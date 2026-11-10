@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to draft, e.g. v0.1.0 (leave empty for a test run without a release)"
+        description: "Release tag to publish, e.g. v0.1.0 (leave empty for a test run without a release)"
         required: false
         default: ""
 
@@ -98,7 +98,7 @@ jobs:
           path: target/dist/*.AppImage
 
   publish:
-    name: Sign and draft the release
+    name: Sign and publish the release
     needs: [windows, linux]
     runs-on: ubuntu-latest
     permissions:

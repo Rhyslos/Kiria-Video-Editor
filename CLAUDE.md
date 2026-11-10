@@ -48,7 +48,7 @@ tests/               cross-crate tests
 test-media/          shared test recordings (only the manifest is in git)
 xtask/               chores: `cargo xtask <check-media | brand | keygen | manifest | sign | verify | icons>`
 packaging/           installers: Windows (Inno Setup), Linux (AppImage), icons, FFmpeg pin
-.github/workflows/   CI on Windows and Linux; release.yml builds, tests, signs and drafts releases
+.github/workflows/   CI on Windows and Linux; release.yml builds, tests, signs and publishes releases
 RELEASING.md         how to make a release; CHANGELOG.md what each release changed
 ```
 
