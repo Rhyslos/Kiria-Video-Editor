@@ -46,7 +46,7 @@ docs/                project plan, build plan, research notes, decisions
 spikes/              throwaway prototypes (not built)
 tests/               cross-crate tests
 test-media/          shared test recordings (only the manifest is in git)
-xtask/               chores: `cargo xtask <check-media | brand | keygen | manifest | sign | verify | icons>`
+xtask/               chores: `cargo xtask <ffmpeg | check-media | brand | keygen | manifest | sign | verify | icons>`
 packaging/           installers: Windows (Inno Setup), Linux (AppImage), icons, FFmpeg pin
 .github/workflows/   CI on Windows and Linux; release.yml builds, tests, signs and publishes releases; spike-*.yml build spike programs to run by hand
 RELEASING.md         how to make a release; CHANGELOG.md what each release changed
@@ -59,12 +59,15 @@ To see a window without a screen (Linux): `xvfb-run -a -s "-screen 0 1600x1000x2
 ## Commands
 
 ```sh
+cargo xtask ffmpeg      # once: fetches the pinned FFmpeg build into .ffmpeg/ (needed to build)
 cargo build --workspace
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
 cargo xtask check-media
 ```
+
+Building needs libclang (for the FFmpeg bindings); on Windows set `LIBCLANG_PATH` if it isn't found. `.cargo/config.toml` points the build at `.ffmpeg/sdk`. On Windows, run `cargo xtask ffmpeg` again after `cargo clean`: it copies the DLLs beside the programs.
 
 `rust-toolchain.toml` pins the Rust version, so rustup downloads it on first use. Offline, override with `RUSTUP_TOOLCHAIN=stable` for local checks; CI always uses the pinned version.
 

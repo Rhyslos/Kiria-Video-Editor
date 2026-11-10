@@ -9,8 +9,10 @@
 //! | `manifest <out> <version> <files...>` | Writes a release manifest for the given files |
 //! | `sign <manifest>` | Signs a manifest with `RELEASE_SIGNING_KEY` (base64) |
 //! | `verify <manifest>` | Checks a manifest's signature against the key built into the app |
+//! | `ffmpeg [--force]` | Fetches the pinned FFmpeg build into `.ffmpeg/sdk` for building and testing |
 //! | `icons` | Draws the app icon (PNG, ICO and the interface mark) from `packaging/icons/icon.svg` |
 
+mod ffmpeg;
 mod icons;
 mod media;
 mod release;
@@ -32,8 +34,9 @@ fn main() -> ExitCode {
         Some("sign") => release::sign(rest),
         Some("verify") => release::verify(rest),
         Some("icons") => icons::write(rest),
+        Some("ffmpeg") => ffmpeg::fetch(rest),
         _ => Err(
-            "Usage: cargo xtask <check-media | brand | beta-version | keygen | manifest | sign | verify | icons> [args]"
+            "Usage: cargo xtask <check-media | brand | beta-version | keygen | manifest | sign | verify | icons | ffmpeg> [args]"
                 .into(),
         ),
     };

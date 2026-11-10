@@ -6,12 +6,15 @@ The editor window and its five pages. Binary name: `editor`.
 
 Phase 0.6 done: the window, the shared top bar, five empty pages that switch instantly, shortcuts, Settings, search for commands, inline errors and Diagnostics. Autosave runs on a worker. The pages fill up from Phase 4.
 
+Phase 4A so far: importing media (Ctrl+I, the Import button, or dropping files on the window). Until the timeline widget arrives, the Edit page lists each track's clips and the project's media.
+
 ## Running
 
 ```sh
 cargo run -p app                         # no project
 cargo run -p app -- trip.kiria           # opens (or creates) a project
 cargo run -p app -- trip.kiria --open-last-save   # sets aside unsaved work from a crash instead of recovering it
+cargo run -p app -- trip.kiria --import match.mkv # imports media at start (repeatable)
 cargo run -p app -- --smoke-test         # open, draw 30 frames, close; exit code 1 on failure
 cargo run -p app -- --responsiveness-test  # 8-second background job; fails if a frame's interface work takes over 16 ms
 cargo run -p app -- --screenshot out.png # save a PNG of the window and close
@@ -25,6 +28,7 @@ The last three are for CI and for checking the look without a screen (`xvfb-run`
 |---|---|
 | `src/main.rs` | Start-up: options, diagnostics, settings, the window, exit code |
 | `src/editor.rs` | `Editor`: the window's state, shortcuts, autosave hand-off to workers, pages, Settings and Search windows, the automated runs |
+| `src/import.rs` | `Importer`: the file dialog (its own thread), reading dropped or chosen files on workers, and applying them in the order chosen; `summary` describes an imported file in one line |
 | `src/settings.rs` | `Settings` (theme, resource budgets, "Edit at the playhead"), saved as `settings.ron` in the app's data folder |
 | `src/run_mode.rs` | Command-line options |
 

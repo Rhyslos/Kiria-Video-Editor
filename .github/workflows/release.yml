@@ -55,6 +55,12 @@ jobs:
         run: |
           $tag = "$env:RELEASE_TAG".TrimStart('v')
           if ($tag -ne $env:APP_VERSION) { throw "The tag says $tag but Cargo.toml says $env:APP_VERSION. Bump the version first (RELEASING.md)." }
+      - name: libclang for the FFmpeg bindings (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo 'LIBCLANG_PATH=C:\Program Files\LLVM\bin' >> "$GITHUB_ENV"
+      - name: FFmpeg for building
+        run: cargo xtask ffmpeg
       - name: Build
         run: cargo build --release -p app -p launcher
       - name: Stage files and FFmpeg
@@ -103,6 +109,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y xvfb libegl1 libgl1-mesa-dri libxkbcommon-x11-0 file
       - name: Name, version and release tag
         run: packaging/release-env.sh >> "$GITHUB_ENV"
+      - name: FFmpeg for building
+        run: cargo xtask ffmpeg
       - name: Build
         run: cargo build --release -p app -p launcher
       - name: Build the AppImage

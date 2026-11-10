@@ -22,13 +22,46 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
 /// The format this build writes.
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
 
 /// Turns the text of a version `n` file into the text of a version `n + 1` file.
 pub type Migration = fn(&str) -> diag::Result<String>;
 
-/// `MIGRATIONS[i]` upgrades version `i + 1` to `i + 2`. Empty while only version 1 exists.
-pub const MIGRATIONS: &[Migration] = &[];
+/// `MIGRATIONS[i]` upgrades version `i + 1` to `i + 2`.
+pub const MIGRATIONS: &[Migration] = &[v1_to_v2];
+
+/// Format 2 adds `info` (the file's streams) to each media entry. The field
+/// has a default, so version 1 text is already valid version 2 text apart
+/// from its version number.
+fn v1_to_v2(text: &str) -> diag::Result<String> {
+    set_format_version(text, 1, 2)
+}
+
+/// Rewrites the `format_version` number at the top of the file.
+fn set_format_version(text: &str, from: u32, to: u32) -> diag::Result<String> {
+    let key = "format_version";
+    let start = text.find(key).ok_or_else(damaged)?;
+    let after_key = start + key.len();
+    let rest = &text[after_key..];
+    let colon = rest.find(':').ok_or_else(damaged)?;
+    let digits_start =
+        after_key + colon + 1 + (rest[colon + 1..].len() - rest[colon + 1..].trim_start().len());
+    let digits_len = text[digits_start..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .count();
+    let found: u32 = text[digits_start..digits_start + digits_len]
+        .parse()
+        .map_err(|_| damaged())?;
+    if found != from {
+        return Err(damaged());
+    }
+    Ok(format!(
+        "{}{to}{}",
+        &text[..digits_start],
+        &text[digits_start + digits_len..]
+    ))
+}
 
 /// The part of a project file the launcher reads to show a project card.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -365,6 +398,24 @@ mod tests {
     }
 
     #[test]
+    fn the_version_number_is_rewritten_in_place() {
+        let text = "(\n  format_version: 1,\n  summary: None,\n)";
+        assert_eq!(
+            set_format_version(text, 1, 2).unwrap(),
+            "(\n  format_version: 2,\n  summary: None,\n)"
+        );
+        assert!(
+            set_format_version(text, 3, 4).is_err(),
+            "only from the expected version"
+        );
+        assert!(
+            set_format_version("(format_version:1)", 1, 2)
+                .unwrap()
+                .contains("format_version:2")
+        );
+    }
+
+    #[test]
     fn a_damaged_head_is_reported() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("test.project");
@@ -436,7 +487,11 @@ mod tests {
                 .replace("format_version: 2", "format_version: 3")
                 .replace("\"after step 1\"", "\"after step 2\""))
         }
-        let text = to_string(&sample_project()).unwrap();
+        let text = to_string(&sample_project()).unwrap().replacen(
+            &format!("format_version: {FORMAT_VERSION}"),
+            "format_version: 1",
+            1,
+        );
         let project = from_str_with(&text, 3, &[v1_to_v2, v2_to_v3]).unwrap();
         assert_eq!(project.name, "after step 2");
 

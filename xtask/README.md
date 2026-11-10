@@ -9,3 +9,4 @@ Project chores written in Rust, so they run the same on Windows and Linux. Run t
 | `beta-version <run>` | Prints the version, `BUILD_VERSION` and tag of an automatic beta (next patch, `-beta.<run>`) |
 | `keygen`, `manifest`, `sign`, `verify` | The release signing key and the signed file list (see `RELEASING.md`) |
 | `icons` | Draws the app icon files from `packaging/icons/icon.svg` |
+| `ffmpeg [--force]` | Fetches the FFmpeg build pinned in `packaging/ffmpeg.env` into `.ffmpeg/sdk` (headers, libraries); on Windows also copies its DLLs beside the built programs. Needed once before building |

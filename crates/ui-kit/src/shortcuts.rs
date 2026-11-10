@@ -20,6 +20,7 @@ pub enum Action {
     Save,
     Search,
     OpenSettings,
+    Import,
 }
 
 impl Action {
@@ -35,6 +36,7 @@ impl Action {
             Action::Save => "Save",
             Action::Search => "Search",
             Action::OpenSettings => "Settings",
+            Action::Import => "Import media",
         }
     }
 }
@@ -118,6 +120,7 @@ impl Default for ShortcutTable {
                 (Action::Save, Shortcut::ctrl(Key::S)),
                 (Action::Search, Shortcut::ctrl(Key::K)),
                 (Action::OpenSettings, Shortcut::ctrl(Key::Comma)),
+                (Action::Import, Shortcut::ctrl(Key::I)),
             ],
         }
     }
@@ -182,6 +185,10 @@ mod tests {
         assert_eq!(first(Key::Delete), Some(Action::Delete));
         assert_eq!(first(Key::Backspace), Some(Action::RippleDelete));
         assert_eq!(first(Key::M), Some(Action::AddLabel));
+        assert_eq!(
+            table.actions_for(Key::I, Modifiers::COMMAND).next(),
+            Some(Action::Import)
+        );
     }
 
     #[test]

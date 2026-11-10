@@ -76,6 +76,59 @@ pub struct MediaRef {
     pub fingerprint: Fingerprint,
     pub kind: MediaKind,
     pub duration: Time,
+    /// What the file holds, read when it was imported. Empty for media added
+    /// before format 2.
+    #[serde(default)]
+    pub info: MediaInfo,
+}
+
+/// The streams of a media file, as found when it was imported.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MediaInfo {
+    /// Container format, such as "matroska,webm" or "mov,mp4,m4a,3gp,3g2,mj2".
+    pub container: String,
+    /// The picture stream, if any.
+    pub video: Option<VideoStream>,
+    /// Every sound stream, in file order. A game recording often has several
+    /// (game, microphone, voice chat).
+    pub audio: Vec<AudioStream>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VideoStream {
+    /// Stream number in the file.
+    pub index: u32,
+    /// Codec name, such as "h264", "hevc" or "av1".
+    pub codec: String,
+    /// Stored picture size, before rotation.
+    pub width: u32,
+    pub height: u32,
+    /// Average frame rate.
+    pub frame_rate: Rate,
+    /// Clockwise turn to show the picture upright: 0, 90, 180 or 270.
+    pub rotation: u16,
+}
+
+impl VideoStream {
+    /// Picture size as shown, after rotation.
+    pub fn display_size(&self) -> (u32, u32) {
+        if self.rotation % 180 == 90 {
+            (self.height, self.width)
+        } else {
+            (self.width, self.height)
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AudioStream {
+    /// Stream number in the file.
+    pub index: u32,
+    pub codec: String,
+    pub channels: u16,
+    pub sample_rate: u32,
+    /// The stream's title in the file, or "Audio N" when it has none.
+    pub name: String,
 }
 
 /// Size plus a hash of the start and end of a file: quick to compute on huge
@@ -365,6 +418,7 @@ mod tests {
                 },
                 kind: MediaKind::Video,
                 duration: Time::seconds(30),
+                info: MediaInfo::default(),
             },
         );
         let clip_id = p.allocate_id();

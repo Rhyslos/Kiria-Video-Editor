@@ -170,6 +170,7 @@ fn media() -> MediaRef {
         },
         kind: MediaKind::Video,
         duration: Time::seconds(600),
+        info: Default::default(),
     }
 }
 

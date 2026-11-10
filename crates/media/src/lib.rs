@@ -1,3 +1,40 @@
 //! Reading and writing media files.
 //!
-//! See this crate's README.md for what will live here and when.
+//! A small, safe layer over FFmpeg. Everything outside this crate sees plain
+//! Rust types and explained errors; the FFmpeg calls stay in here.
+//!
+//! - [`probe`]: what a file holds (container, streams, codec, frame rate,
+//!   length, rotation), without decoding it.
+//! - [`fingerprint`]: recognises a file's contents quickly, so a moved file can
+//!   be found again.
+//! - [`describe`]: both of the above as a [`project::MediaRef`] ready to import.
+//!
+//! Probing opens the file and reads its headers, which can take tens of
+//! milliseconds on a slow disk: call it from a worker, never the interface thread.
+
+// This crate is the FFmpeg wrapper the working rules allow `unsafe` in.
+#![allow(unsafe_code)]
+
+mod ffi;
+pub mod fingerprint;
+pub mod probe;
+
+pub use fingerprint::fingerprint;
+pub use probe::{Probe, probe};
+
+use project::{MediaId, MediaRef};
+use std::path::Path;
+
+/// Everything the project keeps about a file, read from disk. The id is a
+/// placeholder; the project gives a real one when the file is imported.
+pub fn describe(path: &Path) -> diag::Result<MediaRef> {
+    let probe = probe(path)?;
+    Ok(MediaRef {
+        id: MediaId(0),
+        path: path.to_path_buf(),
+        fingerprint: fingerprint(path)?,
+        kind: probe.kind,
+        duration: probe.duration,
+        info: probe.info,
+    })
+}
