@@ -12,7 +12,7 @@ Phase 1 done: checking GitHub, verifying the signed manifest, resumable verified
 |---|---|
 | `src/release.rs` | `check()`: asks GitHub for releases (3-second limit) and picks the newest for the channel (a beta build always follows betas); `decide()` is the testable part. Tags must look like `v1.2.3`; anything else (drafts, `deps-…`) is ignored |
 | `src/manifest.rs` | `Manifest` (version, channel, every file's size and SHA-256), `verify_and_parse()` against `RELEASE_PUBLIC_KEY`, and `sign()` for the release workflow |
-| `src/download.rs` | `download()`: resumes a `.part` file, verifies size and checksum, only then renames it into place |
+| `src/download.rs` | `Progress` (bytes done and total, readable from the interface thread while a download runs) and `download()`: resumes a `.part` file, verifies size and checksum, only then renames it into place |
 | `src/fetch.rs` | `fetch()`: manifest and signature first, then the package for this platform. Both are kept in the download folder so they can be checked again before installing |
 | `src/install.rs` | `Layout`: `current` file and `versions/<version>/` folders; finds the editor to start |
 | `src/apply.rs` | Installing: `pending` (a verified download newer than the running version), `install` (unpack beside the current version, then switch `current`; or replace the AppImage), `prune`, `replace_launcher` |

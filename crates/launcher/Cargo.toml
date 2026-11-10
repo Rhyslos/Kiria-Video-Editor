@@ -22,6 +22,7 @@ project = { path = "../project" }
 project-index = { path = "../project-index" }
 rfd = "0.18"
 ron = "0.12"
+semver = "1"
 serde = { version = "1", features = ["derive"] }
 tracing = "0.1"
 ui-kit = { path = "../ui-kit" }

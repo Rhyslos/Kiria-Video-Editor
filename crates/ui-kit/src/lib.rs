@@ -1,9 +1,10 @@
 //! Shared interface parts.
 //!
 //! Everything that must look and behave the same on every page lives here:
-//! theme colours, fonts, shared sizes, the top bar, the shortcut table and
-//! the way errors are shown. Pages use these instead of drawing their own.
+//! theme colours, fonts, shared sizes, the top bar, dialogs, the shortcut
+//! table and the way errors are shown. Pages use these instead of drawing their own.
 
+pub mod dialog;
 pub mod errors;
 pub mod fonts;
 pub mod layout;
@@ -12,6 +13,7 @@ pub mod theme;
 pub mod time_text;
 pub mod top_bar;
 
+pub use dialog::dialog;
 pub use errors::{ErrorCenter, ErrorResponse, ShownError, accent_button};
 pub use layout::Page;
 pub use shortcuts::{Action, Shortcut, ShortcutTable};

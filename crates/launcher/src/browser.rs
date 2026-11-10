@@ -71,6 +71,8 @@ pub struct Start {
     pub notes: Vec<crate::Note>,
     /// Set when the person asks to restart into a downloaded update.
     pub restart: Arc<AtomicBool>,
+    /// Opens the update window at a sample step (screenshots).
+    pub update_preview: Option<crate::run_mode::UpdatePreview>,
 }
 
 pub struct Browser {
@@ -128,7 +130,10 @@ impl Browser {
                 None
             }
         };
-        let updates = Updates::start(ctx, crate::VERSION, start.data_dir.clone(), start.check_updates);
+        let mut updates = Updates::start(ctx, crate::VERSION, start.data_dir.clone(), start.check_updates);
+        if let Some(step) = start.update_preview {
+            updates.preview(step);
+        }
         let mut browser = Browser {
             theme: start.theme.theme(),
             prefs: LauncherPrefs::load(&start.data_dir),
@@ -727,7 +732,7 @@ impl Browser {
         if let Some(dialog) = &mut self.rename {
             let mut done = false;
             let mut confirmed = false;
-            let modal = egui::Modal::new(egui::Id::unique("rename-project")).show(ctx, |ui| {
+            let modal = ui_kit::dialog(ctx, &self.theme, "rename-project", |ui| {
                 ui.set_width(360.0);
                 ui.label(
                     RichText::new("Rename project")
@@ -921,6 +926,12 @@ impl eframe::App for Browser {
             )
             .show(ui, |ui| self.main_area(ui));
         self.dialogs(&ctx);
+        if let Some(updates) = &mut self.updates
+            && updates.show_window(&ctx, &self.theme)
+        {
+            self.restart.store(true, Ordering::Relaxed);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
 
         self.frames += 1;
         self.automation(&ctx);

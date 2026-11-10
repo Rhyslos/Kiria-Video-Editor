@@ -4,7 +4,7 @@ Shared interface parts. Anything that must look and behave the same on every pag
 
 ## Status
 
-Phase 0.6 done: themes, fonts, shared sizes, the top bar, the shortcut table and error display. Phase 2 added the title bar for the launcher and the shared time wording. The shared timeline widget (playhead, edit needle, region, labels, ruler, transport) arrives in Phase 4.
+Phase 0.6 done: themes, fonts, shared sizes, the top bar, the shortcut table and error display. Phase 2 added the title bar for the launcher, the shared dialog look and the shared time wording. The shared timeline widget (playhead, edit needle, region, labels, ruler, transport) arrives in Phase 4.
 
 ## Files
 
@@ -16,6 +16,7 @@ Phase 0.6 done: themes, fonts, shared sizes, the top bar, the shortcut table and
 | `src/top_bar.rs` | `TopBar`: project name, page tabs centred over the viewport, search, resource readout, settings. `TitleBar`: the same bar for windows without pages (logo and name centred, settings right). `logo_mark` |
 | `src/time_text.rs` | Times written one way everywhere: `ago` ("2 min ago", "yesterday") and `duration` ("4:05", "1:02:09") |
 | `src/shortcuts.rs` | `Action`, `Shortcut`, `ShortcutTable`: the one table of shortcuts, matched on physical key positions |
+| `src/dialog.rs` | `dialog`: every window that asks something and waits uses this frame, padding and dimmed backdrop |
 | `src/errors.rs` | `ErrorCenter`: the inline error strip with its fix button, and the Diagnostics window |
 | `assets/fonts/` | The font files and their licences |
 

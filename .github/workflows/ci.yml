@@ -66,6 +66,7 @@ jobs:
         run: |
           xvfb-run -a -s "-screen 0 1600x1000x24" target/debug/editor --screenshot editor.png
           xvfb-run -a -s "-screen 0 1600x1000x24" target/debug/launcher --demo 14 --screenshot launcher.png
+          xvfb-run -a -s "-screen 0 1600x1000x24" target/debug/launcher --demo 14 --update-window downloading --screenshot update-window.png
       - uses: actions/upload-artifact@v4
         if: runner.os == 'Linux'
         with:
@@ -73,6 +74,7 @@ jobs:
           path: |
             editor.png
             launcher.png
+            update-window.png
 
   licences:
     name: Dependency licences

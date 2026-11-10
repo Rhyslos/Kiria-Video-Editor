@@ -19,6 +19,12 @@ Phase 2 in progress. Done: the project browser (folder tree, project grid, searc
 4. Opening a project starts the editor with its path, notes the time in the index and closes the window. A download still running finishes before the process exits.
 5. Finding projects on disk, renames, moves, file dialogs and update checks all run on worker threads (`work.rs`); the interface thread only reads the index.
 
+## The update window
+
+When a check finds a newer version, a window opens over the browser: **Update available** with **Download** and **Skip this version**. Download turns it into a progress bar (MB done of MB total; **Hide** lets it carry on in the background). When the download is checked, **Update ready** offers **Restart now** or **Later** (it installs the next time the app opens). With automatic updates on, the window opens straight at the progress bar. Closing it never cancels anything: the version panel at the bottom left offers the same choices.
+
+`--update-window <available | downloading | ready>` opens it with a sample version, for screenshots.
+
 ## Where projects are saved
 
 New projects go to one chosen folder, shown with a quiet "new projects" badge in the folder tree. On the first run that is the `<name> projects` folder made in Documents. It can be changed three ways:
@@ -39,7 +45,7 @@ Preferences are read from `<data folder>/updates.ron` (defaults: automatic, Stab
 | `src/browser.rs` | The window: panels, folder tree, header, dialogs, keyboard, automated runs |
 | `src/cards.rs` | The project grid and its cards; search filtering |
 | `src/new_project.rs` | The New project dialog and its presets |
-| `src/updates.rs` | The version panel and its background check and download |
+| `src/updates.rs` | The version panel, the update window (Update available → download bar → Update ready), and the background check and download |
 | `src/files.rs` | Creating, renaming and moving project files (the autosave journal moves along) |
 | `src/editor_start.rs` | Starting the editor; showing a folder in the file manager |
 | `src/work.rs` | `Task`: run work on a thread, pick the result up on a later frame |
