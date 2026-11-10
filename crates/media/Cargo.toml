@@ -10,6 +10,7 @@ publish = false
 [dependencies]
 diag = { path = "../diag" }
 project = { path = "../project" }
+libloading = "0.8"
 sha2 = "0.10"
 # FFmpeg, linked dynamically. `cargo xtask ffmpeg` fetches the pinned build the
 # build reads (FFMPEG_DIR in .cargo/config.toml).

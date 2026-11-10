@@ -2339,6 +2339,7 @@ version = "0.1.0"
 dependencies = [
  "diag",
  "ffmpeg-sys-next",
+ "libloading",
  "project",
  "sha2",
  "tempfile",

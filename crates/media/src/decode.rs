@@ -118,6 +118,23 @@ unsafe extern "C" fn pick_format(
 
 const HARDWARE: &str = if cfg!(windows) { "d3d11va" } else { "vaapi" };
 
+/// The FFmpeg build loads the GPU decoding libraries on first use and stops
+/// the program if they are missing, so check first. On Windows the
+/// Direct3D 11 libraries are always there; on Linux VA-API may not be installed.
+fn hardware_libraries_present() -> bool {
+    if cfg!(windows) {
+        return true;
+    }
+    static PRESENT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *PRESENT.get_or_init(|| {
+        ["libva.so.2", "libva-drm.so.2"].iter().all(|name| {
+            // SAFETY: loading these libraries runs only their initialisers,
+            // which have no requirements; they are closed straight away.
+            unsafe { libloading::Library::new(name) }.is_ok()
+        })
+    })
+}
+
 impl VideoDecoder {
     /// Opens stream `stream` of the file. `rotation` is the clockwise turn
     /// that shows it upright (from probing).
@@ -192,6 +209,9 @@ impl VideoDecoder {
 
     /// Asks FFmpeg for the GPU decoder; leaves the CPU path when it isn't there.
     unsafe fn try_hardware(&mut self, decoder: *const ff::AVCodec) {
+        if !hardware_libraries_present() {
+            return;
+        }
         // SAFETY: called before avcodec_open2 on a fresh context; the device
         // reference is handed to the codec context, which owns it from then on.
         unsafe {
