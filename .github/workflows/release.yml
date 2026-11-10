@@ -4,11 +4,15 @@ name: Release
 # a tag typed in, builds both installers, tests them, signs the manifest and
 # publishes the GitHub release. Installed copies pick it up on their next start.
 # Nothing is published if any build, test or signature check fails.
-# Pull requests run the same build without publishing, so every feature can be
-# tried from a real installer (download "windows" from the run's artifacts).
+# Every push to main publishes an automatic beta (e.g. 0.1.1-beta.12) that beta
+# builds pick up by themselves. Pull requests run the same build without
+# publishing, so every feature can be tried from a real installer (download
+# "windows" from the run's artifacts).
 on:
   push:
     tags: ["v*"]
+    branches: [main]
+    paths-ignore: ["docs/**", "**.md"]
   pull_request:
   workflow_dispatch:
     inputs:
@@ -19,8 +23,13 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  # The release tag: the pushed tag, or the one typed when starting the workflow by hand.
-  RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag }}
+  # Read by packaging/release-env.sh, which sets APP_VERSION, RELEASE_TAG and,
+  # for automatic betas, BUILD_VERSION (the version compiled into the programs).
+  REF_TYPE: ${{ github.ref_type }}
+  REF_NAME: ${{ github.ref_name }}
+  INPUT_TAG: ${{ inputs.tag }}
+  EVENT: ${{ github.event_name }}
+  RUN_NUMBER: ${{ github.run_number }}
 
 jobs:
   windows:
@@ -31,9 +40,9 @@ jobs:
       - name: Install pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
-      - name: Name and version
-        shell: pwsh
-        run: cargo xtask brand | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+      - name: Name, version and release tag
+        shell: bash
+        run: packaging/release-env.sh >> "$GITHUB_ENV"
       - name: Version matches the tag
         if: env.RELEASE_TAG != ''
         shell: pwsh
@@ -58,6 +67,7 @@ jobs:
           $setup = "target/dist/$env:APP_NAME-Setup-$env:APP_VERSION.exe"
           Start-Process -Wait $setup -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER", "/DIR=$dir"
           if (-not (Test-Path "$dir/launcher.exe")) { throw "The launcher was not installed." }
+          if (-not (Test-Path "$dir/versions/$env:APP_VERSION/launcher.exe")) { throw "The version folder has no launcher for updates." }
           if ((Get-Content "$dir/current") -ne $env:APP_VERSION) { throw "The current-version file is wrong." }
           $editor = "$dir/versions/$env:APP_VERSION/editor.exe"
           $run = Start-Process -Wait -PassThru $editor -ArgumentList "--smoke-test"
@@ -83,8 +93,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Tools for building and testing
         run: sudo apt-get update && sudo apt-get install -y xvfb libegl1 libgl1-mesa-dri libxkbcommon-x11-0 file
-      - name: Name and version
-        run: cargo xtask brand >> "$GITHUB_ENV"
+      - name: Name, version and release tag
+        run: packaging/release-env.sh >> "$GITHUB_ENV"
       - name: Build
         run: cargo build --release -p app -p launcher
       - name: Build the AppImage
@@ -115,8 +125,8 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-      - name: Name and version
-        run: cargo xtask brand >> "$GITHUB_ENV"
+      - name: Name, version and release tag
+        run: packaging/release-env.sh >> "$GITHUB_ENV"
       - name: Manifest and signature
         env:
           RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
@@ -135,6 +145,10 @@ jobs:
         run: |
           prerelease=""
           case "$APP_VERSION" in *-*) prerelease="--prerelease" ;; esac
-          # For a hand-started run the tag is created on this commit.
+          notes=(--notes-file CHANGELOG.md)
+          if [ "$EVENT" = push ] && [ "$REF_TYPE" = branch ]; then
+            notes=(--notes "Automatic test build of ${{ github.sha }}: $(git log -1 --format=%s ${{ github.sha }})")
+          fi
+          # For a hand-started run or a beta the tag is created on this commit.
           gh release create "$RELEASE_TAG" $prerelease --target "${{ github.sha }}" \
-            --title "$APP_NAME $APP_VERSION" --notes-file CHANGELOG.md dist/*
+            --title "$APP_NAME $APP_VERSION" "${notes[@]}" dist/*

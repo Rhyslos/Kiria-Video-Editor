@@ -18,7 +18,7 @@ pub enum UpdateState {
     Skipped(String),
     Available(Release),
     Downloading(String),
-    /// Downloaded and verified; it installs once installing arrives (Phase 3).
+    /// Downloaded and verified; it installs on the next start.
     Ready(String),
     /// The check or download failed. Never blocks anything.
     Failed(String),
@@ -161,8 +161,9 @@ impl Updates {
         }
     }
 
-    /// Draws the panel.
-    pub fn show(&mut self, ui: &mut egui::Ui, theme: &Theme) {
+    /// Draws the panel. Returns true when "Restart to update" was clicked.
+    pub fn show(&mut self, ui: &mut egui::Ui, theme: &Theme) -> bool {
+        let mut restart = false;
         let ctx = ui.ctx().clone();
         ui.label(
             RichText::new(format!("{} {}", brand::APP_NAME, self.version))
@@ -179,11 +180,13 @@ impl Updates {
             UpdateState::Ready(v) => (format!("{v} downloaded and verified"), status::GOOD),
             UpdateState::Failed(what) => (what.clone(), theme.muted),
         };
-        let response = ui.label(RichText::new(line).size(11.5).color(colour));
-        if matches!(self.state, UpdateState::Ready(_)) {
-            response.on_hover_text(
-                "Installing downloaded updates from here is still being built. Until then, install new versions from the Releases page.",
-            );
+        ui.label(RichText::new(line).size(11.5).color(colour));
+        if matches!(self.state, UpdateState::Ready(_))
+            && ui_kit::accent_button(ui, theme, "Restart to update")
+                .on_hover_text("Installs it now. Otherwise it installs the next time you open the app.")
+                .clicked()
+        {
+            restart = true;
         }
 
         if let UpdateState::Available(release) = &self.state {
@@ -214,5 +217,6 @@ impl Updates {
                 self.download(&ctx, release);
             }
         }
+        restart
     }
 }

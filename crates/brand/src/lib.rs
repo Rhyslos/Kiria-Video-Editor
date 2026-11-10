@@ -24,6 +24,14 @@ pub const DATA_DIR_NAME: &str = APP_NAME;
 pub const RELEASE_REPO_OWNER: &str = "Rhyslos";
 pub const RELEASE_REPO_NAME: &str = "kiria-video-editor";
 
+/// The version of this build. Normally the workspace version from
+/// `Cargo.toml`; automatic test builds set `BUILD_VERSION` (for example
+/// `0.1.1-beta.12`) so they sort after the release they build on.
+pub const VERSION: &str = match option_env!("BUILD_VERSION") {
+    Some(version) => version,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
 /// Title for a window, for example `window_title("Lofoten trip")`
 /// gives "Lofoten trip – Kiria".
 pub fn window_title(document: &str) -> String {

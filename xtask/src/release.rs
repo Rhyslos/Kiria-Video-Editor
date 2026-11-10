@@ -9,8 +9,37 @@ use updater::{Channel, Manifest, ManifestFile, RELEASE_PUBLIC_KEY};
 pub fn brand() {
     println!("APP_NAME={}", brand::APP_NAME);
     println!("APP_ID={}", brand::APP_ID);
-    println!("APP_VERSION={}", env!("CARGO_PKG_VERSION"));
+    println!("APP_VERSION={}", brand::VERSION);
     println!("PROJECT_FILE_EXTENSION={}", brand::PROJECT_FILE_EXTENSION);
+}
+
+/// `beta-version <run number>`: `KEY=value` lines for an automatic test build
+/// of `main`. The version is the next patch after the workspace version with a
+/// beta number, so it sorts after the last release and before the next one:
+/// 0.1.0 with run 12 gives 0.1.1-beta.12.
+pub fn beta_version(args: &[String]) -> Result<(), String> {
+    let [run] = args else {
+        return Err("Usage: cargo xtask beta-version <run number>".into());
+    };
+    let version = next_beta(env!("CARGO_PKG_VERSION"), run)?;
+    println!("APP_VERSION={version}");
+    println!("BUILD_VERSION={version}");
+    println!("RELEASE_TAG=v{version}");
+    Ok(())
+}
+
+fn next_beta(base: &str, run: &str) -> Result<String, String> {
+    let run: u64 = run.parse().map_err(|_| format!("{run} is not a run number"))?;
+    let core = base.split('-').next().unwrap_or(base);
+    let parts: Vec<u64> = core
+        .split('.')
+        .map(str::parse)
+        .collect::<Result<_, _>>()
+        .map_err(|_| format!("{base} is not a version"))?;
+    let [major, minor, patch] = parts[..] else {
+        return Err(format!("{base} is not a version"));
+    };
+    Ok(format!("{major}.{minor}.{}-beta.{run}", patch + 1))
 }
 
 /// Writes a new secret key (base64) to a file and prints the public key as Rust.
@@ -110,4 +139,17 @@ pub fn verify(args: &[String]) -> Result<(), String> {
     Manifest::verify_and_parse(&bytes, &signature, &RELEASE_PUBLIC_KEY).map_err(|e| e.report())?;
     println!("{path} is signed with the release key.");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn betas_sort_after_the_release_they_build_on() {
+        assert_eq!(next_beta("0.1.0", "12").unwrap(), "0.1.1-beta.12");
+        assert_eq!(next_beta("1.4.9", "3").unwrap(), "1.4.10-beta.3");
+        assert!(next_beta("0.1", "1").is_err());
+        assert!(next_beta("0.1.0", "x").is_err());
+    }
 }

@@ -6,9 +6,12 @@
 //!   key built into the app.
 //! - [`download::download`] fetches a file in the background, resumes a
 //!   partial download, and refuses anything whose checksum does not match.
+//! - [`apply`] installs a verified download beside the current version and
+//!   switches to it, and swaps in a newer launcher.
 //!
-//! Installing side by side and rolling back arrive in Phase 3.
+//! Rolling back a version that fails to start arrives in Phase 3.
 
+pub mod apply;
 pub mod download;
 pub mod fetch;
 pub mod install;
@@ -38,11 +41,7 @@ pub fn package_name(version: &str) -> String {
 fn agent(timeout: Duration) -> ureq::Agent {
     ureq::Agent::config_builder()
         .timeout_global(Some(timeout))
-        .user_agent(format!(
-            "{}-updater/{}",
-            brand::APP_NAME,
-            env!("CARGO_PKG_VERSION")
-        ))
+        .user_agent(format!("{}-updater/{}", brand::APP_NAME, brand::VERSION))
         .build()
         .into()
 }

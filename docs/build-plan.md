@@ -32,7 +32,7 @@ The platform (project file, errors, installs, safe updates) comes before any pag
 | 0 | Foundations | Workspace, engine core, errors, resources, app shell | Empty app opens, autosaves, recovers from a forced crash | Gate passed |
 | 1 | Installer and updates | Signed builds, installers, GitHub releases | A tagged build installs on a clean Windows and Linux machine | Gate passed |
 | 2 | Launcher | Project browser, folders, update panel | Create, find and open projects; manual update works | In progress |
-| 3 | Update safety | Side-by-side installs, rollback, project migrations | A broken update rolls back by itself; old projects open | Not started |
+| 3 | Update safety | Side-by-side installs, rollback, project migrations | A broken update rolls back by itself; old projects open | Started early (installing updates) |
 | 4 | Edit page | Media pipeline, playback, timeline, editing, inspector | Cut a 20-minute game recording smoothly at 1440p 60 | Not started |
 | 5 | Library | Import, index, tabs, lists, labels, prune | 500 clips import, filter and search instantly | Not started |
 | 6 | Export | Encode pipeline, presets, checks, queue | Exports match the timeline frame for frame | Not started |
@@ -256,11 +256,13 @@ Phase 2 builds the launcher exactly as in the agreed mockup: name and logo centr
 
 Phase 3 makes a bad update harmless before real projects exist: new versions install beside the old one, a version that fails to start is rolled back by itself, and project files only ever move forward through tested migrations.
 
+Automatic test builds (added in Phase 2 so features can be tried through updates): every push to `main` publishes a beta like `0.1.1-beta.12`, and beta builds follow betas.
+
 **3.1 Side-by-side install**
 
-- [ ] New version unpacks to `versions/<new>/`; a small `current` pointer file switches only after unpacking and verifying.
-- [ ] Keep the previous two versions; delete older ones after a successful start.
-- [ ] "Use on next start" by default; "Update now" only when no project is open.
+- [x] New version unpacks to `versions/<new>/`; a small `current` pointer file switches only after unpacking and verifying. (`updater::apply`; the signature and checksum are checked again right before installing.)
+- [ ] Keep the previous two versions; delete older ones after a successful start. (For now the previous version is kept and older ones are deleted when an update installs; counting successful starts comes with the health check.)
+- [x] "Use on next start" by default; "Update now" only when no project is open. ("Restart to update" in the launcher, which never has a project open.)
 
 **3.2 Health check and rollback**
 
@@ -270,7 +272,7 @@ Phase 3 makes a bad update harmless before real projects exist: new versions ins
 
 **3.3 Launcher self-update**
 
-- [ ] The launcher updates itself in a separate, rarer step, using a temporary copy so it can never break its own recovery.
+- [ ] The launcher updates itself in a separate, rarer step, using a temporary copy so it can never break its own recovery. (Started: every version carries its launcher; a newer one is swapped in by renaming the running one aside, then the new one restarts. Making it a separate, rarer step is still to do.)
 - [ ] Manifest field "minimum launcher version" forces this step first when needed.
 
 **3.4 Project safety across versions**
