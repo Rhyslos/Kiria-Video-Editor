@@ -1,6 +1,6 @@
 //! The editor: window, pages and the start-up sequence.
 //!
-//! Usage: `editor [project file] [--smoke-test | --responsiveness-test | --screenshot <file.png>]`.
+//! Usage: `editor [project file] [--open-last-save] [--smoke-test | --responsiveness-test | --screenshot <file.png>]`.
 //! The extra options are for automated checks; normal use needs none.
 
 // Release builds on Windows open no console window next to the editor.
@@ -10,7 +10,7 @@ mod editor;
 mod run_mode;
 mod settings;
 
-use editor::{Editor, RunReport};
+use editor::{Editor, ProjectToOpen, RunReport};
 use run_mode::{Options, RunMode};
 use settings::Settings;
 use std::process::ExitCode;
@@ -45,6 +45,21 @@ fn main() -> ExitCode {
         );
     }
 
+    let project = options.project.clone().map(|path| ProjectToOpen {
+        path,
+        recovery: if options.open_last_save {
+            project::Recovery::OpenLastSave
+        } else {
+            project::Recovery::Recover
+        },
+    });
+    // If this run crashes, the launcher offers to recover this project.
+    if let (Some(diagnostics), Some(project)) = (&diagnostics, &project)
+        && let Err(err) = diagnostics.note_open_project(&project.path)
+    {
+        tracing::warn!("{}", err.report());
+    }
+
     let report = Arc::new(Mutex::new(RunReport::default()));
     let window_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -65,7 +80,7 @@ fn main() -> ExitCode {
                     cc,
                     settings,
                     data_dir,
-                    options.project,
+                    project,
                     options.mode,
                     report,
                     problems,

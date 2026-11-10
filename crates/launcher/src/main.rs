@@ -7,7 +7,7 @@
 //! newer version in the background and, with automatic updates on, downloads
 //! and verifies it; installing it arrives in Phase 3.
 //!
-//! Usage: `launcher [project file] [--no-update-check] [--smoke-test | --screenshot <file.png>] [--demo <count>] [--update-window <available | downloading | ready>]`.
+//! Usage: `launcher [project file] [--no-update-check] [--smoke-test | --screenshot <file.png>] [--demo <count>] [--update-window <available | downloading | ready>] [--demo-crash]`.
 
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
@@ -18,6 +18,7 @@ mod editor_start;
 mod files;
 mod new_project;
 mod prefs;
+mod recovery;
 mod run_mode;
 mod updates;
 mod work;
@@ -74,7 +75,7 @@ fn main() -> ExitCode {
     }
 
     let data_dir = match options.demo {
-        Some(count) => match demo::prepare(count) {
+        Some(count) => match demo::prepare(count, options.demo_crash) {
             Ok(dir) => dir,
             Err(err) => {
                 eprintln!("{}", err.report());

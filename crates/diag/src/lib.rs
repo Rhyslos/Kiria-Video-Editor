@@ -62,6 +62,11 @@ pub fn start_helper(name: &str) -> Result<(AppDirs, logging::LogGuard)> {
 }
 
 impl Diagnostics {
+    /// Records which project this run has open, so a crash can offer to recover it.
+    pub fn note_open_project(&self, project: &std::path::Path) -> Result<()> {
+        self.session.note_project(project)
+    }
+
     /// Marks the run as closed cleanly and flushes the log.
     pub fn finish(self) -> Result<()> {
         tracing::info!("closing");

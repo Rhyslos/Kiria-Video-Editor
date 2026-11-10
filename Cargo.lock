@@ -2123,6 +2123,7 @@ dependencies = [
  "ron",
  "semver",
  "serde",
+ "sysinfo",
  "tempfile",
  "tracing",
  "ui-kit",

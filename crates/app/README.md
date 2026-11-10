@@ -11,6 +11,7 @@ Phase 0.6 done: the window, the shared top bar, five empty pages that switch ins
 ```sh
 cargo run -p app                         # no project
 cargo run -p app -- trip.kiria           # opens (or creates) a project
+cargo run -p app -- trip.kiria --open-last-save   # sets aside unsaved work from a crash instead of recovering it
 cargo run -p app -- --smoke-test         # open, draw 30 frames, close; exit code 1 on failure
 cargo run -p app -- --responsiveness-test  # 8-second background job; fails if a frame's interface work takes over 16 ms
 cargo run -p app -- --screenshot out.png # save a PNG of the window and close
@@ -29,5 +30,5 @@ The last three are for CI and for checking the look without a screen (`xvfb-run`
 
 ## Notes
 
-- Opening a project that has unsaved work from a crash recovers it automatically for now; the launcher asks first from Phase 2.
+- Opening a project that has unsaved work from a crash recovers it, unless `--open-last-save` is given. The launcher asks which the person wants and passes the flag.
 - Resource setting changes apply on the next start.

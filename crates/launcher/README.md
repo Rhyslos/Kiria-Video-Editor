@@ -19,6 +19,15 @@ Phase 2 in progress. Done: the project browser (folder tree, project grid, searc
 4. Opening a project starts the editor with its path, notes the time in the index and closes the window. A download still running finishes before the process exits.
 5. Finding projects on disk, renames, moves, file dialogs and update checks all run on worker threads (`work.rs`); the interface thread only reads the index.
 
+## Crash recovery
+
+If the editor didn't close properly last time (its session marker is still there and no editor is running), the launcher says so at start-up:
+
+- with unsaved work in the project that was open: **Kiria closed unexpectedly** with **Recover and open**, **Open last save** (the work is kept beside the project as `<file>.journal.discarded`) and **Not now**;
+- with nothing unsaved: a line under the header saying nothing was lost.
+
+The marker is then cleared so the editor doesn't mention it again. Cards of projects with unsaved crash work say so, and opening one asks the same question. `--demo 8 --demo-crash` shows the window with sample projects.
+
 ## The update window
 
 When a check finds a newer version, a window opens over the browser: **Update available** with **Download** and **Skip this version**. Download turns it into a progress bar (MB done of MB total; **Hide** lets it carry on in the background). When the download is checked, **Update ready** offers **Restart now** or **Later** (it installs the next time the app opens). With automatic updates on, the window opens straight at the progress bar. Closing it never cancels anything: the version panel at the bottom left offers the same choices.
@@ -50,6 +59,7 @@ Preferences are read from `<data folder>/updates.ron` (defaults: automatic, Stab
 | `src/editor_start.rs` | Starting the editor; showing a folder in the file manager |
 | `src/work.rs` | `Task`: run work on a thread, pick the result up on a later frame |
 | `src/demo.rs` | Sample projects in a temporary folder for screenshots and tests |
+| `src/recovery.rs` | Unsaved work left by a crash: reads the editor's session marker and project journals |
 | `src/prefs.rs` | `LauncherPrefs` in `launcher.ron`: the folder new projects are saved in |
 | `src/run_mode.rs` | Command-line options |
 

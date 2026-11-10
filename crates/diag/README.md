@@ -11,7 +11,7 @@ Done (Phase 0.2). Showing errors in the interface (inline messages with a fix bu
 At the top of a program's `main`:
 
 ```rust,ignore
-let diagnostics = diag::start(env!("CARGO_PKG_VERSION"))?; // folders, logging, crash handler, session
+let diagnostics = diag::start(brand::VERSION)?; // folders, logging, crash handler, session
 // ... run the app ...
 diagnostics.finish()?; // records a clean exit
 ```
@@ -40,7 +40,7 @@ std::fs::read(&path).or_explain(|| {
 | `src/paths.rs` | `AppDirs`: the app's data, logs and crash-reports folders |
 | `src/logging.rs` | Daily log files, 7 days kept; warnings also go to the terminal. `RUST_LOG` changes the level |
 | `src/crash.rs` | Panic hook that writes `crash-<time>.txt`: message, place, version, system, graphics card, last 200 log lines, backtrace |
-| `src/session.rs` | A marker file that reveals a run which did not close cleanly (crash, forced quit, power cut) |
+| `src/session.rs` | A marker file that reveals a run which did not close cleanly (crash, forced quit, power cut). It names the process and the open project (`note_open_project`), so the launcher can read it (`unfinished_run`), offer recovery and clear it (`forget_unfinished_run`) |
 | `tests/logging_and_crash.rs` | Logging and a real panic in one test binary, because both are process-wide |
 
 ## Where files go
