@@ -70,6 +70,8 @@ cargo xtask check-media
 
 ## Decisions so far
 
+- One tester (the owner, AMD RX 7900 XT); gates are run on that one machine. The first user (AMD RX 9070 XT) gets the app once the edit and export pages work.
+- GPU priority: AMD first. Prefer vendor-neutral paths; when a choice favours one vendor, choose AMD. Other GPUs must still work, at least through the software fallback.
 - Time is stored as exact fractions (frames over rate), never floats.
 - The project file is versioned from its first commit; every format change gets a migration and a stored sample.
 - FFmpeg is linked dynamically and its licence text ships with the app.

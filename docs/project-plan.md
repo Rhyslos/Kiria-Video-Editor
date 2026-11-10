@@ -399,7 +399,7 @@ Robustness comes from isolating failures, never losing work, and testing against
 | Benchmarks | Decode, composite and export speed tracked per commit; regressions fail CI |
 | Manual smoke test | One short script per release: import, cut, grade, key, mix, export |
 
-CI builds and tests on Windows and Linux for every pull request. The first test machines are an AMD RX 7900 XT (hardware H.264, H.265 and AV1 encode and decode) and an NVIDIA card, so both major GPU vendors are covered from the start.
+CI builds and tests on Windows and Linux for every pull request. Testing is done by the owner on one machine with an AMD RX 7900 XT (hardware H.264, H.265 and AV1 encode and decode). The first user outside the project runs an AMD RX 9070 XT and gets the app once the edit and export pages work. CI covers Windows and Linux but has no GPU.
 
 ### Risks
 
@@ -421,7 +421,8 @@ Explained errors and resource limits are built into the engine from Phase 0, eve
 ## Decisions
 
 - **Platforms:** Windows first, then Linux. macOS later, if ever.
-- **Test machines:** an AMD RX 7900 XT and an NVIDIA card, so both GPU vendors are covered from the start.
+- **Test machine:** one, the owner's, with an AMD RX 7900 XT. The owner is the only tester.
+- **GPU vendor priority:** AMD first (RX 7900 XT and RX 9070 XT). Prefer vendor-neutral paths (Vulkan, D3D11VA, VA-API). Where a choice favours one vendor (hardware encoders, decode paths, shader tuning, defaults), pick what works best on AMD. NVIDIA and Intel must still work, at least through the software fallback, but are not tuned for.
 - **Open source:** yes, under GPL-3.0-or-later. Anything distributed that is based on it must stay open under the same licence.
 - **Footage:** game recordings first, so MKV and MP4. No camera log or HDR footage for now; Rec.709 is enough.
 - **Name:** Kiria. It lives only in `crates/brand`, so changing it later is a one-line change.
