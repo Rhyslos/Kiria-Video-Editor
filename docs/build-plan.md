@@ -140,9 +140,9 @@ Phase 0 builds everything later phases stand on and that is painful to add after
 
 **0.2 Errors and logging (`diag`)**
 
-- [ ] `AppError { what, why, fix, action: Option<FixAction>, source }` with a builder; every crate returns it.
-- [ ] `tracing` setup: rolling log files in the user's data folder, 7 days kept.
-- [ ] Panic hook: writes a crash report (log tail, versions, GPU, OS) and marks the session as crashed.
+- [x] `AppError { what, why, fix, action: Option<FixAction>, source }` with a builder; every crate returns it.
+- [x] `tracing` setup: rolling log files in the user's data folder, 7 days kept.
+- [x] Panic hook: writes a crash report (log tail, versions, GPU, OS) and marks the session as crashed.
 
 **0.3 Project model (`project`)**
 

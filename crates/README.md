@@ -5,7 +5,7 @@ The Cargo workspace members. One engine with no interface, and thin pages on top
 | Crate | Job | Built in |
 |---|---|---|
 | [brand](brand/) | The app's name and identity, in one place | 0.1 (done) |
-| [diag](diag/) | Explained errors, logging, crash reports | 0.2 |
+| [diag](diag/) | Explained errors, logging, crash reports | 0.2 (done) |
 | [project](project/) | Project model, commands, undo/redo, autosave | 0.3 – 0.4 |
 | [jobs](jobs/) | Worker pools, priorities, resource budgets | 0.5 |
 | [ui-kit](ui-kit/) | Themes, top bar, shortcuts, shared timeline widget | 0.6 onwards |

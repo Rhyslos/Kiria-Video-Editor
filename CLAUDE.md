@@ -25,7 +25,7 @@ A fast, light, native video editor written in Rust. A hobby project, open source
 
 - `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace` pass.
 - New behaviour has tests.
-- Errors use the shared what / why / fix type from `crates/diag` (once it exists), never a bare string.
+- Errors are `diag::AppError` (what, why, fix, optional one-click fix), returned as `diag::Result<T>`; wrap other errors with `.or_explain(...)`. Never a bare string.
 - Nothing slower than about 2 ms runs on the interface thread.
 - READMEs, this file and `docs/build-plan.md` are current.
 
@@ -63,4 +63,5 @@ cargo xtask check-media
 - Time is stored as exact fractions (frames over rate), never floats.
 - The project file is versioned from its first commit; every format change gets a migration and a stored sample.
 - FFmpeg is linked dynamically and its licence text ships with the app.
+- Every program calls `diag::start(env!("CARGO_PKG_VERSION"))` first and `finish()` on a clean exit (logging, crash reports, crash detection).
 - Licence: GPL-3.0-or-later (`LICENSE`). Dependencies must have GPL-compatible licences; `deny.toml` checks this in CI. Never copy code whose licence is incompatible.
