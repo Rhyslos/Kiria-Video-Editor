@@ -30,8 +30,8 @@ The platform (project file, errors, installs, safe updates) comes before any pag
 | # | Phase | Builds | Gate (short) | Status |
 | --- | --- | --- | --- | --- |
 | 0 | Foundations | Workspace, engine core, errors, resources, app shell | Empty app opens, autosaves, recovers from a forced crash | Gate passed |
-| 1 | Installer and updates | Signed builds, installers, GitHub releases | A tagged build installs on a clean Windows and Linux machine | In progress |
-| 2 | Launcher | Project browser, folders, update panel | Create, find and open projects; manual update works | Not started |
+| 1 | Installer and updates | Signed builds, installers, GitHub releases | A tagged build installs on a clean Windows and Linux machine | Gate passed |
+| 2 | Launcher | Project browser, folders, update panel | Create, find and open projects; manual update works | In progress |
 | 3 | Update safety | Side-by-side installs, rollback, project migrations | A broken update rolls back by itself; old projects open | Not started |
 | 4 | Edit page | Media pipeline, playback, timeline, editing, inspector | Cut a 20-minute game recording smoothly at 1440p 60 | Not started |
 | 5 | Library | Import, index, tabs, lists, labels, prune | 500 clips import, filter and search instantly | Not started |
@@ -210,13 +210,13 @@ Phase 1 makes every tagged commit a signed, installable release that the app can
 
 **1.4 Release routine**
 
-- [x] `RELEASING.md`: bump version, changelog entry, tag, check CI, publish the draft.
+- [x] `RELEASING.md`: bump version, changelog entry, check CI, start the release; it publishes itself.
 - [x] Version scheme: `0.x.y` until 1.0; the project file format version is separate and only goes up.
 
 **Gate 1**
 
-- [x] Tag `v0.1.0`: CI builds, signs and drafts a release with no manual steps. (Done 10 November 2026: draft "Kiria 0.1.0" with installer, AppImage, update package and signed manifest.)
-- [ ] The installer works on a clean Windows 11 machine and the AppImage on a clean Linux machine. (Automated: every release installs, starts and uninstalls on a fresh Windows runner and starts the AppImage on Ubuntu 22.04. Still to do: your own PCs.)
+- [x] Tag `v0.1.0`: CI builds, signs and publishes a release with no manual steps. (Done 10 November 2026: draft "Kiria 0.1.0" with installer, AppImage, update package and signed manifest.)
+- [x] The installer works on a clean Windows 11 machine and the AppImage on a clean Linux machine. (Automated: every release installs, starts and uninstalls on a fresh Windows runner and starts the AppImage on Ubuntu 22.04. Installed by the owner on Windows 11 on 10 November 2026; the AppImage gets its first run on your own Linux PC when Linux work starts.)
 - [x] A tampered download is refused with a clear message.
 - [x] With the network unplugged the app still starts within 4 seconds. (The launcher starts the editor before checking; measured under 0.1 s with no network.)
 
