@@ -13,19 +13,25 @@ pub struct Drawn {
 }
 
 /// Builds the widget's data. Clips in `selected`, and clips linked to them,
-/// show as selected.
-pub fn drawn(project: &Project, seq: &Sequence, selected: &[ClipId]) -> Drawn {
+/// show as selected. `waveform` gives a sound stream's peaks when ready.
+pub fn drawn(
+    project: &Project,
+    seq: &Sequence,
+    selected: &[ClipId],
+    mut waveform: impl FnMut(&project::MediaRef, u32) -> Option<cache::Peaks>,
+) -> Drawn {
     let links: Vec<_> = seq
         .tracks()
         .flat_map(|t| t.clips.iter())
         .filter(|c| selected.contains(&c.id))
         .filter_map(|c| c.link)
         .collect();
-    let track = |t: &project::Track| TimelineTrack {
+    let mut track = |t: &project::Track| TimelineTrack {
         id: t.id.0,
         name: t.name.clone(),
         muted: t.muted,
         solo: t.solo,
+        gain_db: t.gain_db,
         clips: t
             .clips
             .iter()
@@ -43,13 +49,23 @@ pub fn drawn(project: &Project, seq: &Sequence, selected: &[ClipId]) -> Drawn {
                     selected: selected.contains(&c.id) || c.link.is_some_and(|l| links.contains(&l)),
                     missing: media.is_none(),
                     link: c.link.map(|l| l.0),
+                    waveform: match (t.kind, media) {
+                        (project::TrackKind::Audio, Some(m)) => {
+                            waveform(m, c.stream).map(|p| ui_kit::ClipWaveform {
+                                peaks: p.values,
+                                per_second: p.per_second as f32,
+                                source_in: c.source_in.as_secs_f64(),
+                            })
+                        }
+                        _ => None,
+                    },
                 }
             })
             .collect(),
     };
     Drawn {
-        video: seq.video_tracks.iter().map(track).collect(),
-        audio: seq.audio_tracks.iter().map(track).collect(),
+        video: seq.video_tracks.iter().map(&mut track).collect(),
+        audio: seq.audio_tracks.iter().map(&mut track).collect(),
         markers: seq
             .labels
             .iter()

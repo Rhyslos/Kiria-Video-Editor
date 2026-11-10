@@ -8,6 +8,8 @@ license.workspace = true
 publish = false
 
 [dependencies]
+diag = { path = "../diag" }
+media = { path = "../media" }
 
 [lints]
 workspace = true

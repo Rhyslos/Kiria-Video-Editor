@@ -1,3 +1,11 @@
 //! Every cache, each with a budget.
 //!
-//! See this crate's README.md for what will live here and when.
+//! - [`waveform`]: the peak level of a sound stream, many times a second, for
+//!   drawing waveforms on the timeline.
+//!
+//! Still to come: the RAM frame cache, GPU textures, the disk render cache,
+//! proxies and thumbnails.
+
+pub mod waveform;
+
+pub use waveform::Peaks;

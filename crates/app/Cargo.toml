@@ -12,6 +12,7 @@ name = "editor"
 path = "src/main.rs"
 
 [dependencies]
+cache = { path = "../cache" }
 brand = { path = "../brand" }
 diag = { path = "../diag" }
 eframe = "0.37"

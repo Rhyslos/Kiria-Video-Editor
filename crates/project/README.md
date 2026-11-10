@@ -77,5 +77,6 @@ RON text with the extension from `brand::PROJECT_FILE_EXTENSION`:
 | Place, move | Refused with an explanation if the clip would overlap another or start before zero |
 | Move (drag) | Moves the clip and its linked clips by the same amount; refused if any would overlap or start before zero |
 | Trim (drag an edge) | Moves one edge of the clip and its linked clips; the start edge also moves where in the file it begins, so the picture stays put. Refused past the file's start or end, or to no length |
+| Track mix | A track's mute, solo and volume (-60 to +12 dB) |
 | Set settings | Fixes a timeline's size, frame rate and sound rate; it stops being automatic |
 | Import | One step: adds the file and places it at the end of the timeline, the picture on the first video track and each sound stream on its own audio track (made when missing; an unused default track takes the stream's name), all linked. Pictures last 5 seconds. On an automatic timeline the first video also sets the settings (upright size, frame rate, first sound stream's rate) |

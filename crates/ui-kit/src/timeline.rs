@@ -28,6 +28,17 @@ pub struct TimelineClip {
     pub missing: bool,
     /// Clips with the same link move and trim together.
     pub link: Option<u64>,
+    /// Loudness to draw inside the clip (audio clips), once it has been read.
+    pub waveform: Option<ClipWaveform>,
+}
+
+/// A clip's loudness: peaks of its whole file, and where in the file the clip starts.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClipWaveform {
+    pub peaks: std::sync::Arc<[f32]>,
+    pub per_second: f32,
+    /// Seconds into the file where the clip begins.
+    pub source_in: f64,
 }
 
 /// One track as the timeline shows it.
@@ -38,6 +49,8 @@ pub struct TimelineTrack {
     pub clips: Vec<TimelineClip>,
     pub muted: bool,
     pub solo: bool,
+    /// Volume in decibels.
+    pub gain_db: f32,
 }
 
 /// A timeline label (a named, coloured marker).
@@ -84,6 +97,13 @@ pub enum TimelineEvent {
     Trim { clip: u64, edge: ClipEdge, to: f64 },
     /// The blade tool cut a clip at `at`.
     Blade { clip: u64, at: f64 },
+    /// A track's mute, solo or volume changed.
+    TrackMix {
+        track: u64,
+        muted: bool,
+        solo: bool,
+        gain_db: f32,
+    },
 }
 
 /// One end of a clip.
@@ -154,6 +174,8 @@ pub struct TimelineView {
     needle_drag: Option<f64>,
     scrollbar_drag: Option<(f32, f64)>,
     clip_drag: Option<ClipDrag>,
+    /// A track volume being dragged: track and its value so far.
+    fader_drag: Option<(u64, f32)>,
     pub tool: Tool,
     /// Moved and trimmed edges snap to clip edges, the playhead, the needle and labels.
     pub snapping: bool,
@@ -170,6 +192,7 @@ impl Default for TimelineView {
             needle_drag: None,
             scrollbar_drag: None,
             clip_drag: None,
+            fader_drag: None,
             tool: Tool::Select,
             snapping: true,
         }
@@ -182,7 +205,7 @@ const LABELS: f32 = 18.0;
 const DIVIDER: f32 = 6.0;
 const SCROLLBAR: f32 = 14.0;
 pub const VIDEO_TRACK: f32 = 54.0;
-pub const AUDIO_TRACK: f32 = 46.0;
+pub const AUDIO_TRACK: f32 = 58.0;
 const MIN_ZOOM: f32 = 0.02;
 const MAX_ZOOM: f32 = 2400.0;
 
@@ -339,6 +362,16 @@ impl TimelineView {
                     FontId::proportional(12.5),
                     if track.muted { theme.faint } else { theme.text },
                 );
+                if audio {
+                    self.track_controls(
+                        ui,
+                        theme,
+                        track,
+                        Rect::from_min_max(pos2(layout.header_x, row.top()), pos2(left, row.bottom()))
+                            .intersect(area),
+                        &mut events,
+                    );
+                }
                 let colour = if audio {
                     AUDIO_COLOURS[i % AUDIO_COLOURS.len()]
                 } else {
@@ -373,6 +406,9 @@ impl TimelineView {
                         clip_painter.rect_filled(m, 1.0, tiny_fill(theme, colour, audio));
                     }
                     draw_clip(&clip_painter, theme, r, clip, colour, audio);
+                    if let Some(w) = &clip.waveform {
+                        self.draw_waveform(&clip_painter, r, clip, start, w, colour, track.muted);
+                    }
                 }
                 if let Some(m) = merged {
                     clip_painter.rect_filled(m, 1.0, tiny_fill(theme, colour, audio));
@@ -468,6 +504,182 @@ impl TimelineView {
             ));
         }
         events
+    }
+
+    /// M (mute), S (solo) and a volume fader in an audio track's header.
+    fn track_controls(
+        &mut self,
+        ui: &mut Ui,
+        theme: &Theme,
+        track: &TimelineTrack,
+        header: Rect,
+        events: &mut Vec<TimelineEvent>,
+    ) {
+        if header.height() < 20.0 {
+            return;
+        }
+        let id = ui.scope_id().with(("track", track.id));
+        let button = |i: f32| {
+            Rect::from_min_size(
+                pos2(header.right() - 50.0 + i * 24.0, header.top() + 6.0),
+                vec2(20.0, 16.0),
+            )
+        };
+        for (i, (label, on, tip)) in [
+            ("M", track.muted, "Mute"),
+            ("S", track.solo, "Solo: hear only soloed tracks"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let rect = button(i as f32);
+            let r = ui
+                .interact(rect, id.with(label), Sense::click())
+                .on_hover_text(tip);
+            let fill = match (on, i) {
+                (true, 0) => crate::status::WARNING,
+                (true, _) => theme.accent,
+                _ if r.hovered() => theme.line_strong,
+                _ => theme.line,
+            };
+            let p = ui.painter();
+            p.rect_filled(rect, 3.0, fill);
+            p.text(
+                rect.center(),
+                Align2::CENTER_CENTER,
+                label,
+                FontId::proportional(10.5),
+                if on { theme.bg } else { theme.text },
+            );
+            if r.clicked() {
+                let (muted, solo) = if i == 0 {
+                    (!track.muted, track.solo)
+                } else {
+                    (track.muted, !track.solo)
+                };
+                events.push(TimelineEvent::TrackMix {
+                    track: track.id,
+                    muted,
+                    solo,
+                    gain_db: track.gain_db,
+                });
+            }
+        }
+        // Volume: -60 dB at the left, +12 dB at the right; double-click resets to 0.
+        let bar = Rect::from_min_size(
+            pos2(header.left() + 12.0, header.bottom() - 12.0),
+            vec2(HEADER_WIDTH - 30.0, 5.0),
+        );
+        if bar.bottom() > header.bottom() || bar.top() < header.top() + 22.0 {
+            return;
+        }
+        let db = match self.fader_drag {
+            Some((t, db)) if t == track.id => db,
+            _ => track.gain_db,
+        };
+        let to_x = |db: f32| bar.left() + (db + 60.0) / 72.0 * bar.width();
+        let r = ui
+            .interact(
+                bar.expand2(vec2(4.0, 5.0)),
+                id.with("volume"),
+                Sense::click_and_drag(),
+            )
+            .on_hover_text(format!("Volume {db:+.1} dB (double-click: 0 dB)"));
+        if r.dragged()
+            && let Some(p) = r.interact_pointer_pos()
+        {
+            let v = (((p.x - bar.left()) / bar.width()) * 72.0 - 60.0).clamp(-60.0, 12.0);
+            let v = if v.abs() < 1.0 {
+                0.0
+            } else {
+                (v * 2.0).round() / 2.0
+            };
+            self.fader_drag = Some((track.id, v));
+        }
+        if r.drag_stopped()
+            && let Some((_, v)) = self.fader_drag.take()
+        {
+            events.push(TimelineEvent::TrackMix {
+                track: track.id,
+                muted: track.muted,
+                solo: track.solo,
+                gain_db: v,
+            });
+        }
+        if r.double_clicked() {
+            events.push(TimelineEvent::TrackMix {
+                track: track.id,
+                muted: track.muted,
+                solo: track.solo,
+                gain_db: 0.0,
+            });
+        }
+        let p = ui.painter();
+        p.rect_filled(bar, 2.0, theme.line);
+        p.rect_filled(
+            Rect::from_min_max(bar.min, pos2(to_x(db), bar.bottom())),
+            2.0,
+            theme.text_secondary,
+        );
+        p.line_segment(
+            [
+                pos2(to_x(0.0), bar.top() - 2.0),
+                pos2(to_x(0.0), bar.bottom() + 2.0),
+            ],
+            Stroke::new(1.0, theme.muted),
+        );
+        p.circle_filled(pos2(to_x(db), bar.center().y), 5.0, theme.text);
+    }
+
+    /// The clip's loudness as one bar per pixel column, centred in the clip.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_waveform(
+        &self,
+        p: &egui::Painter,
+        r: Rect,
+        clip: &TimelineClip,
+        shown_start: f64,
+        w: &ClipWaveform,
+        colour: Color32,
+        muted: bool,
+    ) {
+        // Below the clip's name, down to its bottom edge.
+        let below_name = Rect::from_min_max(
+            pos2(r.left() + 1.0, r.top() + 19.0),
+            pos2(r.right() - 1.0, r.bottom() - 3.0),
+        );
+        let clip_area = p.clip_rect().intersect(below_name);
+        if clip_area.width() < 1.0 || clip_area.height() < 4.0 || w.peaks.is_empty() {
+            return;
+        }
+        let left = r.left() - ((shown_start - clip.start) * f64::from(self.zoom)) as f32;
+        let colour = if muted {
+            colour.gamma_multiply(0.5)
+        } else {
+            Color32::from_white_alpha(170)
+        };
+        let mut mesh = egui::Mesh::default();
+        let (mid, half) = (clip_area.center().y, clip_area.height() / 2.0);
+        let per_px = f64::from(w.per_second) / f64::from(self.zoom);
+        let mut x = clip_area.left().floor();
+        while x < clip_area.right() {
+            let t = w.source_in + f64::from(x - left) / f64::from(self.zoom);
+            let a = (t * f64::from(w.per_second)).max(0.0) as usize;
+            let b = ((t * f64::from(w.per_second) + per_px).ceil() as usize)
+                .max(a + 1)
+                .min(w.peaks.len());
+            if a >= w.peaks.len() {
+                break;
+            }
+            let peak = w.peaks[a..b].iter().fold(0f32, |m, v| m.max(*v));
+            let h = (peak.sqrt() * half).max(0.5);
+            mesh.add_colored_rect(
+                Rect::from_min_max(pos2(x, mid - h), pos2(x + 1.0, mid + h)),
+                colour,
+            );
+            x += 1.0;
+        }
+        p.add(Shape::mesh(mesh));
     }
 
     fn input(&mut self, ui: &mut Ui, layout: &Layout, data: &TimelineData, events: &mut Vec<TimelineEvent>) {

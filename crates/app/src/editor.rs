@@ -44,6 +44,7 @@ pub struct Editor {
     selected: Vec<project::ClipId>,
     /// The timeline was fitted to the project once already.
     fitted: bool,
+    waveforms: crate::waveforms::Waveforms,
     /// `--play`: start playing as soon as the imports are in.
     play_when_ready: bool,
     show_timeline_settings: bool,
@@ -132,6 +133,7 @@ impl Editor {
             timeline: ui_kit::TimelineView::default(),
             selected: Vec::new(),
             fitted: false,
+            waveforms: crate::waveforms::Waveforms::default(),
             play_when_ready,
             show_timeline_settings: false,
             show_settings: false,
@@ -376,6 +378,33 @@ impl Editor {
                 });
                 if let Err(err) = result {
                     self.errors.push(&err);
+                }
+            }
+            E::TrackMix {
+                track,
+                muted,
+                solo,
+                gain_db,
+            } => {
+                let result = self.with_document(|d| {
+                    let sequence = d.project().active_sequence;
+                    d.apply(Command::SetTrackMix {
+                        sequence,
+                        track: project::TrackId(track),
+                        muted,
+                        solo,
+                        gain_db,
+                    })
+                });
+                if let Err(err) = result {
+                    self.errors.push(&err);
+                }
+                // Playing on with the new mix.
+                if let Some(playback) = self.playback.take() {
+                    let at = playback.position();
+                    drop(playback);
+                    self.viewer.playhead = at;
+                    self.start_playback();
                 }
             }
             E::Blade { clip, at } => {
@@ -715,7 +744,10 @@ impl Editor {
                 [&tips[0], &tips[1], &tips[2], &tips[3]],
             );
             timeline_panel::keep_existing(&mut self.selected, seq);
-            let drawn = timeline_panel::drawn(p, seq, &self.selected);
+            let (jobs, waveforms, ctx) = (&self.jobs, &mut self.waveforms, ui.ctx().clone());
+            let drawn = timeline_panel::drawn(p, seq, &self.selected, |m, stream| {
+                waveforms.get(jobs, &ctx, m, stream).cloned()
+            });
             let length = seq.length().as_secs_f64();
             let width = ui.available_width();
             if !self.fitted {
@@ -1061,6 +1093,7 @@ impl eframe::App for Editor {
             self.run_action(Action::PlayPause);
         }
         self.follow_playback(&ctx);
+        self.waveforms.poll();
         if let Some(err) = self.viewer.poll(&ctx, self.settings.preview_quality) {
             self.errors.push(&err);
         }

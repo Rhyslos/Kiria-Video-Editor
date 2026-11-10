@@ -6,7 +6,7 @@ The editor window and its five pages. Binary name: `editor`.
 
 Phase 0.6 done: the window, the shared top bar, five empty pages that switch instantly, shortcuts, Settings, search for commands, inline errors and Diagnostics. Autosave runs on a worker. The pages fill up from Phase 4.
 
-Phase 4A so far: importing media (Ctrl+I, the Import button, or dropping files on the window), the viewer with its transport, the timeline (click a clip to select it, drag to move it, drag its edge to trim; V and B switch between the Select and Blade tools, N snapping; Delete, Backspace and S act on the selection; drag the red needle; Ctrl+wheel zooms, \\ shows it all), playback with sound (Space plays; pausing goes back to where playback started, Stop stays), a scrub bar and preview quality (Left/Right step a frame, Home/End jump), and Timeline settings (Automatic until the first video is imported, a template, or the same as one of the project's videos). Until the timeline widget arrives, the Edit page lists each track's clips and the project's media.
+Phase 4A so far: importing media (Ctrl+I, the Import button, or dropping files on the window), the viewer with its transport, the timeline (click a clip to select it, drag to move it, drag its edge to trim; V and B switch between the Select and Blade tools, N snapping; audio tracks show waveforms and have mute, solo and volume; Delete, Backspace and S act on the selection; drag the red needle; Ctrl+wheel zooms, \\ shows it all), playback with sound (Space plays; pausing goes back to where playback started, Stop stays), a scrub bar and preview quality (Left/Right step a frame, Home/End jump), and Timeline settings (Automatic until the first video is imported, a template, or the same as one of the project's videos). Until the timeline widget arrives, the Edit page lists each track's clips and the project's media.
 
 ## Running
 
@@ -32,6 +32,7 @@ The last three are for CI and for checking the look without a screen (`xvfb-run`
 | `src/editor.rs` | `Editor`: the window's state, shortcuts, autosave hand-off to workers, pages, Settings and Search windows, the automated runs |
 | `src/import.rs` | `Importer`: the file dialog (its own thread), reading dropped or chosen files on workers, and applying them in the order chosen; `summary` describes an imported file in one line |
 | `src/timeline_panel.rs` | The open timeline as the timeline widget's data (linked clips show selected together), label colours, the selection |
+| `src/waveforms.rs` | Waveforms for the timeline: each file's sound stream read once on a worker, kept for the session |
 | `src/viewer.rs` | The Edit page's viewer: asks the engine for the picture at the playhead (only when something changed) and shows the newest; the scrub bar and preview quality under it |
 | `src/settings.rs` | `Settings` (theme, resource budgets, "Edit at the playhead"), saved as `settings.ron` in the app's data folder |
 | `src/run_mode.rs` | Command-line options |
