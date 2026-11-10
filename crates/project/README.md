@@ -4,7 +4,9 @@ The project model, edit commands, undo/redo and autosave.
 
 ## Status
 
-Model and project file done (Phase 0.3). Edit commands, undo/redo and autosave come in Phase 0.4.
+Done (Phases 0.3 and 0.4): model, project file, commands, undo/redo, autosave journal and crash recovery.
+
+Full saves currently run on the calling thread; Phase 0.5 moves them to a background job so the interface never waits on the disk.
 
 ## Files
 
@@ -14,6 +16,10 @@ Model and project file done (Phase 0.3). Edit commands, undo/redo and autosave c
 | `src/ids.rs` | One id type per kind of thing (`ClipId`, `TrackId`, ...). Ids come from one counter in the project and are never reused |
 | `src/model.rs` | `Project`, `Sequence` (a timeline), `Track`, `Clip`, `MediaRef` + `Fingerprint`, `TimelineLabel`, `Region`, the edit needle. `Project::problems()` / `validate()` check the rules |
 | `src/file.rs` | The project file: save (atomic), load, the summary block, format versions and migrations |
+| `src/command.rs` | `Command`: every change (place, move, remove or ripple-remove, split, labels, region, edit needle, tracks, media). `apply` returns a new snapshot or an explained error and no change |
+| `src/history.rs` | `History`: unlimited undo and redo as a stack of snapshots |
+| `src/document.rs` | `Document`: an open project on disk. Records every change in the autosave journal, does full saves, and recovers after a crash |
+| `tests/random_edits.rs` | Property test: random edit sessions with undo/redo stay valid, and journal replay rebuilds the exact project |
 | `tests/samples.rs` + `tests/samples/` | One stored project per released file format; all must keep opening |
 
 ## Rules the model keeps
@@ -44,3 +50,20 @@ RON text with the extension from `brand::PROJECT_FILE_EXTENSION`:
 2. Change the model and raise `file::FORMAT_VERSION` to `N + 1`.
 3. Add a step to `file::MIGRATIONS` that reads version `N` text into the frozen types, converts them, and writes version `N + 1` text.
 4. Write the new sample with `WRITE_SAMPLES=1 cargo test -p project --test samples`. Keep every older sample: they must still open.
+
+## Autosave and recovery
+
+- Every change, undo and redo is appended to `<project file>.journal` (one line each, flushed to disk) the moment it happens.
+- `Document::tick(now, idle)` does a full save when changes are 30 seconds old, or straight away when the app is idle. A full save writes the project file and empties the journal.
+- On open, `Document::check` reports how many unsaved changes a crash left. `Document::open` then either replays them (`Recovery::Recover`, which also saves them into the project file) or sets the journal aside as `<file>.journal.discarded` (`Recovery::OpenLastSave`). Nothing is ever deleted.
+- A half-written last journal line (power cut mid-write) is ignored; entries that no longer apply are skipped and logged.
+
+## Edit behaviour
+
+| Command | Behaviour |
+|---|---|
+| Split (`S`) with a clip selected | Cuts that clip and its linked clips (its own audio); the right halves stay linked to each other |
+| Split with nothing selected | Cuts every clip under the edit needle on every track |
+| Remove (`Delete`) | Removes the clip and its linked clips, leaving a gap |
+| Ripple remove (`Backspace`) | Same, and later clips on those tracks move back to close the gap |
+| Place, move | Refused with an explanation if the clip would overlap another or start before zero |

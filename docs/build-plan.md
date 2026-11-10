@@ -154,10 +154,10 @@ Phase 0 builds everything later phases stand on and that is painful to add after
 
 **0.4 Commands, undo and autosave (`project`)**
 
-- [ ] Every change is a `Command` applied to a snapshot; undo/redo is a stack of snapshots.
-- [ ] Autosave journal: append each command to `project.journal`; full save every 30 s and on idle.
-- [ ] Recovery: on open, if the journal is newer than the save, replay it; offer "Recover" or "Open last save".
-- [ ] Property test: random command sequences + undo/redo always leave a valid project.
+- [x] Every change is a `Command` applied to a snapshot; undo/redo is a stack of snapshots.
+- [x] Autosave journal: append each command to `project.journal`; full save every 30 s and on idle.
+- [x] Recovery: on open, if the journal is newer than the save, replay it; offer "Recover" or "Open last save". (The engine side is done; the prompt itself is drawn by the launcher in 2.3.)
+- [x] Property test: random command sequences + undo/redo always leave a valid project.
 
 **0.5 Jobs and resources (`jobs`)**
 

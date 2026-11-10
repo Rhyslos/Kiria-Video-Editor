@@ -13,8 +13,10 @@ diag = { path = "../diag" }
 imbl = { version = "7", features = ["serde"] }
 ron = "0.12"
 serde = { version = "1", features = ["derive"] }
+tracing = "0.1"
 
 [dev-dependencies]
+proptest = "1"
 tempfile = "3"
 
 [lints]

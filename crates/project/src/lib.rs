@@ -4,14 +4,21 @@
 //! - [`ids`]: one id type per kind of thing.
 //! - [`model`]: projects, timelines, tracks, clips, media, labels, the region.
 //! - [`file`]: the versioned project file, atomic saves and migrations.
-//!
-//! Edit commands, undo and autosave arrive in Phase 0.4.
+//! - [`command`]: every change is a `Command` applied to a snapshot.
+//! - [`history`]: unlimited undo and redo over snapshots.
+//! - [`document`]: an open project on disk, with the autosave journal and crash recovery.
 
+pub mod command;
+pub mod document;
 pub mod file;
+pub mod history;
 pub mod ids;
 pub mod model;
 pub mod time;
 
+pub use command::Command;
+pub use document::{Document, OpenCheck, Recovery};
+pub use history::History;
 pub use ids::{ClipId, LabelId, LinkId, MediaId, SequenceId, TrackId};
 pub use model::{
     Clip, Fingerprint, LabelColor, MediaKind, MediaRef, Project, Region, Sequence, SequenceSettings,
