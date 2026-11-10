@@ -25,6 +25,13 @@ fn main() -> ExitCode {
         }
     };
 
+    // Test builds made with BUILD_CRASH_TEST crash before the window opens, to
+    // check that installed copies roll back to the previous version by themselves.
+    if option_env!("BUILD_CRASH_TEST").is_some() {
+        let _ = diag::start(brand::VERSION);
+        panic!("This is a deliberately broken test build: it crashes on start.");
+    }
+
     let diagnostics = match diag::start(brand::VERSION) {
         Ok(diagnostics) => Some(diagnostics),
         Err(err) => {

@@ -10,6 +10,10 @@ Every pull request runs the same Release workflow without publishing anything. I
 
 Every push to `main` (except documentation-only changes) publishes a beta release with no manual step: version `<next patch>-beta.<run number>`, for example `0.1.1-beta.12` after `0.1.0`. Beta builds follow betas by themselves, so a copy installed from a beta picks up every merged feature on its next start. Stable copies only see betas when *Betas too* is chosen in the launcher's settings.
 
+## Rollback test build
+
+To check that installed copies recover from a broken update: **Actions → Release → Run workflow**, leave the tag empty and tick **crash_test**. It publishes a beta whose editor crashes on start (the install tests skip starting it). A beta copy downloads it, fails to start it twice, switches back to the previous version and explains why; that beta is never offered again. Normal betas carry on afterwards.
+
 ## Version numbers
 
 - `0.x.y` until version 1.0. Raise `y` for fixes, `x` for new features.

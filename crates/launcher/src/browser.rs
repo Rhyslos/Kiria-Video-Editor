@@ -85,6 +85,9 @@ pub struct Start {
     pub restart: Arc<AtomicBool>,
     /// Opens the update window at a sample step (screenshots).
     pub update_preview: Option<crate::run_mode::UpdatePreview>,
+    /// Receives the editor process once a project is opened, so `main` can
+    /// check that it starts after the window has closed.
+    pub editor: Arc<Mutex<Option<std::process::Child>>>,
 }
 
 pub struct Browser {
@@ -108,6 +111,8 @@ pub struct Browser {
     /// Projects with unsaved changes left by a crash, and how many.
     recoverable: HashMap<PathBuf, usize>,
     recovery: Option<RecoveryDialog>,
+    /// Shown once after a version failed to start and the previous one came back.
+    rollback: Option<updater::health::RollbackNotice>,
     picker: Option<Task<Picked>>,
     file_job: Option<FileJob>,
     new_project: Option<NewProjectDialog>,
@@ -119,6 +124,7 @@ pub struct Browser {
     report: Arc<Mutex<RunReport>>,
     handoff: Arc<Mutex<Option<Updates>>>,
     restart: Arc<AtomicBool>,
+    editor: Arc<Mutex<Option<std::process::Child>>>,
     screenshot_requested: bool,
     screenshot_saved: Arc<AtomicBool>,
 }
@@ -169,6 +175,7 @@ impl Browser {
             refresh: None,
             recoverable: HashMap::new(),
             recovery: None,
+            rollback: None,
             picker: None,
             file_job: None,
             new_project: None,
@@ -180,6 +187,7 @@ impl Browser {
             report: start.report,
             handoff: start.handoff,
             restart: start.restart,
+            editor: start.editor,
             screenshot_requested: false,
             screenshot_saved: Arc::new(AtomicBool::new(false)),
         };
@@ -189,6 +197,7 @@ impl Browser {
                     browser.status = format!("Updated to {version}.");
                 }
                 crate::Note::Problem(err) => browser.errors.push(&err),
+                crate::Note::RolledBack(notice) => browser.rollback = Some(notice),
             }
         }
         browser.add_default_folder();
@@ -271,6 +280,13 @@ impl Browser {
 
     /// Says what happened if the editor didn't close properly last time.
     fn check_last_run(&mut self) {
+        if self.rollback.is_some() {
+            // The crash was the failed start that the rollback notice explains.
+            if let Err(err) = diag::session::forget_unfinished_run(&self.data_dir) {
+                tracing::warn!("{}", err.report());
+            }
+            return;
+        }
         let crashed = match recovery::last_run(&self.data_dir) {
             LastRun::Fine => return,
             LastRun::CrashedNothingLost => {
@@ -506,11 +522,17 @@ impl Browser {
         if open_last_save {
             args.push(std::ffi::OsStr::new("--open-last-save"));
         }
-        if self.launch_editor
-            && let Err(err) = start_editor(&args)
-        {
-            self.errors.push(&err);
-            return;
+        if self.launch_editor {
+            match start_editor(&self.data_dir, &args) {
+                Ok(child) => {
+                    let mut started = self.editor.lock().unwrap_or_else(|p| p.into_inner());
+                    *started = Some(child);
+                }
+                Err(err) => {
+                    self.errors.push(&err);
+                    return;
+                }
+            }
         }
         if let Some(index) = &self.index
             && let Err(err) = index.mark_opened(path, project_index::now())
@@ -820,6 +842,58 @@ impl Browser {
             }
         }
 
+        if let Some(notice) = self.rollback.clone() {
+            let mut close = false;
+            let modal = ui_kit::dialog(ctx, &self.theme, "rolled-back", |ui| {
+                ui.set_width(420.0);
+                ui.label(
+                    RichText::new(format!("{} went back to {}", brand::APP_NAME, notice.restored))
+                        .family(ui_kit::fonts::semibold())
+                        .size(16.0),
+                );
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new(format!(
+                        "Version {} couldn't start, twice in a row, so {} switched back to {}, which worked before. {} won't be offered again; the next version will be. Your projects are not affected.",
+                        notice.failed,
+                        brand::APP_NAME,
+                        notice.restored,
+                        notice.failed
+                    ))
+                    .color(self.theme.text_secondary),
+                );
+                ui.add_space(14.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui_kit::accent_button(ui, &self.theme, "OK").clicked() {
+                        close = true;
+                    }
+                    if ui
+                        .button("Report the problem")
+                        .on_hover_text("Opens a new issue on the project's GitHub page. Attach the crash report if there is one.")
+                        .clicked()
+                    {
+                        let url = format!(
+                            "https://github.com/{}/{}/issues/new",
+                            brand::RELEASE_REPO_OWNER,
+                            brand::RELEASE_REPO_NAME
+                        );
+                        if let Err(err) = crate::editor_start::open_in_browser(&url) {
+                            self.errors.push(&err);
+                        }
+                    }
+                    if ui.button("Show crash reports").clicked() {
+                        let folder = diag::AppDirs::locate().map(|d| d.crashes);
+                        if let Err(err) = folder.and_then(|f| show_in_file_manager(&f)) {
+                            self.errors.push(&err);
+                        }
+                    }
+                });
+            });
+            if close || modal.should_close() {
+                self.rollback = None;
+            }
+        }
+
         if let Some(dialog) = self.recovery.clone() {
             let mut choice = None;
             let modal = ui_kit::dialog(ctx, &self.theme, "recover-project", |ui| {
@@ -967,7 +1041,10 @@ impl Browser {
     }
 
     fn keyboard(&mut self, ctx: &egui::Context) {
-        let dialog_open = self.new_project.is_some() || self.rename.is_some() || self.recovery.is_some();
+        let dialog_open = self.new_project.is_some()
+            || self.rename.is_some()
+            || self.recovery.is_some()
+            || self.rollback.is_some();
         for action in self.shortcuts.pressed(ctx) {
             match action {
                 Action::OpenSettings => self.show_settings = true,

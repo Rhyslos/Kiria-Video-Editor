@@ -95,6 +95,10 @@ pub fn decide(current: &str, prefs: &UpdatePrefs, github_json: &str) -> diag::Re
         .filter(|r| !r.draft && (betas || !r.prerelease))
         .filter_map(|r| {
             let version = Version::parse(r.tag_name.trim_start_matches('v')).ok()?;
+            // A version that failed to start here is never offered again.
+            if prefs.bad_versions.iter().any(|bad| *bad == version.to_string()) {
+                return None;
+            }
             Some(Release {
                 version,
                 prerelease: r.prerelease,
@@ -177,6 +181,19 @@ mod tests {
             panic!()
         };
         assert_eq!(release.version.to_string(), "0.3.0-beta.1");
+    }
+
+    #[test]
+    fn bad_versions_are_never_offered() {
+        let prefs = UpdatePrefs {
+            channel: Channel::Beta,
+            bad_versions: vec!["0.3.0-beta.1".into()],
+            ..UpdatePrefs::default()
+        };
+        let CheckResult::Available(release) = decide("0.1.0", &prefs, RELEASES).unwrap() else {
+            panic!()
+        };
+        assert_ne!(release.version.to_string(), "0.3.0-beta.1");
     }
 
     #[test]

@@ -10,8 +10,8 @@
 //! 3. [`replace_launcher`] swaps in the new version's launcher when it is
 //!    newer than the running one, so launcher changes arrive too.
 //!
-//! The previous version is kept for rolling back (Phase 3); older ones are
-//! removed by [`prune`].
+//! Earlier versions are kept for rolling back; [`crate::health`] removes all
+//! but the two newest once the new version has started properly.
 
 use crate::download::verify_file;
 use crate::fetch::{MANIFEST_NAME, ReadyUpdate, SIGNATURE_NAME};
@@ -63,16 +63,16 @@ fn old_launcher_name() -> &'static str {
     }
 }
 
-/// The newest verified download in `downloads/<version>/` that is newer than `current`.
-/// Downloads that fail the checks are deleted.
-pub fn pending(downloads: &Path, current: &str) -> Option<ReadyUpdate> {
+/// The newest verified download in `downloads/<version>/` that is newer than
+/// `current` and not one of the `bad` versions. Downloads that fail the checks are deleted.
+pub fn pending(downloads: &Path, current: &str, bad: &[String]) -> Option<ReadyUpdate> {
     let current = Version::parse(current).ok()?;
     let mut candidates: Vec<(Version, PathBuf)> = fs::read_dir(downloads)
         .ok()?
         .flatten()
         .filter_map(|entry| {
             let version = Version::parse(&entry.file_name().to_string_lossy()).ok()?;
-            (version > current).then(|| (version, entry.path()))
+            (version > current && !bad.contains(&version.to_string())).then(|| (version, entry.path()))
         })
         .collect();
     candidates.sort_by(|a, b| b.0.cmp(&a.0));
@@ -338,7 +338,7 @@ mod tests {
         // The test key is not the release key, so this download must be refused and removed.
         let tmp = tempfile::tempdir().unwrap();
         download_dir(tmp.path(), "9.0.0", b"package");
-        assert!(pending(tmp.path(), "0.1.0").is_none());
+        assert!(pending(tmp.path(), "0.1.0", &[]).is_none());
         assert!(!tmp.path().join("9.0.0").exists());
     }
 

@@ -517,6 +517,12 @@ impl eframe::App for Editor {
         self.show_diagnostics = diagnostics;
 
         self.frames += 1;
+        if self.frames == 1 {
+            // The launcher waits for this to know the version works (update safety).
+            if let Err(err) = diag::session::report_started(&self.data_dir, brand::VERSION) {
+                tracing::warn!("{}", err.report());
+            }
+        }
         self.automation(&ctx, started.elapsed());
         // Keep the resource readout and autosave ticking without input.
         ctx.request_repaint_after(Duration::from_millis(500));
