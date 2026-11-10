@@ -13,6 +13,8 @@ pub struct Options {
     pub import: Vec<PathBuf>,
     /// Where the playhead starts, in seconds (`--playhead <seconds>`, for screenshots).
     pub playhead: Option<f64>,
+    /// Start playing once the project and its imports are ready (`--play`, for checks).
+    pub play: bool,
     pub mode: RunMode,
 }
 
@@ -42,6 +44,7 @@ impl Options {
                     let path = args.next().ok_or("--import needs a file name")?;
                     options.import.push(path.into());
                 }
+                "--play" => options.play = true,
                 "--playhead" => {
                     let secs = args
                         .next()

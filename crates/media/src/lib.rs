@@ -6,6 +6,7 @@
 //! - [`probe`]: what a file holds (container, streams, codec, frame rate,
 //!   length, rotation), without decoding it.
 //! - [`timing`]: constant or variable frame rate, and the nearest standard rate.
+//! - [`audio`]: sound as stereo float samples at any rate, from any point.
 //! - [`decode`]: the picture at any moment of a video, scaled and upright.
 //! - [`fingerprint`]: recognises a file's contents quickly, so a moved file can
 //!   be found again.
@@ -17,12 +18,14 @@
 // This crate is the FFmpeg wrapper the working rules allow `unsafe` in.
 #![allow(unsafe_code)]
 
+pub mod audio;
 pub mod decode;
 mod ffi;
 pub mod fingerprint;
 pub mod probe;
 pub mod timing;
 
+pub use audio::AudioDecoder;
 pub use decode::{Decoding, Frame, VideoDecoder};
 pub use fingerprint::fingerprint;
 pub use probe::{Probe, probe};

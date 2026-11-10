@@ -1,6 +1,6 @@
 //! The editor: window, pages and the start-up sequence.
 //!
-//! Usage: `editor [project file] [--open-last-save] [--import <media file>]... [--playhead <seconds>] [--smoke-test | --responsiveness-test | --screenshot <file.png>]`.
+//! Usage: `editor [project file] [--open-last-save] [--import <media file>]... [--playhead <seconds>] [--play] [--smoke-test | --responsiveness-test | --screenshot <file.png>]`.
 //! The extra options are for automated checks; normal use needs none.
 
 // Release builds on Windows open no console window next to the editor.
@@ -63,6 +63,7 @@ fn main() -> ExitCode {
         },
         import: options.import.clone(),
         playhead: options.playhead,
+        play: options.play,
     });
     // If this run crashes, the launcher offers to recover this project.
     if let (Some(diagnostics), Some(project)) = (&diagnostics, &project)

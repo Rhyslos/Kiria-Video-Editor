@@ -8,7 +8,7 @@
 use engine::Preview;
 use media::Decoding;
 use project::{Project, Rate, Time};
-use ui_kit::{PreviewQuality, Theme};
+use ui_kit::{PreviewQuality, Theme, TransportClick};
 
 pub struct Viewer {
     preview: Preview,
@@ -18,6 +18,10 @@ pub struct Viewer {
     /// What was last asked for, so the same request isn't sent every frame.
     requested: Option<(Project, Time, (u32, u32))>,
     last_error: Option<String>,
+    /// While playing on Auto: how far the picture is lowered to keep up (1, 1/2 or 1/4).
+    play_scale: u32,
+    /// Seconds per timeline frame while playing, to tell whether pictures keep up.
+    frame_interval: Option<f64>,
 }
 
 impl Viewer {
@@ -33,12 +37,31 @@ impl Viewer {
                 .unwrap_or(Time::ZERO),
             requested: None,
             last_error: None,
+            play_scale: 1,
+            frame_interval: None,
+        }
+    }
+
+    /// Playback started (`Some(seconds per frame)`) or stopped (`None`).
+    pub fn set_playing(&mut self, frame_interval: Option<f64>) {
+        self.frame_interval = frame_interval;
+        if frame_interval.is_none() {
+            self.play_scale = 1;
         }
     }
 
     /// Takes in a finished picture. Returns an error to show, once per new problem.
     pub fn poll(&mut self, ctx: &egui::Context, quality: PreviewQuality) -> Option<diag::AppError> {
         let picture = self.preview.latest()?;
+        // Drop resolution before dropping frames: on Auto, a picture that
+        // took longer than a frame lowers the next ones.
+        if let Some(interval) = self.frame_interval
+            && quality == PreviewQuality::Auto
+            && picture.took.as_secs_f64() > interval
+            && self.play_scale < 4
+        {
+            self.play_scale *= 2;
+        }
         let mut problem = None;
         if let Some(err) = picture.error {
             let text = err.report();
@@ -63,8 +86,13 @@ impl Viewer {
                         self.texture = Some(ctx.load_texture("viewer", image, egui::TextureOptions::LINEAR))
                     }
                 }
+                let lowered = if self.play_scale > 1 {
+                    format!(" · lowered to 1/{} to keep playing smoothly", self.play_scale)
+                } else {
+                    String::new()
+                };
                 self.note = format!(
-                    "{} · {}×{} · {} ms · {}",
+                    "{}{lowered} · {}×{} · {} ms · {}",
                     quality.label(),
                     frame.width,
                     frame.height,
@@ -92,7 +120,8 @@ impl Viewer {
         self.playhead = rate.snap(at).max(Time::ZERO).min(last);
     }
 
-    /// Draws the viewer and the scrub bar in `height` and asks for the picture it needs.
+    /// Draws the viewer, its transport and the scrub bar in `height`, and asks
+    /// for the picture it needs. Returns a transport button pressed.
     pub fn ui(
         &mut self,
         ui: &mut egui::Ui,
@@ -100,12 +129,13 @@ impl Viewer {
         project: &Project,
         quality: &mut PreviewQuality,
         height: f32,
-    ) {
-        let Some(seq) = project.active() else { return };
+    ) -> Option<TransportClick> {
+        let seq = project.active()?;
         let (rate, length) = (seq.settings.frame_rate, seq.length());
         let timeline = (seq.settings.width, seq.settings.height);
         let size = egui::vec2(ui.available_width(), (height - 34.0).max(120.0));
         let (frame, _) = ui_kit::viewer::viewer(ui, theme, size, timeline, self.texture.as_ref(), &self.note);
+        let click = ui_kit::transport::transport(ui, theme, frame, self.frame_interval.is_some());
 
         ui.add_space(6.0);
         ui.horizontal(|ui| {
@@ -135,7 +165,8 @@ impl Viewer {
         // Ask for the picture this needs, if it isn't the one already asked for.
         let ppp = ui.ctx().pixels_per_point();
         let on_screen = ((frame.width() * ppp) as u32, (frame.height() * ppp) as u32);
-        let want = quality.picture_size(timeline, on_screen);
+        let (w, h) = quality.picture_size(timeline, on_screen);
+        let want = ((w / self.play_scale).max(2), (h / self.play_scale).max(2));
         let same = self
             .requested
             .as_ref()
@@ -144,5 +175,6 @@ impl Viewer {
             self.preview.show(project, seq.id, self.playhead, want.0, want.1);
             self.requested = Some((project.clone(), self.playhead, want));
         }
+        click
     }
 }

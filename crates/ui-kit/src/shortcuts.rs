@@ -25,6 +25,7 @@ pub enum Action {
     NextFrame,
     GoToStart,
     GoToEnd,
+    Stop,
 }
 
 impl Action {
@@ -45,6 +46,7 @@ impl Action {
             Action::NextFrame => "Forward one frame",
             Action::GoToStart => "Go to the start",
             Action::GoToEnd => "Go to the end",
+            Action::Stop => "Stop playing here",
         }
     }
 }

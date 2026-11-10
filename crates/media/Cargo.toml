@@ -12,9 +12,10 @@ diag = { path = "../diag" }
 project = { path = "../project" }
 libloading = "0.8"
 sha2 = "0.10"
+tracing = "0.1"
 # FFmpeg, linked dynamically. `cargo xtask ffmpeg` fetches the pinned build the
 # build reads (FFMPEG_DIR in .cargo/config.toml).
-ffmpeg-sys-next = { version = "8.1", default-features = false, features = ["avcodec", "avformat", "swscale"] }
+ffmpeg-sys-next = { version = "8.1", default-features = false, features = ["avcodec", "avformat", "swscale", "swresample"] }
 
 [dev-dependencies]
 tempfile = "3"

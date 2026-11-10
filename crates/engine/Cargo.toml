@@ -8,6 +8,8 @@ license.workspace = true
 publish = false
 
 [dependencies]
+cpal = "0.18"
+rtrb = "0.4"
 diag = { path = "../diag" }
 media = { path = "../media" }
 project = { path = "../project" }

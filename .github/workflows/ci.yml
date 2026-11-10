@@ -26,6 +26,9 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: echo 'LIBCLANG_PATH=C:\Program Files\LLVM\bin' >> "$GITHUB_ENV"
+      - name: Sound library headers (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
       - name: FFmpeg for building
         run: cargo xtask ffmpeg
       - name: Format
@@ -51,6 +54,9 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: echo 'LIBCLANG_PATH=C:\Program Files\LLVM\bin' >> "$GITHUB_ENV"
+      - name: Sound library headers (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
       - name: FFmpeg for building
         run: cargo xtask ffmpeg
       - name: Software graphics and a virtual screen (Linux)

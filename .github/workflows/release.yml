@@ -106,7 +106,7 @@ jobs:
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       - name: Tools for building and testing
-        run: sudo apt-get update && sudo apt-get install -y xvfb libegl1 libgl1-mesa-dri libxkbcommon-x11-0 file
+        run: sudo apt-get update && sudo apt-get install -y xvfb libegl1 libgl1-mesa-dri libxkbcommon-x11-0 file libasound2-dev
       - name: Name, version and release tag
         run: packaging/release-env.sh >> "$GITHUB_ENV"
       - name: FFmpeg for building

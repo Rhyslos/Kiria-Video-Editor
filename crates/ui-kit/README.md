@@ -15,6 +15,7 @@ Phase 0.6 done: themes, fonts, shared sizes, the top bar, the shortcut table and
 | `src/layout.rs` | Shared sizes (top bar 48, left panel 240, right panel 292, master 80), `viewport_centre_x` for the tabs, and `Page` |
 | `src/top_bar.rs` | `TopBar`: project name, page tabs centred over the viewport, search, resource readout, settings. `TitleBar`: the same bar for windows without pages (logo and name centred, settings right). `logo_mark` |
 | `src/time_text.rs` | Times written one way everywhere: `ago` ("2 min ago", "yesterday") and `duration` ("4:05", "1:02:09") |
+| `src/transport.rs` | The floating transport over the bottom of the viewer: play/pause at the exact centre, frame back and forward, stop |
 | `src/viewer.rs` | The viewer every page shares: the timeline-shaped black frame, the picture fitted inside, a quiet note in the corner; `PreviewQuality` (Auto, Full, 1/2, 1/4) |
 | `src/shortcuts.rs` | `Action`, `Shortcut`, `ShortcutTable`: the one table of shortcuts, matched on physical key positions |
 | `src/icon.rs` | The app icon: `logo_mark`'s picture in the top bar and `with_window_icon` for every window |

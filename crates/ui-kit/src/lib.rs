@@ -13,6 +13,7 @@ pub mod shortcuts;
 pub mod theme;
 pub mod time_text;
 pub mod top_bar;
+pub mod transport;
 pub mod viewer;
 
 pub use dialog::dialog;
@@ -21,6 +22,7 @@ pub use layout::Page;
 pub use shortcuts::{Action, Shortcut, ShortcutTable};
 pub use theme::{Theme, ThemeName, status};
 pub use top_bar::{TitleBar, TopBar, TopBarClicks, logo_mark};
+pub use transport::TransportClick;
 pub use viewer::PreviewQuality;
 
 /// Sets fonts and the theme. Call once at start-up and again when the theme changes.
