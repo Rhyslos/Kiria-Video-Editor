@@ -26,6 +26,8 @@ pub enum Action {
     GoToStart,
     GoToEnd,
     Stop,
+    ClearSelection,
+    ZoomToFit,
 }
 
 impl Action {
@@ -47,6 +49,8 @@ impl Action {
             Action::GoToStart => "Go to the start",
             Action::GoToEnd => "Go to the end",
             Action::Stop => "Stop playing here",
+            Action::ClearSelection => "Select nothing",
+            Action::ZoomToFit => "Show the whole timeline",
         }
     }
 }
@@ -135,6 +139,8 @@ impl Default for ShortcutTable {
                 (Action::NextFrame, Shortcut::key(Key::ArrowRight)),
                 (Action::GoToStart, Shortcut::key(Key::Home)),
                 (Action::GoToEnd, Shortcut::key(Key::End)),
+                (Action::ClearSelection, Shortcut::key(Key::Escape)),
+                (Action::ZoomToFit, Shortcut::key(Key::Backslash)),
             ],
         }
     }
