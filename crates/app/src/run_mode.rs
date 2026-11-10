@@ -11,6 +11,8 @@ pub struct Options {
     pub open_last_save: bool,
     /// Media files to import into the project at start (`--import <file>`, repeatable).
     pub import: Vec<PathBuf>,
+    /// Where the playhead starts, in seconds (`--playhead <seconds>`, for screenshots).
+    pub playhead: Option<f64>,
     pub mode: RunMode,
 }
 
@@ -39,6 +41,13 @@ impl Options {
                 "--import" => {
                     let path = args.next().ok_or("--import needs a file name")?;
                     options.import.push(path.into());
+                }
+                "--playhead" => {
+                    let secs = args
+                        .next()
+                        .and_then(|s| s.parse().ok())
+                        .ok_or("--playhead needs seconds")?;
+                    options.playhead = Some(secs);
                 }
                 "--screenshot" => {
                     let path = args.next().ok_or("--screenshot needs a file name")?;

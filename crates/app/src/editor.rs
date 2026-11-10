@@ -3,6 +3,7 @@
 use crate::import::{self, Importer, Read};
 use crate::run_mode::RunMode;
 use crate::settings::Settings;
+use crate::viewer::Viewer;
 use diag::AppError;
 use jobs::{BackgroundPolicy, JobHandle, JobSystem, Limit, PoolKind, Priority, UsageMonitor};
 use project::{Command, Document, LabelColor, LabelId, Recovery, Time, TimelineLabel};
@@ -35,6 +36,7 @@ pub struct Editor {
     pending_save: Option<(u64, JobHandle<()>)>,
     importer: Importer,
     import_requested: bool,
+    viewer: Viewer,
     show_timeline_settings: bool,
     show_settings: bool,
     show_diagnostics: bool,
@@ -79,6 +81,7 @@ impl Editor {
             errors.push(problem);
         }
         let imports = project.as_ref().map(|p| p.import.clone()).unwrap_or_default();
+        let start_at = project.as_ref().and_then(|p| p.playhead);
         let document = project.and_then(|p| match open_or_create(&p.path, p.recovery) {
             Ok(doc) => {
                 if doc.is_read_only() {
@@ -112,6 +115,7 @@ impl Editor {
             pending_save: None,
             importer,
             import_requested: false,
+            viewer: Viewer::new(&cc.egui_ctx, start_at),
             show_timeline_settings: false,
             show_settings: false,
             show_diagnostics: false,
@@ -175,6 +179,18 @@ impl Editor {
             Action::Import => self.with_document(|_| Ok(())).map(|()| {
                 self.import_requested = true;
             }),
+            Action::PreviousFrame | Action::NextFrame | Action::GoToStart | Action::GoToEnd => {
+                if let Some(seq) = self.document.as_ref().and_then(|d| d.project().active()) {
+                    let (rate, length) = (seq.settings.frame_rate, seq.length());
+                    match action {
+                        Action::PreviousFrame => self.viewer.step(-1, rate, length),
+                        Action::NextFrame => self.viewer.step(1, rate, length),
+                        Action::GoToStart => self.viewer.go_to(Time::ZERO, rate, length),
+                        _ => self.viewer.go_to(length, rate, length),
+                    }
+                }
+                Ok(())
+            }
         };
         if let Err(err) = result {
             self.errors.push(&err);
@@ -408,6 +424,16 @@ impl Editor {
                 );
             });
         } else {
+            let quality_before = self.settings.preview_quality;
+            let height = (ui.available_height() * 0.6).max(220.0);
+            self.viewer
+                .ui(ui, &self.theme, p, &mut self.settings.preview_quality, height);
+            if self.settings.preview_quality != quality_before
+                && let Err(err) = self.settings.save(&self.data_dir)
+            {
+                self.errors.push(&err);
+            }
+            ui.add_space(10.0);
             ui.label(
                 egui::RichText::new(format!("{} · {} long", seq.name, seq.length().timecode(rate)))
                     .family(ui_kit::fonts::semibold()),
@@ -734,6 +760,9 @@ impl eframe::App for Editor {
             self.run_action(action);
         }
         self.imports(&ctx);
+        if let Some(err) = self.viewer.poll(&ctx, self.settings.preview_quality) {
+            self.errors.push(&err);
+        }
         self.autosave(now, idle);
 
         egui::Panel::top("top-bar")
@@ -808,6 +837,8 @@ pub struct ProjectToOpen {
     pub recovery: Recovery,
     /// Media files to import once it is open.
     pub import: Vec<PathBuf>,
+    /// Where the playhead starts, in seconds.
+    pub playhead: Option<f64>,
 }
 
 /// Opens a project, or creates it if it doesn't exist.

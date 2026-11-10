@@ -1,0 +1,501 @@
+//! Turning a video stream into pictures: the frame shown at any moment.
+//!
+//! [`VideoDecoder::frame_at`] returns the frame on screen at a time in the
+//! file: the last frame whose timestamp is at or before it. Frames are found
+//! by timestamp, never by counting, so variable-frame-rate recordings land
+//! right and stay in step with their sound.
+//!
+//! Moving forward a little decodes onward from where it is; jumping back or
+//! far ahead seeks to the key frame before the target first. The picture is
+//! scaled to the size asked for and turned upright, as RGBA.
+//!
+//! The GPU's video decoder is tried first (Direct3D 11 on Windows, VA-API on
+//! Linux); when it can't open or can't handle the codec, the CPU decodes.
+//! See `docs/research/decoding.md` for the faster paths still to come.
+
+use crate::ffi::{Input, error_text};
+use diag::AppError;
+use ffmpeg_sys_next as ff;
+use std::path::Path;
+use std::ptr;
+
+/// A decoded picture, upright, RGBA, `width × height`.
+#[derive(Clone, PartialEq)]
+pub struct Frame {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+    /// When it starts, in seconds from the start of the file.
+    pub time: f64,
+}
+
+impl std::fmt::Debug for Frame {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Frame({}×{} at {:.3} s)", self.width, self.height, self.time)
+    }
+}
+
+/// Which decoder to use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Decoding {
+    /// The GPU's video decoder when it works, else the CPU.
+    Best,
+    /// Always the CPU.
+    Software,
+}
+
+/// How far ahead (seconds) decoding onward is still cheaper than seeking.
+const DECODE_ON_LIMIT: f64 = 3.0;
+
+pub struct VideoDecoder {
+    input: Input,
+    codec: *mut ff::AVCodecContext,
+    stream: i32,
+    time_base: f64,
+    /// Timestamp of the file's first frame, so times count from zero.
+    start: f64,
+    rotation: u16,
+    hw_format: Option<ff::AVPixelFormat>,
+    /// The frame shown at the last time asked for.
+    held: *mut ff::AVFrame,
+    held_time: Option<f64>,
+    /// The next frame, decoded already.
+    ahead: *mut ff::AVFrame,
+    ahead_time: Option<f64>,
+    scratch: *mut ff::AVFrame,
+    copy: *mut ff::AVFrame,
+    packet: *mut ff::AVPacket,
+    scaler: *mut ff::SwsContext,
+    ended: bool,
+    /// "hardware (d3d11va)" or "software", for the log.
+    pub method: String,
+}
+
+impl std::fmt::Debug for VideoDecoder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "VideoDecoder({}, at {:?})", self.method, self.held_time)
+    }
+}
+
+// A decoder is used by one thread at a time; FFmpeg contexts may move between threads.
+unsafe impl Send for VideoDecoder {}
+
+fn explain(path: &Path, what: &str, code: i32) -> AppError {
+    AppError::new("The video can't be shown")
+        .why(format!(
+            "{what} failed for {} ({}).",
+            path.display(),
+            error_text(code)
+        ))
+        .fix("Check that the file still plays in a media player. If it does, report it with the file.")
+}
+
+/// Picks the hardware format FFmpeg offers (stored in `opaque`), else the
+/// first software format, so an unsupported codec quietly decodes on the CPU.
+unsafe extern "C" fn pick_format(
+    ctx: *mut ff::AVCodecContext,
+    offered: *const ff::AVPixelFormat,
+) -> ff::AVPixelFormat {
+    // SAFETY: FFmpeg passes a valid context and a list ended by AV_PIX_FMT_NONE.
+    unsafe {
+        let wanted = (*ctx).opaque as isize as i32;
+        let mut first_software = ff::AVPixelFormat::AV_PIX_FMT_NONE;
+        let mut p = offered;
+        while *p != ff::AVPixelFormat::AV_PIX_FMT_NONE {
+            if *p as i32 == wanted {
+                return *p;
+            }
+            let desc = ff::av_pix_fmt_desc_get(*p);
+            let hw = !desc.is_null() && (*desc).flags & u64::from(ff::AV_PIX_FMT_FLAG_HWACCEL as u32) != 0;
+            if !hw && first_software == ff::AVPixelFormat::AV_PIX_FMT_NONE {
+                first_software = *p;
+            }
+            p = p.add(1);
+        }
+        first_software
+    }
+}
+
+const HARDWARE: &str = if cfg!(windows) { "d3d11va" } else { "vaapi" };
+
+impl VideoDecoder {
+    /// Opens stream `stream` of the file. `rotation` is the clockwise turn
+    /// that shows it upright (from probing).
+    pub fn open(path: &Path, stream: u32, rotation: u16, decoding: Decoding) -> diag::Result<VideoDecoder> {
+        let input = Input::open(path).map_err(|e| {
+            AppError::new("The video can't be shown")
+                .why(format!("{}: {}.", path.display(), e.text))
+                .fix("Check that the file still exists and that the drive is connected.")
+        })?;
+        let raw = input.raw();
+        // SAFETY: `raw` is a valid, opened format context owned by `input`;
+        // every pointer below comes from FFmpeg and is checked before use.
+        unsafe {
+            if stream >= (*raw).nb_streams {
+                return Err(AppError::new("The video can't be shown")
+                    .why(format!("{} has no stream {stream}.", path.display()))
+                    .fix("Import the file again."));
+            }
+            let st = *(*raw).streams.add(stream as usize);
+            let par = (*st).codecpar;
+            let decoder = ff::avcodec_find_decoder((*par).codec_id);
+            if decoder.is_null() {
+                return Err(AppError::new("The video can't be shown")
+                    .why(format!(
+                        "No decoder for this kind of video in {}.",
+                        path.display()
+                    ))
+                    .fix("Convert the file to H.264, H.265 or AV1 first."));
+            }
+            let codec = ff::avcodec_alloc_context3(decoder);
+            if codec.is_null() {
+                return Err(explain(path, "Setting up the decoder", ff::AVERROR(ff::ENOMEM)));
+            }
+            let mut this = VideoDecoder {
+                input,
+                codec,
+                stream: stream as i32,
+                time_base: f64::from((*st).time_base.num) / f64::from((*st).time_base.den.max(1)),
+                start: 0.0,
+                rotation,
+                hw_format: None,
+                held: ff::av_frame_alloc(),
+                held_time: None,
+                ahead: ff::av_frame_alloc(),
+                ahead_time: None,
+                scratch: ff::av_frame_alloc(),
+                copy: ff::av_frame_alloc(),
+                packet: ff::av_packet_alloc(),
+                scaler: ptr::null_mut(),
+                ended: false,
+                method: "software".into(),
+            };
+            if (*st).start_time != ff::AV_NOPTS_VALUE {
+                this.start = (*st).start_time as f64 * this.time_base;
+            }
+            let r = ff::avcodec_parameters_to_context(codec, par);
+            if r < 0 {
+                return Err(explain(path, "Reading the video settings", r));
+            }
+            (*codec).thread_count = 0;
+            (*codec).thread_type = ff::FF_THREAD_FRAME | ff::FF_THREAD_SLICE;
+            if decoding == Decoding::Best {
+                this.try_hardware(decoder);
+            }
+            let r = ff::avcodec_open2(codec, decoder, ptr::null_mut());
+            if r < 0 {
+                return Err(explain(path, "Opening the decoder", r));
+            }
+            Ok(this)
+        }
+    }
+
+    /// Asks FFmpeg for the GPU decoder; leaves the CPU path when it isn't there.
+    unsafe fn try_hardware(&mut self, decoder: *const ff::AVCodec) {
+        // SAFETY: called before avcodec_open2 on a fresh context; the device
+        // reference is handed to the codec context, which owns it from then on.
+        unsafe {
+            let Ok(name) = std::ffi::CString::new(HARDWARE) else {
+                return;
+            };
+            let kind = ff::av_hwdevice_find_type_by_name(name.as_ptr());
+            if kind == ff::AVHWDeviceType::AV_HWDEVICE_TYPE_NONE {
+                return;
+            }
+            let mut i = 0;
+            let format = loop {
+                let cfg = ff::avcodec_get_hw_config(decoder, i);
+                if cfg.is_null() {
+                    return;
+                }
+                if (*cfg).device_type == kind
+                    && (*cfg).methods & ff::AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX as i32 != 0
+                {
+                    break (*cfg).pix_fmt;
+                }
+                i += 1;
+            };
+            let mut device = ptr::null_mut();
+            if ff::av_hwdevice_ctx_create(&mut device, kind, ptr::null(), ptr::null_mut(), 0) < 0 {
+                return;
+            }
+            (*self.codec).hw_device_ctx = device;
+            (*self.codec).opaque = format as i32 as isize as *mut std::ffi::c_void;
+            (*self.codec).get_format = Some(pick_format);
+            self.hw_format = Some(format);
+            self.method = format!("hardware ({HARDWARE})");
+        }
+    }
+
+    /// The frame on screen at `seconds` from the start of the file, scaled
+    /// to fit in `max_width × max_height` (never enlarged) and turned upright.
+    pub fn frame_at(&mut self, seconds: f64, max_width: u32, max_height: u32) -> diag::Result<Frame> {
+        let target = seconds.max(0.0);
+        let seek = match self.held_time {
+            Some(t) => target + 1e-6 < t || target - t > DECODE_ON_LIMIT,
+            None => target > DECODE_ON_LIMIT || self.ended,
+        };
+        if seek {
+            self.seek(target)?;
+        }
+        loop {
+            if let Some(t) = self.ahead_time {
+                if t <= target + 1e-6 || self.held_time.is_none() {
+                    // SAFETY: both frames are owned by self; `held` is cleared first.
+                    unsafe {
+                        ff::av_frame_unref(self.held);
+                        ff::av_frame_move_ref(self.held, self.ahead);
+                    }
+                    self.held_time = self.ahead_time.take();
+                    continue;
+                }
+                break;
+            }
+            match self.decode_next()? {
+                Some(t) => self.ahead_time = Some(t),
+                None => break,
+            }
+        }
+        if self.held_time.is_none() {
+            return Err(AppError::new("The video can't be shown")
+                .why("No picture could be decoded at this point of the file.")
+                .fix("The file may be damaged. Check that it plays in a media player."));
+        }
+        self.convert(max_width, max_height)
+    }
+
+    fn seek(&mut self, target: f64) -> diag::Result<()> {
+        let ts = ((target + self.start) / self.time_base) as i64;
+        // SAFETY: the context and codec are valid; frames are unreferenced, not freed.
+        unsafe {
+            let r = ff::av_seek_frame(self.input.raw(), self.stream, ts, ff::AVSEEK_FLAG_BACKWARD);
+            if r < 0 && target > 0.0 {
+                // Some files only seek to the start.
+                ff::av_seek_frame(self.input.raw(), self.stream, 0, ff::AVSEEK_FLAG_BACKWARD);
+            }
+            ff::avcodec_flush_buffers(self.codec);
+            ff::av_frame_unref(self.held);
+            ff::av_frame_unref(self.ahead);
+        }
+        self.held_time = None;
+        self.ahead_time = None;
+        self.ended = false;
+        Ok(())
+    }
+
+    /// Decodes the next frame into `ahead`; returns its time, or `None` at the end.
+    fn decode_next(&mut self) -> diag::Result<Option<f64>> {
+        // SAFETY: all pointers are owned by self and valid; packets are
+        // unreferenced after sending; FFmpeg's send/receive contract is followed.
+        unsafe {
+            loop {
+                let r = ff::avcodec_receive_frame(self.codec, self.ahead);
+                if r == 0 {
+                    let ts = (*self.ahead).best_effort_timestamp;
+                    let t = if ts == ff::AV_NOPTS_VALUE {
+                        self.held_time.map_or(0.0, |h| h + 1.0 / 60.0)
+                    } else {
+                        ts as f64 * self.time_base - self.start
+                    };
+                    return Ok(Some(t));
+                }
+                if r == ff::AVERROR_EOF {
+                    self.ended = true;
+                    return Ok(None);
+                }
+                if r != ff::AVERROR(ff::EAGAIN) {
+                    return Err(AppError::new("The video can't be shown")
+                        .why(format!("Decoding failed ({}).", error_text(r)))
+                        .fix(
+                            "The file may be damaged at this point. Check that it plays in a media player.",
+                        ));
+                }
+                loop {
+                    let r = ff::av_read_frame(self.input.raw(), self.packet);
+                    if r < 0 {
+                        ff::avcodec_send_packet(self.codec, ptr::null());
+                        break;
+                    }
+                    if (*self.packet).stream_index == self.stream {
+                        let r = ff::avcodec_send_packet(self.codec, self.packet);
+                        ff::av_packet_unref(self.packet);
+                        if r < 0 && r != ff::AVERROR(ff::EAGAIN) && r != ff::AVERROR_EOF {
+                            // A broken packet: skip it and carry on, as players do.
+                            continue;
+                        }
+                        break;
+                    }
+                    ff::av_packet_unref(self.packet);
+                }
+            }
+        }
+    }
+
+    /// Scales `held` to RGBA within the size given, then turns it upright.
+    fn convert(&mut self, max_width: u32, max_height: u32) -> diag::Result<Frame> {
+        let time = self.held_time.unwrap_or(0.0);
+        // SAFETY: `held` holds a decoded frame; the copy and the scaler are
+        // owned by self; the destination buffer is sized for the output.
+        unsafe {
+            let mut source = self.held;
+            if self.hw_format.is_some_and(|f| (*source).format == f as i32) {
+                ff::av_frame_unref(self.copy);
+                let r = ff::av_hwframe_transfer_data(self.copy, source, 0);
+                if r < 0 {
+                    return Err(AppError::new("The video can't be shown")
+                        .why(format!(
+                            "Copying the picture from the GPU failed ({}).",
+                            error_text(r)
+                        ))
+                        .fix("Update the graphics driver. If it keeps happening, report it."));
+                }
+                source = self.copy;
+            }
+            let (sw, sh) = ((*source).width, (*source).height);
+            if sw <= 0 || sh <= 0 {
+                return Err(AppError::new("The video can't be shown").why("A decoded picture had no size."));
+            }
+            // Fit the upright picture in the box, then scale the stored one to match.
+            let turned = self.rotation % 180 == 90;
+            let (uw, uh) = if turned {
+                (sh as u32, sw as u32)
+            } else {
+                (sw as u32, sh as u32)
+            };
+            let scale = (f64::from(max_width.max(1)) / f64::from(uw))
+                .min(f64::from(max_height.max(1)) / f64::from(uh))
+                .min(1.0);
+            let (fw, fh) = (
+                ((f64::from(uw) * scale).round() as u32).max(2) & !1,
+                ((f64::from(uh) * scale).round() as u32).max(2) & !1,
+            );
+            let (dw, dh) = if turned {
+                (fh as i32, fw as i32)
+            } else {
+                (fw as i32, fh as i32)
+            };
+            let src_format: ff::AVPixelFormat =
+                std::mem::transmute::<i32, ff::AVPixelFormat>((*source).format);
+            self.scaler = ff::sws_getCachedContext(
+                self.scaler,
+                sw,
+                sh,
+                src_format,
+                dw,
+                dh,
+                ff::AVPixelFormat::AV_PIX_FMT_RGBA,
+                ff::SwsFlags::SWS_BILINEAR as i32,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null(),
+            );
+            if self.scaler.is_null() {
+                return Err(AppError::new("The video can't be shown")
+                    .why("The picture's format can't be converted for display.")
+                    .fix("Report it with the file attached."));
+            }
+            let mut rgba = vec![0u8; dw as usize * dh as usize * 4];
+            let dst = [
+                rgba.as_mut_ptr(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+            ];
+            let stride = [dw * 4, 0, 0, 0];
+            ff::sws_scale(
+                self.scaler,
+                (*source).data.as_ptr() as *const *const u8,
+                (*source).linesize.as_ptr(),
+                0,
+                sh,
+                dst.as_ptr(),
+                stride.as_ptr(),
+            );
+            let (width, height, rgba) = turn(rgba, dw as u32, dh as u32, self.rotation);
+            Ok(Frame {
+                width,
+                height,
+                rgba,
+                time,
+            })
+        }
+    }
+}
+
+/// Turns an RGBA picture clockwise by 0, 90, 180 or 270 degrees.
+pub(crate) fn turn(rgba: Vec<u8>, w: u32, h: u32, clockwise: u16) -> (u32, u32, Vec<u8>) {
+    let (w, h) = (w as usize, h as usize);
+    let px = |x: usize, y: usize| &rgba[(y * w + x) * 4..(y * w + x) * 4 + 4];
+    match clockwise % 360 {
+        90 => {
+            let mut out = Vec::with_capacity(rgba.len());
+            for y in 0..w {
+                for x in 0..h {
+                    out.extend_from_slice(px(y, h - 1 - x));
+                }
+            }
+            (h as u32, w as u32, out)
+        }
+        180 => {
+            let mut out = Vec::with_capacity(rgba.len());
+            for y in 0..h {
+                for x in 0..w {
+                    out.extend_from_slice(px(w - 1 - x, h - 1 - y));
+                }
+            }
+            (w as u32, h as u32, out)
+        }
+        270 => {
+            let mut out = Vec::with_capacity(rgba.len());
+            for y in 0..w {
+                for x in 0..h {
+                    out.extend_from_slice(px(w - 1 - y, x));
+                }
+            }
+            (h as u32, w as u32, out)
+        }
+        _ => (w as u32, h as u32, rgba),
+    }
+}
+
+impl Drop for VideoDecoder {
+    fn drop(&mut self) {
+        // SAFETY: each pointer was allocated by FFmpeg in `open` and is freed once.
+        unsafe {
+            ff::sws_freeContext(self.scaler);
+            ff::av_frame_free(&mut self.held);
+            ff::av_frame_free(&mut self.ahead);
+            ff::av_frame_free(&mut self.scratch);
+            ff::av_frame_free(&mut self.copy);
+            ff::av_packet_free(&mut self.packet);
+            ff::avcodec_free_context(&mut self.codec);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn turning_moves_pixels_clockwise() {
+        // 2×1: red, green.
+        let img = vec![255, 0, 0, 255, 0, 255, 0, 255];
+        let (w, h, out) = turn(img.clone(), 2, 1, 90);
+        assert_eq!((w, h), (1, 2));
+        assert_eq!(
+            &out[..4],
+            &[255, 0, 0, 255],
+            "red ends on top after a clockwise quarter turn"
+        );
+        let (w, h, out) = turn(img.clone(), 2, 1, 180);
+        assert_eq!((w, h), (2, 1));
+        assert_eq!(&out[..4], &[0, 255, 0, 255]);
+        let (_, _, out) = turn(img, 2, 1, 270);
+        assert_eq!(
+            &out[..4],
+            &[0, 255, 0, 255],
+            "green ends on top after a counter-clockwise turn"
+        );
+    }
+}

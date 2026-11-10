@@ -15,6 +15,7 @@ path = "src/main.rs"
 brand = { path = "../brand" }
 diag = { path = "../diag" }
 eframe = "0.37"
+engine = { path = "../engine" }
 egui = "0.37"
 image = { version = "0.25", default-features = false, features = ["png"] }
 jobs = { path = "../jobs" }
