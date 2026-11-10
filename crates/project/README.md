@@ -13,10 +13,10 @@ Done (Phases 0.3 and 0.4): model, project file, commands, undo/redo, autosave jo
 | `src/time.rs` | `Time` (exact seconds as a reduced fraction) and `Rate` (frames per second as a fraction, e.g. 30000/1001). Frame conversion, snapping, timecode |
 | `src/ids.rs` | One id type per kind of thing (`ClipId`, `TrackId`, ...). Ids come from one counter in the project and are never reused |
 | `src/model.rs` | `Project`, `Sequence` (a timeline), `Track`, `Clip`, `MediaRef` + `Fingerprint`, `TimelineLabel`, `Region`, the edit needle, and the `SequenceSettings` presets (Game clip, High frame rate, Vertical short). `Project::problems()` / `validate()` check the rules |
-| `src/file.rs` | The project file: save (atomic), load, the summary block, format versions and migrations. `read_info` reads only the format version and summary (the text before the project), for project lists |
+| `src/file.rs` | The project file: save (atomic), load, the summary block, format versions and migrations. `read_info` reads only the format version and summary (the text before the project), for project lists. `back_up_before_upgrade` keeps `<file>.backup-v<old>` before an older file is upgraded; `load_newer` reads a newer file for viewing |
 | `src/command.rs` | `Command`: every change (place, move, remove or ripple-remove, split, labels, region, edit needle, tracks, media). `apply` returns a new snapshot or an explained error and no change |
 | `src/history.rs` | `History`: unlimited undo and redo as a stack of snapshots |
-| `src/document.rs` | `Document`: an open project on disk. Records every change in the autosave journal, does full saves, and recovers after a crash |
+| `src/document.rs` | `Document`: an open project on disk. Records every change in the autosave journal, does full saves, and recovers after a crash. Opening an older format makes a backup copy first; a newer one opens read-only (`is_read_only`: changes and saves are refused with an explanation, and nothing is written) |
 | `tests/random_edits.rs` | Property test: random edit sessions with undo/redo stay valid, and journal replay rebuilds the exact project |
 | `tests/samples.rs` + `tests/samples/` | One stored project per released file format; all must keep opening |
 

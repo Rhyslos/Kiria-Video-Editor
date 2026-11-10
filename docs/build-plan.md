@@ -277,9 +277,9 @@ Automatic test builds (added in Phase 2 so features can be tried through updates
 
 **3.4 Project safety across versions**
 
-- [ ] Before migrating a project, keep a copy as `<name>.backup-v<old>`.
-- [ ] A project saved by a newer version opens read-only with an explanation, never silently.
-- [ ] Migration tests: every released format version has a stored sample that must open in the newest build (added to CI from now on).
+- [x] Before migrating a project, keep a copy as `<name>.backup-v<old>`.
+- [x] A project saved by a newer version opens read-only with an explanation, never silently. (If the newer format changed too much to show, opening is refused with an explanation instead.)
+- [x] Migration tests: every released format version has a stored sample that must open in the newest build (added to CI from now on). (`crates/project/tests/samples.rs`, run by `cargo test` in CI.)
 
 **Gate 3**
 

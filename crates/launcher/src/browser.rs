@@ -497,7 +497,8 @@ impl Browser {
             .iter()
             .find(|p| p.path == path)
             .and_then(|p| p.issue);
-        if let Some(issue) = issue {
+        // A project from a newer version opens read-only in the editor.
+        if let Some(issue) = issue.filter(|i| *i != Issue::NewerVersion) {
             self.errors.push(&cannot_open(issue, path));
             return;
         }
@@ -1227,8 +1228,8 @@ fn cannot_open(issue: Issue, path: &Path) -> AppError {
                 "Find the file and open it with Open…, or right-click the card and choose Remove from list.",
             ),
         Issue::NewerVersion => AppError::new("This project was saved by a newer version")
-            .why("A newer version of the app changed the file in ways this version doesn't understand.")
-            .fix("Update the app with the Update button at the bottom left, then open it again."),
+            .why("It opens read-only: this version can show it but not change it.")
+            .fix("Update the app with the Update button at the bottom left to edit it."),
         Issue::Damaged => AppError::new("This project file is damaged")
             .why(format!("{} could not be read as a project.", path.display()))
             .fix("Open a backup copy if you have one."),

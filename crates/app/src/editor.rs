@@ -75,7 +75,16 @@ impl Editor {
             errors.push(problem);
         }
         let document = project.and_then(|p| match open_or_create(&p.path, p.recovery) {
-            Ok(doc) => Some(doc),
+            Ok(doc) => {
+                if doc.is_read_only() {
+                    errors.push(
+                        &AppError::new("Opened read-only")
+                            .why("This project was saved by a newer version of the app. You can look at it, but changes can't be saved.")
+                            .fix("Update the app to edit it."),
+                    );
+                }
+                Some(doc)
+            }
             Err(err) => {
                 errors.push(&err);
                 None

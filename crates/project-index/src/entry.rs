@@ -76,7 +76,7 @@ impl Issue {
     pub fn message(self) -> &'static str {
         match self {
             Issue::Missing => "File not found. It was moved, renamed or deleted.",
-            Issue::NewerVersion => "Saved by a newer version. Update to open it.",
+            Issue::NewerVersion => "Saved by a newer version. Opens read-only.",
             Issue::Damaged => "The file is damaged and can't be read.",
         }
     }
