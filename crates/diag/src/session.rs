@@ -5,9 +5,12 @@
 //! previous run crashed, was killed, or lost power. This also catches cases
 //! the crash handler never sees.
 //!
+//! The marker names the editor's process and the project it has open, so the
+//! launcher can tell a crash from an editor that is still running, and offer
+//! to recover that project ([`unfinished_run`]).
+//!
 //! Limitation: two editor windows running at once would see each other's
-//! marker. Only one editor runs at a time until the launcher (Phase 2) decides
-//! otherwise.
+//! marker. Only one editor runs at a time for now.
 
 use crate::{AppError, Explain, Result};
 use std::fs;
@@ -37,19 +40,32 @@ impl Session {
     pub fn start(data_dir: &Path) -> Result<SessionStart> {
         let marker = data_dir.join(MARKER_FILE);
         let previous_crashed = marker.exists();
-        let contents = format!(
+        let session = Session { marker };
+        session.write(None)?;
+        Ok(SessionStart {
+            session,
+            previous_crashed,
+        })
+    }
+
+    /// Records which project this run has open, so a crash can offer to recover it.
+    pub fn note_project(&self, project: &Path) -> Result<()> {
+        self.write(Some(project))
+    }
+
+    fn write(&self, project: Option<&Path>) -> Result<()> {
+        let mut contents = format!(
             "pid {}\nstarted {}\n",
             std::process::id(),
             humantime::format_rfc3339_seconds(SystemTime::now())
         );
-        fs::write(&marker, contents).or_explain(|| {
+        if let Some(project) = project {
+            contents.push_str(&format!("project {}\n", project.display()));
+        }
+        fs::write(&self.marker, contents).or_explain(|| {
             AppError::new("The app can't record that it has started")
-                .why(format!("Writing {} failed.", marker.display()))
+                .why(format!("Writing {} failed.", self.marker.display()))
                 .fix("Check that the disk is not full and that you can write to the app's data folder.")
-        })?;
-        Ok(SessionStart {
-            session: Session { marker },
-            previous_crashed,
         })
     }
 
@@ -63,6 +79,46 @@ impl Session {
                 .fix("Nothing is lost; the next start may wrongly offer crash recovery.")
                 .source(err)),
         }
+    }
+}
+
+/// What the marker of a run that hasn't closed says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnfinishedRun {
+    /// The editor's process id; if it is still running this was no crash.
+    pub pid: Option<u32>,
+    /// The project it had open, if any.
+    pub project: Option<PathBuf>,
+}
+
+/// The editor run that hasn't closed cleanly, if any: either still running or
+/// crashed. Reading it changes nothing.
+pub fn unfinished_run(data_dir: &Path) -> Option<UnfinishedRun> {
+    let text = fs::read_to_string(data_dir.join(MARKER_FILE)).ok()?;
+    let mut run = UnfinishedRun {
+        pid: None,
+        project: None,
+    };
+    for line in text.lines() {
+        if let Some(pid) = line.strip_prefix("pid ") {
+            run.pid = pid.trim().parse().ok();
+        } else if let Some(project) = line.strip_prefix("project ") {
+            run.project = Some(PathBuf::from(project));
+        }
+    }
+    Some(run)
+}
+
+/// Removes the marker of a crashed run once the crash has been dealt with,
+/// so the next editor start doesn't report it again.
+pub fn forget_unfinished_run(data_dir: &Path) -> Result<()> {
+    match fs::remove_file(data_dir.join(MARKER_FILE)) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(AppError::new("The crash notice can't be cleared")
+            .why("The app's note about the last run could not be removed.")
+            .fix("Nothing is lost; the editor may mention the crash once more.")
+            .source(err)),
     }
 }
 
@@ -92,5 +148,25 @@ mod tests {
         Session::start(tmp.path()).unwrap().session.end().unwrap();
         let next = Session::start(tmp.path()).unwrap();
         assert!(!next.previous_crashed);
+    }
+
+    #[test]
+    fn the_marker_names_the_process_and_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(unfinished_run(tmp.path()), None);
+        let started = Session::start(tmp.path()).unwrap();
+        let run = unfinished_run(tmp.path()).unwrap();
+        assert_eq!(run.pid, Some(std::process::id()));
+        assert_eq!(run.project, None);
+
+        started.session.note_project(Path::new("/videos/trip.x")).unwrap();
+        let run = unfinished_run(tmp.path()).unwrap();
+        assert_eq!(run.project, Some(PathBuf::from("/videos/trip.x")));
+
+        drop(started); // a crash: the marker stays
+        assert!(unfinished_run(tmp.path()).is_some());
+        forget_unfinished_run(tmp.path()).unwrap();
+        assert_eq!(unfinished_run(tmp.path()), None);
+        assert!(!Session::start(tmp.path()).unwrap().previous_crashed);
     }
 }

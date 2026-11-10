@@ -3,6 +3,7 @@
 use egui::text::{LayoutJob, TextWrapping};
 use egui::{Align2, Color32, FontId, Rect, RichText, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use project_index::{Folder, FolderKind, Issue, ProjectEntry};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use ui_kit::{Theme, status, time_text};
 
@@ -30,6 +31,7 @@ pub fn grid(
     projects: &[&ProjectEntry],
     selected: Option<&Path>,
     folders: &[Folder],
+    recoverable: &HashMap<PathBuf, usize>,
     now: i64,
 ) -> Vec<CardAction> {
     let mut actions = Vec::new();
@@ -49,11 +51,13 @@ pub fn grid(
                     ui.spacing_mut().item_spacing.x = GAP;
                     for entry in projects.iter().skip(row * COLUMNS).take(COLUMNS) {
                         let is_selected = selected == Some(entry.path.as_path());
+                        let unsaved = recoverable.get(&entry.path).copied().unwrap_or(0);
                         card(
                             ui,
                             theme,
                             entry,
                             is_selected,
+                            unsaved,
                             folders,
                             now,
                             card_width,
@@ -73,6 +77,7 @@ fn card(
     theme: &Theme,
     entry: &ProjectEntry,
     selected: bool,
+    unsaved: usize,
     folders: &[Folder],
     now: i64,
     width: f32,
@@ -155,6 +160,21 @@ fn card(
             issue.message(),
             FontId::proportional(11.5),
             colour,
+        );
+    } else if unsaved > 0 {
+        painter.circle_filled(pos2(rect.left() + 4.0, y + 7.0), 3.5, status::WARNING);
+        let text = if unsaved == 1 {
+            "1 unsaved change from a crash".to_owned()
+        } else {
+            format!("{unsaved} unsaved changes from a crash")
+        };
+        one_line(
+            &painter,
+            pos2(rect.left() + 14.0, y),
+            width - 14.0,
+            &text,
+            FontId::proportional(11.5),
+            status::WARNING,
         );
     }
 

@@ -24,6 +24,7 @@ rfd = "0.18"
 ron = "0.12"
 semver = "1"
 serde = { version = "1", features = ["derive"] }
+sysinfo = { version = "0.40", default-features = false, features = ["system"] }
 tracing = "0.1"
 ui-kit = { path = "../ui-kit" }
 updater = { path = "../updater" }

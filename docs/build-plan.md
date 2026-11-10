@@ -242,7 +242,7 @@ Phase 2 builds the launcher exactly as in the agreed mockup: name and logo centr
 - [x] Choosing where projects are saved: a default folder (Settings, or right-click a folder) and Browse… for any folder in New project.
 - [x] New project dialog with presets: Game clip (1080p 60), High frame rate (1440p 144), Vertical short (1080×1920 60), Match the first clip.
 - [x] Issue checks before opening: file saved by a newer version, file damaged, project file missing. (Missing media with a relink suggestion moved to 4A, where importing arrives.)
-- [ ] Crash recovery prompt (from phase 0) shown here when the last session crashed.
+- [x] Crash recovery prompt (from phase 0) shown here when the last session crashed. (Also on the card and when opening any project with unsaved crash work.)
 - [x] Opening a project starts the editor process with the project path, then the launcher closes.
 
 **Gate 2**

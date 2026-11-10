@@ -63,7 +63,7 @@ impl Editor {
         cc: &eframe::CreationContext<'_>,
         settings: Settings,
         data_dir: PathBuf,
-        project: Option<PathBuf>,
+        project: Option<ProjectToOpen>,
         mode: RunMode,
         report: Arc<Mutex<RunReport>>,
         startup_problems: Vec<AppError>,
@@ -74,7 +74,7 @@ impl Editor {
         for problem in &startup_problems {
             errors.push(problem);
         }
-        let document = project.and_then(|path| match open_or_create(&path) {
+        let document = project.and_then(|p| match open_or_create(&p.path, p.recovery) {
             Ok(doc) => Some(doc),
             Err(err) => {
                 errors.push(&err);
@@ -554,11 +554,18 @@ where
     });
 }
 
-/// Opens a project, recovering unsaved work from a crash, or creates it if it doesn't exist.
-fn open_or_create(path: &Path) -> diag::Result<Document> {
+/// A project named on the command line, and what to do with unsaved work from a crash.
+#[derive(Debug, Clone)]
+pub struct ProjectToOpen {
+    pub path: PathBuf,
+    /// The launcher asks; the editor on its own always recovers.
+    pub recovery: Recovery,
+}
+
+/// Opens a project, or creates it if it doesn't exist.
+fn open_or_create(path: &Path, recovery: Recovery) -> diag::Result<Document> {
     if path.exists() {
-        // The launcher (Phase 2) will ask; until then recovered work is always kept.
-        Document::open(path, Recovery::Recover)
+        Document::open(path, recovery)
     } else {
         let name = path
             .file_stem()

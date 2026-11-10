@@ -10,6 +10,8 @@ pub struct Options {
     pub mode: RunMode,
     /// Fill a temporary data folder with this many sample projects (screenshots and scroll tests).
     pub demo: Option<usize>,
+    /// With `--demo`: pretend the editor crashed with unsaved work (screenshots of the recovery window).
+    pub demo_crash: bool,
     /// Open the update window at this step with a sample version (screenshots).
     pub update_window: Option<UpdatePreview>,
 }
@@ -55,6 +57,7 @@ impl Options {
                     options.demo = Some(count);
                     options.check_updates = false;
                 }
+                "--demo-crash" => options.demo_crash = true,
                 "--update-window" => {
                     let step = args
                         .next()

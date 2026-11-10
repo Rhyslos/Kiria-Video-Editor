@@ -6,6 +6,9 @@ use std::path::PathBuf;
 pub struct Options {
     /// A project to open (created if it does not exist yet).
     pub project: Option<PathBuf>,
+    /// Open the project as last saved, setting aside unsaved work from a crash
+    /// (the launcher's "Open last save"). Normally that work is recovered.
+    pub open_last_save: bool,
     pub mode: RunMode,
 }
 
@@ -29,6 +32,7 @@ impl Options {
         while let Some(arg) = args.next() {
             match arg.as_str() {
                 "--smoke-test" => options.mode = RunMode::SmokeTest,
+                "--open-last-save" => options.open_last_save = true,
                 "--responsiveness-test" => options.mode = RunMode::ResponsivenessTest,
                 "--screenshot" => {
                     let path = args.next().ok_or("--screenshot needs a file name")?;
@@ -58,5 +62,6 @@ mod tests {
         assert_eq!(o.mode, RunMode::Screenshot("shot.png".into()));
         assert!(parse(&["--screenshot"]).is_err());
         assert!(parse(&["--nope"]).is_err());
+        assert!(parse(&["p.x", "--open-last-save"]).unwrap().open_last_save);
     }
 }

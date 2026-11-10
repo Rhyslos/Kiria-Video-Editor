@@ -5,12 +5,14 @@ use crate::editor_start::{show_in_file_manager, start_editor};
 use crate::files;
 use crate::new_project::{Choice, NewProjectDialog};
 use crate::prefs::LauncherPrefs;
+use crate::recovery::{self, LastRun};
 use crate::run_mode::RunMode;
 use crate::updates::Updates;
 use crate::work::{Poll, Task};
 use diag::AppError;
 use egui::{RichText, Sense};
 use project_index::{Folder, FolderKind, Index, Issue, ProjectEntry};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -47,6 +49,16 @@ enum Picked {
 
 /// A finished rename or move: (old path, new path).
 type FileJob = Task<diag::Result<(PathBuf, PathBuf)>>;
+
+/// "Recover the unsaved work?" for one project.
+#[derive(Debug, Clone)]
+struct RecoveryDialog {
+    path: PathBuf,
+    name: String,
+    unsaved: usize,
+    /// Shown at start-up because the editor crashed (rather than on opening).
+    after_crash: bool,
+}
 
 #[derive(Debug)]
 struct RenameDialog {
@@ -92,7 +104,10 @@ pub struct Browser {
     focus_search: bool,
     selected: Option<PathBuf>,
     status: String,
-    refresh: Option<Task<diag::Result<()>>>,
+    refresh: Option<Task<diag::Result<HashMap<PathBuf, usize>>>>,
+    /// Projects with unsaved changes left by a crash, and how many.
+    recoverable: HashMap<PathBuf, usize>,
+    recovery: Option<RecoveryDialog>,
     picker: Option<Task<Picked>>,
     file_job: Option<FileJob>,
     new_project: Option<NewProjectDialog>,
@@ -152,6 +167,8 @@ impl Browser {
             selected: None,
             status: String::new(),
             refresh: None,
+            recoverable: HashMap::new(),
+            recovery: None,
             picker: None,
             file_job: None,
             new_project: None,
@@ -176,6 +193,7 @@ impl Browser {
         }
         browser.add_default_folder();
         browser.reload();
+        browser.check_last_run();
         browser.start_refresh(ctx);
         browser
     }
@@ -235,7 +253,56 @@ impl Browser {
             return;
         }
         let file = self.index_file.clone();
-        self.refresh = Some(Task::spawn(ctx, move || Index::open(&file)?.refresh()));
+        self.refresh = Some(Task::spawn(ctx, move || {
+            let index = Index::open(&file)?;
+            index.refresh()?;
+            // Only projects with a journal are read further, so this stays quick.
+            Ok(index
+                .projects()?
+                .into_iter()
+                .filter(|p| p.issue.is_none())
+                .filter_map(|p| match recovery::unsaved_changes(&p.path) {
+                    0 => None,
+                    n => Some((p.path, n)),
+                })
+                .collect())
+        }));
+    }
+
+    /// Says what happened if the editor didn't close properly last time.
+    fn check_last_run(&mut self) {
+        let crashed = match recovery::last_run(&self.data_dir) {
+            LastRun::Fine => return,
+            LastRun::CrashedNothingLost => {
+                self.status = format!(
+                    "{} closed unexpectedly last time. Nothing was lost.",
+                    brand::APP_NAME
+                );
+                true
+            }
+            LastRun::CrashedWithWork { project, unsaved } => {
+                self.recovery = Some(RecoveryDialog {
+                    name: self.project_name(&project),
+                    path: project,
+                    unsaved,
+                    after_crash: true,
+                });
+                true
+            }
+        };
+        // Dealt with here, so the editor doesn't report it again.
+        if crashed && let Err(err) = diag::session::forget_unfinished_run(&self.data_dir) {
+            tracing::warn!("{}", err.report());
+        }
+    }
+
+    fn project_name(&self, path: &Path) -> String {
+        self.projects
+            .iter()
+            .find(|p| p.path == path)
+            .map(|p| p.name.clone())
+            .or_else(|| path.file_stem().map(|s| s.to_string_lossy().into_owned()))
+            .unwrap_or_default()
     }
 
     fn with_index(&mut self, f: impl FnOnce(&Index) -> diag::Result<()>) {
@@ -258,8 +325,9 @@ impl Browser {
                 Poll::Running => {}
                 Poll::Done(result) => {
                     self.refresh = None;
-                    if let Err(err) = result {
-                        self.errors.push(&err);
+                    match result {
+                        Ok(recoverable) => self.recoverable = recoverable,
+                        Err(err) => self.errors.push(&err),
                     }
                     self.reload();
                 }
@@ -417,8 +485,29 @@ impl Browser {
             self.errors.push(&cannot_open(issue, path));
             return;
         }
+        // Read fresh: the list may be older than the file.
+        let unsaved = recovery::unsaved_changes(path);
+        if unsaved > 0 {
+            self.recovery = Some(RecoveryDialog {
+                path: path.to_path_buf(),
+                name: self.project_name(path),
+                unsaved,
+                after_crash: false,
+            });
+            return;
+        }
+        self.launch(ctx, path, false);
+    }
+
+    /// Starts the editor with `path` and closes the launcher. With
+    /// `open_last_save`, unsaved work from a crash is set aside instead of recovered.
+    fn launch(&mut self, ctx: &egui::Context, path: &Path, open_last_save: bool) {
+        let mut args = vec![path.as_os_str()];
+        if open_last_save {
+            args.push(std::ffi::OsStr::new("--open-last-save"));
+        }
         if self.launch_editor
-            && let Err(err) = start_editor(&[path.as_os_str()])
+            && let Err(err) = start_editor(&args)
         {
             self.errors.push(&err);
             return;
@@ -431,7 +520,8 @@ impl Browser {
         if self.launch_editor {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         } else {
-            self.status = format!("Would open {} in the editor.", path.display());
+            let how = if open_last_save { " as last saved" } else { "" };
+            self.status = format!("Would open {}{how} in the editor.", path.display());
             self.reload();
         }
     }
@@ -688,6 +778,7 @@ impl Browser {
             &shown,
             self.selected.as_deref(),
             &self.folders,
+            &self.recoverable,
             project_index::now(),
         );
         self.card_actions(&ctx, actions);
@@ -725,6 +816,57 @@ impl Browser {
                         }
                         Err(err) => self.errors.push(&err),
                     }
+                }
+            }
+        }
+
+        if let Some(dialog) = self.recovery.clone() {
+            let mut choice = None;
+            let modal = ui_kit::dialog(ctx, &self.theme, "recover-project", |ui| {
+                ui.set_width(400.0);
+                let title = if dialog.after_crash {
+                    format!("{} closed unexpectedly", brand::APP_NAME)
+                } else {
+                    "Recover unsaved work?".to_owned()
+                };
+                ui.label(RichText::new(title).family(ui_kit::fonts::semibold()).size(16.0));
+                ui.add_space(6.0);
+                let changes = if dialog.unsaved == 1 {
+                    "1 change".to_owned()
+                } else {
+                    format!("{} changes", dialog.unsaved)
+                };
+                ui.label(
+                    RichText::new(format!(
+                        "{} has {changes} that weren't saved before the app closed. They were kept and can be put back.",
+                        dialog.name
+                    ))
+                    .color(self.theme.text_secondary),
+                );
+                ui.add_space(14.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui_kit::accent_button(ui, &self.theme, "Recover and open").clicked() {
+                        choice = Some(Some(false));
+                    }
+                    if ui
+                        .button("Open last save")
+                        .on_hover_text("Opens the project as it was last saved. The unsaved changes are kept in a file beside it, never deleted.")
+                        .clicked()
+                    {
+                        choice = Some(Some(true));
+                    }
+                    if ui.button("Not now").clicked() {
+                        choice = Some(None);
+                    }
+                });
+            });
+            if modal.should_close() && choice.is_none() {
+                choice = Some(None);
+            }
+            if let Some(choice) = choice {
+                self.recovery = None;
+                if let Some(open_last_save) = choice {
+                    self.launch(ctx, &dialog.path, open_last_save);
                 }
             }
         }
@@ -825,7 +967,7 @@ impl Browser {
     }
 
     fn keyboard(&mut self, ctx: &egui::Context) {
-        let dialog_open = self.new_project.is_some() || self.rename.is_some();
+        let dialog_open = self.new_project.is_some() || self.rename.is_some() || self.recovery.is_some();
         for action in self.shortcuts.pressed(ctx) {
             match action {
                 Action::OpenSettings => self.show_settings = true,

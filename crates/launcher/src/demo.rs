@@ -31,7 +31,9 @@ const PRESETS: [SequenceSettings; 3] = [
 ];
 
 /// Makes the sample folder and returns the data folder to use.
-pub fn prepare(count: usize) -> diag::Result<PathBuf> {
+/// With `crash`, the editor is made to look as if it crashed with unsaved
+/// work in one of them, so the recovery window opens at start-up.
+pub fn prepare(count: usize, crash: bool) -> diag::Result<PathBuf> {
     let root = std::env::temp_dir().join(format!(
         "{}-launcher-demo-{}",
         brand::DATA_DIR_NAME,
@@ -85,6 +87,26 @@ pub fn prepare(count: usize) -> diag::Result<PathBuf> {
             "not a project",
         )
         .or_explain(explain)?;
+        // One project with three changes a crash left unsaved.
+        let unsaved = crate::files::create_project(&projects, "Unsaved edit", SequenceSettings::GAME_CLIP)?;
+        index.record(&unsaved)?;
+        index.mark_opened(&unsaved, now - 60)?;
+        let mut doc = project::Document::open(&unsaved, project::Recovery::Recover)?;
+        let sequence = doc.project().active_sequence;
+        for frame in [10, 20, 30] {
+            doc.apply(project::Command::SetEditNeedle {
+                sequence,
+                at: project::Time::from_ratio(frame, 60).unwrap_or(project::Time::ZERO),
+            })?;
+        }
+        drop(doc);
+        if crash {
+            std::fs::write(
+                data.join("session.running"),
+                format!("pid {}\nproject {}\n", u32::MAX - 7, unsaved.display()),
+            )
+            .or_explain(explain)?;
+        }
     }
     Ok(data)
 }
