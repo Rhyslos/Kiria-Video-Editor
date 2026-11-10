@@ -44,7 +44,11 @@ pub enum Choice {
         name: String,
         settings: SequenceSettings,
         folder: PathBuf,
+        /// Use this folder for new projects from now on.
+        remember: bool,
     },
+    /// Pick another folder with the system's folder dialog.
+    Browse,
     Cancel,
 }
 
@@ -54,18 +58,29 @@ pub struct NewProjectDialog {
     name: String,
     preset: usize,
     folder: Option<PathBuf>,
+    /// The folder new projects normally go to, to tell whether `folder` differs.
+    default_folder: Option<PathBuf>,
+    remember: bool,
     focused: bool,
 }
 
 impl NewProjectDialog {
-    /// A dialog that saves into `folder` by default.
-    pub fn new(folder: Option<PathBuf>) -> NewProjectDialog {
+    /// A dialog that saves into `folder` at first. `default_folder` is the
+    /// person's chosen folder for new projects.
+    pub fn new(folder: Option<PathBuf>, default_folder: Option<PathBuf>) -> NewProjectDialog {
         NewProjectDialog {
             name: "Untitled project".into(),
             preset: 0,
             folder,
+            default_folder,
+            remember: false,
             focused: false,
         }
+    }
+
+    /// Sets the folder after Browse… picked one.
+    pub fn set_folder(&mut self, folder: PathBuf) {
+        self.folder = Some(folder);
     }
 
     /// Draws the dialog. `folders` are the project folders to choose from.
@@ -105,18 +120,32 @@ impl NewProjectDialog {
                 || "Choose a project folder".to_owned(),
                 |f| f.display().to_string(),
             );
-            egui::ComboBox::from_id_salt("new-project-folder")
-                .width(ui.available_width())
-                .selected_text(shown)
-                .show_ui(ui, |ui| {
-                    for folder in folders {
-                        ui.selectable_value(
-                            &mut self.folder,
-                            Some(folder.clone()),
-                            folder.display().to_string(),
-                        );
-                    }
-                });
+            ui.horizontal(|ui| {
+                let browse_width = 80.0;
+                egui::ComboBox::from_id_salt("new-project-folder")
+                    .width(ui.available_width() - browse_width - ui.spacing().item_spacing.x)
+                    .selected_text(shown)
+                    .truncate()
+                    .show_ui(ui, |ui| {
+                        for folder in folders {
+                            ui.selectable_value(
+                                &mut self.folder,
+                                Some(folder.clone()),
+                                folder.display().to_string(),
+                            );
+                        }
+                    });
+                if ui
+                    .add_sized([browse_width, 0.0], egui::Button::new("Browse…"))
+                    .on_hover_text("Save in any folder on your computer")
+                    .clicked()
+                {
+                    choice = Some(Choice::Browse);
+                }
+            });
+            if self.folder.is_some() && self.folder != self.default_folder {
+                ui.checkbox(&mut self.remember, "Save new projects here from now on");
+            }
             ui.add_space(14.0);
 
             let ready = self.folder.is_some()
@@ -135,6 +164,7 @@ impl NewProjectDialog {
                             name: self.name.trim().to_owned(),
                             settings,
                             folder: folder.clone(),
+                            remember: self.remember && self.folder != self.default_folder,
                         });
                     }
                     if ui.button("Cancel").clicked() {

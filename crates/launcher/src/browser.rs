@@ -4,6 +4,7 @@ use crate::cards::{self, CardAction};
 use crate::editor_start::{show_in_file_manager, start_editor};
 use crate::files;
 use crate::new_project::{Choice, NewProjectDialog};
+use crate::prefs::LauncherPrefs;
 use crate::run_mode::RunMode;
 use crate::updates::Updates;
 use crate::work::{Poll, Task};
@@ -38,6 +39,10 @@ enum View {
 enum Picked {
     ProjectFile(Option<PathBuf>),
     Folder(FolderKind, Option<PathBuf>),
+    /// Browse… in the New project dialog.
+    SaveFolder(Option<PathBuf>),
+    /// Change… for the default folder in Settings.
+    DefaultFolder(Option<PathBuf>),
 }
 
 /// A finished rename or move: (old path, new path).
@@ -71,6 +76,7 @@ pub struct Start {
 pub struct Browser {
     theme: Theme,
     data_dir: PathBuf,
+    prefs: LauncherPrefs,
     index_file: PathBuf,
     index: Option<Index>,
     errors: ErrorCenter,
@@ -125,6 +131,7 @@ impl Browser {
         let updates = Updates::start(ctx, crate::VERSION, start.data_dir.clone(), start.check_updates);
         let mut browser = Browser {
             theme: start.theme.theme(),
+            prefs: LauncherPrefs::load(&start.data_dir),
             data_dir: start.data_dir,
             index_file,
             index,
@@ -191,8 +198,10 @@ impl Browser {
                     .source(err)
             })
             .and_then(|()| index.add_folder(&folder, FolderKind::Projects));
-        if let Err(err) = result {
-            self.errors.push(&err);
+        match result {
+            Ok(()) if self.prefs.default_project_folder.is_none() => self.set_default_folder(Some(folder)),
+            Ok(()) => {}
+            Err(err) => self.errors.push(&err),
         }
     }
 
@@ -304,8 +313,45 @@ impl Browser {
                 self.view = View::Folder(Folder { path, kind });
                 self.start_refresh(ctx);
             }
-            Picked::ProjectFile(None) | Picked::Folder(_, None) => {}
+            Picked::SaveFolder(Some(path)) => {
+                self.with_index(|index| index.add_folder_if_new(&path, FolderKind::Projects));
+                if let Some(dialog) = &mut self.new_project {
+                    dialog.set_folder(path);
+                }
+            }
+            Picked::DefaultFolder(Some(path)) => {
+                self.with_index(|index| index.add_folder_if_new(&path, FolderKind::Projects));
+                self.set_default_folder(Some(path));
+                self.start_refresh(ctx);
+            }
+            Picked::ProjectFile(None)
+            | Picked::Folder(_, None)
+            | Picked::SaveFolder(None)
+            | Picked::DefaultFolder(None) => {}
         }
+    }
+
+    /// Remembers where new projects go.
+    fn set_default_folder(&mut self, folder: Option<PathBuf>) {
+        self.prefs.default_project_folder = folder;
+        if let Err(err) = self.prefs.save(&self.data_dir) {
+            self.errors.push(&err);
+        }
+    }
+
+    /// Opens the system folder dialog; `make` wraps the answer.
+    fn pick_any_folder(&mut self, ctx: &egui::Context, title: &str, make: fn(Option<PathBuf>) -> Picked) {
+        if self.picker.is_some() {
+            return;
+        }
+        let (title, start) = (title.to_owned(), self.default_project_folder());
+        self.picker = Some(Task::spawn(ctx, move || {
+            let mut dialog = rfd::FileDialog::new().set_title(title);
+            if let Some(start) = start.filter(|s| s.is_dir()) {
+                dialog = dialog.set_directory(start);
+            }
+            make(dialog.pick_folder())
+        }));
     }
 
     fn pick_project_file(&mut self, ctx: &egui::Context) {
@@ -317,7 +363,7 @@ impl Browser {
             let mut dialog = rfd::FileDialog::new()
                 .set_title("Open a project")
                 .add_filter(format!("{} project", brand::APP_NAME), &[project::FILE_EXTENSION]);
-            if let Some(start) = start {
+            if let Some(start) = start.filter(|s| s.is_dir()) {
                 dialog = dialog.set_directory(start);
             }
             Picked::ProjectFile(dialog.pick_file())
@@ -334,17 +380,25 @@ impl Browser {
         }));
     }
 
-    /// The folder new projects go to: the one being viewed if it holds projects, else the first project folder.
+    /// The folder chosen for new projects, or else the first project folder.
     fn default_project_folder(&self) -> Option<PathBuf> {
+        self.prefs.default_project_folder.clone().or_else(|| {
+            self.folders
+                .iter()
+                .find(|f| f.kind == FolderKind::Projects)
+                .map(|f| f.path.clone())
+        })
+    }
+
+    /// Where the New project dialog starts: the folder being viewed if it
+    /// holds projects, else the chosen folder for new projects.
+    fn new_project_folder(&self) -> Option<PathBuf> {
         if let View::Folder(folder) = &self.view
             && folder.kind.holds_projects()
         {
             return Some(folder.path.clone());
         }
-        self.folders
-            .iter()
-            .find(|f| f.kind == FolderKind::Projects)
-            .map(|f| f.path.clone())
+        self.default_project_folder()
     }
 
     /// Opens a project in the editor and closes the launcher.
@@ -460,11 +514,13 @@ impl Browser {
 
     fn folder_tree(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.spacing_mut().item_spacing.y = 2.0;
-        if tree_row(ui, &self.theme, "All projects", self.view == View::All).clicked() {
+        if tree_row(ui, &self.theme, "All projects", None, self.view == View::All).clicked() {
             self.view = View::All;
         }
         let mut remove = None;
         let mut reveal = None;
+        let mut make_default = None;
+        let default_folder = self.default_project_folder();
         for kind in FolderKind::ALL {
             ui.add_space(12.0);
             ui.label(
@@ -479,11 +535,22 @@ impl Browser {
             }
             for folder in folders {
                 let selected = self.view == View::Folder(folder.clone());
-                let response = tree_row(ui, &self.theme, &folder.name(), selected);
+                let is_default = default_folder.as_ref() == Some(&folder.path);
+                let badge = is_default.then_some("new projects");
+                let response = tree_row(ui, &self.theme, &folder.name(), badge, selected);
                 if response.clicked() {
                     self.view = View::Folder(folder.clone());
                 }
                 response.context_menu(|ui| {
+                    if folder.kind.holds_projects()
+                        && !is_default
+                        && ui
+                            .button("Save new projects here")
+                            .on_hover_text("New project will suggest this folder.")
+                            .clicked()
+                    {
+                        make_default = Some(folder.path.clone());
+                    }
                     if ui.button("Show in file manager").clicked() {
                         reveal = Some(folder.path.clone());
                     }
@@ -517,6 +584,12 @@ impl Browser {
         }
         if let Some(path) = remove {
             self.with_index(|index| index.remove_folder(&path));
+            if self.prefs.default_project_folder.as_ref() == Some(&path) {
+                self.set_default_folder(None);
+            }
+        }
+        if let Some(path) = make_default {
+            self.set_default_folder(Some(path));
         }
     }
 
@@ -543,7 +616,10 @@ impl Browser {
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui_kit::accent_button(ui, &self.theme, "New project").clicked() {
-                    self.new_project = Some(NewProjectDialog::new(self.default_project_folder()));
+                    self.new_project = Some(NewProjectDialog::new(
+                        self.new_project_folder(),
+                        self.default_project_folder(),
+                    ));
                 }
                 if ui
                     .button("Open…")
@@ -623,12 +699,19 @@ impl Browser {
             match dialog.show(ctx, &self.theme, &folders) {
                 None => {}
                 Some(Choice::Cancel) => self.new_project = None,
+                Some(Choice::Browse) => {
+                    self.pick_any_folder(ctx, "Save the new project in", Picked::SaveFolder);
+                }
                 Some(Choice::Create {
                     name,
                     settings,
                     folder,
+                    remember,
                 }) => {
                     self.new_project = None;
+                    if remember {
+                        self.set_default_folder(Some(folder.clone()));
+                    }
                     match files::create_project(&folder, &name, settings) {
                         Ok(path) => {
                             self.with_index(|index| index.record(&path).map(|_| ()));
@@ -688,6 +771,7 @@ impl Browser {
         }
 
         let mut open = self.show_settings;
+        let mut change_default = false;
         egui::Window::new("Settings")
             .open(&mut open)
             .collapsible(false)
@@ -703,6 +787,16 @@ impl Browser {
                     updates.set_channel(ctx, channel);
                 }
                 ui.add_space(8.0);
+                ui.heading("New projects");
+                ui.label(RichText::new("Saved in").color(self.theme.text_secondary));
+                let shown = self
+                    .default_project_folder()
+                    .map_or_else(|| "No folder chosen".to_owned(), |f| f.display().to_string());
+                ui.label(RichText::new(shown).font(ui_kit::fonts::mono(11.0)));
+                if ui.button("Change…").clicked() {
+                    change_default = true;
+                }
+                ui.add_space(8.0);
                 ui.heading("Look");
                 ui.label(RichText::new("The theme follows the editor's Settings.").color(self.theme.muted));
                 ui.add_space(8.0);
@@ -716,6 +810,9 @@ impl Browser {
                 });
             });
         self.show_settings = open;
+        if change_default {
+            self.pick_any_folder(ctx, "Save new projects in", Picked::DefaultFolder);
+        }
 
         let mut diagnostics = self.show_diagnostics;
         self.errors.diagnostics_window(ctx, &mut diagnostics, &self.theme);
@@ -839,8 +936,14 @@ impl eframe::App for Browser {
     }
 }
 
-/// One clickable row of the folder tree.
-fn tree_row(ui: &mut egui::Ui, theme: &Theme, text: &str, selected: bool) -> egui::Response {
+/// One clickable row of the folder tree, with an optional quiet badge on the right.
+fn tree_row(
+    ui: &mut egui::Ui,
+    theme: &Theme,
+    text: &str,
+    badge: Option<&str>,
+    selected: bool,
+) -> egui::Response {
     let width = ui.available_width();
     let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 26.0), Sense::click());
     if selected || response.hovered() {
@@ -864,6 +967,15 @@ fn tree_row(ui: &mut egui::Ui, theme: &Theme, text: &str, selected: bool) -> egu
         egui::FontId::new(12.5, family),
         colour,
     );
+    if let Some(badge) = badge {
+        ui.painter().text(
+            rect.right_center() - egui::vec2(8.0, 0.0),
+            egui::Align2::RIGHT_CENTER,
+            badge,
+            egui::FontId::proportional(10.5),
+            theme.faint,
+        );
+    }
     response
 }
 

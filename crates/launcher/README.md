@@ -19,7 +19,17 @@ Phase 2 in progress. Done: the project browser (folder tree, project grid, searc
 4. Opening a project starts the editor with its path, notes the time in the index and closes the window. A download still running finishes before the process exits.
 5. Finding projects on disk, renames, moves, file dialogs and update checks all run on worker threads (`work.rs`); the interface thread only reads the index.
 
-Preferences are read from `<data folder>/updates.ron` (defaults: automatic, Stable channel). The theme follows the editor's `settings.ron`.
+## Where projects are saved
+
+New projects go to one chosen folder, shown with a quiet "new projects" badge in the folder tree. On the first run that is the `<name> projects` folder made in Documents. It can be changed three ways:
+
+- **Settings (⚙) → New projects → Change…** picks any folder.
+- **Right-click a folder → Save new projects here.**
+- **New project → Browse…** saves one project anywhere; ticking *Save new projects here from now on* makes that folder the choice.
+
+A folder picked this way is added to the Projects group (unless a listed folder already contains it), so its projects show up in the grid. While a project folder is open in the grid, New project suggests that folder instead.
+
+Preferences are read from `<data folder>/updates.ron` (defaults: automatic, Stable channel) and `<data folder>/launcher.ron` (the folder for new projects). The theme follows the editor's `settings.ron`.
 
 ## Files
 
@@ -34,6 +44,7 @@ Preferences are read from `<data folder>/updates.ron` (defaults: automatic, Stab
 | `src/editor_start.rs` | Starting the editor; showing a folder in the file manager |
 | `src/work.rs` | `Task`: run work on a thread, pick the result up on a later frame |
 | `src/demo.rs` | Sample projects in a temporary folder for screenshots and tests |
+| `src/prefs.rs` | `LauncherPrefs` in `launcher.ron`: the folder new projects are saved in |
 | `src/run_mode.rs` | Command-line options |
 
 ## Trying it without installing

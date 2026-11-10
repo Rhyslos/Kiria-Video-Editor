@@ -17,6 +17,7 @@ mod demo;
 mod editor_start;
 mod files;
 mod new_project;
+mod prefs;
 mod run_mode;
 mod updates;
 mod work;

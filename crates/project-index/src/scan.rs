@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 /// How many folder levels below a project folder are searched. Enough for
 /// "Projects/2026/Trip/trip.kiria" without wandering through a whole drive.
-const MAX_DEPTH: usize = 3;
+pub(crate) const MAX_DEPTH: usize = 3;
 
 /// Every project file in `folder` and up to three levels of subfolders.
 /// Hidden folders (starting with a dot) are skipped. Unreadable folders are

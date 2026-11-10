@@ -98,6 +98,22 @@ impl Index {
         Ok(())
     }
 
+    /// Makes sure projects saved in `path` are listed: adds it as a `kind`
+    /// folder unless it already is one, or sits inside a folder that is
+    /// searched for projects anyway. A media folder chosen for projects becomes `kind`.
+    pub fn add_folder_if_new(&self, path: &Path, kind: FolderKind) -> diag::Result<()> {
+        let folders = self.folders()?;
+        let covered = folders.iter().any(|f| {
+            f.kind.holds_projects()
+                && path.starts_with(&f.path)
+                && path.components().count() - f.path.components().count() <= crate::scan::MAX_DEPTH
+        });
+        if covered {
+            return Ok(());
+        }
+        self.add_folder(path, kind)
+    }
+
     /// Removes a folder from the tree. Nothing on disk is touched.
     pub fn remove_folder(&self, path: &Path) -> diag::Result<()> {
         self.conn
@@ -391,6 +407,32 @@ mod tests {
         assert_eq!(m.kind, FolderKind::Other, "adding again moves it");
         index.remove_folder(Path::new("/p")).unwrap();
         assert_eq!(index.folders().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn folders_inside_listed_folders_are_not_added_twice() {
+        let index = Index::open_in_memory().unwrap();
+        index.add_folder(Path::new("/p"), FolderKind::Projects).unwrap();
+        index.add_folder(Path::new("/m"), FolderKind::Media).unwrap();
+        index
+            .add_folder_if_new(Path::new("/p/2026"), FolderKind::Projects)
+            .unwrap();
+        index
+            .add_folder_if_new(Path::new("/p"), FolderKind::Projects)
+            .unwrap();
+        assert_eq!(index.folders().unwrap().len(), 2, "already searched");
+        index
+            .add_folder_if_new(Path::new("/m"), FolderKind::Projects)
+            .unwrap();
+        index
+            .add_folder_if_new(Path::new("/elsewhere"), FolderKind::Projects)
+            .unwrap();
+        let folders = index.folders().unwrap();
+        assert_eq!(folders.len(), 3);
+        assert!(
+            folders.iter().all(|f| f.kind == FolderKind::Projects),
+            "the media folder now holds projects"
+        );
     }
 
     #[test]
