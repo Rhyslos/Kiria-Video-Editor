@@ -1,0 +1,17 @@
+# Spike: not part of the workspace (see spikes/README.md).
+[package]
+name = "decode-bench"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "GPL-3.0-or-later"
+
+[workspace]
+
+[dependencies]
+ffmpeg-sys-next = { version = "8.1", default-features = false, features = ["avcodec", "avformat"] }
+wgpu = "30"
+pollster = "0.4"
+cpu-time = "1"
+memory-stats = "1"
+ash = "0.38"

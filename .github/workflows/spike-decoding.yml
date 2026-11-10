@@ -1,0 +1,53 @@
+# Builds the decoding measurement program (spikes/decoding) for Windows as a
+# ready-to-run zip. Started by hand, or when the spike changes.
+name: Decoding spike
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ["spikes/decoding/**", ".github/workflows/spike-decoding.yml"]
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+      - name: Toolchain
+        run: rustup toolchain install stable --profile minimal
+      - name: FFmpeg (the pinned build)
+        run: |
+          source packaging/ffmpeg.env
+          curl -sSL -o ffmpeg.zip "$FFMPEG_WINDOWS_URL"
+          7z x -y ffmpeg.zip > /dev/null
+          echo "FFMPEG_DIR=$(cygpath -w "$PWD/$(ls -d ffmpeg-*-win64-gpl-shared-*/ | head -1)")" >> "$GITHUB_ENV"
+      - name: Build
+        working-directory: spikes/decoding
+        env:
+          RUSTUP_TOOLCHAIN: stable
+          LIBCLANG_PATH: C:\Program Files\LLVM\bin
+        run: cargo build --release
+      - name: Layout test and a software run
+        working-directory: spikes/decoding
+        env:
+          RUSTUP_TOOLCHAIN: stable
+          LIBCLANG_PATH: C:\Program Files\LLVM\bin
+        run: |
+          export PATH="$(cygpath -u "$FFMPEG_DIR")/bin:$PATH"
+          cargo test --release
+          ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=1280x720:rate=60 -t 3 -g 120 -c:v libx264 smoke.mp4
+          target/release/decode-bench.exe --frames 120 --seeks 5 smoke.mp4
+      - name: Package
+        run: |
+          mkdir -p pkg/ffmpeg
+          cp spikes/decoding/target/release/decode-bench.exe spikes/decoding/run.ps1 spikes/decoding/run.bat pkg/
+          cp "$(cygpath -u "$FFMPEG_DIR")"/bin/* pkg/ffmpeg/
+          cp "$(cygpath -u "$FFMPEG_DIR")"/bin/*.dll pkg/
+          cp "$(cygpath -u "$FFMPEG_DIR")"/LICENSE* pkg/ffmpeg/ 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: decode-bench-windows
+          path: pkg/
