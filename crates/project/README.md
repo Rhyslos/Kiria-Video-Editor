@@ -32,7 +32,7 @@ RON text with the extension from `brand::PROJECT_FILE_EXTENSION`:
 
 ```ron
 (
-  format_version: 3,
+  format_version: 4,
   summary: Some((name: "...", settings: (...), length: (21, 1))),
   project: ( ... ),
 )
@@ -49,6 +49,7 @@ RON text with the extension from `brand::PROJECT_FILE_EXTENSION`:
 | 1 | First format | – |
 | 2 | Media entries gain `info`: the file's video and sound streams | Version number only: `info` defaults to empty |
 | 3 | Timelines gain `automatic` (settings wait for the first video); the summary says so too | Version number only: `automatic` defaults to off, as older timelines had fixed settings |
+| 4 | Video streams gain `variable_frame_rate` | Version number only: defaults to off |
 
 ### Changing the format
 

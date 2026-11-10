@@ -37,7 +37,7 @@ pub fn probe(path: &Path) -> diag::Result<Probe> {
     let picture = streams
         .iter()
         .find(|s| s.kind() == StreamKind::Video && !s.is_attached_picture());
-    let video = picture.map(video_stream);
+    let mut video = picture.map(video_stream);
     let audio: Vec<AudioStream> = streams
         .iter()
         .filter(|s| s.kind() == StreamKind::Audio)
@@ -59,6 +59,12 @@ pub fn probe(path: &Path) -> diag::Result<Probe> {
     } else {
         length(&input, &streams)
     };
+    drop(streams);
+    if kind == MediaKind::Video
+        && let Some(v) = video.as_mut()
+    {
+        measure_timing(&input, v, duration);
+    }
     Ok(Probe {
         kind,
         duration,
@@ -95,6 +101,22 @@ fn video_stream(s: &Stream) -> VideoStream {
         height,
         frame_rate,
         rotation: s.display_matrix().map_or(0, |m| clockwise_turn(&m)),
+        variable_frame_rate: false,
+    }
+}
+
+/// Reads packet times at the start, middle and end of the file and settles
+/// the frame rate: constant or variable, and the rate it is shown at.
+fn measure_timing(input: &Input, video: &mut VideoStream, duration: Time) {
+    let secs = duration.as_secs_f64();
+    let mut windows = vec![input.packet_times(video.index, 0.0, 10.0)];
+    if secs > 30.0 {
+        windows.push(input.packet_times(video.index, secs / 2.0, 5.0));
+        windows.push(input.packet_times(video.index, secs - 6.0, 5.0));
+    }
+    if let Some(timing) = crate::timing::analyse(&windows) {
+        video.frame_rate = timing.rate;
+        video.variable_frame_rate = timing.variable;
     }
 }
 

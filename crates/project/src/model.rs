@@ -123,8 +123,13 @@ pub struct VideoStream {
     /// Stored picture size, before rotation.
     pub width: u32,
     pub height: u32,
-    /// Average frame rate.
+    /// The constant rate the picture is shown at: the file's own rate, or for
+    /// a variable-frame-rate recording the nearest standard rate.
     pub frame_rate: Rate,
+    /// The file's frames are unevenly spaced (common in game recordings).
+    /// Frames are then placed by their timestamps.
+    #[serde(default)]
+    pub variable_frame_rate: bool,
     /// Clockwise turn to show the picture upright: 0, 90, 180 or 270.
     pub rotation: u16,
 }

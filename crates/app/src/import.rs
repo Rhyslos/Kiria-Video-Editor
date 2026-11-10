@@ -125,6 +125,12 @@ pub fn summary(media: &MediaRef) -> String {
         };
         parts.push(match media.kind {
             MediaKind::Image => format!("{w}×{h} picture"),
+            _ if v.variable_frame_rate => format!(
+                "{size} {} {} (variable frame rate, shown at {} fps)",
+                v.frame_rate.nominal_fps(),
+                v.codec,
+                v.frame_rate
+            ),
             _ => format!("{size} {} {}", v.frame_rate.nominal_fps(), v.codec),
         });
     }
@@ -164,6 +170,7 @@ mod tests {
                     height: 1440,
                     frame_rate: Rate::FPS_60,
                     rotation: 0,
+                    variable_frame_rate: false,
                 }),
                 audio: audio
                     .iter()

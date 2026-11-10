@@ -110,6 +110,51 @@ impl Input {
         (d > 0 && d != ff::AV_NOPTS_VALUE).then_some(d)
     }
 
+    /// Presentation times (seconds) of the packets of `stream` from about
+    /// `from` seconds on, for up to `span` seconds of file. Reads packets only;
+    /// nothing is decoded. Empty when the file can't be read there.
+    pub fn packet_times(&self, stream: u32, from: f64, span: f64) -> Vec<f64> {
+        let ctx = self.ctx();
+        if stream >= ctx.nb_streams {
+            return Vec::new();
+        }
+        // SAFETY: the index was checked against `nb_streams`; stream pointers
+        // stay valid while the input is open.
+        let tb = unsafe { (**ctx.streams.add(stream as usize)).time_base };
+        if tb.num <= 0 || tb.den <= 0 {
+            return Vec::new();
+        }
+        let tb = f64::from(tb.num) / f64::from(tb.den);
+        let mut times = Vec::new();
+        // SAFETY: the packet is allocated here, filled by av_read_frame,
+        // unreferenced after each use and freed before returning; the format
+        // context is valid and only this thread uses it.
+        unsafe {
+            let target = (from / tb) as i64;
+            let _ = ff::av_seek_frame(self.ctx, stream as i32, target, ff::AVSEEK_FLAG_BACKWARD);
+            let mut packet = ff::av_packet_alloc();
+            if packet.is_null() {
+                return times;
+            }
+            let mut first: Option<f64> = None;
+            while ff::av_read_frame(self.ctx, packet) >= 0 {
+                let p = &*packet;
+                if p.stream_index as u32 == stream && p.pts != ff::AV_NOPTS_VALUE {
+                    let t = p.pts as f64 * tb;
+                    let start = *first.get_or_insert(t);
+                    if t - start > span {
+                        ff::av_packet_unref(packet);
+                        break;
+                    }
+                    times.push(t);
+                }
+                ff::av_packet_unref(packet);
+            }
+            ff::av_packet_free(&mut packet);
+        }
+        times
+    }
+
     pub fn streams(&self) -> Vec<Stream<'_>> {
         let ctx = self.ctx();
         (0..ctx.nb_streams as usize)
