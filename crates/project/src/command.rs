@@ -5,7 +5,7 @@
 //! written to the autosave journal and replayed after a crash.
 
 use crate::ids::{ClipId, LabelId, LinkId, MediaId, SequenceId, TrackId};
-use crate::model::{Clip, MediaRef, Project, Region, Sequence, TimelineLabel, Track, TrackKind};
+use crate::model::{Clip, MediaKind, MediaRef, Project, Region, Sequence, TimelineLabel, Track, TrackKind};
 use crate::time::Time;
 use diag::AppError;
 use serde::{Deserialize, Serialize};
@@ -17,6 +17,14 @@ pub enum Command {
         name: String,
     },
     AddMedia {
+        media: MediaRef,
+    },
+    /// Adds a media file and places it at the end of the timeline as one step:
+    /// its picture on the first video track and each sound stream on its own
+    /// audio track (made when missing, named after the stream), all linked.
+    /// The media's `id` is ignored and a new one is given.
+    Import {
+        sequence: SequenceId,
         media: MediaRef,
     },
     AddTrack {
@@ -84,6 +92,7 @@ impl Command {
                 let id: MediaId = p.allocate_id();
                 p.media.insert(id, MediaRef { id, ..media.clone() });
             }
+            Command::Import { sequence, media } => import(&mut p, *sequence, media)?,
             Command::AddTrack { sequence, kind, name } => {
                 let track = p.new_track(*kind, name);
                 let seq = sequence_mut(&mut p, *sequence)?;
@@ -191,6 +200,74 @@ impl Command {
         p.validate()?;
         Ok(p)
     }
+}
+
+/// How long a still image lasts when it is placed.
+pub const STILL_LENGTH: Time = Time::seconds(5);
+
+fn import(p: &mut Project, sequence: SequenceId, media: &MediaRef) -> diag::Result<()> {
+    let length = match media.kind {
+        MediaKind::Image => STILL_LENGTH,
+        MediaKind::Video | MediaKind::Audio => media.duration,
+    };
+    if length <= Time::ZERO {
+        return Err(AppError::new("This file can't be placed")
+            .why("Its length could not be read, so the app doesn't know how long the clip is.")
+            .fix("Try re-saving the file with a recording or conversion tool, then import it again."));
+    }
+    let video = media
+        .info
+        .video
+        .as_ref()
+        .filter(|_| media.kind != MediaKind::Audio);
+    let audio = if media.kind == MediaKind::Image {
+        &[][..]
+    } else {
+        &media.info.audio[..]
+    };
+    if video.is_none() && audio.is_empty() {
+        return Err(
+            AppError::new("This file has nothing to place").why("No picture or sound was found in it.")
+        );
+    }
+
+    let id: MediaId = p.allocate_id();
+    p.media.insert(id, MediaRef { id, ..media.clone() });
+    let link: Option<LinkId> = (usize::from(video.is_some()) + audio.len() > 1).then(|| p.allocate_id());
+    let at = sequence_ref(p, sequence)?.length();
+    let clip = |p: &mut Project, stream: u32| Clip {
+        id: p.allocate_id(),
+        media: id,
+        stream,
+        start: at,
+        source_in: Time::ZERO,
+        duration: length,
+        link,
+    };
+
+    if let Some(v) = video {
+        let c = clip(p, v.index);
+        if sequence_ref(p, sequence)?.video_tracks.is_empty() {
+            let track = p.new_track(TrackKind::Video, "V1");
+            sequence_mut(p, sequence)?.video_tracks.push_back(track);
+        }
+        let seq = sequence_mut(p, sequence)?;
+        insert_clip(&mut seq.video_tracks[0], c)?;
+    }
+    for (i, stream) in audio.iter().enumerate() {
+        let c = clip(p, stream.index);
+        if sequence_ref(p, sequence)?.audio_tracks.len() <= i {
+            let track = p.new_track(TrackKind::Audio, &stream.name);
+            sequence_mut(p, sequence)?.audio_tracks.push_back(track);
+        }
+        let track = &mut sequence_mut(p, sequence)?.audio_tracks[i];
+        // A track nobody has used yet takes the stream's name.
+        if track.clips.is_empty() && track.name == format!("A{}", i + 1) {
+            track.name = stream.name.clone();
+        }
+        insert_clip(track, c)?;
+    }
+    Ok(())
 }
 
 fn split(p: &mut Project, sequence: SequenceId, at: Time, only: Option<ClipId>) -> diag::Result<()> {
@@ -339,7 +416,8 @@ fn missing(thing: &str) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Fingerprint, MediaKind, SequenceSettings};
+    use crate::model::{AudioStream, Fingerprint, MediaInfo, SequenceSettings, VideoStream};
+    use crate::time::Rate;
 
     struct Fixture {
         p: Project,
@@ -361,6 +439,7 @@ mod tests {
                 },
                 kind: MediaKind::Video,
                 duration: Time::seconds(100),
+                info: MediaInfo::default(),
             },
         }
         .apply(&p)
@@ -539,5 +618,113 @@ mod tests {
         .unwrap();
         let times: Vec<_> = p.active().unwrap().labels.iter().map(|l| l.at).collect();
         assert_eq!(times, vec![Time::seconds(10), Time::seconds(30)]);
+    }
+
+    fn recording(audio: &[&str], seconds: i64) -> MediaRef {
+        MediaRef {
+            id: MediaId(0),
+            path: "match.mkv".into(),
+            fingerprint: Fingerprint {
+                size: 1,
+                sample_hash: "y".into(),
+            },
+            kind: MediaKind::Video,
+            duration: Time::seconds(seconds),
+            info: MediaInfo {
+                container: "matroska,webm".into(),
+                video: Some(VideoStream {
+                    index: 0,
+                    codec: "hevc".into(),
+                    width: 2560,
+                    height: 1440,
+                    frame_rate: Rate::FPS_60,
+                    rotation: 0,
+                }),
+                audio: audio
+                    .iter()
+                    .enumerate()
+                    .map(|(i, name)| AudioStream {
+                        index: i as u32 + 1,
+                        codec: "aac".into(),
+                        channels: 2,
+                        sample_rate: 48_000,
+                        name: (*name).into(),
+                    })
+                    .collect(),
+            },
+        }
+    }
+
+    #[test]
+    fn importing_puts_each_sound_stream_on_its_own_named_track() {
+        let p = Project::new("Test", SequenceSettings::GAME_CLIP);
+        let seq = p.active_sequence;
+        let p = Command::Import {
+            sequence: seq,
+            media: recording(&["Game", "Mic", "Voice chat"], 30),
+        }
+        .apply(&p)
+        .unwrap();
+        let s = p.active().unwrap();
+        let names: Vec<&str> = s.audio_tracks.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["Game", "Mic", "Voice chat"]);
+        assert_eq!(s.video_tracks[0].clips.len(), 1);
+        let all: Vec<&Clip> = s.tracks().flat_map(|t| t.clips.iter()).collect();
+        assert_eq!(all.len(), 4);
+        assert!(
+            all.iter().all(|c| c.link.is_some() && c.link == all[0].link),
+            "all linked"
+        );
+        let streams: Vec<u32> = s.audio_tracks.iter().map(|t| t.clips[0].stream).collect();
+        assert_eq!(streams, [1, 2, 3]);
+        assert_eq!(s.length(), Time::seconds(30));
+    }
+
+    #[test]
+    fn a_second_import_goes_after_the_first_and_keeps_track_names() {
+        let p = Project::new("Test", SequenceSettings::GAME_CLIP);
+        let seq = p.active_sequence;
+        let p = Command::Import {
+            sequence: seq,
+            media: recording(&["Game"], 30),
+        }
+        .apply(&p)
+        .unwrap();
+        let p = Command::Import {
+            sequence: seq,
+            media: recording(&["Other", "Mic"], 10),
+        }
+        .apply(&p)
+        .unwrap();
+        let s = p.active().unwrap();
+        let names: Vec<&str> = s.audio_tracks.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["Game", "Mic"], "a used track keeps its name");
+        assert_eq!(s.video_tracks[0].clips[1].start, Time::seconds(30));
+        assert_eq!(s.length(), Time::seconds(40));
+        assert_eq!(p.media.len(), 2);
+    }
+
+    #[test]
+    fn images_get_a_fixed_length_and_files_without_length_are_refused() {
+        let p = Project::new("Test", SequenceSettings::GAME_CLIP);
+        let seq = p.active_sequence;
+        let mut image = recording(&[], 0);
+        image.kind = MediaKind::Image;
+        let q = Command::Import {
+            sequence: seq,
+            media: image,
+        }
+        .apply(&p)
+        .unwrap();
+        assert_eq!(q.active().unwrap().length(), STILL_LENGTH);
+        assert!(q.active().unwrap().video_tracks[0].clips[0].link.is_none());
+
+        let err = Command::Import {
+            sequence: seq,
+            media: recording(&["Game"], 0),
+        }
+        .apply(&p)
+        .unwrap_err();
+        assert!(err.what().contains("can't be placed"));
     }
 }

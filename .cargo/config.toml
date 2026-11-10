@@ -1,2 +1,10 @@
 [alias]
 xtask = "run --quiet --package xtask --"
+
+# FFmpeg for building and running the media code: `cargo xtask ffmpeg` puts the
+# pinned build here (see packaging/ffmpeg.env).
+[env]
+FFMPEG_DIR = { value = ".ffmpeg/sdk", relative = true }
+# Finding the shared libraries when running: on Linux, debug builds of the
+# editor and the media tests carry this path (their build.rs); on Windows,
+# `cargo xtask ffmpeg` copies the DLLs beside the programs.

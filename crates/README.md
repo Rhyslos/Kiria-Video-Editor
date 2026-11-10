@@ -13,7 +13,7 @@ The Cargo workspace members. One engine with no interface, and thin pages on top
 | [updater](updater/) | Release checks, signatures, safe installs, rollback | 1 (done), 3 |
 | [project-index](project-index/) | The launcher's list of known projects and folders (SQLite) | 2 |
 | [launcher](launcher/) | Project browser and update panel (binary `launcher`) | 2 |
-| [media](media/) | Probe, demux, decode, encode (FFmpeg wrapper) | 4A |
+| [media](media/) | Probe, demux, decode, encode (FFmpeg wrapper) | 4A (probe done) |
 | [cache](cache/) | RAM, GPU and disk caches, proxies, thumbnails, waveforms | 4A |
 | [audio](audio/) | Real-time mixer, effects, meters, loudness | 4A, 8 |
 | [render](render/) | GPU compositor, colour, effects | 4 onwards |

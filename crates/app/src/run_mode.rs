@@ -9,6 +9,8 @@ pub struct Options {
     /// Open the project as last saved, setting aside unsaved work from a crash
     /// (the launcher's "Open last save"). Normally that work is recovered.
     pub open_last_save: bool,
+    /// Media files to import into the project at start (`--import <file>`, repeatable).
+    pub import: Vec<PathBuf>,
     pub mode: RunMode,
 }
 
@@ -34,6 +36,10 @@ impl Options {
                 "--smoke-test" => options.mode = RunMode::SmokeTest,
                 "--open-last-save" => options.open_last_save = true,
                 "--responsiveness-test" => options.mode = RunMode::ResponsivenessTest,
+                "--import" => {
+                    let path = args.next().ok_or("--import needs a file name")?;
+                    options.import.push(path.into());
+                }
                 "--screenshot" => {
                     let path = args.next().ok_or("--screenshot needs a file name")?;
                     options.mode = RunMode::Screenshot(path.into());
@@ -63,5 +69,8 @@ mod tests {
         assert!(parse(&["--screenshot"]).is_err());
         assert!(parse(&["--nope"]).is_err());
         assert!(parse(&["p.x", "--open-last-save"]).unwrap().open_last_save);
+        let o = parse(&["p.x", "--import", "a.mkv", "--import", "b.mp4"]).unwrap();
+        assert_eq!(o.import, [PathBuf::from("a.mkv"), PathBuf::from("b.mp4")]);
+        assert!(parse(&["--import"]).is_err());
     }
 }

@@ -12,9 +12,9 @@ Done (Phases 0.3 and 0.4): model, project file, commands, undo/redo, autosave jo
 |---|---|
 | `src/time.rs` | `Time` (exact seconds as a reduced fraction) and `Rate` (frames per second as a fraction, e.g. 30000/1001). Frame conversion, snapping, timecode |
 | `src/ids.rs` | One id type per kind of thing (`ClipId`, `TrackId`, ...). Ids come from one counter in the project and are never reused |
-| `src/model.rs` | `Project`, `Sequence` (a timeline), `Track`, `Clip`, `MediaRef` + `Fingerprint`, `TimelineLabel`, `Region`, the edit needle, and the `SequenceSettings` presets (Game clip, High frame rate, Vertical short). `Project::problems()` / `validate()` check the rules |
+| `src/model.rs` | `Project`, `Sequence` (a timeline), `Track`, `Clip`, `MediaRef` + `Fingerprint` + `MediaInfo` (the file's video and sound streams, read on import), `TimelineLabel`, `Region`, the edit needle, and the `SequenceSettings` presets (Game clip, High frame rate, Vertical short). `Project::problems()` / `validate()` check the rules |
 | `src/file.rs` | The project file: save (atomic), load, the summary block, format versions and migrations. `read_info` reads only the format version and summary (the text before the project), for project lists. `back_up_before_upgrade` keeps `<file>.backup-v<old>` before an older file is upgraded; `load_newer` reads a newer file for viewing |
-| `src/command.rs` | `Command`: every change (place, move, remove or ripple-remove, split, labels, region, edit needle, tracks, media). `apply` returns a new snapshot or an explained error and no change |
+| `src/command.rs` | `Command`: every change (import, place, move, remove or ripple-remove, split, labels, region, edit needle, tracks, media). `apply` returns a new snapshot or an explained error and no change |
 | `src/history.rs` | `History`: unlimited undo and redo as a stack of snapshots |
 | `src/document.rs` | `Document`: an open project on disk. Records every change in the autosave journal, does full saves, and recovers after a crash. Opening an older format makes a backup copy first; a newer one opens read-only (`is_read_only`: changes and saves are refused with an explanation, and nothing is written) |
 | `tests/random_edits.rs` | Property test: random edit sessions with undo/redo stay valid, and journal replay rebuilds the exact project |
@@ -32,7 +32,7 @@ RON text with the extension from `brand::PROJECT_FILE_EXTENSION`:
 
 ```ron
 (
-  format_version: 1,
+  format_version: 2,
   summary: Some((name: "...", settings: (...), length: (21, 1))),
   project: ( ... ),
 )
@@ -41,6 +41,13 @@ RON text with the extension from `brand::PROJECT_FILE_EXTENSION`:
 - **Saving** writes `.name.saving` next to the file, flushes it to disk, then renames it over the old file. A crash mid-save leaves the old file intact.
 - **The summary** lets the launcher show a project card without reading the whole project (`file::read_summary`).
 - **A newer file** is refused with an explanation instead of being misread.
+
+### Format history
+
+| Version | Change | Migration |
+|---|---|---|
+| 1 | First format | – |
+| 2 | Media entries gain `info`: the file's video and sound streams | Version number only: `info` defaults to empty |
 
 ### Changing the format
 
@@ -66,3 +73,4 @@ RON text with the extension from `brand::PROJECT_FILE_EXTENSION`:
 | Remove (`Delete`) | Removes the clip and its linked clips, leaving a gap |
 | Ripple remove (`Backspace`) | Same, and later clips on those tracks move back to close the gap |
 | Place, move | Refused with an explanation if the clip would overlap another or start before zero |
+| Import | One step: adds the file and places it at the end of the timeline, the picture on the first video track and each sound stream on its own audio track (made when missing; an unused default track takes the stream's name), all linked. Pictures last 5 seconds |

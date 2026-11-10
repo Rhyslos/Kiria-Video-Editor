@@ -12,3 +12,6 @@
 *.swp
 .DS_Store
 Thumbs.db
+
+# FFmpeg for building, fetched by `cargo xtask ffmpeg`.
+/.ffmpeg/

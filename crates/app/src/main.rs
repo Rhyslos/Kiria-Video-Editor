@@ -1,12 +1,13 @@
 //! The editor: window, pages and the start-up sequence.
 //!
-//! Usage: `editor [project file] [--open-last-save] [--smoke-test | --responsiveness-test | --screenshot <file.png>]`.
+//! Usage: `editor [project file] [--open-last-save] [--import <media file>]... [--smoke-test | --responsiveness-test | --screenshot <file.png>]`.
 //! The extra options are for automated checks; normal use needs none.
 
 // Release builds on Windows open no console window next to the editor.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod editor;
+mod import;
 mod run_mode;
 mod settings;
 
@@ -59,6 +60,7 @@ fn main() -> ExitCode {
         } else {
             project::Recovery::Recover
         },
+        import: options.import.clone(),
     });
     // If this run crashes, the launcher offers to recover this project.
     if let (Some(diagnostics), Some(project)) = (&diagnostics, &project)

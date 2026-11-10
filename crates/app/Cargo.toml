@@ -18,7 +18,9 @@ eframe = "0.37"
 egui = "0.37"
 image = { version = "0.25", default-features = false, features = ["png"] }
 jobs = { path = "../jobs" }
+media = { path = "../media" }
 project = { path = "../project" }
+rfd = "0.18"
 ron = "0.12"
 serde = { version = "1", features = ["derive"] }
 tracing = "0.1"

@@ -13,8 +13,8 @@
 
 use project::file::{self, FORMAT_VERSION};
 use project::{
-    Clip, Fingerprint, LabelColor, MediaKind, MediaRef, Project, Rate, Region, SequenceSettings, Time,
-    TimelineLabel,
+    AudioStream, Clip, Fingerprint, LabelColor, MediaInfo, MediaKind, MediaRef, Project, Rate, Region,
+    SequenceSettings, Time, TimelineLabel, VideoStream,
 };
 use std::path::{Path, PathBuf};
 
@@ -37,6 +37,33 @@ fn rich_project() -> Project {
             },
             kind: MediaKind::Video,
             duration: Time::seconds(600),
+            info: MediaInfo {
+                container: "matroska,webm".into(),
+                video: Some(VideoStream {
+                    index: 0,
+                    codec: "hevc".into(),
+                    width: 2560,
+                    height: 1440,
+                    frame_rate: Rate::NTSC_60,
+                    rotation: 0,
+                }),
+                audio: vec![
+                    AudioStream {
+                        index: 1,
+                        codec: "aac".into(),
+                        channels: 2,
+                        sample_rate: 48_000,
+                        name: "Game".into(),
+                    },
+                    AudioStream {
+                        index: 2,
+                        codec: "opus".into(),
+                        channels: 1,
+                        sample_rate: 48_000,
+                        name: "Mic".into(),
+                    },
+                ],
+            },
         },
     );
     let link = Some(p.allocate_id());
@@ -79,6 +106,20 @@ fn version_1_sample_opens() {
     assert_eq!(seq.labels[0].name, "First kill");
     assert_eq!(seq.region.map(|r| r.length()), Some(Time::seconds(30)));
     assert_eq!(seq.edit_needle, Time::seconds(81));
+    let media = project.media.values().next().expect("the sample has media");
+    assert_eq!(media.info, MediaInfo::default(), "format 1 had no stream details");
+}
+
+#[test]
+fn version_2_sample_opens_with_stream_details() {
+    let project = file::load(&sample_path(2)).expect("the version 2 sample opens");
+    let media = project.media.values().next().expect("the sample has media");
+    let names: Vec<&str> = media.info.audio.iter().map(|a| a.name.as_str()).collect();
+    assert_eq!(names, ["Game", "Mic"]);
+    assert_eq!(
+        media.info.video.as_ref().map(|v| v.display_size()),
+        Some((2560, 1440))
+    );
 }
 
 #[test]

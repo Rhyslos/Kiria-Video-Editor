@@ -1,5 +1,6 @@
 //! The editor window.
 
+use crate::import::{self, Importer, Read};
 use crate::run_mode::RunMode;
 use crate::settings::Settings;
 use diag::AppError;
@@ -32,6 +33,8 @@ pub struct Editor {
     usage: UsageMonitor,
     document: Option<Document>,
     pending_save: Option<(u64, JobHandle<()>)>,
+    importer: Importer,
+    import_requested: bool,
     show_settings: bool,
     show_diagnostics: bool,
     show_search: bool,
@@ -74,6 +77,7 @@ impl Editor {
         for problem in &startup_problems {
             errors.push(problem);
         }
+        let imports = project.as_ref().map(|p| p.import.clone()).unwrap_or_default();
         let document = project.and_then(|p| match open_or_create(&p.path, p.recovery) {
             Ok(doc) => {
                 if doc.is_read_only() {
@@ -90,6 +94,10 @@ impl Editor {
                 None
             }
         });
+        let mut importer = Importer::default();
+        if !imports.is_empty() {
+            importer.read(&jobs, &cc.egui_ctx, imports);
+        }
         Editor {
             theme: settings.theme.theme(),
             settings,
@@ -101,6 +109,8 @@ impl Editor {
             usage: UsageMonitor::start(Duration::from_secs(1)),
             document,
             pending_save: None,
+            importer,
+            import_requested: false,
             show_settings: false,
             show_diagnostics: false,
             show_search: false,
@@ -160,6 +170,9 @@ impl Editor {
                 self.show_settings = true;
                 Ok(())
             }
+            Action::Import => self.with_document(|_| Ok(())).map(|()| {
+                self.import_requested = true;
+            }),
         };
         if let Err(err) = result {
             self.errors.push(&err);
@@ -171,7 +184,46 @@ impl Editor {
             Some(document) => f(document),
             None => Err(AppError::new("No project is open")
                 .why("This needs a project.")
-                .fix("Start the editor with a project file. The launcher arrives in Phase 2.")),
+                .fix("Open a project from the launcher.")),
+        }
+    }
+
+    /// Starts imports asked for this frame and adds finished ones to the project.
+    fn imports(&mut self, ctx: &egui::Context) {
+        if std::mem::take(&mut self.import_requested) {
+            self.importer.choose_files(ctx);
+        }
+        let dropped: Vec<PathBuf> = ctx.input(|i| {
+            i.raw
+                .dropped_files
+                .iter()
+                .map(|f| f.path().to_path_buf())
+                .collect()
+        });
+        if !dropped.is_empty() {
+            match self.with_document(|_| Ok(())) {
+                Ok(()) => self.importer.read(&self.jobs, ctx, dropped),
+                Err(err) => self.errors.push(&err),
+            }
+        }
+        for read in self.importer.poll(&self.jobs, ctx) {
+            let result = match read {
+                Read::Ready(media) => {
+                    let line = import::summary(&media);
+                    self.with_document(|d| {
+                        let sequence = d.project().active_sequence;
+                        d.apply(Command::Import { sequence, media })
+                    })
+                    .map(|()| self.status = format!("Imported {line}"))
+                }
+                Read::Failed(path, err) => {
+                    tracing::info!(path = %path.display(), "import failed: {}", err.report());
+                    Err(err)
+                }
+            };
+            if let Err(err) = result {
+                self.errors.push(&err);
+            }
         }
     }
 
@@ -254,6 +306,10 @@ impl Editor {
             }
             ui.add_space(8.0);
         }
+        if self.page == Page::Edit && self.document.is_some() {
+            self.edit_page(ui);
+            return;
+        }
         let (title, coming) = match self.page {
             Page::Library => ("Library", "Media, labels and custom lists arrive in Phase 5."),
             Page::Edit => ("Edit", "The viewer and timeline arrive in Phase 4."),
@@ -287,6 +343,91 @@ impl Editor {
         }
         if !self.status.is_empty() {
             ui.add_space(8.0);
+            ui.label(egui::RichText::new(&self.status).color(self.theme.text_secondary));
+        }
+    }
+
+    /// The Edit page until the viewer and the timeline widget arrive: import,
+    /// and a plain list of what is on the timeline.
+    fn edit_page(&mut self, ui: &mut egui::Ui) {
+        let shortcut = self
+            .shortcuts
+            .shortcut_for(Action::Import)
+            .map_or_else(String::new, |s| s.label());
+        ui.horizontal(|ui| {
+            let button = ui_kit::accent_button(ui, &self.theme, "Import media…").on_hover_text(&shortcut);
+            if button.clicked() {
+                self.run_action(Action::Import);
+            }
+            let busy = self.importer.busy();
+            if busy > 0 {
+                ui.spinner();
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Reading {busy} file{}…",
+                        if busy == 1 { "" } else { "s" }
+                    ))
+                    .color(self.theme.text_secondary),
+                );
+            }
+        });
+        ui.add_space(12.0);
+        let Some(document) = &self.document else { return };
+        let p = document.project();
+        let Some(seq) = p.active() else { return };
+        let rate = seq.settings.frame_rate;
+        if seq.length() == project::Time::ZERO {
+            ui.add_space(40.0);
+            ui.vertical_centered(|ui| {
+                ui.label(egui::RichText::new("Nothing here yet").family(ui_kit::fonts::semibold()).size(18.0));
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Drop recordings on the window, or press {shortcut} to import them. Each file goes at the end of the timeline, with every sound stream on its own track."
+                    ))
+                    .color(self.theme.muted),
+                );
+            });
+        } else {
+            ui.label(
+                egui::RichText::new(format!("{} · {} long", seq.name, seq.length().timecode(rate)))
+                    .family(ui_kit::fonts::semibold()),
+            );
+            ui.label(egui::RichText::new("A plain list until the timeline arrives.").color(self.theme.muted));
+            ui.add_space(6.0);
+            egui::Grid::new("tracks")
+                .striped(true)
+                .spacing([16.0, 6.0])
+                .show(ui, |ui| {
+                    for track in seq.tracks() {
+                        ui.label(egui::RichText::new(&track.name).family(ui_kit::fonts::semibold()));
+                        let clips: Vec<String> = track
+                            .clips
+                            .iter()
+                            .map(|c| {
+                                let name = p
+                                    .media
+                                    .get(&c.media)
+                                    .and_then(|m| m.path.file_name())
+                                    .map_or_else(|| "missing".into(), |n| n.to_string_lossy().into_owned());
+                                format!("{name}  {}–{}", c.start.timecode(rate), c.end().timecode(rate))
+                            })
+                            .collect();
+                        if clips.is_empty() {
+                            ui.label(egui::RichText::new("empty").color(self.theme.faint));
+                        } else {
+                            ui.label(clips.join("    "));
+                        }
+                        ui.end_row();
+                    }
+                });
+            ui.add_space(16.0);
+            ui.label(egui::RichText::new("Media in this project").family(ui_kit::fonts::semibold()));
+            for media in p.media.values() {
+                ui.label(egui::RichText::new(import::summary(media)).color(self.theme.text_secondary));
+            }
+        }
+        if !self.status.is_empty() {
+            ui.add_space(12.0);
             ui.label(egui::RichText::new(&self.status).color(self.theme.text_secondary));
         }
     }
@@ -504,6 +645,7 @@ impl eframe::App for Editor {
         for action in self.shortcuts.pressed(&ctx) {
             self.run_action(action);
         }
+        self.imports(&ctx);
         self.autosave(now, idle);
 
         egui::Panel::top("top-bar")
@@ -575,6 +717,8 @@ pub struct ProjectToOpen {
     pub path: PathBuf,
     /// The launcher asks; the editor on its own always recovers.
     pub recovery: Recovery,
+    /// Media files to import once it is open.
+    pub import: Vec<PathBuf>,
 }
 
 /// Opens a project, or creates it if it doesn't exist.

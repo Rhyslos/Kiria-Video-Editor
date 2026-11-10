@@ -21,8 +21,8 @@ pub use document::{Document, OpenCheck, Recovery};
 pub use history::History;
 pub use ids::{ClipId, LabelId, LinkId, MediaId, SequenceId, TrackId};
 pub use model::{
-    Clip, Fingerprint, LabelColor, MediaKind, MediaRef, Project, Region, Sequence, SequenceSettings,
-    TimelineLabel, Track, TrackKind,
+    AudioStream, Clip, Fingerprint, LabelColor, MediaInfo, MediaKind, MediaRef, Project, Region, Sequence,
+    SequenceSettings, TimelineLabel, Track, TrackKind, VideoStream,
 };
 pub use time::{Rate, Time};
 

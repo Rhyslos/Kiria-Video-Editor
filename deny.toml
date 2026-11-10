@@ -23,6 +23,8 @@ exceptions = [
     { allow = ["OFL-1.1", "Ubuntu-font-1.0"], crate = "epaint_default_fonts" },
     # The list of trusted certificate authorities used for HTTPS update checks is data under a permissive data licence.
     { allow = ["CDLA-Permissive-2.0"], crate = "webpki-roots" },
+    # The FFmpeg bindings: a permissive licence the Free Software Foundation lists as GPL-compatible.
+    { allow = ["WTFPL"], crate = "ffmpeg-sys-next" },
 ]
 # Our own crates are not published to crates.io.
 private = { ignore = true }
