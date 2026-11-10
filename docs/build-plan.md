@@ -146,11 +146,11 @@ Phase 0 builds everything later phases stand on and that is painful to add after
 
 **0.3 Project model (`project`)**
 
-- [ ] Data types: Project, Sequence, Track (video/audio), Clip, MediaRef (path + fingerprint), TimelineLabel, Region, edit needle position.
-- [ ] Time as rational numbers (`frames / rate`), never floats; frame-rate conversion helpers.
-- [ ] Persistent data structures (`im`) so a snapshot is a cheap clone.
-- [ ] Project file: RON with a `format_version` field from day one, written atomically (temp file, then rename).
-- [ ] Migration framework: one function per version step, tested with a stored v1 sample file.
+- [x] Data types: Project, Sequence, Track (video/audio), Clip, MediaRef (path + fingerprint), TimelineLabel, Region, edit needle position.
+- [x] Time as rational numbers (`frames / rate`), never floats; frame-rate conversion helpers.
+- [x] Persistent data structures (`imbl`) so a snapshot is a cheap clone.
+- [x] Project file: RON with a `format_version` field from day one, written atomically (temp file, then rename).
+- [x] Migration framework: one function per version step, tested with a stored v1 sample file.
 
 **0.4 Commands, undo and autosave (`project`)**
 

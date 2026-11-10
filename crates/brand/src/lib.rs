@@ -14,6 +14,9 @@ pub const APP_SHORT_NAME: &str = APP_NAME;
 /// desktop entries, app data folders on some platforms).
 pub const APP_ID: &str = "io.github.rhyslos.kiria";
 
+/// File extension for project files, without the dot.
+pub const PROJECT_FILE_EXTENSION: &str = "kiria";
+
 /// Folder name under the user's data and cache directories.
 pub const DATA_DIR_NAME: &str = APP_NAME;
 

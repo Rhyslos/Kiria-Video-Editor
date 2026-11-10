@@ -9,4 +9,6 @@ Name files `NNNN-short-title.md` (for example `0001-store-time-as-fractions.md`)
 - **Why:** what made this the right call.
 - **Instead of:** what was considered and dropped.
 
-No decisions recorded yet.
+| # | Decision |
+|---|---|
+| [0001](0001-project-model-libraries-and-migrations.md) | Project model uses `imbl`; file migrations work on text |

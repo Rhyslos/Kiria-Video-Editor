@@ -101,7 +101,7 @@ The editor is a Rust workspace of small crates around one UI-free engine. The UI
 | Inference | `ort` (ONNX Runtime) with CUDA, DirectML and CoreML providers | Runs segmentation models on the GPU on every platform |
 | Parallel work | `rayon` thread pools with configurable size, `crossbeam` channels | Directly maps to the CPU allocation setting |
 | Data | `rusqlite` for library and search, versioned RON files for the timeline | Library queries stay fast at thousands of clips; timeline files stay diffable |
-| State | Persistent data structures (`im`) | Cheap snapshots make undo, autosave and background rendering safe |
+| State | Persistent data structures (`imbl`) | Cheap snapshots make undo, autosave and background rendering safe |
 | Search | `nucleo` fuzzy matcher | Instant ranking across clips, commands and settings |
 
 ### How playback works
