@@ -7,7 +7,7 @@
 //! newer version in the background and, with automatic updates on, downloads
 //! and verifies it; installing it arrives in Phase 3.
 //!
-//! Usage: `launcher [project file] [--no-update-check] [--smoke-test | --screenshot <file.png>] [--demo <count>]`.
+//! Usage: `launcher [project file] [--no-update-check] [--smoke-test | --screenshot <file.png>] [--demo <count>] [--update-window <available | downloading | ready>]`.
 
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
@@ -181,6 +181,7 @@ fn browse(data_dir: std::path::PathBuf, options: Options, notes: Vec<Note>) -> E
         handoff: Arc::clone(&handoff),
         notes,
         restart: Arc::clone(&restart),
+        update_preview: options.update_window,
     };
     let window_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

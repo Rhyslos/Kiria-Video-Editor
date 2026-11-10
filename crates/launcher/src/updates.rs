@@ -1,11 +1,17 @@
-//! The version panel at the bottom left: checking, downloading, skipping and
-//! the Automatic updates tick box. The network work runs on worker threads.
+//! Updates in the launcher: the version panel at the bottom left and the
+//! update window that opens when a new version is found.
+//!
+//! The window walks through three steps: "Update available" (Download or
+//! Skip this version), a download bar, then "Update ready" (Restart now or
+//! Later). With automatic updates on it opens straight at the download bar.
+//! Closing it never cancels anything; the version panel keeps the same
+//! choices. The network work runs on worker threads.
 
 use crate::work::{Poll, Task};
 use egui::RichText;
 use std::path::PathBuf;
 use ui_kit::{Theme, status};
-use updater::{Channel, CheckResult, ReadyUpdate, Release, UpdatePrefs};
+use updater::{Channel, CheckResult, Progress, ReadyUpdate, Release, UpdatePrefs};
 
 /// Where the update check has got to.
 #[derive(Debug, Clone, PartialEq)]
@@ -37,6 +43,10 @@ pub struct Updates {
     state: UpdateState,
     task: Option<Task<Message>>,
     problem: Option<diag::AppError>,
+    /// The running (or last) download's progress.
+    progress: Progress,
+    /// Whether the update window is open.
+    window_open: bool,
 }
 
 impl std::fmt::Debug for Updates {
@@ -58,6 +68,8 @@ impl Updates {
             state: UpdateState::NotChecking,
             task: None,
             problem: None,
+            progress: Progress::new(),
+            window_open: false,
         };
         if check {
             updates.check(ctx);
@@ -85,9 +97,18 @@ impl Updates {
     fn download(&mut self, ctx: &egui::Context, release: Release) {
         let downloads = self.data_dir.join("downloads");
         self.state = UpdateState::Downloading(release.version.to_string());
+        self.progress = Progress::new();
+        let progress = self.progress.clone();
         self.task = Some(Task::spawn(ctx, move || {
-            Message::Fetched(updater::fetch(&release, &downloads))
+            Message::Fetched(updater::fetch_with_progress(&release, &downloads, &progress))
         }));
+    }
+
+    fn skip(&mut self, release: &Release) {
+        let version = release.version.to_string();
+        self.prefs.skipped_version = Some(version.clone());
+        self.save_prefs();
+        self.state = UpdateState::Skipped(version);
     }
 
     /// Picks up finished work. Call once per frame.
@@ -110,6 +131,7 @@ impl Updates {
             Message::Checked(Ok(CheckResult::Skipped(v))) => self.state = UpdateState::Skipped(v.to_string()),
             Message::Checked(Ok(CheckResult::Available(release))) => {
                 tracing::info!(version = %release.version, "an update is available");
+                self.window_open = true;
                 if self.prefs.automatic {
                     self.download(ctx, release);
                 } else {
@@ -123,11 +145,16 @@ impl Updates {
             Message::Fetched(Ok(ready)) => {
                 tracing::info!(version = %ready.version, package = %ready.package.display(), "update downloaded and verified");
                 self.state = UpdateState::Ready(ready.version);
+                // The restart prompt, even if the download window was hidden.
+                self.window_open = true;
             }
             Message::Fetched(Err(err)) => {
                 tracing::warn!("{}", err.report());
                 self.state = UpdateState::Failed(err.what().to_owned());
-                self.problem = Some(err);
+                // Shown in the update window if it is open, else in the error strip.
+                if !self.window_open {
+                    self.problem = Some(err);
+                }
             }
         }
     }
@@ -176,7 +203,13 @@ impl Updates {
             UpdateState::UpToDate => ("Up to date".to_owned(), theme.muted),
             UpdateState::Skipped(v) => (format!("{v} skipped"), theme.muted),
             UpdateState::Available(r) => (format!("{} available", r.version), status::WARNING),
-            UpdateState::Downloading(v) => (format!("Downloading {v}…"), theme.text_secondary),
+            UpdateState::Downloading(v) => (
+                match self.progress.fraction() {
+                    Some(f) => format!("Downloading {v}… {:.0} %", f * 100.0),
+                    None => format!("Downloading {v}…"),
+                },
+                theme.text_secondary,
+            ),
             UpdateState::Ready(v) => (format!("{v} downloaded and verified"), status::GOOD),
             UpdateState::Failed(what) => (what.clone(), theme.muted),
         };
@@ -196,10 +229,7 @@ impl Updates {
                     self.download(&ctx, release.clone());
                 }
                 if ui.button("Skip this version").clicked() {
-                    let version = release.version.to_string();
-                    self.prefs.skipped_version = Some(version.clone());
-                    self.save_prefs();
-                    self.state = UpdateState::Skipped(version);
+                    self.skip(&release);
                 }
             });
         }
@@ -218,5 +248,172 @@ impl Updates {
             }
         }
         restart
+    }
+
+    /// Opens the window at `step` with a made-up next version, for screenshots.
+    pub fn preview(&mut self, step: crate::run_mode::UpdatePreview) {
+        use crate::run_mode::UpdatePreview;
+        let next = "0.2.0".to_owned();
+        self.window_open = true;
+        self.state = match step {
+            UpdatePreview::Available => UpdateState::Available(Release {
+                version: semver::Version::new(0, 2, 0),
+                prerelease: false,
+                notes: String::new(),
+                assets: Vec::new(),
+            }),
+            UpdatePreview::Downloading => {
+                self.progress.set(41_300_000, 63_500_000);
+                UpdateState::Downloading(next)
+            }
+            UpdatePreview::Ready => UpdateState::Ready(next),
+        };
+    }
+
+    /// Draws the update window when it is open. Returns true when "Restart now" was clicked.
+    pub fn show_window(&mut self, ctx: &egui::Context, theme: &Theme) -> bool {
+        if !self.window_open {
+            return false;
+        }
+        if matches!(self.state, UpdateState::Downloading(_)) {
+            // Keep the bar moving.
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+        let mut restart = false;
+        let mut close = false;
+        let modal = ui_kit::dialog(ctx, theme, "update-window", |ui| {
+            ui.set_width(380.0);
+            match self.state.clone() {
+                UpdateState::Available(release) => {
+                    heading(ui, "Update available");
+                    body(
+                        ui,
+                        theme,
+                        &format!(
+                            "{} {} is out. You have {}.",
+                            brand::APP_NAME,
+                            release.version,
+                            self.version
+                        ),
+                    );
+                    ui.add_space(14.0);
+                    buttons(ui, |ui| {
+                        if ui_kit::accent_button(ui, theme, "Download").clicked() {
+                            self.download(ctx, release.clone());
+                        }
+                        if ui.button("Skip this version").clicked() {
+                            self.skip(&release);
+                            close = true;
+                        }
+                    });
+                }
+                UpdateState::Downloading(version) => {
+                    heading(ui, &format!("Downloading {version}"));
+                    let fraction = self.progress.fraction();
+                    let (done, total) = self.progress.bytes();
+                    let bar = egui::ProgressBar::new(fraction.unwrap_or(0.0))
+                        .fill(theme.accent)
+                        .desired_height(8.0)
+                        .corner_radius(4.0);
+                    ui.add_space(4.0);
+                    ui.add(if fraction.is_none() {
+                        bar.animate(true)
+                    } else {
+                        bar
+                    });
+                    let detail = if total > 0 {
+                        format!("{} of {} MB", mb(done), mb(total))
+                    } else {
+                        "Starting…".to_owned()
+                    };
+                    body(ui, theme, &detail);
+                    ui.add_space(10.0);
+                    buttons(ui, |ui| {
+                        if ui
+                            .button("Hide")
+                            .on_hover_text(
+                                "The download carries on; the panel at the bottom left shows how far it is.",
+                            )
+                            .clicked()
+                        {
+                            close = true;
+                        }
+                    });
+                }
+                UpdateState::Ready(version) => {
+                    heading(ui, "Update ready");
+                    body(
+                        ui,
+                        theme,
+                        &format!("{version} is downloaded and checked. Restart to start using it."),
+                    );
+                    ui.add_space(14.0);
+                    buttons(ui, |ui| {
+                        if ui_kit::accent_button(ui, theme, "Restart now").clicked() {
+                            restart = true;
+                        }
+                        if ui
+                            .button("Later")
+                            .on_hover_text("It installs the next time you open the app.")
+                            .clicked()
+                        {
+                            close = true;
+                        }
+                    });
+                }
+                UpdateState::Failed(what) => {
+                    heading(ui, "The update didn't finish");
+                    body(
+                        ui,
+                        theme,
+                        &format!("{what} Nothing changed; the app tries again next time."),
+                    );
+                    ui.add_space(14.0);
+                    buttons(ui, |ui| {
+                        if ui.button("Close").clicked() {
+                            close = true;
+                        }
+                    });
+                }
+                UpdateState::NotChecking
+                | UpdateState::Checking
+                | UpdateState::UpToDate
+                | UpdateState::Skipped(_) => close = true,
+            }
+        });
+        if close || modal.should_close() {
+            self.window_open = false;
+        }
+        restart
+    }
+}
+
+fn heading(ui: &mut egui::Ui, text: &str) {
+    ui.label(RichText::new(text).family(ui_kit::fonts::semibold()).size(16.0));
+    ui.add_space(6.0);
+}
+
+fn body(ui: &mut egui::Ui, theme: &Theme, text: &str) {
+    ui.label(RichText::new(text).color(theme.text_secondary));
+}
+
+/// Buttons on the right, main action first (rightmost).
+fn buttons(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), add);
+}
+
+/// Bytes as megabytes with one decimal.
+fn mb(bytes: u64) -> String {
+    format!("{:.1}", bytes as f64 / 1_000_000.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn megabytes_read_naturally() {
+        assert_eq!(mb(0), "0.0");
+        assert_eq!(mb(63_500_000), "63.5");
     }
 }

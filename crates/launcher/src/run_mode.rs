@@ -10,6 +10,16 @@ pub struct Options {
     pub mode: RunMode,
     /// Fill a temporary data folder with this many sample projects (screenshots and scroll tests).
     pub demo: Option<usize>,
+    /// Open the update window at this step with a sample version (screenshots).
+    pub update_window: Option<UpdatePreview>,
+}
+
+/// A step of the update window to show with sample numbers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdatePreview {
+    Available,
+    Downloading,
+    Ready,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -45,6 +55,18 @@ impl Options {
                     options.demo = Some(count);
                     options.check_updates = false;
                 }
+                "--update-window" => {
+                    let step = args
+                        .next()
+                        .ok_or("--update-window needs available, downloading or ready")?;
+                    options.update_window = Some(match step.as_str() {
+                        "available" => UpdatePreview::Available,
+                        "downloading" => UpdatePreview::Downloading,
+                        "ready" => UpdatePreview::Ready,
+                        other => return Err(format!("--update-window: unknown step {other}")),
+                    });
+                    options.check_updates = false;
+                }
                 other if other.starts_with("--") => return Err(format!("unknown option {other}")),
                 path => options.project = Some(path.into()),
             }
@@ -72,6 +94,10 @@ mod tests {
         assert_eq!(o.demo, Some(200));
         assert_eq!(o.mode, RunMode::Screenshot("s.png".into()));
         assert!(parse(&["--demo", "many"]).is_err());
+        let o = parse(&["--update-window", "downloading"]).unwrap();
+        assert_eq!(o.update_window, Some(UpdatePreview::Downloading));
+        assert!(!o.check_updates);
+        assert!(parse(&["--update-window", "later"]).is_err());
         assert!(parse(&["--nope"]).is_err());
     }
 }

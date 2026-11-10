@@ -86,7 +86,7 @@ impl NewProjectDialog {
     /// Draws the dialog. `folders` are the project folders to choose from.
     pub fn show(&mut self, ctx: &egui::Context, theme: &Theme, folders: &[PathBuf]) -> Option<Choice> {
         let mut choice = None;
-        let modal = egui::Modal::new(egui::Id::unique("new-project")).show(ctx, |ui| {
+        let modal = ui_kit::dialog(ctx, theme, "new-project", |ui| {
             ui.set_width(420.0);
             ui.label(
                 RichText::new("New project")

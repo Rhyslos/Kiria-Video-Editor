@@ -1,7 +1,7 @@
 //! Fetching a whole update: the signed manifest first, then the package,
 //! each checked before the next step.
 
-use crate::download::download;
+use crate::download::{Progress, download_with_progress};
 use crate::manifest::{Manifest, RELEASE_PUBLIC_KEY, tampered};
 use crate::release::Release;
 use diag::{AppError, Explain};
@@ -23,6 +23,15 @@ pub struct ReadyUpdate {
 
 /// Downloads `release` into `<downloads>/<version>/` and verifies everything.
 pub fn fetch(release: &Release, downloads: &Path) -> diag::Result<ReadyUpdate> {
+    fetch_with_progress(release, downloads, &Progress::new())
+}
+
+/// [`fetch`], reporting the package download to `progress`.
+pub fn fetch_with_progress(
+    release: &Release,
+    downloads: &Path,
+    progress: &Progress,
+) -> diag::Result<ReadyUpdate> {
     let version = release.version.to_string();
     let dir = downloads.join(&version);
     let manifest_bytes = small_asset(release, MANIFEST_NAME)?;
@@ -44,7 +53,7 @@ pub fn fetch(release: &Release, downloads: &Path) -> diag::Result<ReadyUpdate> {
     let name = crate::package_name(&version);
     let entry = manifest.file(&name).ok_or_else(|| missing(&name))?;
     let asset = release.asset(&name).ok_or_else(|| missing(&name))?;
-    let package = download(&asset.url, &dir, entry)?;
+    let package = download_with_progress(&asset.url, &dir, entry, progress)?;
     Ok(ReadyUpdate {
         version,
         package,
