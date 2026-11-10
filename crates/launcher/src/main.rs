@@ -18,7 +18,8 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let check_updates = !args.iter().any(|a| a == "--no-update-check");
-    let editor_args: Vec<&String> = args.iter().filter(|a| !a.starts_with("--")).collect();
+    // Everything else (a project file, test options) is passed on to the editor.
+    let editor_args: Vec<&String> = args.iter().filter(|a| *a != "--no-update-check").collect();
 
     let helper = diag::start_helper("launcher");
     let (dirs, _log) = match helper {
