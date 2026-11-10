@@ -6,6 +6,10 @@ Every release is built, tested, signed and published by GitHub Actions. Starting
 
 Every pull request runs the same Release workflow without publishing anything. Its run page has a `windows` artifact (the installer and update package) and a `linux` artifact (the AppImage) for trying the change before it is merged.
 
+## Automatic betas
+
+Every push to `main` (except documentation-only changes) publishes a beta release with no manual step: version `<next patch>-beta.<run number>`, for example `0.1.1-beta.12` after `0.1.0`. Beta builds follow betas by themselves, so a copy installed from a beta picks up every merged feature on its next start. Stable copies only see betas when *Betas too* is chosen in the launcher's settings.
+
 ## Version numbers
 
 - `0.x.y` until version 1.0. Raise `y` for fixes, `x` for new features.

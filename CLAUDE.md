@@ -13,7 +13,7 @@ A fast, light, native video editor written in Rust. A hobby project, open source
 ## How we work together
 
 - **Chores happen directly:** fixing CI, dependency and tooling updates, documentation, merging finished pull requests. Commit to `main` (or merge) without asking.
-- **Features come as pull requests, one feature each.** The description says what the feature does, how to try it in the app step by step, and what is not done yet. Every pull request builds a test installer (the Release workflow's `windows` artifact); the description links to it. The owner tests and merges; the pull requests double as a guided tour of the app.
+- **Features come as pull requests, one feature each.** The description says what the feature does, how to try it in the app step by step, and what is not done yet. Every pull request builds a test installer (the Release workflow's `windows` artifact). The owner may ask to merge first and test through the update: every push to `main` publishes an automatic beta that installed beta copies install by themselves. Merged pull requests keep their test steps. The pull requests double as a guided tour of the app.
 - **Releases:** when asked to release, bump the version and `CHANGELOG.md` (a small pull request or a direct commit), then start the Release workflow with the new tag. The workflow publishes on its own once everything passes.
 
 ## Working rules
@@ -73,6 +73,6 @@ cargo xtask check-media
 - Time is stored as exact fractions (frames over rate), never floats.
 - The project file is versioned from its first commit; every format change gets a migration and a stored sample.
 - FFmpeg is linked dynamically and its licence text ships with the app.
-- Every program calls `diag::start(env!("CARGO_PKG_VERSION"))` first and `finish()` on a clean exit (logging, crash reports, crash detection).
-- Releases are tagged `vX.Y.Z` (pushed, or typed into "Run workflow"); the release workflow builds, tests, signs and publishes. Updates are trusted only with a valid signature from the `RELEASE_SIGNING_KEY` secret.
+- Every program calls `diag::start(brand::VERSION)` first and `finish()` on a clean exit (logging, crash reports, crash detection).
+- Releases are tagged `vX.Y.Z` (pushed, or typed into "Run workflow"); the release workflow builds, tests, signs and publishes. Pushes to `main` publish automatic betas (`brand::VERSION` comes from `BUILD_VERSION` then). Updates are trusted only with a valid signature from the `RELEASE_SIGNING_KEY` secret.
 - Licence: GPL-3.0-or-later (`LICENSE`). Dependencies must have GPL-compatible licences; `deny.toml` checks this in CI. Never copy code whose licence is incompatible.

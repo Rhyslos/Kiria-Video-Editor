@@ -88,9 +88,11 @@ pub fn decide(current: &str, prefs: &UpdatePrefs, github_json: &str) -> diag::Re
     })?;
     let releases: Vec<GithubRelease> = serde_json::from_str(github_json)
         .or_explain(|| unreachable_server("GitHub's answer could not be read."))?;
+    // A beta build keeps following betas, whatever the channel setting says.
+    let betas = prefs.channel == Channel::Beta || !current.pre.is_empty();
     let newest = releases
         .into_iter()
-        .filter(|r| !r.draft && (prefs.channel == Channel::Beta || !r.prerelease))
+        .filter(|r| !r.draft && (betas || !r.prerelease))
         .filter_map(|r| {
             let version = Version::parse(r.tag_name.trim_start_matches('v')).ok()?;
             Some(Release {
@@ -172,6 +174,16 @@ mod tests {
             ..UpdatePrefs::default()
         };
         let CheckResult::Available(release) = decide("0.1.0", &prefs, RELEASES).unwrap() else {
+            panic!()
+        };
+        assert_eq!(release.version.to_string(), "0.3.0-beta.1");
+    }
+
+    #[test]
+    fn a_beta_build_follows_betas_on_the_stable_channel() {
+        let CheckResult::Available(release) =
+            decide("0.1.1-beta.3", &UpdatePrefs::default(), RELEASES).unwrap()
+        else {
             panic!()
         };
         assert_eq!(release.version.to_string(), "0.3.0-beta.1");

@@ -17,7 +17,10 @@ semver = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
+tracing = "0.1"
 ureq = "3"
+# Unpacking update packages (only the decompressor the packages use).
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [dev-dependencies]
 tempfile = "3"

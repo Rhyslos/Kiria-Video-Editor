@@ -1,5 +1,5 @@
 # Builds the Windows install layout in $Stage:
-#   launcher.exe, current, versions/<version>/{editor.exe, FFmpeg DLLs, licenses/}
+#   launcher.exe, current, versions/<version>/{editor.exe, launcher.exe, FFmpeg DLLs, licenses/}
 # and the update package <name>-<version>-windows-x64.zip (the versions/<version> folder).
 #
 # Run from the repository root after `cargo build --release -p app -p launcher`.
@@ -22,6 +22,8 @@ New-Item -ItemType Directory -Force $licenses, $Out | Out-Null
 
 Copy-Item target/release/launcher.exe $Stage
 Copy-Item target/release/editor.exe $versionDir
+# A copy of the launcher travels in every version, so an update can replace the installed one.
+Copy-Item target/release/launcher.exe $versionDir
 Set-Content -NoNewline -Path (Join-Path $Stage "current") -Value $version
 
 # FFmpeg: shared libraries and licence.

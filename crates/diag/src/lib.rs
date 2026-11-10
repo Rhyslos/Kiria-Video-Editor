@@ -33,7 +33,7 @@ pub struct Diagnostics {
 
 /// Sets up the data folders, logging, the crash handler and session tracking.
 ///
-/// `app_version` is the caller's version, usually `env!("CARGO_PKG_VERSION")`.
+/// `app_version` is the caller's version, usually `brand::VERSION`.
 pub fn start(app_version: &'static str) -> Result<Diagnostics> {
     let dirs = AppDirs::locate()?;
     dirs.create()?;

@@ -4,11 +4,12 @@ The small program the Start menu and desktop shortcuts open: the project browser
 
 ## Status
 
-Phase 2 in progress. Done: the project browser (folder tree, project grid, search, Open…, New project with presets, rename, move, remove from list) and the version panel (check, Update, Skip this version, Automatic updates). Still to come: missing-media checks with relinking, the crash-recovery prompt, real thumbnails. Installing a downloaded update arrives in Phase 3.
+Phase 2 in progress. Done: the project browser (folder tree, project grid, search, Open…, New project with presets, rename, move, remove from list) and the version panel (check, Update, Skip this version, Automatic updates). Updates install themselves: a verified download is installed the next time the launcher starts, or at once with "Restart to update". Still to come: missing-media checks with relinking, the crash-recovery prompt, real thumbnails, and rolling back a version that fails to start (Phase 3).
 
 ## Behaviour
 
 1. Logs to `<data folder>/logs/launcher.<date>.log` (no crash detection; that belongs to the editor).
+1. In an installed copy, installs an update downloaded on an earlier run (`updater::apply`), checking its signature and checksum again first. If the new version brings a newer launcher, that is swapped in and started instead, with the same arguments. The window then says "Updated to x.y.z"; a failure is shown in the error strip and the old version keeps working.
 2. With a project file as argument (`launcher trip.kiria`), starts the editor with it at once, lists it for next time and checks for updates. Being offline never delays this.
 3. Otherwise opens the browser window:
    - **Top bar** from `ui-kit` (`TitleBar`): logo and name centred, settings on the right.

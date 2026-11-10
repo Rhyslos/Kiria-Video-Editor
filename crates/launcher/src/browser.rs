@@ -62,6 +62,10 @@ pub struct Start {
     pub report: Arc<Mutex<RunReport>>,
     /// Receives the version panel when the window closes, so a running download can finish.
     pub handoff: Arc<Mutex<Option<Updates>>>,
+    /// Things that happened before the window opened (an update was installed, or failed).
+    pub notes: Vec<crate::Note>,
+    /// Set when the person asks to restart into a downloaded update.
+    pub restart: Arc<AtomicBool>,
 }
 
 pub struct Browser {
@@ -91,6 +95,7 @@ pub struct Browser {
     frames: u64,
     report: Arc<Mutex<RunReport>>,
     handoff: Arc<Mutex<Option<Updates>>>,
+    restart: Arc<AtomicBool>,
     screenshot_requested: bool,
     screenshot_saved: Arc<AtomicBool>,
 }
@@ -145,9 +150,18 @@ impl Browser {
             frames: 0,
             report: start.report,
             handoff: start.handoff,
+            restart: start.restart,
             screenshot_requested: false,
             screenshot_saved: Arc::new(AtomicBool::new(false)),
         };
+        for note in start.notes {
+            match note {
+                crate::Note::Updated(version) => {
+                    browser.status = format!("Updated to {version}.");
+                }
+                crate::Note::Problem(err) => browser.errors.push(&err),
+            }
+        }
         browser.add_default_folder();
         browser.reload();
         browser.start_refresh(ctx);
@@ -433,8 +447,12 @@ impl Browser {
         ui.scope_builder(
             egui::UiBuilder::new().max_rect(version_rect.shrink2(egui::vec2(16.0, 14.0))),
             |ui| {
-                if let Some(updates) = &mut self.updates {
-                    updates.show(ui, &self.theme);
+                if let Some(updates) = &mut self.updates
+                    && updates.show(ui, &self.theme)
+                {
+                    // The new version installs as the launcher starts again.
+                    self.restart.store(true, Ordering::Relaxed);
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                 }
             },
         );

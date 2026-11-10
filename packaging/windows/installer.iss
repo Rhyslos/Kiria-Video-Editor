@@ -52,3 +52,5 @@ Filename: "{app}\launcher.exe"; Description: "Start {#AppName}"; Flags: nowait p
 ; Versions installed later by the updater are removed too. Projects and settings are never touched.
 Type: filesandordirs; Name: "{app}\versions"
 Type: files; Name: "{app}\current"
+Type: files; Name: "{app}\current.new"
+Type: files; Name: "{app}\launcher.old.exe"

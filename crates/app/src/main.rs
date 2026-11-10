@@ -25,7 +25,7 @@ fn main() -> ExitCode {
         }
     };
 
-    let diagnostics = match diag::start(env!("CARGO_PKG_VERSION")) {
+    let diagnostics = match diag::start(brand::VERSION) {
         Ok(diagnostics) => Some(diagnostics),
         Err(err) => {
             eprintln!("{}", err.report());
