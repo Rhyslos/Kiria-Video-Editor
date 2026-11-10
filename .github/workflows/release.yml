@@ -7,9 +7,16 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to draft, e.g. v0.1.0 (leave empty for a test run without a release)"
+        required: false
+        default: ""
 
 env:
   CARGO_TERM_COLOR: always
+  # The release tag: the pushed tag, or the one typed when starting the workflow by hand.
+  RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag }}
 
 jobs:
   windows:
@@ -24,10 +31,10 @@ jobs:
         shell: pwsh
         run: cargo xtask brand | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
       - name: Version matches the tag
-        if: startsWith(github.ref, 'refs/tags/')
+        if: env.RELEASE_TAG != ''
         shell: pwsh
         run: |
-          $tag = "${{ github.ref_name }}".TrimStart('v')
+          $tag = "$env:RELEASE_TAG".TrimStart('v')
           if ($tag -ne $env:APP_VERSION) { throw "The tag says $tag but Cargo.toml says $env:APP_VERSION. Bump the version first (RELEASING.md)." }
       - name: Build
         run: cargo build --release -p app -p launcher
@@ -111,18 +118,19 @@ jobs:
           RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
         run: |
           cargo xtask manifest dist/manifest.json "$APP_VERSION" dist/*.zip dist/*.AppImage dist/*.exe
-          if [ -z "$RELEASE_SIGNING_KEY" ] && [ "${{ github.ref_type }}" != "tag" ]; then
+          if [ -z "$RELEASE_SIGNING_KEY" ] && [ -z "$RELEASE_TAG" ]; then
             echo "::warning::RELEASE_SIGNING_KEY is not set; a test run skips signing. A tagged release fails without it."
             exit 0
           fi
           cargo xtask sign dist/manifest.json
           cargo xtask verify dist/manifest.json
       - name: Draft the release
-        if: startsWith(github.ref, 'refs/tags/')
+        if: env.RELEASE_TAG != ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           prerelease=""
           case "$APP_VERSION" in *-*) prerelease="--prerelease" ;; esac
-          gh release create "${{ github.ref_name }}" --draft $prerelease \
+          # For a hand-started run the tag is created on this commit when the draft is published.
+          gh release create "$RELEASE_TAG" --draft $prerelease --target "${{ github.sha }}" \
             --title "$APP_NAME $APP_VERSION" --notes-file CHANGELOG.md dist/*

@@ -13,8 +13,10 @@ Every release is built, tested, signed and drafted by GitHub Actions. Publishing
 1. Set `version` under `[workspace.package]` in `Cargo.toml` to the new version and commit.
 2. Add a section for it at the top of `CHANGELOG.md`: what changed, in plain words.
 3. Check that CI is green on `main`.
-4. Tag and push: `git tag v0.1.0 && git push origin v0.1.0`.
-5. Wait for the **Release** workflow. It:
+4. Start the release, either way:
+   - push a tag: `git tag v0.1.0 && git push origin v0.1.0`, or
+   - on GitHub: **Actions** → **Release** → **Run workflow**, type the tag (`v0.1.0`) and run it.
+5. Wait for the **Release** workflow (about 15 minutes). It:
    - builds the editor and launcher for Windows and Linux,
    - bundles FFmpeg and every licence,
    - builds the Windows installer and the Linux AppImage,
