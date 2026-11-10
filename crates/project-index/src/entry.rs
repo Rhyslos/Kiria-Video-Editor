@@ -109,12 +109,24 @@ pub struct ProjectEntry {
     /// Seconds since 1970 when the file last changed.
     pub modified: Option<i64>,
     pub issue: Option<Issue>,
+    /// The timeline's settings wait for the first video imported.
+    pub automatic: bool,
 }
 
 impl ProjectEntry {
     /// The folder the project file is in.
     pub fn folder(&self) -> Option<&std::path::Path> {
         self.path.parent()
+    }
+
+    /// The settings in a few words: "1440p 60", or "Automatic" while they
+    /// wait for the first video.
+    pub fn settings_label(&self) -> Option<String> {
+        if self.automatic {
+            Some("Automatic".into())
+        } else {
+            self.settings.map(|s| s.short_label())
+        }
     }
 
     /// When it was last used: opened from here, or else changed on disk.

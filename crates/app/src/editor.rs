@@ -35,6 +35,7 @@ pub struct Editor {
     pending_save: Option<(u64, JobHandle<()>)>,
     importer: Importer,
     import_requested: bool,
+    show_timeline_settings: bool,
     show_settings: bool,
     show_diagnostics: bool,
     show_search: bool,
@@ -111,6 +112,7 @@ impl Editor {
             pending_save: None,
             importer,
             import_requested: false,
+            show_timeline_settings: false,
             show_settings: false,
             show_diagnostics: false,
             show_search: false,
@@ -210,11 +212,26 @@ impl Editor {
             let result = match read {
                 Read::Ready(media) => {
                     let line = import::summary(&media);
+                    let mut settled = None;
                     self.with_document(|d| {
                         let sequence = d.project().active_sequence;
-                        d.apply(Command::Import { sequence, media })
+                        let was_automatic = d.project().active().is_some_and(|s| s.automatic);
+                        d.apply(Command::Import { sequence, media })?;
+                        if was_automatic && let Some(s) = d.project().active().filter(|s| !s.automatic) {
+                            settled = Some(s.settings);
+                        }
+                        Ok(())
                     })
-                    .map(|()| self.status = format!("Imported {line}"))
+                    .map(|()| {
+                        self.status = match settled {
+                            Some(s) => format!(
+                                "Imported {line}. The timeline is now {} at {} kHz to match it (Timeline settings to change).",
+                                import::settings_text(&s),
+                                s.sample_rate as f32 / 1000.0
+                            ),
+                            None => format!("Imported {line}"),
+                        };
+                    })
                 }
                 Read::Failed(path, err) => {
                     tracing::info!(path = %path.display(), "import failed: {}", err.report());
@@ -275,12 +292,12 @@ impl Editor {
                 "saved"
             };
             d.project().active().map_or_else(String::new, |s| {
-                format!(
-                    "{} · {}p {} · {saved}",
-                    s.name,
-                    s.settings.height,
-                    s.settings.frame_rate.nominal_fps()
-                )
+                let settings = if s.automatic {
+                    "Automatic".to_owned()
+                } else {
+                    import::settings_text(&s.settings)
+                };
+                format!("{} · {settings} · {saved}", s.name)
             })
         });
         let usage = self.usage_text();
@@ -359,6 +376,9 @@ impl Editor {
             if button.clicked() {
                 self.run_action(Action::Import);
             }
+            if ui.button("Timeline settings…").clicked() {
+                self.show_timeline_settings = true;
+            }
             let busy = self.importer.busy();
             if busy > 0 {
                 ui.spinner();
@@ -429,6 +449,74 @@ impl Editor {
         if !self.status.is_empty() {
             ui.add_space(12.0);
             ui.label(egui::RichText::new(&self.status).color(self.theme.text_secondary));
+        }
+    }
+
+    /// Picture size, frame rate and sound rate of the open timeline: Automatic,
+    /// a template, or the same as one of the project's videos.
+    fn timeline_settings_window(&mut self, ctx: &egui::Context) {
+        if !self.show_timeline_settings {
+            return;
+        }
+        let Some(document) = &self.document else {
+            self.show_timeline_settings = false;
+            return;
+        };
+        let p = document.project();
+        let Some(seq) = p.active() else { return };
+        let current = if seq.automatic {
+            "Automatic: the first video you import decides.".to_owned()
+        } else {
+            format!(
+                "{} · {} kHz",
+                import::settings_text(&seq.settings),
+                seq.settings.sample_rate as f32 / 1000.0
+            )
+        };
+        let mut choices: Vec<(String, project::SequenceSettings)> = project::SequenceSettings::TEMPLATES
+            .iter()
+            .map(|(name, s)| (format!("{name} · {}", import::settings_text(s)), *s))
+            .collect();
+        for media in p.media.values() {
+            if let (project::MediaKind::Video, Some(v)) = (media.kind, &media.info.video) {
+                let s = project::SequenceSettings::matching(v, &media.info.audio);
+                let name = media
+                    .path
+                    .file_name()
+                    .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+                choices.push((format!("Same as {name} · {}", import::settings_text(&s)), s));
+            }
+        }
+        let sequence = seq.id;
+        let mut chosen = None;
+        let mut open = true;
+        egui::Window::new("Timeline settings")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.label(egui::RichText::new(current).family(ui_kit::fonts::semibold()));
+                ui.add_space(8.0);
+                ui.label(egui::RichText::new("Change to").color(self.theme.text_secondary));
+                for (label, settings) in &choices {
+                    if ui.button(label).clicked() {
+                        chosen = Some(*settings);
+                    }
+                }
+                ui.add_space(6.0);
+                ui.label(
+                    egui::RichText::new("Clips of another size or frame rate are fitted, never changed.")
+                        .size(11.5)
+                        .color(self.theme.muted),
+                );
+            });
+        if let Some(settings) = chosen {
+            if let Err(err) = self.with_document(|d| d.apply(Command::SetSettings { sequence, settings })) {
+                self.errors.push(&err);
+            }
+            self.show_timeline_settings = false;
+        } else {
+            self.show_timeline_settings = open;
         }
     }
 
@@ -661,6 +749,7 @@ impl eframe::App for Editor {
             .show(ui, |ui| self.page(ui));
 
         self.settings_window(&ctx);
+        self.timeline_settings_window(&ctx);
         self.search_window(&ctx);
         let mut diagnostics = self.show_diagnostics;
         self.errors
@@ -729,10 +818,7 @@ fn open_or_create(path: &Path, recovery: Recovery) -> diag::Result<Document> {
         let name = path
             .file_stem()
             .map_or("Untitled".into(), |s| s.to_string_lossy().into_owned());
-        Document::create(
-            path,
-            project::Project::new(name, project::SequenceSettings::GAME_CLIP),
-        )
+        Document::create(path, project::Project::new_automatic(name))
     }
 }
 

@@ -6,7 +6,7 @@ The editor window and its five pages. Binary name: `editor`.
 
 Phase 0.6 done: the window, the shared top bar, five empty pages that switch instantly, shortcuts, Settings, search for commands, inline errors and Diagnostics. Autosave runs on a worker. The pages fill up from Phase 4.
 
-Phase 4A so far: importing media (Ctrl+I, the Import button, or dropping files on the window). Until the timeline widget arrives, the Edit page lists each track's clips and the project's media.
+Phase 4A so far: importing media (Ctrl+I, the Import button, or dropping files on the window), and Timeline settings (Automatic until the first video is imported, a template, or the same as one of the project's videos). Until the timeline widget arrives, the Edit page lists each track's clips and the project's media.
 
 ## Running
 

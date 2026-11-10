@@ -134,7 +134,8 @@ mod tests {
     #[test]
     fn a_saved_project_has_nothing_to_recover() {
         let tmp = tempfile::tempdir().unwrap();
-        let path = crate::files::create_project(tmp.path(), "Saved", SequenceSettings::GAME_CLIP).unwrap();
+        let path =
+            crate::files::create_project(tmp.path(), "Saved", Some(SequenceSettings::GAME_CLIP)).unwrap();
         assert_eq!(unsaved_changes(&path), 0);
     }
 }

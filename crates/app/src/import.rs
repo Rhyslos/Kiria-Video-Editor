@@ -6,7 +6,7 @@
 //! once a frame and applies whatever is ready.
 
 use jobs::{JobHandle, JobSystem, PoolKind, Priority};
-use project::{MediaKind, MediaRef};
+use project::{MediaKind, MediaRef, SequenceSettings};
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
@@ -100,6 +100,12 @@ impl Importer {
     pub fn busy(&self) -> usize {
         self.reading.len()
     }
+}
+
+/// Picture size and frame rate in a few words: "1440p 60", or "1080×1920 60"
+/// for an upright picture.
+pub fn settings_text(s: &SequenceSettings) -> String {
+    s.short_label()
 }
 
 /// One line about an imported file, such as

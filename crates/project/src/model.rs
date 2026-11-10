@@ -56,6 +56,26 @@ impl SequenceSettings {
         sample_rate: 48_000,
     };
 
+    /// The optional templates, with their names, as offered for new projects
+    /// and in a timeline's settings.
+    pub const TEMPLATES: [(&'static str, SequenceSettings); 3] = [
+        ("Game clip", SequenceSettings::GAME_CLIP),
+        ("High frame rate", SequenceSettings::HIGH_FRAME_RATE),
+        ("Vertical short", SequenceSettings::VERTICAL_SHORT),
+    ];
+
+    /// Settings matching a video: its upright size and frame rate, and the
+    /// sound rate of its first sound stream (48 kHz when it has none).
+    pub fn matching(video: &VideoStream, audio: &[AudioStream]) -> SequenceSettings {
+        let (width, height) = video.display_size();
+        SequenceSettings {
+            width,
+            height,
+            frame_rate: video.frame_rate,
+            sample_rate: audio.first().map_or(48_000, |a| a.sample_rate).max(8_000),
+        }
+    }
+
     /// A short description such as "1080p 60" or "1080×1920 60" (portrait).
     pub fn short_label(&self) -> String {
         let fps = self.frame_rate.nominal_fps();
@@ -158,6 +178,10 @@ pub struct Sequence {
     pub region: Option<Region>,
     /// Where cuts, splits and pastes happen; separate from the playhead.
     pub edit_needle: Time,
+    /// "Automatic": the first video imported sets `settings` (which hold
+    /// placeholder values until then). Off once settled or chosen by hand.
+    #[serde(default)]
+    pub automatic: bool,
 }
 
 impl Sequence {
@@ -262,6 +286,16 @@ impl Region {
 }
 
 impl Project {
+    /// A new project whose timeline takes its settings from the first video
+    /// imported (the default for new projects).
+    pub fn new_automatic(name: impl Into<String>) -> Project {
+        let mut project = Project::new(name, SequenceSettings::GAME_CLIP);
+        for sequence in project.sequences.iter_mut() {
+            sequence.automatic = true;
+        }
+        project
+    }
+
     /// A new project with one timeline holding one video and one audio track.
     pub fn new(name: impl Into<String>, settings: SequenceSettings) -> Project {
         let mut project = Project {
@@ -297,6 +331,7 @@ impl Project {
             labels: Vector::new(),
             region: None,
             edit_needle: Time::ZERO,
+            automatic: false,
         }
     }
 

@@ -1,39 +1,40 @@
-//! The New project dialog: a name, a preset and a folder.
+//! The New project dialog: a name, the timeline settings (Automatic or a template) and a folder.
 
 use egui::RichText;
 use project::SequenceSettings;
 use std::path::PathBuf;
 use ui_kit::Theme;
 
-/// One choice in the preset list.
+/// One choice in the settings list.
 #[derive(Debug, Clone, Copy)]
 pub struct Preset {
     pub name: &'static str,
     pub detail: &'static str,
-    /// `None` when the settings come from media (not possible yet).
+    /// `None` for Automatic: the first video imported decides.
     pub settings: Option<SequenceSettings>,
 }
 
+/// Automatic first (the default), then the optional templates.
 pub const PRESETS: [Preset; 4] = [
     Preset {
-        name: "Game clip",
-        detail: "1920×1080 · 60 fps",
-        settings: Some(SequenceSettings::GAME_CLIP),
-    },
-    Preset {
-        name: "High frame rate",
-        detail: "2560×1440 · 144 fps",
-        settings: Some(SequenceSettings::HIGH_FRAME_RATE),
-    },
-    Preset {
-        name: "Vertical short",
-        detail: "1080×1920 · 60 fps",
-        settings: Some(SequenceSettings::VERTICAL_SHORT),
-    },
-    Preset {
-        name: "Match the first clip",
-        detail: "Size and frame rate of the first clip you add",
+        name: "Automatic",
+        detail: "Size, frame rate and sound rate from the first video you import",
         settings: None,
+    },
+    Preset {
+        name: SequenceSettings::TEMPLATES[0].0,
+        detail: "1920×1080 · 60 fps",
+        settings: Some(SequenceSettings::TEMPLATES[0].1),
+    },
+    Preset {
+        name: SequenceSettings::TEMPLATES[1].0,
+        detail: "2560×1440 · 144 fps",
+        settings: Some(SequenceSettings::TEMPLATES[1].1),
+    },
+    Preset {
+        name: SequenceSettings::TEMPLATES[2].0,
+        detail: "1080×1920 · 60 fps",
+        settings: Some(SequenceSettings::TEMPLATES[2].1),
     },
 ];
 
@@ -42,7 +43,8 @@ pub const PRESETS: [Preset; 4] = [
 pub enum Choice {
     Create {
         name: String,
-        settings: SequenceSettings,
+        /// `None` for Automatic.
+        settings: Option<SequenceSettings>,
         folder: PathBuf,
         /// Use this folder for new projects from now on.
         remember: bool,
@@ -103,14 +105,18 @@ impl NewProjectDialog {
             }
             ui.add_space(10.0);
 
-            ui.label(RichText::new("Preset").color(theme.text_secondary));
+            ui.label(RichText::new("Timeline settings").color(theme.text_secondary));
             for (i, preset) in PRESETS.iter().enumerate() {
-                ui.add_enabled_ui(preset.settings.is_some(), |ui| {
-                    ui.horizontal(|ui| {
-                        ui.radio_value(&mut self.preset, i, preset.name)
-                            .on_disabled_hover_text("Available once importing clips arrives.");
-                        ui.label(RichText::new(preset.detail).size(11.5).color(theme.muted));
-                    });
+                if i == 1 {
+                    ui.label(
+                        RichText::new("Or start from a template")
+                            .size(11.5)
+                            .color(theme.muted),
+                    );
+                }
+                ui.horizontal(|ui| {
+                    ui.radio_value(&mut self.preset, i, preset.name);
+                    ui.label(RichText::new(preset.detail).size(11.5).color(theme.muted));
                 });
             }
             ui.add_space(10.0);
@@ -148,9 +154,7 @@ impl NewProjectDialog {
             }
             ui.add_space(14.0);
 
-            let ready = self.folder.is_some()
-                && !self.name.trim().is_empty()
-                && PRESETS[self.preset].settings.is_some();
+            let ready = self.folder.is_some() && !self.name.trim().is_empty();
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let create = ui
@@ -158,11 +162,11 @@ impl NewProjectDialog {
                         .inner;
                     let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                     if (create.clicked() || (enter && ready))
-                        && let (Some(folder), Some(settings)) = (&self.folder, PRESETS[self.preset].settings)
+                        && let Some(folder) = &self.folder
                     {
                         choice = Some(Choice::Create {
                             name: self.name.trim().to_owned(),
-                            settings,
+                            settings: PRESETS[self.preset].settings,
                             folder: folder.clone(),
                             remember: self.remember && self.folder != self.default_folder,
                         });
@@ -189,14 +193,13 @@ mod tests {
         let names: Vec<&str> = PRESETS.iter().map(|p| p.name).collect();
         assert_eq!(
             names,
-            [
-                "Game clip",
-                "High frame rate",
-                "Vertical short",
-                "Match the first clip"
-            ]
+            ["Automatic", "Game clip", "High frame rate", "Vertical short"]
         );
-        assert_eq!(PRESETS[1].settings.unwrap().frame_rate.nominal_fps(), 144);
-        assert!(PRESETS[3].settings.is_none(), "needs media first");
+        assert!(
+            PRESETS[0].settings.is_none(),
+            "Automatic is the default and has no fixed settings"
+        );
+        assert_eq!(PRESETS[2].settings.unwrap().frame_rate.nominal_fps(), 144);
+        assert_eq!(NewProjectDialog::new(None, None).preset, 0);
     }
 }

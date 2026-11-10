@@ -32,7 +32,7 @@ RON text with the extension from `brand::PROJECT_FILE_EXTENSION`:
 
 ```ron
 (
-  format_version: 2,
+  format_version: 3,
   summary: Some((name: "...", settings: (...), length: (21, 1))),
   project: ( ... ),
 )
@@ -48,6 +48,7 @@ RON text with the extension from `brand::PROJECT_FILE_EXTENSION`:
 |---|---|---|
 | 1 | First format | – |
 | 2 | Media entries gain `info`: the file's video and sound streams | Version number only: `info` defaults to empty |
+| 3 | Timelines gain `automatic` (settings wait for the first video); the summary says so too | Version number only: `automatic` defaults to off, as older timelines had fixed settings |
 
 ### Changing the format
 
@@ -73,4 +74,5 @@ RON text with the extension from `brand::PROJECT_FILE_EXTENSION`:
 | Remove (`Delete`) | Removes the clip and its linked clips, leaving a gap |
 | Ripple remove (`Backspace`) | Same, and later clips on those tracks move back to close the gap |
 | Place, move | Refused with an explanation if the clip would overlap another or start before zero |
-| Import | One step: adds the file and places it at the end of the timeline, the picture on the first video track and each sound stream on its own audio track (made when missing; an unused default track takes the stream's name), all linked. Pictures last 5 seconds |
+| Set settings | Fixes a timeline's size, frame rate and sound rate; it stops being automatic |
+| Import | One step: adds the file and places it at the end of the timeline, the picture on the first video track and each sound stream on its own audio track (made when missing; an unused default track takes the stream's name), all linked. Pictures last 5 seconds. On an automatic timeline the first video also sets the settings (upright size, frame rate, first sound stream's rate) |

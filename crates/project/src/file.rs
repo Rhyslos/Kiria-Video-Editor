@@ -22,19 +22,25 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
 /// The format this build writes.
-pub const FORMAT_VERSION: u32 = 2;
+pub const FORMAT_VERSION: u32 = 3;
 
 /// Turns the text of a version `n` file into the text of a version `n + 1` file.
 pub type Migration = fn(&str) -> diag::Result<String>;
 
 /// `MIGRATIONS[i]` upgrades version `i + 1` to `i + 2`.
-pub const MIGRATIONS: &[Migration] = &[v1_to_v2];
+pub const MIGRATIONS: &[Migration] = &[v1_to_v2, v2_to_v3];
 
 /// Format 2 adds `info` (the file's streams) to each media entry. The field
 /// has a default, so version 1 text is already valid version 2 text apart
 /// from its version number.
 fn v1_to_v2(text: &str) -> diag::Result<String> {
     set_format_version(text, 1, 2)
+}
+
+/// Format 3 adds `automatic` to each timeline. It defaults to off, which is
+/// what every older timeline was (its settings were chosen up front).
+fn v2_to_v3(text: &str) -> diag::Result<String> {
+    set_format_version(text, 2, 3)
 }
 
 /// Rewrites the `format_version` number at the top of the file.
@@ -70,6 +76,9 @@ pub struct Summary {
     pub settings: SequenceSettings,
     /// Length of the open timeline.
     pub length: Time,
+    /// The settings still wait for the first video (they are placeholders).
+    #[serde(default)]
+    pub automatic: bool,
 }
 
 impl Summary {
@@ -79,6 +88,7 @@ impl Summary {
             name: project.name.clone(),
             settings: sequence.settings,
             length: sequence.length(),
+            automatic: sequence.automatic,
         })
     }
 }

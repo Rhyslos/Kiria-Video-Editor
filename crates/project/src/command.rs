@@ -5,7 +5,9 @@
 //! written to the autosave journal and replayed after a crash.
 
 use crate::ids::{ClipId, LabelId, LinkId, MediaId, SequenceId, TrackId};
-use crate::model::{Clip, MediaKind, MediaRef, Project, Region, Sequence, TimelineLabel, Track, TrackKind};
+use crate::model::{
+    Clip, MediaKind, MediaRef, Project, Region, Sequence, SequenceSettings, TimelineLabel, Track, TrackKind,
+};
 use crate::time::Time;
 use diag::AppError;
 use serde::{Deserialize, Serialize};
@@ -74,6 +76,11 @@ pub enum Command {
     SetEditNeedle {
         sequence: SequenceId,
         at: Time,
+    },
+    /// Fixes a timeline's picture size, frame rate and sound rate (it stops being automatic).
+    SetSettings {
+        sequence: SequenceId,
+        settings: SequenceSettings,
     },
 }
 
@@ -193,6 +200,15 @@ impl Command {
                 }
                 sequence_mut(&mut p, *sequence)?.region = *region;
             }
+            Command::SetSettings { sequence, settings } => {
+                if settings.width == 0 || settings.height == 0 || settings.sample_rate == 0 {
+                    return Err(AppError::new("Those timeline settings can't be used")
+                        .why("The picture size and sound rate must be above zero."));
+                }
+                let seq = sequence_mut(&mut p, *sequence)?;
+                seq.settings = *settings;
+                seq.automatic = false;
+            }
             Command::SetEditNeedle { sequence, at } => {
                 sequence_mut(&mut p, *sequence)?.edit_needle = (*at).max(Time::ZERO);
             }
@@ -229,6 +245,17 @@ fn import(p: &mut Project, sequence: SequenceId, media: &MediaRef) -> diag::Resu
         return Err(
             AppError::new("This file has nothing to place").why("No picture or sound was found in it.")
         );
+    }
+
+    // An automatic timeline takes its settings from the first video imported.
+    if let Some(v) = video
+        && media.kind == MediaKind::Video
+    {
+        let seq = sequence_mut(p, sequence)?;
+        if seq.automatic {
+            seq.settings = SequenceSettings::matching(v, &media.info.audio);
+            seq.automatic = false;
+        }
     }
 
     let id: MediaId = p.allocate_id();
@@ -726,5 +753,95 @@ mod tests {
         .apply(&p)
         .unwrap_err();
         assert!(err.what().contains("can't be placed"));
+    }
+
+    #[test]
+    fn an_automatic_timeline_takes_the_first_videos_settings() {
+        let p = Project::new_automatic("Test");
+        let seq = p.active_sequence;
+        assert!(p.active().unwrap().automatic);
+
+        // Sound alone doesn't settle it.
+        let mut voice = recording(&["Voice"], 5);
+        voice.kind = MediaKind::Audio;
+        voice.info.video = None;
+        let p = Command::Import {
+            sequence: seq,
+            media: voice,
+        }
+        .apply(&p)
+        .unwrap();
+        assert!(p.active().unwrap().automatic);
+
+        let mut phone = recording(&["Audio 1"], 10);
+        if let Some(v) = phone.info.video.as_mut() {
+            (v.width, v.height, v.rotation, v.frame_rate) = (1920, 1080, 90, Rate::NTSC_30);
+        }
+        phone.info.audio[0].sample_rate = 44_100;
+        let p = Command::Import {
+            sequence: seq,
+            media: phone,
+        }
+        .apply(&p)
+        .unwrap();
+        let s = p.active().unwrap();
+        assert!(!s.automatic);
+        assert_eq!(
+            s.settings,
+            SequenceSettings {
+                width: 1080,
+                height: 1920,
+                frame_rate: Rate::NTSC_30,
+                sample_rate: 44_100
+            }
+        );
+
+        // Later videos don't change it.
+        let p = Command::Import {
+            sequence: seq,
+            media: recording(&["Game"], 10),
+        }
+        .apply(&p)
+        .unwrap();
+        assert_eq!(p.active().unwrap().settings.width, 1080);
+    }
+
+    #[test]
+    fn a_project_with_fixed_settings_keeps_them() {
+        let p = Project::new("Test", SequenceSettings::GAME_CLIP);
+        let seq = p.active_sequence;
+        let p = Command::Import {
+            sequence: seq,
+            media: recording(&["Game"], 10),
+        }
+        .apply(&p)
+        .unwrap();
+        assert_eq!(p.active().unwrap().settings, SequenceSettings::GAME_CLIP);
+    }
+
+    #[test]
+    fn settings_can_be_set_by_hand_and_must_make_sense() {
+        let p = Project::new_automatic("Test");
+        let seq = p.active_sequence;
+        let q = Command::SetSettings {
+            sequence: seq,
+            settings: SequenceSettings::VERTICAL_SHORT,
+        }
+        .apply(&p)
+        .unwrap();
+        assert_eq!(q.active().unwrap().settings, SequenceSettings::VERTICAL_SHORT);
+        assert!(!q.active().unwrap().automatic);
+        let bad = SequenceSettings {
+            width: 0,
+            ..SequenceSettings::GAME_CLIP
+        };
+        assert!(
+            Command::SetSettings {
+                sequence: seq,
+                settings: bad
+            }
+            .apply(&p)
+            .is_err()
+        );
     }
 }

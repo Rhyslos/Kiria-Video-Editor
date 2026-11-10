@@ -68,7 +68,7 @@ pub fn prepare(count: usize, crash: bool) -> diag::Result<PathBuf> {
             round => format!("{} {}", NAMES[i % NAMES.len()], round + 1),
         };
         let settings = PRESETS[i % PRESETS.len()];
-        let path = crate::files::create_project(&projects, &name, settings)?;
+        let path = crate::files::create_project(&projects, &name, Some(settings))?;
         // Give the sample a length, as if it had clips on its timeline.
         let seconds = 45 + (i * 97) % 1500;
         let text = std::fs::read_to_string(&path).or_explain(explain)?;
@@ -78,7 +78,8 @@ pub fn prepare(count: usize, crash: bool) -> diag::Result<PathBuf> {
         index.mark_opened(&path, now - (i as i64 * i as i64 * 1800 + 120))?;
     }
     if count > 2 {
-        let gone = crate::files::create_project(&projects, "Old tournament", SequenceSettings::GAME_CLIP)?;
+        let gone =
+            crate::files::create_project(&projects, "Old tournament", Some(SequenceSettings::GAME_CLIP))?;
         index.record(&gone)?;
         index.mark_opened(&gone, now - 40 * 86_400)?;
         std::fs::remove_file(&gone).or_explain(explain)?;
@@ -88,7 +89,7 @@ pub fn prepare(count: usize, crash: bool) -> diag::Result<PathBuf> {
         )
         .or_explain(explain)?;
         // One project with three changes a crash left unsaved.
-        let unsaved = crate::files::create_project(&projects, "Unsaved edit", SequenceSettings::GAME_CLIP)?;
+        let unsaved = crate::files::create_project(&projects, "Unsaved edit", None)?;
         index.record(&unsaved)?;
         index.mark_opened(&unsaved, now - 60)?;
         let mut doc = project::Document::open(&unsaved, project::Recovery::Recover)?;
