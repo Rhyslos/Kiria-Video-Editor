@@ -215,7 +215,7 @@ Phase 1 makes every tagged commit a signed, installable release that the app can
 
 **Gate 1**
 
-- [ ] Tag `v0.1.0`: CI builds, signs and drafts a release with no manual steps.
+- [x] Tag `v0.1.0`: CI builds, signs and drafts a release with no manual steps. (Done 10 November 2026: draft "Kiria 0.1.0" with installer, AppImage, update package and signed manifest.)
 - [ ] The installer works on a clean Windows 11 machine and the AppImage on a clean Linux machine. (Automated: every release installs, starts and uninstalls on a fresh Windows runner and starts the AppImage on Ubuntu 22.04. Still to do: your own PCs.)
 - [x] A tampered download is refused with a clear message.
 - [x] With the network unplugged the app still starts within 4 seconds. (The launcher starts the editor before checking; measured under 0.1 s with no network.)
