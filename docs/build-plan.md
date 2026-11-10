@@ -239,6 +239,7 @@ Phase 2 builds the launcher exactly as in the agreed mockup: name and logo centr
 
 **2.3 Behaviour**
 
+- [x] Choosing where projects are saved: a default folder (Settings, or right-click a folder) and Browse… for any folder in New project.
 - [x] New project dialog with presets: Game clip (1080p 60), High frame rate (1440p 144), Vertical short (1080×1920 60), Match the first clip.
 - [ ] Issue checks before opening: missing media (with a relink suggestion), file saved by a newer version, file damaged. (Newer version, damaged and missing project files are done; missing media and relinking are next.)
 - [ ] Crash recovery prompt (from phase 0) shown here when the last session crashed.

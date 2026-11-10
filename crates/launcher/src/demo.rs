@@ -54,6 +54,10 @@ pub fn prepare(count: usize) -> diag::Result<PathBuf> {
     let index = Index::open(&data.join(project_index::INDEX_FILE_NAME))?;
     index.add_folder(&projects, FolderKind::Projects)?;
     index.add_folder(&media, FolderKind::Media)?;
+    crate::prefs::LauncherPrefs {
+        default_project_folder: Some(projects.clone()),
+    }
+    .save(&data)?;
 
     let now = project_index::now();
     for i in 0..count {

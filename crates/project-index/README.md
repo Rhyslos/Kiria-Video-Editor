@@ -24,7 +24,7 @@ Reading a project never loads it: `project::file::read_info` reads only the form
 | File | What it holds |
 |---|---|
 | `src/entry.rs` | `Folder`, `FolderKind`, `Issue` (with the card text) and `ProjectEntry` |
-| `src/store.rs` | `Index`: open, folders, record, refresh, mark opened, forget, follow a move. Table layout and its upgrade steps (`SCHEMA_VERSION`) |
+| `src/store.rs` | `Index`: open, folders (`add_folder_if_new` skips folders a listed one already covers), record, refresh, mark opened, forget, follow a move. Table layout and its upgrade steps (`SCHEMA_VERSION`) |
 | `src/scan.rs` | `find_project_files`: project files in a folder and up to three levels below |
 
 ## Rules
