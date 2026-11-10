@@ -1,0 +1,32 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "xtask"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.97"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/Rhyslos/kiria-video-editor"
+
+# Shared lint rules for every crate (each crate opts in with `[lints] workspace = true`).
+[workspace.lints.rust]
+unsafe_code = "deny"           # FFmpeg and GPU wrappers will allow it locally, nowhere else.
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+unwrap_used = "warn"           # No `unwrap()` outside tests; return an explained error instead.
+expect_used = "warn"
+dbg_macro = "warn"
+todo = "warn"
+
+[profile.dev]
+# Media code is unusable unoptimised; keep our crates debuggable but optimise dependencies.
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

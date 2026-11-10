@@ -1,0 +1,18 @@
+[package]
+name = "launcher"
+description = "The small program that opens first."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "launcher"
+path = "src/main.rs"
+
+[dependencies]
+brand = { path = "../brand" }
+
+[lints]
+workspace = true

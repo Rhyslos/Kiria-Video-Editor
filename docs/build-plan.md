@@ -1,0 +1,535 @@
+# Kiria — Build Plan
+
+> Copied into the repository on 10 November 2026. From now on this file is the one to keep up to date; change it in the same commit as the code it describes.
+
+## How to use this plan
+
+Version 1.0 is built in ten phases plus a release phase, strictly in order; each phase ends at a gate that must pass before the next one starts. The [project plan](project-plan.md) says *what* the app is; this doc says *how* and *in what order* to build it. The agreed look is in the [mockups](https://claude.ai/artifact/BoWqShTxNag7Q1yD8BoKLr).
+
+**Resuming work (people or Claude):**
+
+1. Find the first phase in the table below that is not "Gate passed".
+2. Open that phase and take its first unticked step.
+3. Read `CLAUDE.md` and the `README.md` of every folder you will touch before writing code.
+4. Finish the step (definition of done in the next section), tick it here, commit.
+5. When every step in a phase is ticked, run its gate; only a passed gate moves the phase to "Gate passed".
+
+**Changing the plan:** a new idea goes to "After 1.0" at the bottom unless it blocks the current gate. Changing an agreed decision means updating the project plan first, then this doc.
+
+```mermaid
+flowchart LR
+    P0[0 Foundations] --> P1[1 Installer] --> P2[2 Launcher] --> P3[3 Safe updates]
+    P3 --> P4[4 Edit page] --> P5[5 Library] --> P6[6 Export]
+    P6 --> P7[7 Color] --> P8[8 Audio] --> P9[9 Effects] --> P10[10 Release 1.0]
+```
+
+Every arrow is a gate: the phase before it is tested on both machines before the next one starts.
+
+The platform (project file, errors, installs, safe updates) comes before any page, so every page is built on top of something that already can't lose work.
+
+| # | Phase | Builds | Gate (short) | Status |
+| --- | --- | --- | --- | --- |
+| 0 | Foundations | Workspace, engine core, errors, resources, app shell | Empty app opens, autosaves, recovers from a forced crash | In progress |
+| 1 | Installer and updates | Signed builds, installers, GitHub releases | A tagged build installs on a clean Windows and Linux machine | Not started |
+| 2 | Launcher | Project browser, folders, update panel | Create, find and open projects; manual update works | Not started |
+| 3 | Update safety | Side-by-side installs, rollback, project migrations | A broken update rolls back by itself; old projects open | Not started |
+| 4 | Edit page | Media pipeline, playback, timeline, editing, inspector | Cut a 20-minute game recording smoothly at 1440p 60 | Not started |
+| 5 | Library | Import, index, tabs, lists, labels, prune | 500 clips import, filter and search instantly | Not started |
+| 6 | Export | Encode pipeline, presets, checks, queue | Exports match the timeline frame for frame | Not started |
+| 7 | Color | Float pipeline, wheels, curves, scopes, auto white balance | Preview and export colours match; grades copy between clips | Not started |
+| 8 | Audio | Mixer, effects, loudness, clarity check | A noisy three-track recording mixes to −14 LUFS cleanly | Not started |
+| 9 | Effects and extras | Effects drawer, background removal, extra features | Hair edges hold, no flicker; extras pass their tests | Not started |
+| 10 | Release 1.0 | Hardening, docs, licence, first public release | Release checklist all ticked | Not started |
+
+## Ground rules and how each task is done
+
+Every step follows the eight working rules in the project plan; the ones that change how code is written are repeated here so they are never missed.
+
+- **Same control, same key, every page.** Shared tools (playhead, edit needle, region, labels, transport, shortcuts) live in one shared module and are reused, never re-implemented per page.
+- **Shared visuals stay put.** Top bar, tab position (centred over the viewport), panel widths and theme tokens come from one layout and one theme module.
+- **No other product names** in code, comments, docs, commit messages or UI text.
+- **Documented folders.** Every crate and every folder with more than a couple of files has a `README.md` (what it holds, how it fits, entry points). `CLAUDE.md` in the root is the map of the whole project. Both are updated in the same commit as the code they describe.
+- **Readable over clever.** Small modules, clear names, no `unsafe` outside the FFmpeg and GPU wrappers, no `unwrap()` in non-test code.
+- **One name, one place.** The app name, short name, icon and identifiers live in `crates/brand`; nothing else hard-codes them.
+
+### Workflow for a big system
+
+Used for playback, caching, the timeline widget, rendering, the audio engine, background removal, auto white balance and the highlight finder (rule 7).
+
+1. **Research:** short written note in `docs/research/<system>.md`: what the problem is, known approaches, sources.
+2. **Prototype two or three approaches** in a throwaway `spikes/<system>/` folder, built in parallel (separate agents or branches), each against the same benchmark and test clips.
+3. **Compare** on speed, smoothness, memory, code size and robustness; write the result and the choice into the research note.
+4. **Build the chosen one properly** in its crate, delete the spike folder.
+
+### Definition of done (every step)
+
+- [ ] Builds without warnings on Windows and Linux (`cargo clippy -- -D warnings`).
+- [ ] Tests for the new behaviour pass; existing tests still pass.
+- [ ] Errors use the shared what / why / fix type, never a bare string.
+- [ ] No UI-thread blocking: anything over 2 ms runs on a worker.
+- [ ] Folder `README.md` and `CLAUDE.md` updated if structure or behaviour changed.
+- [ ] Step ticked in this doc; commit message says what and why.
+
+### Test footage
+
+A shared `test-media/` folder (not in git; listed in `test-media/MANIFEST.md` with checksums) holds real recordings from both machines: 1080p 60, 1440p 144, variable frame rate, H.264, H.265 and AV1 from the AMD and NVIDIA encoders, MKV files with 3 audio streams, a 1-hour recording, a facecam clip, and a few deliberately broken files. Every phase gate is run against it.
+
+## Repository layout and tooling
+
+One Cargo workspace, one engine with no UI, and thin pages on top; the UI only sends commands to the engine and reads snapshots back, so a slow decode can never freeze a window.
+
+```text
+/
+├─ CLAUDE.md               map of the project, rules, where things live, how to run
+├─ README.md               public intro, build instructions, licence
+├─ Cargo.toml              workspace, shared dependency versions
+├─ crates/
+│  ├─ brand/               app name, short name, icon, ids (the one place)
+│  ├─ diag/                what/why/fix errors, logging, crash reports
+│  ├─ project/             project model, commands, undo/redo, autosave journal
+│  ├─ jobs/                worker pools, priorities, resource budgets
+│  ├─ media/               probe, demux, decode, encode (FFmpeg wrapper)
+│  ├─ cache/               RAM, GPU and disk caches, proxies, thumbnails, waveforms
+│  ├─ render/              GPU compositor, transforms, colour, effects (wgpu)
+│  ├─ audio/               real-time mixer, DSP, meters, loudness
+│  ├─ ml/                  model inference (ONNX Runtime)
+│  ├─ library/             media index and search (SQLite)
+│  ├─ engine/              ties the above together: playback scheduler, export
+│  ├─ ui-kit/              theme tokens, shared widgets, top bar, timeline widget
+│  ├─ app/                 the editor window and its five pages
+│  ├─ launcher/            small separate binary: projects + updates
+│  └─ updater/             release check, signature check, install, rollback
+├─ docs/
+│  ├─ research/            one note per big system (rule 7)
+│  └─ decisions/           short records of decisions that changed the plan
+├─ spikes/                 throwaway prototypes, deleted after a choice
+├─ xtask/                  project chores: `cargo xtask check-media`
+├─ tests/                  cross-crate and golden-frame tests
+├─ test-media/             not in git, see MANIFEST.md
+└─ .github/workflows/      CI and release pipelines
+```
+
+### Tooling
+
+| Need | Choice | Notes |
+| --- | --- | --- |
+| Language | Rust stable, edition 2024 | Pinned with `rust-toolchain.toml` |
+| Lint and format | `cargo clippy`, `rustfmt` | Warnings fail CI |
+| Tests | `cargo nextest`, `proptest`, `insta` snapshots | Golden frames compared with a tolerance |
+| Fuzzing | `cargo-fuzz` | Demuxer input and project files |
+| Benchmarks | `criterion` | Tracked per commit, regressions fail CI |
+| Licences | `cargo-deny` | Blocks dependencies with incompatible licences |
+| Release | `cargo-dist` + GitHub Actions | Builds, signs and uploads on every tag |
+| Profiling | `tracing` + Tracy | Spans on every job, frame and command |
+
+### CI on every pull request
+
+Windows and Linux runners: format check, clippy, tests, licence check, a 30-second playback benchmark on a reference clip. Tags `v*` additionally build installers, sign them and draft a GitHub release.
+
+## Phase 0 · Foundations
+
+Phase 0 builds everything later phases stand on and that is painful to add afterwards: the versioned project file, undo, autosave, explained errors, resource budgets and an empty themed window. No video yet.
+
+**0.1 Repository and CI**
+
+- [x] Create the GitHub repo, workspace `Cargo.toml`, `rust-toolchain.toml`, `.gitignore`, empty crates from the layout above.
+- [x] Write `CLAUDE.md` (rules, layout, how to build, how to resume via this doc) and a `README.md` in every crate.
+- [x] CI workflow: fmt, clippy, tests and cargo-deny on Windows and Linux (switch to nextest when the test suite grows).
+- [x] `crates/brand`: name "Kiria", short name, app id, icon path; one unit test that nothing else contains the name string (grep test).
+- [x] `test-media/MANIFEST.md` and a script that checks the files and checksums are present.
+
+**0.2 Errors and logging (`diag`)**
+
+- [ ] `AppError { what, why, fix, action: Option<FixAction>, source }` with a builder; every crate returns it.
+- [ ] `tracing` setup: rolling log files in the user's data folder, 7 days kept.
+- [ ] Panic hook: writes a crash report (log tail, versions, GPU, OS) and marks the session as crashed.
+
+**0.3 Project model (`project`)**
+
+- [ ] Data types: Project, Sequence, Track (video/audio), Clip, MediaRef (path + fingerprint), TimelineLabel, Region, edit needle position.
+- [ ] Time as rational numbers (`frames / rate`), never floats; frame-rate conversion helpers.
+- [ ] Persistent data structures (`im`) so a snapshot is a cheap clone.
+- [ ] Project file: RON with a `format_version` field from day one, written atomically (temp file, then rename).
+- [ ] Migration framework: one function per version step, tested with a stored v1 sample file.
+
+**0.4 Commands, undo and autosave (`project`)**
+
+- [ ] Every change is a `Command` applied to a snapshot; undo/redo is a stack of snapshots.
+- [ ] Autosave journal: append each command to `project.journal`; full save every 30 s and on idle.
+- [ ] Recovery: on open, if the journal is newer than the save, replay it; offer "Recover" or "Open last save".
+- [ ] Property test: random command sequences + undo/redo always leave a valid project.
+
+**0.5 Jobs and resources (`jobs`)**
+
+- [ ] Thread pools for decode, render, analysis and export; one thread always kept free for the UI.
+- [ ] Priorities: playback > interactive > background; background jobs pause while playing (setting).
+- [ ] Budgets for worker threads, RAM cache and disk cache, read from settings with Auto defaults.
+- [ ] Live usage numbers (CPU, GPU, RAM) published for the top-bar readout.
+
+**0.6 App shell (`ui-kit`, `app`)**
+
+- [ ] wgpu + egui window; Ash and Carbon theme tokens copied from the mockups; Inter and a monospace font bundled.
+- [ ] Shared top bar: project name left, page tabs centred over the viewport position, search button, resource readout, settings cog.
+- [ ] Empty pages for Library, Edit, Color, Audio, Export that switch instantly.
+- [ ] Shortcut system: one table of actions and default keys (Space, S, Delete, Backspace, M so far), used by every page.
+- [ ] Settings window skeleton: theme, resources, "Edit at the playhead".
+- [ ] Inline error display component (what / why / fix + button) and a Diagnostics panel listing the session's errors.
+
+**Gate 0**
+
+- [ ] A new project opens, a dummy command changes it, undo and redo work, the file saves and reopens.
+- [ ] Killing the process mid-edit and reopening recovers every change.
+- [ ] An old-format sample project migrates and opens.
+- [ ] The window stays at the display refresh rate while a fake 8-second job runs in the background.
+- [ ] CI is green on Windows and Linux.
+
+## Phase 1 · Installer and updates
+
+Phase 1 makes every tagged commit a signed, installable release that the app can find and verify, so both of you run real builds from the first weeks instead of compiling locally.
+
+**1.1 Packaging**
+
+- [ ] FFmpeg: a shared-library build (LGPL or GPL, both fit the project's GPL-3.0 licence) pinned to one version, fetched by a build script and bundled next to the binaries (Windows DLLs, Linux AppImage libs). Licence texts shipped in `licenses/`.
+- [ ] `cargo-dist` config producing a Windows per-user installer (MSI) and a Linux AppImage containing both `app` and `launcher`.
+- [ ] Install layout: `<install>/versions/<x.y.z>/` holds each version; `<install>/launcher` stays outside it (needed for phase 3).
+- [ ] Start-menu / desktop entry points at the launcher, never directly at the editor.
+
+**1.2 Signing**
+
+- [ ] Generate an ed25519 release key; private key only in GitHub Actions secrets, public key compiled into `updater`.
+- [ ] Release workflow signs a `manifest.json` (version, channel, file hashes, minimum launcher version).
+- [ ] Windows code-signing certificate for the installer (avoids SmartScreen warnings); until it is bought, the README explains the warning.
+
+**1.3 Release check (`updater`)**
+
+- [ ] Query the GitHub Releases API with a 3-second timeout; Stable and Beta channels (Beta = pre-releases).
+- [ ] Download in the background with resume; verify every hash and the manifest signature before anything is unpacked.
+- [ ] Settings stored: automatic updates on/off, skipped version, channel.
+- [ ] Every failure becomes a what / why / fix error (offline, rate-limited, bad signature, disk full); none of them blocks opening.
+
+**1.4 Release routine**
+
+- [ ] `RELEASING.md`: bump version, changelog entry, tag, check CI, publish the draft.
+- [ ] Version scheme: `0.x.y` until 1.0; the project file format version is separate and only goes up.
+
+**Gate 1**
+
+- [ ] Tag `v0.1.0`: CI builds, signs and drafts a release with no manual steps.
+- [ ] The installer works on a clean Windows 11 machine and the AppImage on a clean Linux machine.
+- [ ] A tampered download is refused with a clear message.
+- [ ] With the network unplugged the app still starts within 4 seconds.
+
+## Phase 2 · Launcher
+
+Phase 2 builds the launcher exactly as in the agreed mockup: name and logo centred on top, folder tree on the left, a 3-wide project grid, and the version panel bottom left with Update, Skip this version and Automatic updates.
+
+**2.1 Project index**
+
+- [ ] Small SQLite file in the user's data folder: known projects, path, thumbnail, length, settings, last opened, folder.
+- [ ] Projects found by: created here, opened from disk, or found in a watched project folder.
+- [ ] Reading a project's summary never loads the whole project (summary block at the top of the file).
+
+**2.2 Layout**
+
+- [ ] Top bar from `ui-kit` with the name and logo from `brand`, centred; settings cog right.
+- [ ] Left: folder tree with three groups (Projects, Media folders, Other folders) and "+ Add folder". Media folders are remembered for later import.
+- [ ] Main: "All projects", search, Open…, New project; 3-wide grid of 16:9 thumbnails, scrolling down; each card shows length, resolution, frame rate, last used and any issue line.
+- [ ] Bottom left: version, "x.y.z available", Update, Skip this version, Automatic updates tick box (wired to phase 1).
+
+**2.3 Behaviour**
+
+- [ ] New project dialog with presets: Game clip (1080p 60), High frame rate (1440p 144), Vertical short (1080×1920 60), Match the first clip.
+- [ ] Issue checks before opening: missing media (with a relink suggestion), file saved by a newer version, file damaged.
+- [ ] Crash recovery prompt (from phase 0) shown here when the last session crashed.
+- [ ] Opening a project starts the editor process with the project path, then the launcher closes.
+- [ ] Thumbnails: the editor writes one on every save; the launcher only reads it.
+
+**Gate 2**
+
+- [ ] Cold start to a usable launcher in under 1 second on both machines.
+- [ ] Create, rename, move to a folder, search and open projects; 200 fake projects scroll smoothly.
+- [ ] Missing media and newer-version issues show on the right cards.
+- [ ] Update, Skip and the Automatic tick box behave as labelled against a test release.
+
+## Phase 3 · Update safety
+
+Phase 3 makes a bad update harmless before real projects exist: new versions install beside the old one, a version that fails to start is rolled back by itself, and project files only ever move forward through tested migrations.
+
+**3.1 Side-by-side install**
+
+- [ ] New version unpacks to `versions/<new>/`; a small `current` pointer file switches only after unpacking and verifying.
+- [ ] Keep the previous two versions; delete older ones after a successful start.
+- [ ] "Use on next start" by default; "Update now" only when no project is open.
+
+**3.2 Health check and rollback**
+
+- [ ] The editor writes "started OK" once its first window has drawn; the launcher waits up to 20 seconds.
+- [ ] Two failed starts in a row: switch the pointer back, mark the version as bad, explain what happened, offer to send the crash report.
+- [ ] A bad version is never offered again; the next good release is.
+
+**3.3 Launcher self-update**
+
+- [ ] The launcher updates itself in a separate, rarer step, using a temporary copy so it can never break its own recovery.
+- [ ] Manifest field "minimum launcher version" forces this step first when needed.
+
+**3.4 Project safety across versions**
+
+- [ ] Before migrating a project, keep a copy as `<name>.backup-v<old>`.
+- [ ] A project saved by a newer version opens read-only with an explanation, never silently.
+- [ ] Migration tests: every released format version has a stored sample that must open in the newest build (added to CI from now on).
+
+**Gate 3**
+
+- [ ] Ship a deliberately crashing test release on the Beta channel: both machines roll back on their own and show why.
+- [ ] Pull the power during an update: the next start works on the old version.
+- [ ] Sample projects from every earlier format version open, and a backup copy exists.
+
+## Phase 4 · Edit page
+
+Phase 4 is the heart of the app and the longest phase, so it runs as three parts with a checkpoint each: 4A plays media smoothly, 4B edits it on the timeline, 4C completes the page and its extras. Every shared timeline part (playhead, edit needle, region, labels, ruler, transport) is built once in `ui-kit` here and reused by Color and Audio later.
+
+### 4A · Media and playback
+
+- [ ] **Probe and import:** container, streams, codec, frame rate, duration, rotation; MKV files with several audio streams import one track per stream, named after the stream.
+- [ ] **Variable frame rate:** detect it on import, conform to the nearest constant rate, show what was done; audio must not drift over a 1-hour file.
+- [ ] **Decoding** (research workflow): hardware decode via D3D11VA / Vulkan Video / VAAPI on AMD and NVIDIA, software fallback, frames uploaded straight to GPU textures; compare at least two pipelines on the test footage.
+- [ ] **Audio clock as master:** `cpal` output with lock-free ring buffers; video frames scheduled against the audio clock.
+- [ ] **Caches** (research workflow): RAM frame cache ahead of the playhead in the play direction, GPU texture cache, disk render cache keyed by input hash; budgets from phase 0.
+- [ ] **Thumbnails, waveforms and proxies** built in the background; proxy Off / On / Auto; export always uses originals.
+- [ ] **Preview quality:** Full, 1/2, 1/4, Auto; drop resolution before dropping frames; the viewport says when and why.
+- [ ] **Viewport and transport:** single view, Display menu, preview-resolution dropdown, zoom; floating squircle transport with play centred; pause returns to where playback started, stop holds; Space plays/pauses.
+
+**Checkpoint 4A:** a 1440p 60 H.265 recording plays in real time on both machines, scrubbing shows a frame within 50 ms, and a 1-hour VFR file stays in sync to the end.
+
+### 4B · Timeline and editing
+
+- [ ] **Timeline widget** (research workflow): one custom GPU-drawn widget, not stacked UI elements; video area and audio area with separate vertical scroll, a draggable divider, shared ruler starting at 00:00:00:00, bottom scroll bar with zoom.
+- [ ] **Clips:** video clips share one fill with a label-coloured top edge; each audio track has its own colour; waveforms drawn from the cache.
+- [ ] **Edit commands** (all undoable): insert, overwrite, move, trim, delete (Delete, leaves gap), ripple delete (Backspace, closes gap), split (S: selected clip's video and linked audio, or every track when nothing is selected).
+- [ ] **Tools as icons:** select, blade, ripple, roll, slip, slide, text; magnetic snapping (N).
+- [ ] **Red edit needle:** separate from the playhead, draggable, its timecode beside the playhead's; cuts, splits and pastes happen there; setting "Edit at the playhead" merges them.
+- [ ] **Region:** dragged in the ruler; filled half-circle handles, muted bar, everything outside darkened; loop (L), pre-render, reuse as export range.
+- [ ] **Timeline labels:** right-click menu and M place one at the edit needle; Labels row under the ruler; label the region; search finds labels.
+- [ ] **Rough cut view:** Display › Timeline: Full / Rough cut; one strip per clip with picture and sound together.
+- [ ] **Track headers:** per-track horizontal fader, mute, solo; master column right of the timeline whose meter is also the fader, with LUFS and true peak.
+
+**Checkpoint 4B:** cut a 20-minute recording into a 3-minute edit using only the keyboard shortcuts, undo the whole session step by step, and the timeline never drops below the display refresh rate.
+
+### 4C · Page completion and extras
+
+- [ ] **Inspector** (right, fixed width): Transform, Crop, Quick color, Speed, Effects, Audio; one-line summaries in collapsed headers; keyframe diamonds.
+- [ ] **Split view:** Source (raw clip) beside Program (final), off by default, from the Display menu.
+- [ ] **Media pool drawer:** left edge tab sliding out a compact media list (full library comes in phase 5) with the Media / Effects switch in place.
+- [ ] **Search palette** (Ctrl K): clips, labels, timeline labels, commands, settings; shows each command's shortcut.
+- [ ] **Slow motion and speed ramps:** speed per clip, ramp keyframes, frame blending; high-frame-rate sources slow down cleanly.
+- [ ] **Nested timelines and several timelines per project;** adjustment layers.
+- [ ] **Facecam layouts:** picture-in-picture and vertical game-plus-facecam presets with on-picture handles.
+- [ ] **Remove silence:** detect silence on a chosen track, preview the cuts, apply as one undoable command.
+- [ ] **Saved versions, templates, thumbnail grab:** named project snapshots, intro/outro templates, save any frame as a full-quality image.
+- [ ] **Comfort:** viewer on a second monitor or full screen, per-project cache cleanup.
+  - [ ] **Keyboard shortcuts page** (Settings, or "shortcuts", "keybinds", "hotkeys" or "keys" in search): visual keyboard drawn for the layout detected from the operating system (Windows keyboard-layout API, Linux xkbcommon), with the right key shapes (ISO, ANSI, JIS) and printed characters, following layout switches live, a dropdown as manual override; shortcuts stored by physical key position so they work on every layout, non-Latin keys showing both their character and the shortcut letter; test on Norwegian, US English, Arabic and Russian layouts; search box, coloured context chips as filters, coloured dots on each used key, dimmed unused keys, Shift / Ctrl / Alt redraws combinations, point to preview and click to pin a key's actions, a Mouse section below; rebinding with clash warnings and a printable cheat sheet, all generated from the one shortcut table.
+
+**Gate 4**
+
+- [ ] Both of you edit a real 20-minute game recording at 1440p 60 to a finished cut without a stutter, crash or lost change.
+- [ ] Every shortcut and tool behaves the same in Rough cut and Full views.
+- [ ] Performance targets from the project plan are met and recorded in the benchmark history.
+
+## Phase 5 · Library
+
+Phase 5 turns the simple media list from phase 4 into the full Library page and gives long recordings a head start with the highlight finder; the same index also powers the Edit page's media drawer.
+
+**5.1 Index and search (`library`)**
+
+- [ ] SQLite tables: media, types, labels, custom lists, notes, usage in timelines; full-text search across names, labels and notes.
+- [ ] Import checks every file first and explains anything unsupported (codec, damaged, too new) before it reaches a timeline.
+- [ ] Media folders from the launcher are watched; new recordings show up on their own.
+
+**5.2 Page layout (as in the mockup)**
+
+- [ ] Same top bar and tab position as every page.
+- [ ] Left: labels, smart filters, Import, Prune.
+- [ ] Tab bar: Video, Audio, Images, Effects, then custom lists with "+ New list"; the bar fades and scrolls when full.
+- [ ] Filter row: label chips, group by, sort, thumbnail size, grid / list switch.
+- [ ] Video, Images, Effects: thumbnail grid grouped by label, coloured label edge, "In timeline" and "Needs proxy" badges.
+- [ ] Audio: rows with play button, name, full-width waveform in label colour, format, used-in-timeline mark, duration; grouped by label.
+- [ ] Detail panel (right, same width as the Edit inspector): preview, mark in/out, add to timeline, metadata, labels, lists, notes; for audio a large waveform, loudness and true peak with one-click fixes.
+
+**5.3 Media management**
+
+- [ ] Prune: list unused media first, remove it from the project in one undoable step, never delete files from disk.
+- [ ] Relink: by fingerprint, automatically when files moved inside a known folder.
+- [ ] Package project: copy the project plus only the media it uses into one folder (with progress and size shown first) that opens on the other person's machine.
+
+**5.4 Highlight finder** (research workflow)
+
+- [ ] Background analysis on import of long recordings: mic loudness bursts, game-audio spikes, scene changes, sudden motion.
+- [ ] Results become suggested timeline labels on the clip, shown faded until accepted; accept or dismiss one by one or all at once.
+- [ ] Sensitivity setting; tested on at least five recordings from different games, with false positives counted.
+
+**Gate 5**
+
+- [ ] 500 mixed files import with live progress while the UI stays smooth; filters and search answer in under 100 ms.
+- [ ] A packaged project opens on the other machine with nothing missing.
+- [ ] The highlight finder marks at least the moments both of you would pick in a 30-minute test recording.
+
+## Phase 6 · Export
+
+Phase 6 delivers finished files: the full Export page from the mockup, a background queue, and output that matches the timeline frame for frame and sample for sample.
+
+**6.1 Encode pipeline (`engine`, `media`)**
+
+- [ ] Render the timeline from originals (never proxies) through the same compositor as playback, at full quality.
+- [ ] Hardware encoders first (AMD AMF / VA-API, NVIDIA NVENC) for H.264, H.265 and AV1; software fallback.
+- [ ] Containers MP4 and MKV; audio AAC, Opus, FLAC; audio-only WAV, MP3, OGG.
+- [ ] Loudness normalisation pass (two-pass measure, then apply) and a true-peak limiter on the master.
+
+**6.2 Page (as in the mockup)**
+
+- [ ] Presets left: Web 1080p, Web 4K, Vertical, Archive master, Small preview, Audio only, plus saving your own.
+- [ ] Settings middle: file name, folder, range (whole timeline, in to out, or the region), video and audio settings, separate WAV option.
+- [ ] Checks: missing media, loudness and peaks, unrendered effects with "Render now", disk space.
+- [ ] Summary right in plain words: size, time on this machine, what it plays on, Export / Add to queue.
+- [ ] Queue along the bottom: background exports with progress, time left, pause, cancel; editing continues.
+
+Chapters from labels and one file per label were not picked for 1.0; they wait in "After 1.0" unless you add them.
+
+**Gate 6**
+
+- [ ] Golden-frame test: exported frames match the preview within tolerance on both GPUs.
+- [ ] Audio and video stay in sync to the frame over a 1-hour export.
+- [ ] Every preset plays in a standard media player and uploads to a video site without re-encoding warnings.
+- [ ] Exporting a 10-minute 1440p 60 timeline takes no longer than its real time on either machine with hardware encoding.
+
+## Phase 7 · Color
+
+Phase 7 builds the grading pipeline and the Color page from the mockup: one tool at a time, the picture and one scope, Simple and Advanced wheels, and colours that look the same after export as in the viewer.
+
+**7.1 Pipeline (`render`)**
+
+- [ ] 32-bit float, linear light, on the GPU; input transform per clip (Rec.709, sRGB), output Rec.709.
+- [ ] A grade = an ordered list of nodes (layers) per clip, stored in the project, cached in the render cache.
+- [ ] Operations: exposure, contrast + pivot, temperature / tint, lift / gamma / gain / offset, saturation, highlights, shadows; curves (RGB, per channel, hue vs hue, hue vs saturation, luma vs saturation); HSL qualifier with soft edges; ellipse, rectangle and freehand masks; .cube LUTs with an intensity slider.
+- [ ] Scopes computed on the GPU from the real output: waveform, RGB parade, vectorscope, histogram, plus a one-line plain reading ("nothing is clipped").
+
+**7.2 Auto white balance** (research workflow)
+
+- [ ] Compare at least two statistical methods and one small learned model on facecam and game clips.
+- [ ] Chosen method: several frames across the clip, linear light, ignores clipped, near-black and strongly saturated pixels.
+- [ ] Writes into the temperature and tint sliders; strength slider; the "pick something white" eyedropper overrides it; never runs on its own.
+
+**7.3 Page (as in the mockup)**
+
+- [ ] Large viewport with Compare and Display menus; one scope on the right with a dropdown.
+- [ ] Tool switcher under the picture: Basic, Wheels, Curves, Color range, Masks, Looks; only one shown.
+- [ ] Layer dropdown; Simple / Advanced toggle next to it.
+- [ ] Simple wheels: white balance left, four wheels (Shadows, Midtones, Highlights, Overall) with brightness sliders, tone right. Advanced: large wheels with typed R, G, B and brightness values.
+- [ ] Timeline: video clips with a dot on graded ones, all audio as one view-only bar; Apply to (this clip, all clips with a label, whole timeline), Copy grade, Paste, Match to, Reset.
+- [ ] Transport steps clip by clip as well as frame by frame; shared playhead, edit needle, region and labels from phase 4.
+
+**Gate 7**
+
+- [ ] Golden-frame tests: preview, scopes and export agree within tolerance on both GPUs.
+- [ ] A grade copied to 50 clips applies instantly and plays in real time after caching.
+- [ ] Auto white balance fixes a warm-lit facecam clip and leaves a deliberately tinted game clip almost untouched.
+
+## Phase 8 · Audio
+
+Phase 8 builds the audio engine's effects and the Audio page from the mockup: video preview top left, one effect at a time top right, the clarity check across the middle, and a Timeline / Mixer / Split view at the bottom that scales to dozens of tracks.
+
+**8.1 DSP (`audio`)** (research workflow for the engine)
+
+- [ ] Real-time thread with no allocations or locks; every effect processes fixed-size blocks; tested with a stress run of 32 tracks.
+- [ ] Per track: high-pass filter, parametric EQ with an analyser overlay, compressor (threshold, ratio, attack, release, knee, makeup, gain-reduction meter, plain presets), noise clean-up, ducking (sidechain under dialogue), loudness.
+- [ ] Master: compressor, true-peak limiter; meters for integrated, short-term and true-peak loudness.
+- [ ] Volume and pan automation lines, drawn on clips and tracks.
+
+**8.2 Clarity check**
+
+- [ ] Worker-thread analysis of where tracks share frequencies at the playhead and over the region.
+- [ ] Muddy zones highlighted, explained in plain words, with one-click fixes (lower music under dialogue, cut music around 300 Hz).
+
+**8.3 Sync by sound**
+
+- [ ] Cross-correlate waveforms to line up a separately recorded mic or friend's recording with the game recording; show the offset found and a confidence; one undoable step.
+
+**8.4 Page (as in the mockup)**
+
+- [ ] Top left: video preview with transport. Top right: track dropdown + one-at-a-time switcher (EQ, Compressor, Clean-up, Ducking, Loudness), each with its graph, settings and one plain sentence of what it is doing.
+- [ ] Bottom: Timeline, Mixer, Split toggle; Split side by side by default, stacked as an option; Show filter (all, dialogue, music, SFX and foley, ambience).
+- [ ] Mixer strips: meter that doubles as fader, exact dB box, effect tags, mute, solo; strips scroll sideways, master pinned right.
+- [ ] Shared playhead, edit needle, region, labels, transport and shortcuts from phase 4.
+
+**Gate 8**
+
+- [ ] A noisy recording with game, mic and voice chat streams mixes to −14 LUFS integrated with no true peak over −1 dB.
+- [ ] 32 tracks with effects play without a single audio dropout on either machine.
+- [ ] Sync by sound lines up a separate mic recording to within one frame.
+
+## Phase 9 · Effects library and background removal
+
+Phase 9 fills the Effects side of the Edit page's drawer and ships background removal that holds up on hair and motion; nothing here adds a page.
+
+**9.1 Effects drawer**
+
+- [ ] Media / Effects switch; group list left (Favourites, Recently used, Video transitions, Audio transitions, Titles, Motion, Keying, Stabilise, Blur and censor, Stylise, Overlays, Audio effects).
+- [ ] Larger rows with a preview thumbnail, grouped under collapsible headings; a setting switches to a grid of tiles.
+- [ ] Drag onto a clip or a cut; hovering an effect previews it on the selected clip.
+- [ ] Settings appear in the inspector's Effects section and are tuned on the picture wherever possible.
+
+**9.2 First effects** (each a small GPU shader or DSP module with a test)
+
+- [ ] Transitions: cross dissolve, dip to black/white, wipe, push, zoom; audio crossfade.
+- [ ] Titles: lower third, centred title, end card; text tool from phase 4.
+- [ ] Motion: zoom to a point, shake, smooth pan.
+- [ ] Stabilise (tracking-based), blur and pixelate with a tracked box for censoring names and chat.
+- [ ] Stylise: vignette, film grain, sharpen, glow. Overlays: image and video on top with blend modes.
+
+**9.3 Background removal** (research workflow, `ml`)
+
+- [ ] Evaluate two or three open video-matting models on your own facecam footage; check their licences fit the project.
+- [ ] Run through ONNX Runtime on the GPU (DirectML on Windows, CUDA / ROCm where available), CPU fallback.
+- [ ] High-resolution edge refinement, temporal smoothing with a strength slider, add/remove brushes, edge softness, choke/expand, spill suppression, matte view.
+- [ ] Mattes computed once in the background and stored in the render cache, so playback is real time afterwards.
+
+**Gate 9**
+
+- [ ] Background removal on the difficult-clips set (hair against busy backgrounds, fast motion, low light): no visible flicker and clean hair edges at full resolution.
+- [ ] Every effect works the same in preview and export (golden frames) and undoes cleanly.
+- [ ] The drawer opens and closes without moving anything underneath it.
+
+## Phase 10 · Release 1.0
+
+Phase 10 adds no big features: it polishes, settles the two open decisions, and makes the project ready for strangers to install, use and contribute to.
+
+**Decisions that must be made before the first public release**
+
+- [ ] App name: Kiria, confirmed free in TMview (classes 9 and 42, EU, Norway, UK, US), domain and GitHub organisation secured, set in `crates/brand` (one-line change), icon made.
+- [x] Licence: GPL-3.0-or-later chosen and `LICENSE` added (November 2026); FFmpeg build checked against it in Phase 1.
+
+**Hardening**
+
+- [ ] Interface scaling for high-resolution screens; label colours checked for colour-blind users.
+- [ ] Fuzzing runs for 24 hours on the demuxer and project parser with no crash.
+- [ ] Media corpus: every file in `test-media/` imports, plays and exports, or fails with a clear explained error.
+- [ ] Memory: a 4-hour editing session on both machines with no growth beyond the cache budgets.
+- [ ] Every error message read through once for plain wording and a working fix button.
+
+**Release checklist**
+
+- [ ] `README.md` with screenshots, install steps and system requirements; `CONTRIBUTING.md`; every folder README current; `CLAUDE.md` current.
+- [ ] Code-signing certificate in place for Windows; AppImage tested on two Linux distributions.
+- [ ] Changelog from 0.1 to 1.0; tag `v1.0.0` on the Stable channel.
+- [ ] Manual smoke test on both machines: install, launcher, import, cut, grade, key, mix, export, update to a 1.0.1 test build.
+
+## After 1.0
+
+Ideas that are agreed as worth doing but deliberately not in 1.0. Anything new that comes up during the build goes here first.
+
+- Automatic captions and edit by transcript.
+- Chapters from timeline labels; one exported file per label.
+- macOS build.
+- HDR and camera log footage.
+- Multicam editing.
+- Plugin API.
+- Working on the same project together (sync, shared libraries).

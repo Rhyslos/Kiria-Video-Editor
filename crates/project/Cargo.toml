@@ -1,0 +1,13 @@
+[package]
+name = "project"
+description = "The project model, edit commands, undo/redo and autosave."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+
+[lints]
+workspace = true

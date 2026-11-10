@@ -1,0 +1,14 @@
+/target
+**/*.rs.bk
+
+# Test recordings are large and shared outside git; only the manifest is tracked.
+/test-media/*
+!/test-media/MANIFEST.md
+!/test-media/README.md
+
+# Editor and OS clutter
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
