@@ -9,7 +9,7 @@ Phase 2 in progress. Done: the project browser (folder tree, project grid, searc
 ## Behaviour
 
 1. Logs to `<data folder>/logs/launcher.<date>.log` (no crash detection; that belongs to the editor).
-1. In an installed copy, installs an update downloaded on an earlier run (`updater::apply`), checking its signature and checksum again first. If the new version brings a newer launcher, that is swapped in and started instead, with the same arguments. The window then says "Updated to x.y.z"; a failure is shown in the error strip and the old version keeps working.
+1. In an installed copy, installs an update downloaded on an earlier run (`updater::apply`), checking its signature and checksum again first. The launcher itself is replaced later, once the new version has started properly, so a broken update can never take the recovery with it. Only when the update's manifest needs a newer launcher is it swapped in at once (after its `--self-test`) and started instead, with the same arguments. The window then says "Updated to x.y.z"; a failure is shown in the error strip and the old version keeps working.
 2. With a project file as argument (`launcher trip.kiria`), starts the editor with it at once, lists it for next time and checks for updates. Being offline never delays this.
 3. Otherwise opens the browser window:
    - **Top bar** from `ui-kit` (`TitleBar`): logo and name centred, settings on the right.

@@ -7,8 +7,11 @@
 //! 2. [`install`] puts it next to the current version (never over it) and
 //!    switches the `current` file to it in one rename. On Linux the AppImage
 //!    file is replaced in one rename instead.
-//! 3. [`replace_launcher`] swaps in the new version's launcher when it is
-//!    newer than the running one, so launcher changes arrive too.
+//! 3. [`replace_launcher`] swaps in the new version's launcher, after checking
+//!    that it runs. This is a separate, rarer step: it happens once the new
+//!    version has started properly (`crate::health`), or straight away when
+//!    the update's manifest needs a newer launcher ([`needs_newer_launcher`]).
+//!    The replaced launcher is kept aside until the new one has run.
 //!
 //! Earlier versions are kept for rolling back; [`crate::health`] removes all
 //! but the two newest once the new version has started properly.
@@ -232,9 +235,60 @@ pub fn prune(layout: &Layout, keep: &[&str]) {
     }
 }
 
+/// Whether `ready` says it needs a newer launcher than `own_version`.
+pub fn needs_newer_launcher(ready: &ReadyUpdate, own_version: &str) -> bool {
+    match (
+        Version::parse(&ready.manifest.min_launcher_version),
+        Version::parse(own_version),
+    ) {
+        (Ok(needed), Ok(own)) => needed > own,
+        _ => false,
+    }
+}
+
+/// How long a new launcher may take to answer its self-test.
+const SELF_TEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Runs `launcher --self-test` and checks that it answers.
+fn self_test(launcher: &Path) -> diag::Result<()> {
+    let failed = |why: String| {
+        install_failed(why)
+            .fix("Nothing changed: the current launcher keeps working. The app tries again next time.")
+    };
+    let mut child = std::process::Command::new(launcher)
+        .arg("--self-test")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| failed(format!("The new launcher could not be started ({e}).")))?;
+    let deadline = std::time::Instant::now() + SELF_TEST_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return Ok(()),
+            Ok(Some(status)) => {
+                return Err(failed(format!(
+                    "The new launcher failed its self-test ({status})."
+                )));
+            }
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                return Err(failed("The new launcher didn't answer its self-test.".into()));
+            }
+            Err(e) => {
+                return Err(failed(format!(
+                    "The new launcher's self-test could not be checked ({e})."
+                )));
+            }
+        }
+    }
+}
+
 /// Swaps in the current version's launcher if it is newer than the running one
-/// (`own_version`). Returns true when it did; the caller should then start the
-/// new launcher and exit.
+/// (`own_version`) and passes its self-test. Returns true when it did; the new
+/// launcher is used from the next start (or restart).
 pub fn replace_launcher(layout: &Layout, own_version: &str) -> diag::Result<bool> {
     let Some(current) = layout.current_version() else {
         return Ok(false);
@@ -247,6 +301,7 @@ pub fn replace_launcher(layout: &Layout, own_version: &str) -> diag::Result<bool
     if !newer || !new.is_file() {
         return Ok(false);
     }
+    self_test(&new)?;
     let exe = layout.root().join(launcher_file_name());
     let old = layout.root().join(old_launcher_name());
     let failed = || {
@@ -412,6 +467,15 @@ mod tests {
         assert!(!tmp.path().join("evil.txt").exists());
     }
 
+    /// A stand-in launcher: a script that answers the self-test with `code`.
+    #[cfg(unix)]
+    fn fake_launcher(path: &Path, code: i32) {
+        use std::os::unix::fs::PermissionsExt;
+        fs::write(path, format!("#!/bin/sh\nexit {code}\n")).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[cfg(unix)]
     #[test]
     fn a_newer_launcher_is_swapped_in_and_the_old_one_parked() {
         let tmp = tempfile::tempdir().unwrap();
@@ -419,7 +483,7 @@ mod tests {
         fs::write(tmp.path().join(launcher_file_name()), "running launcher").unwrap();
         let dir = layout.version_dir("0.2.0");
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join(launcher_file_name()), "new launcher").unwrap();
+        fake_launcher(&dir.join(launcher_file_name()), 0);
         set_current(&layout, "0.2.0").unwrap();
 
         assert!(
@@ -427,13 +491,63 @@ mod tests {
             "same version: nothing to do"
         );
         assert!(replace_launcher(&layout, "0.1.0").unwrap());
-        assert_eq!(
-            fs::read(tmp.path().join(launcher_file_name())).unwrap(),
-            b"new launcher"
+        assert!(
+            fs::read_to_string(tmp.path().join(launcher_file_name()))
+                .unwrap()
+                .starts_with("#!/bin/sh")
         );
         assert!(tmp.path().join(old_launcher_name()).exists());
         remove_old_launcher(&layout);
         assert!(!tmp.path().join(old_launcher_name()).exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_launcher_that_fails_its_self_test_is_not_swapped_in() {
+        let tmp = tempfile::tempdir().unwrap();
+        let layout = Layout::at(tmp.path());
+        fs::write(tmp.path().join(launcher_file_name()), "running launcher").unwrap();
+        let dir = layout.version_dir("0.2.0");
+        fs::create_dir_all(&dir).unwrap();
+        fake_launcher(&dir.join(launcher_file_name()), 3);
+        set_current(&layout, "0.2.0").unwrap();
+        assert!(replace_launcher(&layout, "0.1.0").is_err());
+        assert_eq!(
+            fs::read_to_string(tmp.path().join(launcher_file_name())).unwrap(),
+            "running launcher"
+        );
+    }
+
+    #[test]
+    fn a_launcher_that_cannot_run_is_not_swapped_in() {
+        let tmp = tempfile::tempdir().unwrap();
+        let layout = Layout::at(tmp.path());
+        fs::write(tmp.path().join(launcher_file_name()), "running launcher").unwrap();
+        let dir = layout.version_dir("0.2.0");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(launcher_file_name()), "not a program").unwrap();
+        set_current(&layout, "0.2.0").unwrap();
+        assert!(replace_launcher(&layout, "0.1.0").is_err());
+        assert_eq!(
+            fs::read_to_string(tmp.path().join(launcher_file_name())).unwrap(),
+            "running launcher"
+        );
+    }
+
+    #[test]
+    fn a_manifest_can_require_a_newer_launcher() {
+        let ready = |min: &str| ReadyUpdate {
+            version: "0.3.0".into(),
+            package: PathBuf::new(),
+            manifest: Manifest {
+                version: "0.3.0".into(),
+                channel: Channel::Stable,
+                min_launcher_version: min.into(),
+                files: vec![],
+            },
+        };
+        assert!(!needs_newer_launcher(&ready("0.1.0"), "0.2.0"));
+        assert!(needs_newer_launcher(&ready("0.3.0"), "0.2.0"));
     }
 
     #[test]

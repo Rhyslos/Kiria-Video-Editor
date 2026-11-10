@@ -93,7 +93,7 @@ pub fn manifest(args: &[String]) -> Result<(), String> {
     let manifest = Manifest {
         version: version.trim_start_matches('v').to_owned(),
         channel,
-        min_launcher_version: env!("CARGO_PKG_VERSION").to_owned(),
+        min_launcher_version: brand::MIN_LAUNCHER_VERSION.to_owned(),
         files,
     };
     std::fs::write(out, manifest.to_bytes()).map_err(|e| format!("Can't write {out}: {e}"))?;
