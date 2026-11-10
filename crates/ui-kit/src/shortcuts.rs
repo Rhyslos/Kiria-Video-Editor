@@ -31,6 +31,8 @@ pub enum Action {
     SelectTool,
     BladeTool,
     ToggleSnapping,
+    ToggleLoop,
+    ClearRegion,
 }
 
 impl Action {
@@ -57,6 +59,8 @@ impl Action {
             Action::SelectTool => "Select tool: pick, move and trim clips",
             Action::BladeTool => "Blade tool: cut clips where clicked",
             Action::ToggleSnapping => "Snapping on or off",
+            Action::ToggleLoop => "Loop playback inside the region",
+            Action::ClearRegion => "Clear the region",
         }
     }
 }
@@ -150,6 +154,7 @@ impl Default for ShortcutTable {
                 (Action::SelectTool, Shortcut::key(Key::V)),
                 (Action::BladeTool, Shortcut::key(Key::B)),
                 (Action::ToggleSnapping, Shortcut::key(Key::N)),
+                (Action::ToggleLoop, Shortcut::key(Key::L)),
             ],
         }
     }

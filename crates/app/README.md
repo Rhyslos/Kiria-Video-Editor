@@ -32,6 +32,7 @@ The last three are for CI and for checking the look without a screen (`xvfb-run`
 | `src/editor.rs` | `Editor`: the window's state, shortcuts, autosave hand-off to workers, pages, Settings and Search windows, the automated runs |
 | `src/import.rs` | `Importer`: the file dialog (its own thread), reading dropped or chosen files on workers, and applying them in the order chosen; `summary` describes an imported file in one line |
 | `src/timeline_panel.rs` | The open timeline as the timeline widget's data (linked clips show selected together), label colours, the selection |
+| `src/looping.rs` | Looping playback inside the region (L): where it starts and when it jumps back |
 | `src/waveforms.rs` | Waveforms for the timeline: each file's sound stream read once on a worker, kept for the session |
 | `src/viewer.rs` | The Edit page's viewer: asks the engine for the picture at the playhead (only when something changed) and shows the newest; the scrub bar and preview quality under it |
 | `src/settings.rs` | `Settings` (theme, resource budgets, "Edit at the playhead"), saved as `settings.ron` in the app's data folder |
