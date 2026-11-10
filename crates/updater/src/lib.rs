@@ -9,11 +9,13 @@
 //! - [`apply`] installs a verified download beside the current version and
 //!   switches to it, and swaps in a newer launcher.
 //!
-//! Rolling back a version that fails to start arrives in Phase 3.
+//! - [`health`] notices a version that fails to start and rolls back to the
+//!   previous one, which it never offers again.
 
 pub mod apply;
 pub mod download;
 pub mod fetch;
+pub mod health;
 pub mod install;
 pub mod manifest;
 pub mod prefs;

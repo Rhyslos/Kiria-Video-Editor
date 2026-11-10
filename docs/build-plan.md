@@ -261,14 +261,14 @@ Automatic test builds (added in Phase 2 so features can be tried through updates
 **3.1 Side-by-side install**
 
 - [x] New version unpacks to `versions/<new>/`; a small `current` pointer file switches only after unpacking and verifying. (`updater::apply`; the signature and checksum are checked again right before installing.)
-- [ ] Keep the previous two versions; delete older ones after a successful start. (For now the previous version is kept and older ones are deleted when an update installs; counting successful starts comes with the health check.)
+- [x] Keep the previous two versions; delete older ones after a successful start.
 - [x] "Use on next start" by default; "Update now" only when no project is open. ("Restart to update" in the launcher, which never has a project open.)
 
 **3.2 Health check and rollback**
 
-- [ ] The editor writes "started OK" once its first window has drawn; the launcher waits up to 20 seconds.
-- [ ] Two failed starts in a row: switch the pointer back, mark the version as bad, explain what happened, offer to send the crash report.
-- [ ] A bad version is never offered again; the next good release is.
+- [x] The editor writes "started OK" once its first window has drawn; the launcher waits up to 20 seconds.
+- [x] Two failed starts in a row: switch the pointer back, mark the version as bad, explain what happened, offer to send the crash report. ("Report the problem" opens a new GitHub issue; "Show crash reports" opens the folder.)
+- [x] A bad version is never offered again; the next good release is.
 
 **3.3 Launcher self-update**
 

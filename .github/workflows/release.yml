@@ -20,6 +20,11 @@ on:
         description: "Release tag to publish, e.g. v0.1.0 (leave empty for a test run without a release)"
         required: false
         default: ""
+      crash_test:
+        description: "Publish a deliberately broken beta whose editor crashes on start (tests rollback; leave the tag empty)"
+        type: boolean
+        required: false
+        default: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -30,6 +35,7 @@ env:
   INPUT_TAG: ${{ inputs.tag }}
   EVENT: ${{ github.event_name }}
   RUN_NUMBER: ${{ github.run_number }}
+  CRASH_TEST: ${{ inputs.crash_test }}
 
 jobs:
   windows:
@@ -70,8 +76,10 @@ jobs:
           if (-not (Test-Path "$dir/versions/$env:APP_VERSION/launcher.exe")) { throw "The version folder has no launcher for updates." }
           if ((Get-Content "$dir/current") -ne $env:APP_VERSION) { throw "The current-version file is wrong." }
           $editor = "$dir/versions/$env:APP_VERSION/editor.exe"
-          $run = Start-Process -Wait -PassThru $editor -ArgumentList "--smoke-test"
-          if ($run.ExitCode -ne 0) { throw "The installed editor failed its smoke test (exit $($run.ExitCode))." }
+          if ($env:BUILD_CRASH_TEST -ne "1") {
+            $run = Start-Process -Wait -PassThru $editor -ArgumentList "--smoke-test"
+            if ($run.ExitCode -ne 0) { throw "The installed editor failed its smoke test (exit $($run.ExitCode))." }
+          }
           Start-Process -Wait "$dir/unins000.exe" -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES"
           Start-Sleep -Seconds 3
           if (Test-Path "$dir/versions") { throw "Uninstalling left the versions folder behind." }
@@ -100,6 +108,7 @@ jobs:
       - name: Build the AppImage
         run: packaging/linux/build-appimage.sh
       - name: Start the editor from the AppImage
+        if: env.BUILD_CRASH_TEST != '1'
         run: |
           cd target/dist
           ./"$APP_NAME-$APP_VERSION-linux-x86_64.AppImage" --appimage-extract >/dev/null
@@ -148,6 +157,9 @@ jobs:
           notes=(--notes-file CHANGELOG.md)
           if [ "$EVENT" = push ] && [ "$REF_TYPE" = branch ]; then
             notes=(--notes "Automatic test build of ${{ github.sha }}: $(git log -1 --format=%s ${{ github.sha }})")
+          fi
+          if [ "${BUILD_CRASH_TEST:-}" = 1 ]; then
+            notes=(--notes "Deliberately broken test build: its editor crashes on start, so installed copies should switch back to the previous version by themselves and never offer this one again.")
           fi
           # For a hand-started run or a beta the tag is created on this commit.
           gh release create "$RELEASE_TAG" $prerelease --target "${{ github.sha }}" \

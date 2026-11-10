@@ -82,6 +82,19 @@ impl Session {
     }
 }
 
+/// The file the editor writes once its first window is on screen (see `updater::health`).
+pub const STARTED_FILE: &str = "editor.started";
+
+/// The editor's first window is on screen: writes `<version> <process id>`, so
+/// the launcher knows this version starts properly.
+pub fn report_started(data_dir: &Path, version: &str) -> Result<()> {
+    fs::write(data_dir.join(STARTED_FILE), format!("{version} {}\n", std::process::id())).or_explain(|| {
+        AppError::new("The editor can't report that it started")
+            .why(format!("Writing to {} failed.", data_dir.display()))
+            .fix("Check that the disk is not full. The editor works; only the update safety check is affected.")
+    })
+}
+
 /// What the marker of a run that hasn't closed says.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnfinishedRun {

@@ -11,6 +11,8 @@ pub struct UpdatePrefs {
     pub channel: Channel,
     /// A version the person chose to skip; newer versions are still offered.
     pub skipped_version: Option<String>,
+    /// Versions that failed to start and were rolled back; never offered again.
+    pub bad_versions: Vec<String>,
 }
 
 impl Default for UpdatePrefs {
@@ -19,6 +21,7 @@ impl Default for UpdatePrefs {
             automatic: true,
             channel: Channel::Stable,
             skipped_version: None,
+            bad_versions: Vec::new(),
         }
     }
 }
@@ -60,6 +63,7 @@ mod tests {
             automatic: false,
             channel: Channel::Beta,
             skipped_version: Some("0.2.0".into()),
+            bad_versions: vec!["0.1.5".into()],
         };
         prefs.save(tmp.path()).unwrap();
         assert_eq!(UpdatePrefs::load(tmp.path()), prefs);

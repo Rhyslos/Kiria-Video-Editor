@@ -51,6 +51,11 @@ fn main() -> ExitCode {
 
     // A verified update downloaded last time is installed before anything opens.
     let mut start_notes = Vec::new();
+    if let Some(dirs) = &dirs
+        && let Some(notice) = updater::health::RollbackNotice::take(&dirs.data)
+    {
+        start_notes.push(Note::RolledBack(notice));
+    }
     if options.demo.is_none()
         && options.mode == RunMode::Normal
         && let Some(dirs) = &dirs
@@ -100,6 +105,8 @@ enum Installed {
 #[derive(Debug)]
 pub(crate) enum Note {
     Updated(String),
+    /// A version failed to start and the previous one is back.
+    RolledBack(updater::health::RollbackNotice),
     Problem(diag::AppError),
 }
 
@@ -117,13 +124,12 @@ fn install_waiting_update(data_dir: &Path) -> diag::Result<Installed> {
     }
     let downloads = data_dir.join("downloads");
     let mut installed = None;
-    if let Some(ready) = apply::pending(&downloads, &current) {
+    let bad = UpdatePrefs::load(data_dir).bad_versions;
+    if let Some(ready) = apply::pending(&downloads, &current, &bad) {
         tracing::info!(from = %current, to = %ready.version, "installing an update");
         apply::install(&kind, &ready)?;
+        // Earlier versions stay until the new one has started properly (health::after_start).
         apply::forget_download(&downloads, &ready.version);
-        if let InstallKind::Folders(layout) = &kind {
-            apply::prune(layout, &[&ready.version, &current]);
-        }
         installed = Some(ready.version);
     }
     let restart = match &kind {
@@ -171,10 +177,11 @@ fn browse(data_dir: std::path::PathBuf, options: Options, notes: Vec<Note>) -> E
     let report = Arc::new(Mutex::new(RunReport::default()));
     let handoff = Arc::new(Mutex::new(None));
     let restart = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let editor = Arc::new(Mutex::new(None));
     let automated = options.mode != RunMode::Normal;
     let start = Start {
         theme: saved_theme(&data_dir),
-        data_dir,
+        data_dir: data_dir.clone(),
         check_updates: options.check_updates,
         launch_editor: !automated && options.demo.is_none(),
         mode: options.mode,
@@ -183,6 +190,7 @@ fn browse(data_dir: std::path::PathBuf, options: Options, notes: Vec<Note>) -> E
         notes,
         restart: Arc::clone(&restart),
         update_preview: options.update_window,
+        editor: Arc::clone(&editor),
     };
     let window_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -212,6 +220,11 @@ fn browse(data_dir: std::path::PathBuf, options: Options, notes: Vec<Note>) -> E
     if let Some(updates) = updates {
         updates.finish_download();
     }
+    // The editor was started: make sure this version actually opens.
+    let child = editor.lock().unwrap_or_else(|p| p.into_inner()).take();
+    if let Some(child) = child {
+        watch_editor(&data_dir, child);
+    }
     if restart.load(std::sync::atomic::Ordering::Relaxed) {
         return restart_launcher(false);
     }
@@ -228,13 +241,16 @@ fn browse(data_dir: std::path::PathBuf, options: Options, notes: Vec<Note>) -> E
 
 /// Starts the editor with a project given on the command line, then checks for updates.
 fn open_directly(project: &Path, data_dir: Option<&Path>, check_updates: bool) -> ExitCode {
-    if let Err(err) = editor_start::start_editor(&[project.as_os_str()]) {
-        tracing::error!("{}", err.report());
-        eprintln!("{}", err.report());
-        return ExitCode::FAILURE;
-    }
     let Some(data_dir) = data_dir else {
-        return ExitCode::SUCCESS;
+        return ExitCode::FAILURE;
+    };
+    let child = match editor_start::start_editor(data_dir, &[project.as_os_str()]) {
+        Ok(child) => child,
+        Err(err) => {
+            tracing::error!("{}", err.report());
+            eprintln!("{}", err.report());
+            return ExitCode::FAILURE;
+        }
     };
     // Best effort: list it so it shows up in the browser next time.
     if let Ok(index) = project_index::Index::open(&data_dir.join(project_index::INDEX_FILE_NAME))
@@ -245,7 +261,32 @@ fn open_directly(project: &Path, data_dir: Option<&Path>, check_updates: bool) -
     if check_updates {
         update_in_background(data_dir);
     }
+    watch_editor(data_dir, child);
     ExitCode::SUCCESS
+}
+
+/// Waits (up to 20 seconds, no window) for the editor to report that it
+/// started. Repeated failures switch back to the previous version; the
+/// launcher then opens again to explain.
+fn watch_editor(data_dir: &Path, mut child: std::process::Child) {
+    use updater::apply::InstallKind;
+    use updater::health;
+    let InstallKind::Folders(layout) = InstallKind::detect(&install_root()) else {
+        return;
+    };
+    let Some(version) = layout.current_version() else {
+        return;
+    };
+    let outcome = health::watch_start(data_dir, &mut child, health::START_TIMEOUT);
+    tracing::info!(?outcome, %version, "editor start");
+    match health::after_start(data_dir, &layout, &version, outcome) {
+        Ok(Some(notice)) => {
+            tracing::warn!(failed = %notice.failed, restored = %notice.restored, "rolled back");
+            restart_launcher(false);
+        }
+        Ok(None) => {}
+        Err(err) => tracing::warn!("{}", err.report()),
+    }
 }
 
 /// Checks for a newer version and, with automatic updates on, downloads and verifies it.
