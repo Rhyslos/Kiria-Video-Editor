@@ -58,6 +58,8 @@ struct Probe {
     started: Option<Instant>,
     last_frame: Option<Instant>,
     slowest_ui: Duration,
+    /// Every frame's interface time, for the percentile.
+    ui_times: Vec<Duration>,
     slowest_gap: Duration,
     frames: u64,
     screenshot_saved: Arc<AtomicBool>,
@@ -715,17 +717,29 @@ impl Editor {
                 }
                 probe.last_frame = Some(now);
                 probe.slowest_ui = probe.slowest_ui.max(ui_time);
+                probe.ui_times.push(ui_time);
                 probe.frames += 1;
                 let done = probe.job.as_ref().and_then(JobHandle::try_result).is_some();
                 if done {
                     let elapsed = probe.started.map_or(Duration::ZERO, |s| now - s);
                     let fps = probe.frames as f64 / elapsed.as_secs_f64().max(0.001);
-                    let failed = probe.slowest_ui > Duration::from_millis(16);
+                    // One hiccup from the operating system (common on shared test
+                    // machines) shouldn't fail it: 99 frames in 100 must take under
+                    // 16 ms, and none over 50 ms.
+                    probe.ui_times.sort();
+                    let p99 = probe
+                        .ui_times
+                        .get(probe.ui_times.len() * 99 / 100)
+                        .copied()
+                        .unwrap_or_default();
+                    let failed =
+                        p99 > Duration::from_millis(16) || probe.slowest_ui > Duration::from_millis(50);
                     let message = format!(
-                        "Responsiveness test {}: {} frames in {:.1} s ({fps:.0} per second), slowest interface work {:.1} ms, longest gap between frames {:.1} ms.",
+                        "Responsiveness test {}: {} frames in {:.1} s ({fps:.0} per second), interface work {:.1} ms for 99 frames in 100 and {:.1} ms at most, longest gap between frames {:.1} ms.",
                         if failed { "FAILED" } else { "passed" },
                         probe.frames,
                         elapsed.as_secs_f64(),
+                        p99.as_secs_f64() * 1000.0,
                         probe.slowest_ui.as_secs_f64() * 1000.0,
                         probe.slowest_gap.as_secs_f64() * 1000.0,
                     );

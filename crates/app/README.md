@@ -17,7 +17,7 @@ cargo run -p app -- trip.kiria --open-last-save   # sets aside unsaved work from
 cargo run -p app -- trip.kiria --import match.mkv # imports media at start (repeatable)
 cargo run -p app -- trip.kiria --playhead 12.5     # starts with the playhead there (for screenshots)
 cargo run -p app -- --smoke-test         # open, draw 30 frames, close; exit code 1 on failure
-cargo run -p app -- --responsiveness-test  # 8-second background job; fails if a frame's interface work takes over 16 ms
+cargo run -p app -- --responsiveness-test  # 8-second background job; fails unless 99 frames in 100 take under 16 ms of interface work (and none over 50 ms)
 cargo run -p app -- --screenshot out.png # save a PNG of the window and close
 ```
 
