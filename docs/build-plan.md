@@ -29,8 +29,8 @@ The platform (project file, errors, installs, safe updates) comes before any pag
 
 | # | Phase | Builds | Gate (short) | Status |
 | --- | --- | --- | --- | --- |
-| 0 | Foundations | Workspace, engine core, errors, resources, app shell | Empty app opens, autosaves, recovers from a forced crash | In progress |
-| 1 | Installer and updates | Signed builds, installers, GitHub releases | A tagged build installs on a clean Windows and Linux machine | Not started |
+| 0 | Foundations | Workspace, engine core, errors, resources, app shell | Empty app opens, autosaves, recovers from a forced crash | Gate passed |
+| 1 | Installer and updates | Signed builds, installers, GitHub releases | A tagged build installs on a clean Windows and Linux machine | In progress |
 | 2 | Launcher | Project browser, folders, update panel | Create, find and open projects; manual update works | Not started |
 | 3 | Update safety | Side-by-side installs, rollback, project migrations | A broken update rolls back by itself; old projects open | Not started |
 | 4 | Edit page | Media pipeline, playback, timeline, editing, inspector | Cut a 20-minute game recording smoothly at 1440p 60 | Not started |
@@ -178,11 +178,11 @@ Phase 0 builds everything later phases stand on and that is painful to add after
 
 **Gate 0**
 
-- [ ] A new project opens, a dummy command changes it, undo and redo work, the file saves and reopens.
-- [ ] Killing the process mid-edit and reopening recovers every change.
-- [ ] An old-format sample project migrates and opens.
-- [ ] The window stays at the display refresh rate while a fake 8-second job runs in the background.
-- [ ] CI is green on Windows and Linux.
+- [x] A new project opens, a dummy command changes it, undo and redo work, the file saves and reopens.
+- [x] Killing the process mid-edit and reopening recovers every change.
+- [x] An old-format sample project migrates and opens.
+- [x] The window stays at the display refresh rate while a fake 8-second job runs in the background. (`--responsiveness-test`: slowest interface work 12.5 ms per frame on a software renderer; runs in CI.)
+- [x] CI is green on Windows and Linux.
 
 ## Phase 1 · Installer and updates
 
@@ -216,9 +216,9 @@ Phase 1 makes every tagged commit a signed, installable release that the app can
 **Gate 1**
 
 - [ ] Tag `v0.1.0`: CI builds, signs and drafts a release with no manual steps.
-- [ ] The installer works on a clean Windows 11 machine and the AppImage on a clean Linux machine.
-- [ ] A tampered download is refused with a clear message.
-- [ ] With the network unplugged the app still starts within 4 seconds.
+- [ ] The installer works on a clean Windows 11 machine and the AppImage on a clean Linux machine. (Automated: every release installs, starts and uninstalls on a fresh Windows runner and starts the AppImage on Ubuntu 22.04. Still to do: your own PCs.)
+- [x] A tampered download is refused with a clear message.
+- [x] With the network unplugged the app still starts within 4 seconds. (The launcher starts the editor before checking; measured under 0.1 s with no network.)
 
 ## Phase 2 · Launcher
 
