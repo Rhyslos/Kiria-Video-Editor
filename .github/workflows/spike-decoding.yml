@@ -42,11 +42,11 @@ jobs:
           target/release/decode-bench.exe --frames 120 --seeks 5 smoke.mp4
       - name: Package
         run: |
-          mkdir -p pkg/ffmpeg
-          cp spikes/decoding/target/release/decode-bench.exe spikes/decoding/run.ps1 spikes/decoding/run.bat pkg/
-          cp "$(cygpath -u "$FFMPEG_DIR")"/bin/* pkg/ffmpeg/
-          cp "$(cygpath -u "$FFMPEG_DIR")"/bin/*.dll pkg/
-          cp "$(cygpath -u "$FFMPEG_DIR")"/LICENSE* pkg/ffmpeg/ 2>/dev/null || true
+          mkdir -p pkg/bin
+          cp spikes/decoding/run.ps1 spikes/decoding/run.bat pkg/
+          cp spikes/decoding/target/release/decode-bench.exe pkg/bin/
+          cp "$(cygpath -u "$FFMPEG_DIR")"/bin/ffmpeg.exe "$(cygpath -u "$FFMPEG_DIR")"/bin/*.dll pkg/bin/
+          cp "$(cygpath -u "$FFMPEG_DIR")"/LICENSE* pkg/bin/ 2>/dev/null || true
       - uses: actions/upload-artifact@v4
         with:
           name: decode-bench-windows

@@ -4,7 +4,7 @@
 $ErrorActionPreference = "Stop"
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $here
-$env:PATH = "$here\ffmpeg;$env:PATH"
+$env:PATH = "$here\bin;$env:PATH"
 $clips = Join-Path $here "clips"
 New-Item -ItemType Directory -Force -Path $clips, (Join-Path $here "recordings") | Out-Null
 
@@ -26,7 +26,7 @@ $files = @(Get-ChildItem $clips -File | ForEach-Object FullName)
 $files += @(Get-ChildItem (Join-Path $here "recordings") -File -Include *.mp4,*.mkv,*.mov -Recurse | ForEach-Object FullName)
 
 Write-Host "Measuring $($files.Count) clips. This takes a few minutes; leave the PC alone meanwhile."
-& (Join-Path $here "decode-bench.exe") @files | Tee-Object -FilePath (Join-Path $here "results.md")
+& (Join-Path $here "bin\decode-bench.exe") @files | Tee-Object -FilePath (Join-Path $here "results.md")
 Write-Host ""
 Write-Host "Done. The results are in results.md. Send that file back."
 Read-Host "Press Enter to close"
