@@ -110,6 +110,7 @@ pub struct Browser {
     refresh: Option<Task<diag::Result<HashMap<PathBuf, usize>>>>,
     /// Projects with unsaved changes left by a crash, and how many.
     recoverable: HashMap<PathBuf, usize>,
+    thumbnails: crate::thumbnails::Thumbnails,
     recovery: Option<RecoveryDialog>,
     /// Shown once after a version failed to start and the previous one came back.
     rollback: Option<updater::health::RollbackNotice>,
@@ -174,6 +175,7 @@ impl Browser {
             status: String::new(),
             refresh: None,
             recoverable: HashMap::new(),
+            thumbnails: Default::default(),
             recovery: None,
             rollback: None,
             picker: None,
@@ -802,6 +804,7 @@ impl Browser {
             self.selected.as_deref(),
             &self.folders,
             &self.recoverable,
+            &mut self.thumbnails,
             project_index::now(),
         );
         self.card_actions(&ctx, actions);

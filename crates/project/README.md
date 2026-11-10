@@ -17,6 +17,7 @@ Done (Phases 0.3 and 0.4): model, project file, commands, undo/redo, autosave jo
 | `src/command.rs` | `Command`: every change (import, place, move, remove or ripple-remove, split, labels, region, edit needle, tracks, media). `apply` returns a new snapshot or an explained error and no change |
 | `src/history.rs` | `History`: unlimited undo and redo as a stack of snapshots |
 | `src/document.rs` | `Document`: an open project on disk. Records every change in the autosave journal, does full saves, and recovers after a crash. Opening an older format makes a backup copy first; a newer one opens read-only (`is_read_only`: changes and saves are refused with an explanation, and nothing is written) |
+| `src/document.rs` (also) | `thumbnail_path`: where the launcher's picture of a project lives (`<file>.thumbnail.png`, beside the journal) |
 | `tests/random_edits.rs` | Property test: random edit sessions with undo/redo stay valid, and journal replay rebuilds the exact project |
 | `tests/samples.rs` + `tests/samples/` | One stored project per released file format; all must keep opening |
 

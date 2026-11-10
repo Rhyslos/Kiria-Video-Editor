@@ -25,6 +25,7 @@ pub enum CardAction {
 }
 
 /// Draws the cards. `now` is the current time in seconds since 1970.
+#[allow(clippy::too_many_arguments)]
 pub fn grid(
     ui: &mut Ui,
     theme: &Theme,
@@ -32,6 +33,7 @@ pub fn grid(
     selected: Option<&Path>,
     folders: &[Folder],
     recoverable: &HashMap<PathBuf, usize>,
+    thumbnails: &mut crate::thumbnails::Thumbnails,
     now: i64,
 ) -> Vec<CardAction> {
     let mut actions = Vec::new();
@@ -52,12 +54,14 @@ pub fn grid(
                     for entry in projects.iter().skip(row * COLUMNS).take(COLUMNS) {
                         let is_selected = selected == Some(entry.path.as_path());
                         let unsaved = recoverable.get(&entry.path).copied().unwrap_or(0);
+                        let picture = thumbnails.get(ui.ctx(), entry).map(|t| t.id());
                         card(
                             ui,
                             theme,
                             entry,
                             is_selected,
                             unsaved,
+                            picture,
                             folders,
                             now,
                             card_width,
@@ -78,6 +82,7 @@ fn card(
     entry: &ProjectEntry,
     selected: bool,
     unsaved: usize,
+    picture: Option<egui::TextureId>,
     folders: &[Folder],
     now: i64,
     width: f32,
@@ -88,16 +93,27 @@ fn card(
     let painter = ui.painter_at(rect.expand(2.0));
     let thumb = Rect::from_min_size(rect.min, vec2(width, thumb_height));
 
-    // Thumbnail. Real pictures arrive once the editor writes them on save.
+    // Thumbnail: the picture the editor wrote on its last save, or the
+    // settings until there is one.
     painter.rect_filled(thumb, 8.0, theme.viewport);
     let settings = entry.settings_label();
-    painter.text(
-        thumb.center(),
-        Align2::CENTER_CENTER,
-        settings.as_deref().unwrap_or("—"),
-        FontId::proportional(13.0),
-        theme.faint,
-    );
+    match picture {
+        Some(texture) => {
+            painter.add(
+                egui::epaint::RectShape::filled(thumb, 8.0, Color32::WHITE)
+                    .with_texture(texture, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0))),
+            );
+        }
+        None => {
+            painter.text(
+                thumb.center(),
+                Align2::CENTER_CENTER,
+                settings.as_deref().unwrap_or("—"),
+                FontId::proportional(13.0),
+                theme.faint,
+            );
+        }
+    }
     if let Some(length) = entry.length {
         let text = time_text::duration(length.as_secs_f64().max(0.0) as u64);
         let galley = painter.layout_no_wrap(text, ui_kit::fonts::mono(11.0), theme.text);
