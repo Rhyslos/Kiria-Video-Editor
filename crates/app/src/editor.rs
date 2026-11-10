@@ -37,6 +37,9 @@ pub struct Editor {
     importer: Importer,
     import_requested: bool,
     viewer: Viewer,
+    playback: Option<engine::Playback>,
+    /// `--play`: start playing as soon as the imports are in.
+    play_when_ready: bool,
     show_timeline_settings: bool,
     show_settings: bool,
     show_diagnostics: bool,
@@ -84,6 +87,7 @@ impl Editor {
         }
         let imports = project.as_ref().map(|p| p.import.clone()).unwrap_or_default();
         let start_at = project.as_ref().and_then(|p| p.playhead);
+        let play_when_ready = project.as_ref().is_some_and(|p| p.play);
         let document = project.and_then(|p| match open_or_create(&p.path, p.recovery) {
             Ok(doc) => {
                 if doc.is_read_only() {
@@ -118,6 +122,8 @@ impl Editor {
             importer,
             import_requested: false,
             viewer: Viewer::new(&cc.egui_ctx, start_at),
+            playback: None,
+            play_when_ready,
             show_timeline_settings: false,
             show_settings: false,
             show_diagnostics: false,
@@ -165,9 +171,19 @@ impl Editor {
                 Ok(())
             }
             Action::PlayPause => {
-                self.playing = !self.playing;
-                self.jobs.set_playing(self.playing);
-                self.status = if self.playing { "Playing" } else { "Paused" }.into();
+                match self.playback.take() {
+                    // Pause: back to where playback started, to watch it again.
+                    Some(playback) => self.viewer.playhead = playback.started_at(),
+                    None => self.start_playback(),
+                }
+                self.after_play_change();
+                Ok(())
+            }
+            Action::Stop => {
+                if let Some(playback) = self.playback.take() {
+                    self.viewer.playhead = self.snapped(playback.position());
+                }
+                self.after_play_change();
                 Ok(())
             }
             Action::Search => {
@@ -205,6 +221,63 @@ impl Editor {
             None => Err(AppError::new("No project is open")
                 .why("This needs a project.")
                 .fix("Open a project from the launcher.")),
+        }
+    }
+
+    fn start_playback(&mut self) {
+        let Some(document) = &self.document else { return };
+        let p = document.project();
+        let Some(seq) = p.active() else { return };
+        let length = seq.length();
+        if length == Time::ZERO {
+            return;
+        }
+        // From the end, play from the start again.
+        let last = (length - seq.settings.frame_rate.frame_duration()).max(Time::ZERO);
+        let from = if self.viewer.playhead >= last {
+            Time::ZERO
+        } else {
+            self.viewer.playhead
+        };
+        self.viewer.playhead = from;
+        self.playback = Some(engine::Playback::start(p.clone(), seq.id, from));
+    }
+
+    fn after_play_change(&mut self) {
+        self.playing = self.playback.is_some();
+        self.jobs.set_playing(self.playing);
+        let interval = self
+            .document
+            .as_ref()
+            .and_then(|d| d.project().active())
+            .map(|s| 1.0 / s.settings.frame_rate.as_f64());
+        self.viewer
+            .set_playing(if self.playing { interval } else { None });
+    }
+
+    /// `at` on a frame of the open timeline.
+    fn snapped(&self, at: Time) -> Time {
+        self.document
+            .as_ref()
+            .and_then(|d| d.project().active())
+            .map_or(at, |s| s.settings.frame_rate.snap(at))
+    }
+
+    /// While playing: the playhead follows the clock, and playback stops at the end.
+    fn follow_playback(&mut self, ctx: &egui::Context) {
+        let Some(playback) = &self.playback else { return };
+        let seq = self.document.as_ref().and_then(|d| d.project().active());
+        let (length, rate) = seq.map_or((Time::ZERO, project::Rate::FPS_60), |s| {
+            (s.length(), s.settings.frame_rate)
+        });
+        let at = playback.position();
+        if at >= length {
+            self.playback = None;
+            self.viewer.go_to(length, rate, length);
+            self.after_play_change();
+        } else {
+            self.viewer.playhead = at;
+            ctx.request_repaint();
         }
     }
 
@@ -385,6 +458,7 @@ impl Editor {
     /// The Edit page until the viewer and the timeline widget arrive: import,
     /// and a plain list of what is on the timeline.
     fn edit_page(&mut self, ui: &mut egui::Ui) {
+        let mut transport_click = None;
         let shortcut = self
             .shortcuts
             .shortcut_for(Action::Import)
@@ -428,8 +502,10 @@ impl Editor {
         } else {
             let quality_before = self.settings.preview_quality;
             let height = (ui.available_height() * 0.6).max(220.0);
-            self.viewer
+            let click = self
+                .viewer
                 .ui(ui, &self.theme, p, &mut self.settings.preview_quality, height);
+            transport_click = click;
             if self.settings.preview_quality != quality_before
                 && let Err(err) = self.settings.save(&self.data_dir)
             {
@@ -473,6 +549,14 @@ impl Editor {
             for media in p.media.values() {
                 ui.label(egui::RichText::new(import::summary(media)).color(self.theme.text_secondary));
             }
+        }
+        if let Some(click) = transport_click {
+            self.run_action(match click {
+                ui_kit::TransportClick::FrameBack => Action::PreviousFrame,
+                ui_kit::TransportClick::FrameForward => Action::NextFrame,
+                ui_kit::TransportClick::PlayPause => Action::PlayPause,
+                ui_kit::TransportClick::Stop => Action::Stop,
+            });
         }
         if !self.status.is_empty() {
             ui.add_space(12.0);
@@ -774,6 +858,11 @@ impl eframe::App for Editor {
             self.run_action(action);
         }
         self.imports(&ctx);
+        if self.play_when_ready && self.importer.busy() == 0 && self.document.is_some() {
+            self.play_when_ready = false;
+            self.run_action(Action::PlayPause);
+        }
+        self.follow_playback(&ctx);
         if let Some(err) = self.viewer.poll(&ctx, self.settings.preview_quality) {
             self.errors.push(&err);
         }
@@ -853,6 +942,8 @@ pub struct ProjectToOpen {
     pub import: Vec<PathBuf>,
     /// Where the playhead starts, in seconds.
     pub playhead: Option<f64>,
+    /// Start playing once imports are done.
+    pub play: bool,
 }
 
 /// Opens a project, or creates it if it doesn't exist.
