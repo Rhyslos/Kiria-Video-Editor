@@ -21,6 +21,10 @@ pub enum Action {
     Search,
     OpenSettings,
     Import,
+    PreviousFrame,
+    NextFrame,
+    GoToStart,
+    GoToEnd,
 }
 
 impl Action {
@@ -37,6 +41,10 @@ impl Action {
             Action::Search => "Search",
             Action::OpenSettings => "Settings",
             Action::Import => "Import media",
+            Action::PreviousFrame => "Back one frame",
+            Action::NextFrame => "Forward one frame",
+            Action::GoToStart => "Go to the start",
+            Action::GoToEnd => "Go to the end",
         }
     }
 }
@@ -121,6 +129,10 @@ impl Default for ShortcutTable {
                 (Action::Search, Shortcut::ctrl(Key::K)),
                 (Action::OpenSettings, Shortcut::ctrl(Key::Comma)),
                 (Action::Import, Shortcut::ctrl(Key::I)),
+                (Action::PreviousFrame, Shortcut::key(Key::ArrowLeft)),
+                (Action::NextFrame, Shortcut::key(Key::ArrowRight)),
+                (Action::GoToStart, Shortcut::key(Key::Home)),
+                (Action::GoToEnd, Shortcut::key(Key::End)),
             ],
         }
     }

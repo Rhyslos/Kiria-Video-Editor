@@ -13,6 +13,8 @@ pub struct Settings {
     pub resources: jobs::Budgets,
     /// Merge the red edit needle into the playhead.
     pub edit_at_playhead: bool,
+    /// How sharp the viewer's picture is.
+    pub preview_quality: ui_kit::PreviewQuality,
 }
 
 impl Settings {

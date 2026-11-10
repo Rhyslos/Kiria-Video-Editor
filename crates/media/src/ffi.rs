@@ -89,6 +89,11 @@ impl Input {
         Ok(input)
     }
 
+    /// The raw context, for the decoder in this crate.
+    pub(crate) fn raw(&self) -> *mut ff::AVFormatContext {
+        self.ctx
+    }
+
     fn ctx(&self) -> &ff::AVFormatContext {
         // SAFETY: `ctx` is non-null and valid for as long as `self` lives.
         unsafe { &*self.ctx }
