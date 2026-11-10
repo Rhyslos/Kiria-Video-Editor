@@ -31,7 +31,7 @@ The platform (project file, errors, installs, safe updates) comes before any pag
 | --- | --- | --- | --- | --- |
 | 0 | Foundations | Workspace, engine core, errors, resources, app shell | Empty app opens, autosaves, recovers from a forced crash | Gate passed |
 | 1 | Installer and updates | Signed builds, installers, GitHub releases | A tagged build installs on a clean Windows and Linux machine | Gate passed |
-| 2 | Launcher | Project browser, folders, update panel | Create, find and open projects; manual update works | In progress |
+| 2 | Launcher | Project browser, folders, update panel | Create, find and open projects; manual update works | Built; gate tests by the owner |
 | 3 | Update safety | Side-by-side installs, rollback, project migrations | A broken update rolls back by itself; old projects open | Built; gate tests by the owner |
 | 4 | Edit page | Media pipeline, playback, timeline, editing, inspector | Cut a 20-minute game recording smoothly at 1440p 60 | Not started |
 | 5 | Library | Import, index, tabs, lists, labels, prune | 500 clips import, filter and search instantly | Not started |
