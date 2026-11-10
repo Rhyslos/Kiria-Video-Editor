@@ -12,7 +12,7 @@ Version 1.0 is built in ten phases plus a release phase, strictly in order; each
 2. Open that phase and take its first unticked step.
 3. Read `CLAUDE.md` and the `README.md` of every folder you will touch before writing code.
 4. Finish the step (definition of done in the next section), tick it here, commit.
-5. When every step in a phase is ticked, run its gate; only a passed gate moves the phase to "Gate passed".
+5. When every step in a phase is ticked, run its gate; only a passed gate, or the owner accepting the phase without it, moves the phase to "Gate passed".
 
 **Changing the plan:** a new idea goes to "After 1.0" at the bottom unless it blocks the current gate. Changing an agreed decision means updating the project plan first, then this doc.
 
@@ -31,8 +31,8 @@ The platform (project file, errors, installs, safe updates) comes before any pag
 | --- | --- | --- | --- | --- |
 | 0 | Foundations | Workspace, engine core, errors, resources, app shell | Empty app opens, autosaves, recovers from a forced crash | Gate passed |
 | 1 | Installer and updates | Signed builds, installers, GitHub releases | A tagged build installs on a clean Windows and Linux machine | Gate passed |
-| 2 | Launcher | Project browser, folders, update panel | Create, find and open projects; manual update works | Built; gate tests by the owner |
-| 3 | Update safety | Side-by-side installs, rollback, project migrations | A broken update rolls back by itself; old projects open | Built; gate tests by the owner |
+| 2 | Launcher | Project browser, folders, update panel | Create, find and open projects; manual update works | Gate passed (accepted by the owner; manual gate tests skipped) |
+| 3 | Update safety | Side-by-side installs, rollback, project migrations | A broken update rolls back by itself; old projects open | Gate passed (accepted by the owner; manual gate tests skipped) |
 | 4 | Edit page | Media pipeline, playback, timeline, editing, inspector | Cut a 20-minute game recording smoothly at 1440p 60 | Not started |
 | 5 | Library | Import, index, tabs, lists, labels, prune | 500 clips import, filter and search instantly | Not started |
 | 6 | Export | Encode pipeline, presets, checks, queue | Exports match the timeline frame for frame | Not started |
