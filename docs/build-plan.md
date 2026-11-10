@@ -23,7 +23,7 @@ flowchart LR
     P6 --> P7[7 Color] --> P8[8 Audio] --> P9[9 Effects] --> P10[10 Release 1.0]
 ```
 
-Every arrow is a gate: the owner tests the phase before it on the test machine (RX 7900 XT) before the next one starts.
+Every arrow is a gate: the phase before it is tested on both machines before the next one starts.
 
 The platform (project file, errors, installs, safe updates) comes before any page, so every page is built on top of something that already can't lose work.
 
@@ -72,7 +72,7 @@ Used for playback, caching, the timeline widget, rendering, the audio engine, ba
 
 ### Test footage
 
-A shared `test-media/` folder (not in git; listed in `test-media/MANIFEST.md` with checksums) holds real recordings: 1080p 60, 1440p 144, variable frame rate, H.264, H.265 and AV1 from the AMD hardware encoder (plus a few software-encoded files, and NVIDIA-encoded ones if any turn up), MKV files with 3 audio streams, a 1-hour recording, a facecam clip, and a few deliberately broken files. Every phase gate is run against it.
+A shared `test-media/` folder (not in git; listed in `test-media/MANIFEST.md` with checksums) holds real recordings from both machines: 1080p 60, 1440p 144, variable frame rate, H.264, H.265 and AV1 from the AMD and NVIDIA encoders, MKV files with 3 audio streams, a 1-hour recording, a facecam clip, and a few deliberately broken files. Every phase gate is run against it.
 
 ## Repository layout and tooling
 
@@ -247,7 +247,7 @@ Phase 2 builds the launcher exactly as in the agreed mockup: name and logo centr
 
 **Gate 2**
 
-- [ ] Cold start to a usable launcher in under 1 second on the test machine.
+- [ ] Cold start to a usable launcher in under 1 second on both machines.
 - [ ] Create, rename, move to a folder, search and open projects; 200 fake projects scroll smoothly.
 - [ ] Newer-version, damaged and missing-file issues show on the right cards.
 - [ ] Update, Skip and the Automatic tick box behave as labelled against a test release.
@@ -283,7 +283,7 @@ Automatic test builds (added in Phase 2 so features can be tried through updates
 
 **Gate 3**
 
-- [ ] Ship a deliberately crashing test release on the Beta channel: the installed copy rolls back on its own and shows why.
+- [ ] Ship a deliberately crashing test release on the Beta channel: both machines roll back on their own and show why.
 - [ ] Pull the power during an update: the next start works on the old version.
 - [ ] Sample projects from every earlier format version open, and a backup copy exists.
 
@@ -295,7 +295,7 @@ Phase 4 is the heart of the app and the longest phase, so it runs as three parts
 
 - [ ] **Probe and import:** container, streams, codec, frame rate, duration, rotation; MKV files with several audio streams import one track per stream, named after the stream.
 - [ ] **Variable frame rate:** detect it on import, conform to the nearest constant rate, show what was done; audio must not drift over a 1-hour file.
-- [ ] **Decoding** (research workflow): hardware decode via D3D11VA / Vulkan Video / VAAPI, tuned and measured on AMD (RX 7900 XT) first, software fallback, frames uploaded straight to GPU textures; compare at least two pipelines on the test footage.
+- [ ] **Decoding** (research workflow): hardware decode via D3D11VA / Vulkan Video / VAAPI on AMD and NVIDIA, software fallback, frames uploaded straight to GPU textures; compare at least two pipelines on the test footage.
 - [ ] **Audio clock as master:** `cpal` output with lock-free ring buffers; video frames scheduled against the audio clock.
 - [ ] **Caches** (research workflow): RAM frame cache ahead of the playhead in the play direction, GPU texture cache, disk render cache keyed by input hash; budgets from phase 0.
 - [ ] **Thumbnails, waveforms and proxies** built in the background; proxy Off / On / Auto; export always uses originals.
@@ -304,7 +304,7 @@ Phase 4 is the heart of the app and the longest phase, so it runs as three parts
 - [ ] **Preview quality:** Full, 1/2, 1/4, Auto; drop resolution before dropping frames; the viewport says when and why.
 - [ ] **Viewport and transport:** single view, Display menu, preview-resolution dropdown, zoom; floating squircle transport with play centred; pause returns to where playback started, stop holds; Space plays/pauses.
 
-**Checkpoint 4A:** a 1440p 60 H.265 recording plays in real time on the test machine, scrubbing shows a frame within 50 ms, and a 1-hour VFR file stays in sync to the end.
+**Checkpoint 4A:** a 1440p 60 H.265 recording plays in real time on both machines, scrubbing shows a frame within 50 ms, and a 1-hour VFR file stays in sync to the end.
 
 ### 4B · Timeline and editing
 
@@ -385,7 +385,7 @@ Phase 6 delivers finished files: the full Export page from the mockup, a backgro
 **6.1 Encode pipeline (`engine`, `media`)**
 
 - [ ] Render the timeline from originals (never proxies) through the same compositor as playback, at full quality.
-- [ ] Hardware encoders first: AMD AMF on Windows and VA-API on Linux, tuned for the RX 7900 XT and RX 9070 XT, for H.264, H.265 and AV1; NVIDIA NVENC when present, untuned; software fallback.
+- [ ] Hardware encoders first (AMD AMF / VA-API, NVIDIA NVENC) for H.264, H.265 and AV1; software fallback.
 - [ ] Containers MP4 and MKV; audio AAC, Opus, FLAC; audio-only WAV, MP3, OGG.
 - [ ] Loudness normalisation pass (two-pass measure, then apply) and a true-peak limiter on the master.
 
@@ -517,7 +517,7 @@ Phase 10 adds no big features: it polishes, settles the two open decisions, and 
 - [ ] Interface scaling for high-resolution screens; label colours checked for colour-blind users.
 - [ ] Fuzzing runs for 24 hours on the demuxer and project parser with no crash.
 - [ ] Media corpus: every file in `test-media/` imports, plays and exports, or fails with a clear explained error.
-- [ ] Memory: a 4-hour editing session on the test machine with no growth beyond the cache budgets.
+- [ ] Memory: a 4-hour editing session on both machines with no growth beyond the cache budgets.
 - [ ] Every error message read through once for plain wording and a working fix button.
 
 **Release checklist**
@@ -525,7 +525,7 @@ Phase 10 adds no big features: it polishes, settles the two open decisions, and 
 - [ ] `README.md` with screenshots, install steps and system requirements; `CONTRIBUTING.md`; every folder README current; `CLAUDE.md` current.
 - [ ] Code-signing certificate in place for Windows; AppImage tested on two Linux distributions.
 - [ ] Changelog from 0.1 to 1.0; tag `v1.0.0` on the Stable channel.
-- [ ] Manual smoke test on the test machine, then on the first user's machine (RX 9070 XT): install, launcher, import, cut, grade, key, mix, export, update to a 1.0.1 test build.
+- [ ] Manual smoke test on both machines: install, launcher, import, cut, grade, key, mix, export, update to a 1.0.1 test build.
 
 ## After 1.0
 
