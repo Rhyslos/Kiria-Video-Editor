@@ -21,6 +21,8 @@ allow = [
 # The interface library's built-in fallback fonts (symbols, emoji) carry font licences.
 exceptions = [
     { allow = ["OFL-1.1", "Ubuntu-font-1.0"], crate = "epaint_default_fonts" },
+    # The list of trusted certificate authorities used for HTTPS update checks is data under a permissive data licence.
+    { allow = ["CDLA-Permissive-2.0"], crate = "webpki-roots" },
 ]
 # Our own crates are not published to crates.io.
 private = { ignore = true }
