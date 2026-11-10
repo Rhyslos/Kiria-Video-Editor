@@ -5,6 +5,7 @@
 //!
 //! - [`probe`]: what a file holds (container, streams, codec, frame rate,
 //!   length, rotation), without decoding it.
+//! - [`timing`]: constant or variable frame rate, and the nearest standard rate.
 //! - [`fingerprint`]: recognises a file's contents quickly, so a moved file can
 //!   be found again.
 //! - [`describe`]: both of the above as a [`project::MediaRef`] ready to import.
@@ -18,6 +19,7 @@
 mod ffi;
 pub mod fingerprint;
 pub mod probe;
+pub mod timing;
 
 pub use fingerprint::fingerprint;
 pub use probe::{Probe, probe};

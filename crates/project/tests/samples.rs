@@ -46,6 +46,7 @@ fn rich_project() -> Project {
                     height: 1440,
                     frame_rate: Rate::NTSC_60,
                     rotation: 0,
+                    variable_frame_rate: false,
                 }),
                 audio: vec![
                     AudioStream {

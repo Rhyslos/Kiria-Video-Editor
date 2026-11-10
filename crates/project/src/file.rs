@@ -22,13 +22,13 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
 /// The format this build writes.
-pub const FORMAT_VERSION: u32 = 3;
+pub const FORMAT_VERSION: u32 = 4;
 
 /// Turns the text of a version `n` file into the text of a version `n + 1` file.
 pub type Migration = fn(&str) -> diag::Result<String>;
 
 /// `MIGRATIONS[i]` upgrades version `i + 1` to `i + 2`.
-pub const MIGRATIONS: &[Migration] = &[v1_to_v2, v2_to_v3];
+pub const MIGRATIONS: &[Migration] = &[v1_to_v2, v2_to_v3, v3_to_v4];
 
 /// Format 2 adds `info` (the file's streams) to each media entry. The field
 /// has a default, so version 1 text is already valid version 2 text apart
@@ -41,6 +41,12 @@ fn v1_to_v2(text: &str) -> diag::Result<String> {
 /// what every older timeline was (its settings were chosen up front).
 fn v2_to_v3(text: &str) -> diag::Result<String> {
     set_format_version(text, 2, 3)
+}
+
+/// Format 4 adds `variable_frame_rate` to video streams. It defaults to off;
+/// files imported before were treated as constant.
+fn v3_to_v4(text: &str) -> diag::Result<String> {
+    set_format_version(text, 3, 4)
 }
 
 /// Rewrites the `format_version` number at the top of the file.

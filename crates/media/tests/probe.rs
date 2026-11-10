@@ -77,3 +77,14 @@ fn describe_fills_in_everything_the_project_keeps() {
     assert_eq!(m.fingerprint.size, std::fs::metadata(&path).unwrap().len());
     assert_eq!(m.info.audio.len(), 3);
 }
+
+#[test]
+fn variable_frame_rate_is_detected_and_shown_at_the_nearest_rate() {
+    let vfr = probe(&fixture("vfr-60.mkv")).unwrap().info.video.unwrap();
+    assert!(vfr.variable_frame_rate, "every 15th frame is missing");
+    assert_eq!(vfr.frame_rate, Rate::FPS_60);
+
+    let steady = probe(&fixture("game-3-audio.mkv")).unwrap().info.video.unwrap();
+    assert!(!steady.variable_frame_rate);
+    assert_eq!(steady.frame_rate, Rate::FPS_60);
+}

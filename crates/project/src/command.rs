@@ -666,6 +666,7 @@ mod tests {
                     height: 1440,
                     frame_rate: Rate::FPS_60,
                     rotation: 0,
+                    variable_frame_rate: false,
                 }),
                 audio: audio
                     .iter()
