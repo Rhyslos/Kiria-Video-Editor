@@ -18,7 +18,7 @@ use crate::time::Time;
 use diag::{AppError, Explain};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
 /// The format this build writes.
@@ -138,13 +138,57 @@ pub fn load_with_journal_seq(path: &Path) -> diag::Result<(Project, u64)> {
     Ok((from_str(&text)?, journal_seq))
 }
 
+/// What a project list needs to know about a file, read without loading the project.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FileInfo {
+    /// The format the file was written in. Higher than [`FORMAT_VERSION`] means a newer app saved it.
+    pub format_version: u32,
+    pub summary: Option<Summary>,
+}
+
+/// Reads only the start of the file (format version and summary), for project
+/// lists. The project itself is never read, so this stays cheap for big projects.
+pub fn read_info(path: &Path) -> diag::Result<FileInfo> {
+    let head = read_head(path)?;
+    let header: Header = ron::from_str(&head).or_explain(damaged)?;
+    Ok(FileInfo {
+        format_version: header.format_version,
+        summary: header.summary,
+    })
+}
+
 /// Reads only the summary block, for project lists. Cheap even for big projects.
 pub fn read_summary(path: &Path) -> diag::Result<Option<Summary>> {
-    let text = fs::read_to_string(path).or_explain(|| {
-        AppError::new("The project can't be read").why(format!("{} could not be read.", path.display()))
-    })?;
-    Ok(parse_header(&text)?.summary)
+    Ok(read_info(path)?.summary)
 }
+
+/// The text before the `project:` field, closed off so it parses as a file on
+/// its own. Files written by this app always put the project last; for any
+/// other layout the whole text is returned.
+fn read_head(path: &Path) -> diag::Result<String> {
+    let explain = || {
+        AppError::new("The project can't be read")
+            .why(format!("{} could not be read.", path.display()))
+            .fix("Check that the file still exists and that you can open it.")
+    };
+    let mut reader = BufReader::new(File::open(path).or_explain(explain)?);
+    let mut head = String::new();
+    let mut line = String::new();
+    loop {
+        line.clear();
+        if reader.read_line(&mut line).or_explain(explain)? == 0 {
+            return Ok(head);
+        }
+        if line.starts_with(PROJECT_FIELD) {
+            head.push(')');
+            return Ok(head);
+        }
+        head.push_str(&line);
+    }
+}
+
+/// How the project field starts in files this app writes (two-space indent).
+const PROJECT_FIELD: &str = "  project: ";
 
 /// The last autosave-journal entry included in the file, read from the header only.
 pub fn read_journal_seq(path: &Path) -> diag::Result<u64> {
@@ -257,6 +301,29 @@ mod tests {
         let summary = read_summary(&path).unwrap().unwrap();
         assert_eq!(summary.name, "Round trip");
         assert_eq!(summary.settings, SequenceSettings::GAME_CLIP);
+    }
+
+    #[test]
+    fn the_summary_is_read_without_reading_the_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("test.project");
+        let text = to_string(&sample_project()).unwrap();
+        let at = text
+            .find(PROJECT_FIELD)
+            .expect("the project field is written last");
+        // Everything after the summary is garbage: it must never be looked at.
+        fs::write(&path, format!("{}{PROJECT_FIELD}%%% not read %%%\n", &text[..at])).unwrap();
+        let info = read_info(&path).unwrap();
+        assert_eq!(info.format_version, FORMAT_VERSION);
+        assert_eq!(info.summary.unwrap().name, "Round trip");
+    }
+
+    #[test]
+    fn a_damaged_head_is_reported() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("test.project");
+        fs::write(&path, "not a project at all").unwrap();
+        assert!(read_info(&path).unwrap_err().what().contains("damaged"));
     }
 
     #[test]

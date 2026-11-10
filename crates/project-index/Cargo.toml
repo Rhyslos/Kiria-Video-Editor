@@ -1,0 +1,22 @@
+[package]
+name = "project-index"
+description = "The launcher's list of known projects and folders."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+brand = { path = "../brand" }
+diag = { path = "../diag" }
+project = { path = "../project" }
+# SQLite is compiled in, so nothing needs installing on the person's machine.
+rusqlite = { version = "0.41", features = ["bundled"] }
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

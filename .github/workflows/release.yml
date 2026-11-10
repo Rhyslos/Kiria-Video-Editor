@@ -4,9 +4,12 @@ name: Release
 # a tag typed in, builds both installers, tests them, signs the manifest and
 # publishes the GitHub release. Installed copies pick it up on their next start.
 # Nothing is published if any build, test or signature check fails.
+# Pull requests run the same build without publishing, so every feature can be
+# tried from a real installer (download "windows" from the run's artifacts).
 on:
   push:
     tags: ["v*"]
+  pull_request:
   workflow_dispatch:
     inputs:
       tag:

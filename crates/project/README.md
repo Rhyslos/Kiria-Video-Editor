@@ -12,8 +12,8 @@ Done (Phases 0.3 and 0.4): model, project file, commands, undo/redo, autosave jo
 |---|---|
 | `src/time.rs` | `Time` (exact seconds as a reduced fraction) and `Rate` (frames per second as a fraction, e.g. 30000/1001). Frame conversion, snapping, timecode |
 | `src/ids.rs` | One id type per kind of thing (`ClipId`, `TrackId`, ...). Ids come from one counter in the project and are never reused |
-| `src/model.rs` | `Project`, `Sequence` (a timeline), `Track`, `Clip`, `MediaRef` + `Fingerprint`, `TimelineLabel`, `Region`, the edit needle. `Project::problems()` / `validate()` check the rules |
-| `src/file.rs` | The project file: save (atomic), load, the summary block, format versions and migrations |
+| `src/model.rs` | `Project`, `Sequence` (a timeline), `Track`, `Clip`, `MediaRef` + `Fingerprint`, `TimelineLabel`, `Region`, the edit needle, and the `SequenceSettings` presets (Game clip, High frame rate, Vertical short). `Project::problems()` / `validate()` check the rules |
+| `src/file.rs` | The project file: save (atomic), load, the summary block, format versions and migrations. `read_info` reads only the format version and summary (the text before the project), for project lists |
 | `src/command.rs` | `Command`: every change (place, move, remove or ripple-remove, split, labels, region, edit needle, tracks, media). `apply` returns a new snapshot or an explained error and no change |
 | `src/history.rs` | `History`: unlimited undo and redo as a stack of snapshots |
 | `src/document.rs` | `Document`: an open project on disk. Records every change in the autosave journal, does full saves, and recovers after a crash |

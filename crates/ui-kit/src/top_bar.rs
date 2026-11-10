@@ -43,8 +43,7 @@ impl TopBar<'_> {
             egui::UiBuilder::new().max_rect(left.shrink2(vec2(16.0, 0.0))),
             |ui| {
                 ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                    let (mark, _) = ui.allocate_exact_size(vec2(22.0, 22.0), Sense::hover());
-                    ui.painter().rect_filled(mark, 6.0, theme.accent);
+                    logo_mark(ui, theme);
                     ui.add_space(6.0);
                     ui.vertical(|ui| {
                         ui.add_space(7.0);
@@ -113,11 +112,7 @@ impl TopBar<'_> {
             egui::UiBuilder::new().max_rect(right.shrink2(vec2(12.0, 0.0))),
             |ui| {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui
-                        .add(egui::Button::new(RichText::new("⚙").size(15.0)).frame(false))
-                        .on_hover_text("Settings (Ctrl+,)")
-                        .clicked()
-                    {
+                    if settings_button(ui).clicked() {
                         clicks.settings = true;
                     }
                     ui.add_space(6.0);
@@ -152,4 +147,60 @@ impl TopBar<'_> {
             .hline(full.x_range(), full.max.y - 0.5, Stroke::new(1.0, theme.line));
         clicks
     }
+}
+
+/// The app's small logo mark, the same everywhere it appears.
+pub fn logo_mark(ui: &mut Ui, theme: &Theme) {
+    let (mark, _) = ui.allocate_exact_size(vec2(22.0, 22.0), Sense::hover());
+    ui.painter().rect_filled(mark, 6.0, theme.accent);
+}
+
+/// The top bar of windows without pages (the launcher): logo and app name
+/// centred, settings on the right. Same height, colours and line as [`TopBar`].
+#[derive(Debug, Clone)]
+pub struct TitleBar<'a> {
+    pub title: &'a str,
+}
+
+impl TitleBar<'_> {
+    /// Draws the bar into a top panel of [`TOP_BAR_HEIGHT`]. Returns true when settings was clicked.
+    pub fn show(&self, ui: &mut Ui, theme: &Theme) -> bool {
+        let full = ui.max_rect();
+        let title_width = ui
+            .painter()
+            .layout_no_wrap(
+                self.title.to_owned(),
+                FontId::new(14.0, fonts::semibold()),
+                theme.text,
+            )
+            .size()
+            .x;
+        let group = Rect::from_center_size(full.center(), vec2(22.0 + 8.0 + title_width, 22.0));
+        ui.scope_builder(egui::UiBuilder::new().max_rect(group), |ui| {
+            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                logo_mark(ui, theme);
+                ui.label(RichText::new(self.title).family(fonts::semibold()).size(14.0));
+            });
+        });
+
+        let mut settings = false;
+        let right = Rect::from_min_max(pos2(full.max.x - full.width() / 3.0, full.min.y), full.max);
+        ui.scope_builder(
+            egui::UiBuilder::new().max_rect(right.shrink2(vec2(12.0, 0.0))),
+            |ui| {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    settings = settings_button(ui).clicked();
+                });
+            },
+        );
+        ui.painter()
+            .hline(full.x_range(), full.max.y - 0.5, Stroke::new(1.0, theme.line));
+        settings
+    }
+}
+
+fn settings_button(ui: &mut Ui) -> egui::Response {
+    ui.add(egui::Button::new(RichText::new("⚙").size(15.0)).frame(false))
+        .on_hover_text("Settings (Ctrl+,)")
 }

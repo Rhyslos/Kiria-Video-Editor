@@ -1,28 +1,44 @@
 //! The small program that opens first.
 //!
-//! For now it starts the editor straight away, then checks GitHub for a newer
-//! version in the background and, if automatic updates are on, downloads and
-//! verifies it. Installing a downloaded update (Phase 3) and the project
-//! browser window (Phase 2) build on this.
+//! With no arguments it shows the project browser: a folder tree, the
+//! project grid and the version panel. Opening a project starts the editor
+//! and closes the browser. With a project file as argument it starts the
+//! editor with that project straight away. Either way it checks GitHub for a
+//! newer version in the background and, with automatic updates on, downloads
+//! and verifies it; installing it arrives in Phase 3.
 //!
-//! Usage: `launcher [project file] [--no-update-check]`.
+//! Usage: `launcher [project file] [--no-update-check] [--smoke-test | --screenshot <file.png>] [--demo <count>]`.
 
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
-use std::path::Path;
-use std::process::{Command, ExitCode};
-use updater::{CheckResult, Layout, UpdatePrefs};
+mod browser;
+mod cards;
+mod demo;
+mod editor_start;
+mod files;
+mod new_project;
+mod run_mode;
+mod updates;
+mod work;
 
-const VERSION: &str = env!("CARGO_PKG_VERSION");
+use browser::{Browser, RunReport, Start};
+use run_mode::{Options, RunMode};
+use std::path::Path;
+use std::process::ExitCode;
+use std::sync::{Arc, Mutex};
+use updater::{CheckResult, UpdatePrefs};
+
+pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let check_updates = !args.iter().any(|a| a == "--no-update-check");
-    // Everything else (a project file, test options) is passed on to the editor.
-    let editor_args: Vec<&String> = args.iter().filter(|a| *a != "--no-update-check").collect();
-
-    let helper = diag::start_helper("launcher");
-    let (dirs, _log) = match helper {
+    let options = match Options::parse(std::env::args().skip(1)) {
+        Ok(options) => options,
+        Err(message) => {
+            eprintln!("{message}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let (dirs, _log) = match diag::start_helper("launcher") {
         Ok((dirs, log)) => (Some(dirs), Some(log)),
         Err(err) => {
             eprintln!("{}", err.report());
@@ -31,73 +47,128 @@ fn main() -> ExitCode {
     };
     tracing::info!(version = VERSION, "launcher started");
 
-    // The editor starts first: being offline or a slow network never delays it.
-    let started = start_editor(&editor_args);
-    if let Err(err) = &started {
-        tracing::error!("{}", err.report());
-        eprintln!("{}", err.report());
+    if let Some(project) = &options.project {
+        return open_directly(
+            project,
+            dirs.as_ref().map(|d| d.data.as_path()),
+            options.check_updates,
+        );
     }
 
-    if check_updates && let Some(dirs) = &dirs {
-        update_in_background(&dirs.data);
-    }
-    if started.is_ok() {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::FAILURE
-    }
+    let data_dir = match options.demo {
+        Some(count) => match demo::prepare(count) {
+            Ok(dir) => dir,
+            Err(err) => {
+                eprintln!("{}", err.report());
+                return ExitCode::FAILURE;
+            }
+        },
+        None => dirs.as_ref().map_or_else(std::env::temp_dir, |d| d.data.clone()),
+    };
+    browse(data_dir, options)
 }
 
-fn start_editor(args: &[&String]) -> diag::Result<()> {
-    let exe = std::env::current_exe().map_err(|err| {
-        diag::AppError::new("The editor can't be found")
-            .why("The launcher could not tell where it is installed.")
-            .fix("Reinstall the app.")
-            .source(err)
-    })?;
-    let root = exe.parent().unwrap_or(Path::new("."));
-    let editor = Layout::at(root).editor().ok_or_else(|| {
-        diag::AppError::new("The editor can't be found")
-            .why(format!("No editor is installed in {}.", root.display()))
-            .fix("Reinstall the app.")
-    })?;
-    tracing::info!(editor = %editor.display(), "starting the editor");
-    Command::new(&editor).args(args).spawn().map_err(|err| {
-        diag::AppError::new("The editor could not start")
-            .why(format!("Starting {} failed.", editor.display()))
-            .fix("Reinstall the app. If that doesn't help, report it with the launcher log.")
-            .source(err)
-    })?;
-    Ok(())
+/// Shows the project browser until a project is opened or the window is closed.
+fn browse(data_dir: std::path::PathBuf, options: Options) -> ExitCode {
+    let report = Arc::new(Mutex::new(RunReport::default()));
+    let handoff = Arc::new(Mutex::new(None));
+    let automated = options.mode != RunMode::Normal;
+    let start = Start {
+        theme: saved_theme(&data_dir),
+        data_dir,
+        check_updates: options.check_updates,
+        launch_editor: !automated && options.demo.is_none(),
+        mode: options.mode,
+        report: Arc::clone(&report),
+        handoff: Arc::clone(&handoff),
+    };
+    let window_options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_title(brand::APP_NAME)
+            .with_inner_size([1180.0, 760.0])
+            .with_min_inner_size([900.0, 560.0]),
+        renderer: eframe::Renderer::Wgpu,
+        ..Default::default()
+    };
+    let result = eframe::run_native(
+        brand::APP_NAME,
+        window_options,
+        Box::new(move |cc| Ok(Box::new(Browser::new(cc, start)))),
+    );
+
+    let mut code = ExitCode::SUCCESS;
+    if let Err(err) = result {
+        let err = diag::AppError::new("The launcher window could not open")
+            .why(format!("The graphics system reported: {err}"))
+            .fix("Update your graphics driver. If that doesn't help, report it with the launcher log.");
+        tracing::error!("{}", err.report());
+        eprintln!("{}", err.report());
+        code = ExitCode::FAILURE;
+    }
+    // A download that was running when the window closed finishes quietly.
+    let updates = handoff.lock().unwrap_or_else(|p| p.into_inner()).take();
+    if let Some(updates) = updates {
+        updates.finish_download();
+    }
+    if automated {
+        let report = report.lock().unwrap_or_else(|p| p.into_inner());
+        println!("{}", report.message);
+        tracing::info!("{}", report.message);
+        if report.failed || report.message.is_empty() {
+            code = ExitCode::FAILURE;
+        }
+    }
+    code
+}
+
+/// Starts the editor with a project given on the command line, then checks for updates.
+fn open_directly(project: &Path, data_dir: Option<&Path>, check_updates: bool) -> ExitCode {
+    if let Err(err) = editor_start::start_editor(&[project.as_os_str()]) {
+        tracing::error!("{}", err.report());
+        eprintln!("{}", err.report());
+        return ExitCode::FAILURE;
+    }
+    let Some(data_dir) = data_dir else {
+        return ExitCode::SUCCESS;
+    };
+    // Best effort: list it so it shows up in the browser next time.
+    if let Ok(index) = project_index::Index::open(&data_dir.join(project_index::INDEX_FILE_NAME))
+        && index.record(project).is_ok()
+    {
+        let _ = index.mark_opened(project, project_index::now());
+    }
+    if check_updates {
+        update_in_background(data_dir);
+    }
+    ExitCode::SUCCESS
 }
 
 /// Checks for a newer version and, with automatic updates on, downloads and verifies it.
 fn update_in_background(data_dir: &Path) {
-    let prefs = load_prefs(data_dir);
+    let prefs = UpdatePrefs::load(data_dir);
     match updater::release::check(VERSION, &prefs) {
-        Ok(CheckResult::UpToDate) => tracing::info!("up to date"),
-        Ok(CheckResult::Skipped(version)) => tracing::info!(%version, "skipped by choice"),
         Ok(CheckResult::Available(release)) if prefs.automatic => {
             tracing::info!(version = %release.version, "downloading an update");
             match updater::fetch(&release, &data_dir.join("downloads")) {
-                Ok(ready) => tracing::info!(
-                    version = %ready.version,
-                    package = %ready.package.display(),
-                    "update downloaded and verified; it installs once installing arrives (Phase 3)"
-                ),
+                Ok(ready) => tracing::info!(version = %ready.version, "update downloaded and verified"),
                 Err(err) => tracing::warn!("{}", err.report()),
             }
         }
-        Ok(CheckResult::Available(release)) => {
-            tracing::info!(version = %release.version, "an update is available; automatic updates are off");
-        }
+        Ok(result) => tracing::info!(?result, "update check done"),
         Err(err) => tracing::info!("{}", err.report()),
     }
 }
 
-fn load_prefs(data_dir: &Path) -> UpdatePrefs {
-    std::fs::read_to_string(data_dir.join("updates.ron"))
+/// The theme chosen in the editor's Settings, so both windows look alike.
+fn saved_theme(data_dir: &Path) -> ui_kit::ThemeName {
+    #[derive(serde::Deserialize, Default)]
+    #[serde(default)]
+    struct EditorSettings {
+        theme: ui_kit::ThemeName,
+    }
+    std::fs::read_to_string(data_dir.join("settings.ron"))
         .ok()
-        .and_then(|text| ron::from_str(&text).ok())
+        .and_then(|text| ron::from_str::<EditorSettings>(&text).ok())
         .unwrap_or_default()
+        .theme
 }

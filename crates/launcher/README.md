@@ -1,16 +1,46 @@
 # launcher
 
-The small program the Start menu and desktop shortcuts open.
+The small program the Start menu and desktop shortcuts open: the project browser and the update panel.
 
 ## Status
 
-Phase 1: starts the editor at once, then checks for updates in the background and, with automatic updates on, downloads and verifies the new version. The project browser window arrives in Phase 2 and installing downloaded updates in Phase 3.
+Phase 2 in progress. Done: the project browser (folder tree, project grid, search, Open…, New project with presets, rename, move, remove from list) and the version panel (check, Update, Skip this version, Automatic updates). Still to come: missing-media checks with relinking, the crash-recovery prompt, real thumbnails. Installing a downloaded update arrives in Phase 3.
 
 ## Behaviour
 
 1. Logs to `<data folder>/logs/launcher.<date>.log` (no crash detection; that belongs to the editor).
-2. Finds the editor with `updater::Layout`: `versions/<current>/editor` next to the launcher, or an editor right next to it (development builds, the AppImage).
-3. Starts it with everything passed on the command line except `--no-update-check` (a project file, test options). Being offline never delays this: measured at under 0.1 s from launcher start to editor start with no network.
-4. Unless `--no-update-check` is given: checks GitHub (3-second limit). If a newer version is available and automatic updates are on, downloads it to `<data folder>/downloads/<version>/` and verifies it.
+2. With a project file as argument (`launcher trip.kiria`), starts the editor with it at once, lists it for next time and checks for updates. Being offline never delays this.
+3. Otherwise opens the browser window:
+   - **Top bar** from `ui-kit` (`TitleBar`): logo and name centred, settings on the right.
+   - **Left**: All projects, then the three folder groups and "+ Add folder". On the first run a `<name> projects` folder is made in Documents. Right-click a folder to show it or remove it from the list.
+   - **Bottom left**: the version panel (`updates.rs`).
+   - **Main**: the 3-wide grid of project cards, most recently used first, with search, Open… and New project. Click selects, double-click or Enter opens, right-click offers Open, Rename…, Move to, Show in file manager and Remove from list.
+4. Opening a project starts the editor with its path, notes the time in the index and closes the window. A download still running finishes before the process exits.
+5. Finding projects on disk, renames, moves, file dialogs and update checks all run on worker threads (`work.rs`); the interface thread only reads the index.
 
-Preferences are read from `<data folder>/updates.ron` (defaults: automatic, Stable channel).
+Preferences are read from `<data folder>/updates.ron` (defaults: automatic, Stable channel). The theme follows the editor's `settings.ron`.
+
+## Files
+
+| File | What it holds |
+|---|---|
+| `src/main.rs` | Start-up: options, opening a project directly, or the browser window |
+| `src/browser.rs` | The window: panels, folder tree, header, dialogs, keyboard, automated runs |
+| `src/cards.rs` | The project grid and its cards; search filtering |
+| `src/new_project.rs` | The New project dialog and its presets |
+| `src/updates.rs` | The version panel and its background check and download |
+| `src/files.rs` | Creating, renaming and moving project files (the autosave journal moves along) |
+| `src/editor_start.rs` | Starting the editor; showing a folder in the file manager |
+| `src/work.rs` | `Task`: run work on a thread, pick the result up on a later frame |
+| `src/demo.rs` | Sample projects in a temporary folder for screenshots and tests |
+| `src/run_mode.rs` | Command-line options |
+
+## Trying it without installing
+
+```sh
+cargo run -p launcher -- --demo 14            # sample projects in a temporary folder
+cargo run -p launcher -- --demo 200 --smoke-test
+xvfb-run -a -s "-screen 0 1600x1000x24" target/debug/launcher --demo 14 --screenshot launcher.png
+```
+
+With `--demo`, opening a project only reports what would happen; the editor is not started and nothing outside the temporary folder is touched.

@@ -2,6 +2,10 @@
 
 Every release is built, tested, signed and published by GitHub Actions. Starting it is the only manual step.
 
+## Test builds
+
+Every pull request runs the same Release workflow without publishing anything. Its run page has a `windows` artifact (the installer and update package) and a `linux` artifact (the AppImage) for trying the change before it is merged.
+
 ## Version numbers
 
 - `0.x.y` until version 1.0. Raise `y` for fixes, `x` for new features.

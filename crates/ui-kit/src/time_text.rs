@@ -1,0 +1,52 @@
+//! Times written the same way everywhere: "2 min ago", "yesterday", "12:04".
+
+/// How long ago something happened, given the seconds since then.
+pub fn ago(secs: u64) -> String {
+    const MIN: u64 = 60;
+    const HOUR: u64 = 60 * MIN;
+    const DAY: u64 = 24 * HOUR;
+    match secs {
+        0..10 => "just now".to_owned(),
+        10..MIN => format!("{secs} s ago"),
+        MIN..HOUR => format!("{} min ago", secs / MIN),
+        HOUR..DAY => format!("{} h ago", secs / HOUR),
+        DAY..172_800 => "yesterday".to_owned(),
+        _ if secs < 60 * DAY => format!("{} days ago", secs / DAY),
+        _ if secs < 730 * DAY => format!("{} months ago", secs / (30 * DAY)),
+        _ => format!("{} years ago", secs / (365 * DAY)),
+    }
+}
+
+/// A length as "4:05" or "1:02:09" (hours only when needed).
+pub fn duration(secs: u64) -> String {
+    let (h, m, s) = (secs / 3600, secs / 60 % 60, secs % 60);
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m}:{s:02}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ago_reads_naturally() {
+        assert_eq!(ago(3), "just now");
+        assert_eq!(ago(42), "42 s ago");
+        assert_eq!(ago(125), "2 min ago");
+        assert_eq!(ago(3 * 3600), "3 h ago");
+        assert_eq!(ago(30 * 3600), "yesterday");
+        assert_eq!(ago(5 * 86_400), "5 days ago");
+        assert_eq!(ago(90 * 86_400), "3 months ago");
+        assert_eq!(ago(800 * 86_400), "2 years ago");
+    }
+
+    #[test]
+    fn durations_show_hours_only_when_needed() {
+        assert_eq!(duration(0), "0:00");
+        assert_eq!(duration(245), "4:05");
+        assert_eq!(duration(3729), "1:02:09");
+    }
+}

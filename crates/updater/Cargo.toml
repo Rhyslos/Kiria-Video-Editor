@@ -12,6 +12,7 @@ base64 = "0.22"
 brand = { path = "../brand" }
 diag = { path = "../diag" }
 ed25519-dalek = "2"
+ron = "0.12"
 semver = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

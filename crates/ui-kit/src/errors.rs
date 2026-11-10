@@ -147,11 +147,7 @@ pub fn accent_button(ui: &mut egui::Ui, theme: &Theme, text: &str) -> egui::Resp
 
 fn humantime_ago(at: SystemTime) -> String {
     let secs = SystemTime::now().duration_since(at).map_or(0, |d| d.as_secs());
-    match secs {
-        0..=59 => format!("{secs} s ago"),
-        60..=3599 => format!("{} min ago", secs / 60),
-        _ => format!("{} h ago", secs / 3600),
-    }
+    crate::time_text::ago(secs)
 }
 
 /// A small dot in a status colour, for readouts.
