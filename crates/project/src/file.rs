@@ -198,6 +198,52 @@ pub fn read_journal_seq(path: &Path) -> diag::Result<u64> {
     Ok(parse_header(&text)?.journal_seq)
 }
 
+/// Reads a project saved by a newer version, for looking at only: fields this
+/// version doesn't know are skipped. Fails (explained) if the newer format
+/// changed something this version can't skip.
+pub fn load_newer(path: &Path) -> diag::Result<Project> {
+    let text = fs::read_to_string(path).or_explain(|| {
+        AppError::new("The project can't be opened")
+            .why(format!("{} could not be read.", path.display()))
+            .fix("Check that the file still exists and that you can open it.")
+    })?;
+    let version = parse_header(&text)?.format_version;
+    let file: FileIn = ron::from_str(&text).or_explain(|| {
+        AppError::new("This project was saved by a newer version")
+            .why(format!(
+                "It uses file format {version}, which changed too much for this version to show it."
+            ))
+            .fix("Update the app, then open the project again.")
+    })?;
+    file.project.validate()?;
+    Ok(file.project)
+}
+
+/// Where the copy of a project is kept before it is upgraded from format
+/// `old_version`: `<file>.backup-v<old_version>` beside it.
+pub fn backup_path(path: &Path, old_version: u32) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(format!(".backup-v{old_version}"));
+    PathBuf::from(name)
+}
+
+/// Copies a project file before an upgrade changes it, unless a copy for that
+/// format is already there (the first one is the true original).
+pub fn back_up_before_upgrade(path: &Path, old_version: u32) -> diag::Result<PathBuf> {
+    let backup = backup_path(path, old_version);
+    if !backup.exists() {
+        fs::copy(path, &backup).or_explain(|| {
+            AppError::new("The project can't be upgraded safely")
+                .why(format!(
+                    "A copy of the original could not be made at {}.",
+                    backup.display()
+                ))
+                .fix("Check that the disk is not full and that you can write to the project's folder.")
+        })?;
+    }
+    Ok(backup)
+}
+
 /// Parses project file text, migrating it from an older format if needed.
 pub fn from_str(text: &str) -> diag::Result<Project> {
     from_str_with(text, FORMAT_VERSION, MIGRATIONS)
@@ -324,6 +370,39 @@ mod tests {
         let path = tmp.path().join("test.project");
         fs::write(&path, "not a project at all").unwrap();
         assert!(read_info(&path).unwrap_err().what().contains("damaged"));
+    }
+
+    #[test]
+    fn a_backup_is_made_once_per_old_format() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("p.project");
+        fs::write(&path, "original").unwrap();
+        let backup = back_up_before_upgrade(&path, 1).unwrap();
+        assert_eq!(backup, tmp.path().join("p.project.backup-v1"));
+        fs::write(&path, "upgraded").unwrap();
+        back_up_before_upgrade(&path, 1).unwrap();
+        assert_eq!(
+            fs::read_to_string(&backup).unwrap(),
+            "original",
+            "the first copy is kept"
+        );
+    }
+
+    #[test]
+    fn a_newer_file_with_unknown_fields_still_shows() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("p.project");
+        let text = to_string(&sample_project())
+            .unwrap()
+            .replacen(
+                &format!("format_version: {FORMAT_VERSION}"),
+                &format!("format_version: {}", FORMAT_VERSION + 1),
+                1,
+            )
+            .replacen("project: (", "future_field: 42,\n  project: (", 1);
+        fs::write(&path, text).unwrap();
+        assert!(load(&path).is_err(), "a normal open refuses");
+        assert_eq!(load_newer(&path).unwrap().name, "Round trip");
     }
 
     #[test]

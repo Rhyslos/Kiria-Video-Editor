@@ -73,7 +73,8 @@ impl SaveJob {
 pub struct Document {
     path: PathBuf,
     history: History,
-    journal: File,
+    /// `None` for a read-only document: nothing is written.
+    journal: Option<File>,
     /// Number of the last journal entry written.
     seq: u64,
     unsaved_since: Option<Instant>,
@@ -88,7 +89,7 @@ impl Document {
         Ok(Document {
             path: path.to_owned(),
             history: History::new(project),
-            journal,
+            journal: Some(journal),
             seq: 0,
             unsaved_since: None,
             save_in_flight: false,
@@ -106,7 +107,25 @@ impl Document {
 
     /// Opens the project at `path`. `recovery` only matters when [`Document::check`]
     /// found unsaved changes.
+    ///
+    /// A file from an older format is copied to `<file>.backup-v<old>` before
+    /// anything is written to it. A file saved by a newer version opens
+    /// read-only ([`Document::is_read_only`]) when this version can show it.
     pub fn open(path: &Path, recovery: Recovery) -> diag::Result<Document> {
+        let format = file::read_info(path)?.format_version;
+        if format > file::FORMAT_VERSION {
+            return Ok(Document {
+                path: path.to_owned(),
+                history: History::new(file::load_newer(path)?),
+                journal: None,
+                seq: 0,
+                unsaved_since: None,
+                save_in_flight: false,
+            });
+        }
+        if format < file::FORMAT_VERSION {
+            file::back_up_before_upgrade(path, format)?;
+        }
         let (project, saved_seq) = file::load_with_journal_seq(path)?;
         let journal_file = journal_path(path);
         let entries: Vec<(u64, JournalEntry)> = read_journal(&journal_file)?
@@ -130,7 +149,7 @@ impl Document {
         let mut document = Document {
             path: path.to_owned(),
             history,
-            journal: open_journal(&journal_file, false)?,
+            journal: Some(open_journal(&journal_file, false)?),
             seq,
             unsaved_since: None,
             save_in_flight: false,
@@ -154,14 +173,28 @@ impl Document {
         &self.history
     }
 
+    /// True for a project saved by a newer version: it can be looked at, not changed.
+    pub fn is_read_only(&self) -> bool {
+        self.journal.is_none()
+    }
+
+    fn refuse_if_read_only(&self) -> diag::Result<()> {
+        if self.is_read_only() {
+            return Err(read_only());
+        }
+        Ok(())
+    }
+
     /// Applies a change and records it in the journal.
     pub fn apply(&mut self, command: Command) -> diag::Result<()> {
+        self.refuse_if_read_only()?;
         self.history.apply(&command)?;
         self.record(JournalEntry::Do(command))
     }
 
     /// Undoes the last change. Returns false when there was nothing to undo.
     pub fn undo(&mut self) -> diag::Result<bool> {
+        self.refuse_if_read_only()?;
         if !self.history.undo() {
             return Ok(false);
         }
@@ -171,6 +204,7 @@ impl Document {
 
     /// Redoes the last undone change. Returns false when there was nothing to redo.
     pub fn redo(&mut self) -> diag::Result<bool> {
+        self.refuse_if_read_only()?;
         if !self.history.redo() {
             return Ok(false);
         }
@@ -190,7 +224,7 @@ impl Document {
         let due = self
             .unsaved_since
             .is_some_and(|since| idle || now.duration_since(since) >= FULL_SAVE_INTERVAL);
-        (due && !self.save_in_flight).then(|| self.prepare_save())
+        (due && !self.save_in_flight && !self.is_read_only()).then(|| self.prepare_save())
     }
 
     /// Takes a snapshot for a full save. Run the job, then call [`Document::finish_save`].
@@ -209,7 +243,9 @@ impl Document {
         self.save_in_flight = false;
         result?;
         if self.seq == journal_seq {
-            self.journal = open_journal(&journal_path(&self.path), true)?;
+            if self.journal.is_some() {
+                self.journal = Some(open_journal(&journal_path(&self.path), true)?);
+            }
             self.unsaved_since = None;
         } else {
             // Newer changes arrived during the save; they wait for the next one.
@@ -220,6 +256,7 @@ impl Document {
 
     /// Writes the project file now, on this thread.
     pub fn save(&mut self) -> diag::Result<()> {
+        self.refuse_if_read_only()?;
         let job = self.prepare_save();
         let result = job.run();
         self.finish_save(job.journal_seq, result)
@@ -237,12 +274,19 @@ impl Document {
                 .why("Writing to the autosave journal failed.")
                 .fix("Check that the disk is not full, then save the project.")
         };
-        writeln!(self.journal, "{line}").or_explain(explain)?;
-        self.journal.sync_data().or_explain(explain)?;
+        let journal = self.journal.as_mut().ok_or_else(read_only)?;
+        writeln!(journal, "{line}").or_explain(explain)?;
+        journal.sync_data().or_explain(explain)?;
         self.seq = seq;
         self.unsaved_since.get_or_insert_with(Instant::now);
         Ok(())
     }
+}
+
+fn read_only() -> AppError {
+    AppError::new("This project is open read-only")
+        .why("It was saved by a newer version of the app, so this version can show it but not change it.")
+        .fix("Update the app to edit it.")
 }
 
 /// `<project file>.journal`.
@@ -317,6 +361,35 @@ fn open_journal(path: &Path, truncate: bool) -> diag::Result<File> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_newer_project_opens_read_only_and_is_never_written() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("p.project");
+        let text = file::to_string(&Project::new("Future", crate::SequenceSettings::GAME_CLIP))
+            .unwrap()
+            .replacen(
+                &format!("format_version: {}", file::FORMAT_VERSION),
+                &format!("format_version: {}", file::FORMAT_VERSION + 1),
+                1,
+            );
+        fs::write(&path, &text).unwrap();
+        let mut doc = Document::open(&path, Recovery::Recover).unwrap();
+        assert!(doc.is_read_only());
+        assert_eq!(doc.project().name, "Future");
+        let sequence = doc.project().active_sequence;
+        let err = doc
+            .apply(Command::SetEditNeedle {
+                sequence,
+                at: crate::Time::ZERO,
+            })
+            .unwrap_err();
+        assert!(err.what().contains("read-only"));
+        assert!(doc.save().is_err());
+        assert!(doc.tick(Instant::now() + FULL_SAVE_INTERVAL * 2, true).is_none());
+        assert_eq!(fs::read_to_string(&path).unwrap(), text, "the file is untouched");
+        assert!(!journal_path(&path).exists(), "no journal is made");
+    }
+
     use super::*;
     use crate::model::SequenceSettings;
 
