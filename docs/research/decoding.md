@@ -112,7 +112,13 @@ Software decoding can be measured on any machine. B and C need the real GPU, so 
 Even where playing keeps up, a jump takes 0.2 to 2.3 seconds, because every frame from the key frame before the target is decoded on the CPU. That is 4 to 46 times the 50 ms target. A desktop CPU with more cores is faster, but not by that much, so software decoding alone can't meet the scrubbing target; it stays as the fallback. Approaches B and C need the real GPU and are measured with the Windows package from the "Decoding spike" workflow.
 
 
-Expectation before measuring, to be proven or disproven: B is enough for one 1440p 60 stream and keeps the code simple, A is the required fallback, and C is the only way to keep 4 streams and fast scrubbing cheap. If B meets every target in the table above, it gets built first and C waits until a measured need appears.
+**Choice (November 2026):** the owner chose to go ahead without running the GPU measurements. The decoder tries the approaches in order and falls back per file, so a failure only costs speed, never a picture:
+
+1. **C, zero-copy Vulkan,** when wgpu runs on Vulkan and the driver offers a video decode queue for the codec.
+2. **B, hardware decoding with a copy,** through Direct3D 11 on Windows and VA-API on Linux.
+3. **A, software decoding,** always.
+
+The order is logged with each file, so real use shows which path runs. If C turns out unreliable on some drivers, it can be switched off per driver without touching the rest. The spike stays until the GPU table is filled in.
 
 ## Sources
 
