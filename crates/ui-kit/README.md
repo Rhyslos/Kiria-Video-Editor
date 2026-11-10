@@ -16,9 +16,11 @@ Phase 0.6 done: themes, fonts, shared sizes, the top bar, the shortcut table and
 | `src/top_bar.rs` | `TopBar`: project name, page tabs centred over the viewport, search, resource readout, settings. `TitleBar`: the same bar for windows without pages (logo and name centred, settings right). `logo_mark` |
 | `src/time_text.rs` | Times written one way everywhere: `ago` ("2 min ago", "yesterday") and `duration` ("4:05", "1:02:09") |
 | `src/shortcuts.rs` | `Action`, `Shortcut`, `ShortcutTable`: the one table of shortcuts, matched on physical key positions |
+| `src/icon.rs` | The app icon: `logo_mark`'s picture in the top bar and `with_window_icon` for every window |
 | `src/dialog.rs` | `dialog`: every window that asks something and waits uses this frame, padding and dimmed backdrop |
 | `src/errors.rs` | `ErrorCenter`: the inline error strip with its fix button, and the Diagnostics window |
 | `assets/fonts/` | The font files and their licences |
+| `assets/icon/` | `icon-64.png`, drawn by `cargo xtask icons` from `packaging/icons/icon.svg` |
 
 ## Rules
 

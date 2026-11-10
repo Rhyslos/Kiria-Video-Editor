@@ -149,10 +149,19 @@ impl TopBar<'_> {
     }
 }
 
-/// The app's small logo mark, the same everywhere it appears.
+/// The app's small logo mark (the app icon), the same everywhere it appears.
 pub fn logo_mark(ui: &mut Ui, theme: &Theme) {
     let (mark, _) = ui.allocate_exact_size(vec2(22.0, 22.0), Sense::hover());
-    ui.painter().rect_filled(mark, 6.0, theme.accent);
+    match crate::icon::texture(ui.ctx()) {
+        Some(texture) => {
+            let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+            ui.painter().image(texture.id(), mark, uv, egui::Color32::WHITE);
+        }
+        // Only if the built-in picture can't be read.
+        None => {
+            ui.painter().rect_filled(mark, 6.0, theme.accent);
+        }
+    }
 }
 
 /// The top bar of windows without pages (the launcher): logo and app name

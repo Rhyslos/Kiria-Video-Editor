@@ -7,6 +7,7 @@
 pub mod dialog;
 pub mod errors;
 pub mod fonts;
+pub mod icon;
 pub mod layout;
 pub mod shortcuts;
 pub mod theme;

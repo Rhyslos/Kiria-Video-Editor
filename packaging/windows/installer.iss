@@ -24,7 +24,7 @@ PrivilegesRequired=lowest
 OutputDir={#OutDir}
 OutputBaseFilename={#AppName}-Setup-{#AppVersion}
 SetupIconFile=..\icons\icon.ico
-UninstallDisplayIcon={app}\launcher.exe
+UninstallDisplayIcon={app}\icon.ico
 UninstallDisplayName={#AppName}
 Compression=lzma2/max
 SolidCompression=yes
@@ -38,12 +38,13 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
 [Files]
 Source: "{#Stage}\launcher.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Stage}\current"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#Stage}\icon.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Stage}\versions\*"; DestDir: "{app}\versions"; Flags: recursesubdirs createallsubdirs ignoreversion
 
 [Icons]
 ; Shortcuts always open the launcher, never the editor directly.
-Name: "{autoprograms}\{#AppName}"; Filename: "{app}\launcher.exe"
-Name: "{autodesktop}\{#AppName}"; Filename: "{app}\launcher.exe"; Tasks: desktopicon
+Name: "{autoprograms}\{#AppName}"; Filename: "{app}\launcher.exe"; IconFilename: "{app}\icon.ico"
+Name: "{autodesktop}\{#AppName}"; Filename: "{app}\launcher.exe"; IconFilename: "{app}\icon.ico"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\launcher.exe"; Description: "Start {#AppName}"; Flags: nowait postinstall skipifsilent

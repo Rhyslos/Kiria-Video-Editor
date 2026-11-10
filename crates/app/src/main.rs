@@ -47,7 +47,7 @@ fn main() -> ExitCode {
 
     let report = Arc::new(Mutex::new(RunReport::default()));
     let window_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
+        viewport: ui_kit::icon::with_window_icon(egui::ViewportBuilder::default())
             .with_title(brand::APP_NAME)
             .with_inner_size([1440.0, 900.0])
             .with_min_inner_size([960.0, 600.0]),

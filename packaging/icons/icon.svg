@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <!-- The app icon: a shaded colour wheel with a puck, on a graphite tile.
+       `cargo xtask icons packaging/icons` draws every size from this file. -->
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2C2D30"/>
+      <stop offset="1" stop-color="#111213"/>
+    </linearGradient>
+    <radialGradient id="ringShade" cx="256" cy="256" r="206" gradientUnits="userSpaceOnUse">
+      <stop offset="0.7" stop-color="#000000" stop-opacity="0.45"/>
+      <stop offset="0.8" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="0.93" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0.35"/>
+    </radialGradient>
+    <linearGradient id="ringLight" x1="0" y1="52" x2="0" y2="460" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.3"/>
+      <stop offset="0.5" stop-color="#FFFFFF" stop-opacity="0"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0.25"/>
+    </linearGradient>
+    <radialGradient id="centre" cx="0.5" cy="0.38" r="0.6">
+      <stop offset="0" stop-color="#303134"/>
+      <stop offset="1" stop-color="#151617"/>
+    </radialGradient>
+    <linearGradient id="puck" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFCF5"/>
+      <stop offset="1" stop-color="#D3CAB7"/>
+    </linearGradient>
+    <filter id="wheelShadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="10"/>
+    </filter>
+    <filter id="puckShadow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="6"/>
+    </filter>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#tile)"/>
+  <rect x="1" y="1" width="510" height="510" rx="111" fill="none" stroke="#FFFFFF" stroke-opacity="0.07" stroke-width="2"/>
+  <circle cx="256" cy="270" r="206" fill="#000000" opacity="0.5" filter="url(#wheelShadow)"/>
+  <path d="M254.2 52.0 A204 204 0 0 1 359.5 80.2 L330.1 130.2 A146 146 0 0 0 254.7 110.0 Z" fill="#EA3232"/>
+  <path d="M356.5 78.4 A204 204 0 0 1 433.6 155.5 L383.1 184.1 A146 146 0 0 0 327.9 128.9 Z" fill="#EA8E32"/>
+  <path d="M431.8 152.5 A204 204 0 0 1 460.0 257.8 L402.0 257.3 A146 146 0 0 0 381.8 181.9 Z" fill="#EAEA32"/>
+  <path d="M460.0 254.2 A204 204 0 0 1 431.8 359.5 L381.8 330.1 A146 146 0 0 0 402.0 254.7 Z" fill="#8EEA32"/>
+  <path d="M433.6 356.5 A204 204 0 0 1 356.5 433.6 L327.9 383.1 A146 146 0 0 0 383.1 327.9 Z" fill="#32EA32"/>
+  <path d="M359.5 431.8 A204 204 0 0 1 254.2 460.0 L254.7 402.0 A146 146 0 0 0 330.1 381.8 Z" fill="#32EA8E"/>
+  <path d="M257.8 460.0 A204 204 0 0 1 152.5 431.8 L181.9 381.8 A146 146 0 0 0 257.3 402.0 Z" fill="#32EAEA"/>
+  <path d="M155.5 433.6 A204 204 0 0 1 78.4 356.5 L128.9 327.9 A146 146 0 0 0 184.1 383.1 Z" fill="#328EEA"/>
+  <path d="M80.2 359.5 A204 204 0 0 1 52.0 254.2 L110.0 254.7 A146 146 0 0 0 130.2 330.1 Z" fill="#3232EA"/>
+  <path d="M52.0 257.8 A204 204 0 0 1 80.2 152.5 L130.2 181.9 A146 146 0 0 0 110.0 257.3 Z" fill="#8E32EA"/>
+  <path d="M78.4 155.5 A204 204 0 0 1 155.5 78.4 L184.1 128.9 A146 146 0 0 0 128.9 184.1 Z" fill="#EA32EA"/>
+  <path d="M152.5 80.2 A204 204 0 0 1 257.8 52.0 L257.3 110.0 A146 146 0 0 0 181.9 130.2 Z" fill="#EA328E"/>
+  <circle cx="256" cy="256" r="175" fill="none" stroke="url(#ringShade)" stroke-width="58"/>
+  <circle cx="256" cy="256" r="175" fill="none" stroke="url(#ringLight)" stroke-width="58"/>
+  <circle cx="256" cy="256" r="138" fill="url(#centre)"/>
+  <circle cx="256" cy="256" r="136" fill="none" stroke="#000000" stroke-opacity="0.45" stroke-width="5"/>
+  <g stroke="#3A3B3E" stroke-width="3">
+    <path d="M156 256 H356"/>
+    <path d="M256 156 V356"/>
+  </g>
+  <path d="M256 256 L310 202" stroke="#EDE6D6" stroke-width="7" stroke-linecap="round" opacity="0.45"/>
+  <circle cx="312" cy="211" r="27" fill="#000000" opacity="0.55" filter="url(#puckShadow)"/>
+  <circle cx="310" cy="202" r="27" fill="url(#puck)"/>
+  <circle cx="310" cy="202" r="10" fill="#1E1F21"/>
+</svg>
