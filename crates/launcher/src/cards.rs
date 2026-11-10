@@ -90,7 +90,7 @@ fn card(
 
     // Thumbnail. Real pictures arrive once the editor writes them on save.
     painter.rect_filled(thumb, 8.0, theme.viewport);
-    let settings = entry.settings.map(|s| s.short_label());
+    let settings = entry.settings_label();
     painter.text(
         thumb.center(),
         Align2::CENTER_CENTER,
@@ -283,6 +283,7 @@ mod tests {
             last_opened: None,
             modified: None,
             issue: None,
+            automatic: false,
         }
     }
 

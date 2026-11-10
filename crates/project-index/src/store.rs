@@ -10,10 +10,10 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// The table layout version. Raise it and add a step to [`upgrade`] when the tables change.
-const SCHEMA_VERSION: i32 = 1;
+const SCHEMA_VERSION: i32 = 2;
 
 const COLUMNS: &str = "path, name, width, height, rate_num, rate_den, sample_rate, \
-                       length_num, length_den, last_opened, modified, issue";
+                       length_num, length_den, last_opened, modified, issue, automatic";
 
 /// The list of known projects and folders.
 #[derive(Debug)]
@@ -259,29 +259,29 @@ impl Index {
         let fallback_name = path
             .file_stem()
             .map_or_else(String::new, |s| s.to_string_lossy().into_owned());
-        let (name, settings, length, issue) = match project::file::read_info(path) {
+        let (name, settings, length, issue, automatic) = match project::file::read_info(path) {
             Ok(info) if info.format_version > project::file::FORMAT_VERSION => {
-                (fallback_name, None, None, Some(Issue::NewerVersion))
+                (fallback_name, None, None, Some(Issue::NewerVersion), false)
             }
             Ok(info) => match info.summary {
-                Some(s) => (s.name, Some(s.settings), Some(s.length), None),
-                None => (fallback_name, None, None, None),
+                Some(s) => (s.name, Some(s.settings), Some(s.length), None, s.automatic),
+                None => (fallback_name, None, None, None, false),
             },
             Err(err) => {
                 tracing::info!(path = %path.display(), "{}", err.report());
-                (fallback_name, None, None, Some(Issue::Damaged))
+                (fallback_name, None, None, Some(Issue::Damaged), false)
             }
         };
         let hidden_reset = if only_if_changed { "" } else { ", hidden = 0" };
         let sql = format!(
             "INSERT INTO projects ({COLUMNS}, hidden)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10, ?11, 0)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10, ?11, ?12, 0)
              ON CONFLICT(path) DO UPDATE SET
                name = excluded.name, width = excluded.width, height = excluded.height,
                rate_num = excluded.rate_num, rate_den = excluded.rate_den,
                sample_rate = excluded.sample_rate, length_num = excluded.length_num,
                length_den = excluded.length_den, modified = excluded.modified,
-               issue = excluded.issue{hidden_reset}"
+               issue = excluded.issue, automatic = excluded.automatic{hidden_reset}"
         );
         self.conn
             .execute(
@@ -298,6 +298,7 @@ impl Index {
                     length.map(|l| l.den() as i64),
                     modified,
                     issue.map(Issue::key),
+                    automatic,
                 ],
             )
             .or_explain(unreadable)?;
@@ -331,6 +332,10 @@ fn upgrade(conn: &Connection, from: i32) -> rusqlite::Result<()> {
              );",
         )?;
     }
+    if from < 2 {
+        // Projects whose settings wait for the first video.
+        conn.execute_batch("ALTER TABLE projects ADD COLUMN automatic INTEGER NOT NULL DEFAULT 0;")?;
+    }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)
 }
 
@@ -344,6 +349,7 @@ fn entry_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProjectEntry> {
     let length_num: Option<i64> = row.get(7)?;
     let length_den: Option<i64> = row.get(8)?;
     let issue: Option<String> = row.get(11)?;
+    let automatic: bool = row.get(12)?;
     let settings = match (width, height, rate_num, rate_den, sample_rate) {
         (Some(width), Some(height), Some(num), Some(den), Some(sample_rate)) => {
             Rate::new(num, den).ok().map(|frame_rate| SequenceSettings {
@@ -367,6 +373,7 @@ fn entry_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProjectEntry> {
         last_opened: row.get(9)?,
         modified: row.get(10)?,
         issue: issue.as_deref().and_then(Issue::from_key),
+        automatic,
     })
 }
 
@@ -447,6 +454,51 @@ mod tests {
         assert_eq!(entry.length, Some(Time::ZERO));
         assert_eq!(entry.issue, None);
         assert!(entry.modified.is_some());
+    }
+
+    #[test]
+    fn automatic_projects_say_so() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join(format!("auto.{}", ext()));
+        file::save(&Project::new_automatic("New"), &path).unwrap();
+        let index = Index::open_in_memory().unwrap();
+        let entry = index.record(&path).unwrap();
+        assert!(entry.automatic);
+        assert_eq!(entry.settings_label().as_deref(), Some("Automatic"));
+        let fixed = tmp.path().join(format!("fixed.{}", ext()));
+        write_project(&fixed, "Fixed", SequenceSettings::GAME_CLIP);
+        assert_eq!(
+            index.record(&fixed).unwrap().settings_label().as_deref(),
+            Some("1080p 60")
+        );
+    }
+
+    #[test]
+    fn a_list_from_the_first_layout_is_upgraded() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("index.sqlite");
+        {
+            let conn = Connection::open(&db).unwrap();
+            upgrade_to_1(&conn);
+            conn.execute("INSERT INTO projects (path, name) VALUES ('/p/old.x', 'Old')", [])
+                .unwrap();
+        }
+        let index = Index::open(&db).unwrap();
+        let old = index.projects().unwrap();
+        assert_eq!(old.len(), 1);
+        assert!(!old[0].automatic, "existing projects keep their fixed settings");
+    }
+
+    /// The tables as schema version 1 made them.
+    fn upgrade_to_1(conn: &Connection) {
+        conn.execute_batch(
+            "CREATE TABLE folders (path TEXT PRIMARY KEY, kind TEXT NOT NULL, added INTEGER NOT NULL);
+             CREATE TABLE projects (path TEXT PRIMARY KEY, name TEXT NOT NULL, width INTEGER, height INTEGER,
+                rate_num INTEGER, rate_den INTEGER, sample_rate INTEGER, length_num INTEGER, length_den INTEGER,
+                last_opened INTEGER, modified INTEGER, issue TEXT, hidden INTEGER NOT NULL DEFAULT 0);
+             PRAGMA user_version = 1;",
+        )
+        .unwrap();
     }
 
     #[test]

@@ -46,7 +46,12 @@ pub fn free_path(folder: &Path, file_name: &str, keep: Option<&Path>) -> PathBuf
 }
 
 /// Saves a new, empty project and returns where it went.
-pub fn create_project(folder: &Path, name: &str, settings: SequenceSettings) -> diag::Result<PathBuf> {
+/// `settings` of `None` makes an Automatic project: the first video imported sets them.
+pub fn create_project(
+    folder: &Path,
+    name: &str,
+    settings: Option<SequenceSettings>,
+) -> diag::Result<PathBuf> {
     std::fs::create_dir_all(folder).or_explain(|| {
         AppError::new("The project can't be created")
             .why(format!("The folder {} could not be made.", folder.display()))
@@ -58,7 +63,11 @@ pub fn create_project(folder: &Path, name: &str, settings: SequenceSettings) -> 
         name.trim()
     };
     let path = free_path(folder, &file_name_for(name), None);
-    project::file::save(&Project::new(name, settings), &path)?;
+    let project = match settings {
+        Some(settings) => Project::new(name, settings),
+        None => Project::new_automatic(name),
+    };
+    project::file::save(&project, &path)?;
     Ok(path)
 }
 
@@ -177,7 +186,7 @@ mod tests {
     #[test]
     fn create_rename_and_move() {
         let tmp = tempfile::tempdir().unwrap();
-        let path = create_project(tmp.path(), "Highlights", SequenceSettings::VERTICAL_SHORT).unwrap();
+        let path = create_project(tmp.path(), "Highlights", Some(SequenceSettings::VERTICAL_SHORT)).unwrap();
         assert_eq!(
             project::file::read_summary(&path).unwrap().unwrap().name,
             "Highlights"

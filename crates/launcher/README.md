@@ -54,7 +54,7 @@ Preferences are read from `<data folder>/updates.ron` (defaults: automatic, Stab
 | `src/main.rs` | Start-up: options, opening a project directly, or the browser window |
 | `src/browser.rs` | The window: panels, folder tree, header, dialogs, keyboard, automated runs |
 | `src/cards.rs` | The project grid and its cards; search filtering |
-| `src/new_project.rs` | The New project dialog and its presets |
+| `src/new_project.rs` | The New project dialog: Automatic settings by default (the first video imported decides), or one of the templates |
 | `src/updates.rs` | The version panel, the update window (Update available → download bar → Update ready), and the background check and download |
 | `src/files.rs` | Creating, renaming and moving project files (the autosave journal moves along) |
 | `src/editor_start.rs` | Starting the editor; showing a folder in the file manager |
