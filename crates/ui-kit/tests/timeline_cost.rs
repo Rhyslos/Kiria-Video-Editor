@@ -21,6 +21,7 @@ fn tracks(count: usize, clips_each: usize, clip_len: f64) -> Vec<TimelineTrack> 
                     info: String::new(),
                     selected: c == 3,
                     missing: false,
+                    link: None,
                 })
                 .collect(),
             muted: false,

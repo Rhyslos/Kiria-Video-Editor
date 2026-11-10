@@ -6,7 +6,7 @@ The editor window and its five pages. Binary name: `editor`.
 
 Phase 0.6 done: the window, the shared top bar, five empty pages that switch instantly, shortcuts, Settings, search for commands, inline errors and Diagnostics. Autosave runs on a worker. The pages fill up from Phase 4.
 
-Phase 4A so far: importing media (Ctrl+I, the Import button, or dropping files on the window), the viewer with its transport, the timeline (click a clip to select it; Delete, Backspace and S act on the selection; drag the red needle; Ctrl+wheel zooms, \\ shows it all), playback with sound (Space plays; pausing goes back to where playback started, Stop stays), a scrub bar and preview quality (Left/Right step a frame, Home/End jump), and Timeline settings (Automatic until the first video is imported, a template, or the same as one of the project's videos). Until the timeline widget arrives, the Edit page lists each track's clips and the project's media.
+Phase 4A so far: importing media (Ctrl+I, the Import button, or dropping files on the window), the viewer with its transport, the timeline (click a clip to select it, drag to move it, drag its edge to trim; V and B switch between the Select and Blade tools, N snapping; Delete, Backspace and S act on the selection; drag the red needle; Ctrl+wheel zooms, \\ shows it all), playback with sound (Space plays; pausing goes back to where playback started, Stop stays), a scrub bar and preview quality (Left/Right step a frame, Home/End jump), and Timeline settings (Automatic until the first video is imported, a template, or the same as one of the project's videos). Until the timeline widget arrives, the Edit page lists each track's clips and the project's media.
 
 ## Running
 

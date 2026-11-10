@@ -22,7 +22,9 @@ pub use errors::{ErrorCenter, ErrorResponse, ShownError, accent_button};
 pub use layout::Page;
 pub use shortcuts::{Action, Shortcut, ShortcutTable};
 pub use theme::{Theme, ThemeName, status};
-pub use timeline::{TimelineClip, TimelineData, TimelineEvent, TimelineMarker, TimelineTrack, TimelineView};
+pub use timeline::{
+    ClipEdge, TimelineClip, TimelineData, TimelineEvent, TimelineMarker, TimelineTrack, TimelineView, Tool,
+};
 pub use top_bar::{TitleBar, TopBar, TopBarClicks, logo_mark};
 pub use transport::TransportClick;
 pub use viewer::PreviewQuality;

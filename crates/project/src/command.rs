@@ -54,6 +54,22 @@ pub enum Command {
         start: Time,
         track: Option<TrackId>,
     },
+    /// Moves a clip and every clip linked to it by `by` (later is positive),
+    /// keeping them in step. Refused if any would overlap or start before zero.
+    MoveLinked {
+        sequence: SequenceId,
+        clip: ClipId,
+        by: Time,
+    },
+    /// Moves one edge of a clip (and the same edge of its linked clips) to
+    /// `to` on the timeline. The start edge also moves where in the file the
+    /// clip begins, so the picture stays in place.
+    Trim {
+        sequence: SequenceId,
+        clip: ClipId,
+        edge: Edge,
+        to: Time,
+    },
     /// Splits at `at`: only `clip` and its linked clips, or every clip under `at` when `None`.
     Split {
         sequence: SequenceId,
@@ -169,6 +185,13 @@ impl Command {
                 }
                 insert_clip(target, moved)?;
             }
+            Command::MoveLinked { sequence, clip, by } => move_linked(&mut p, *sequence, *clip, *by)?,
+            Command::Trim {
+                sequence,
+                clip,
+                edge,
+                to,
+            } => trim(&mut p, *sequence, *clip, *edge, *to)?,
             Command::Split { sequence, at, clip } => split(&mut p, *sequence, *at, *clip)?,
             Command::AddLabel { sequence, label } => {
                 if label.at.is_negative() {
@@ -216,6 +239,101 @@ impl Command {
         p.validate()?;
         Ok(p)
     }
+}
+
+/// One end of a clip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Edge {
+    Start,
+    End,
+}
+
+fn move_linked(p: &mut Project, sequence: SequenceId, clip: ClipId, by: Time) -> diag::Result<()> {
+    let seq = sequence_mut(p, sequence)?;
+    let group = with_linked(seq, clip)?;
+    let mut moved = Vec::new();
+    for track in tracks_mut(seq) {
+        let (ours, rest): (Vec<Clip>, Vec<Clip>) =
+            track.clips.iter().cloned().partition(|c| group.contains(&c.id));
+        if ours.is_empty() {
+            continue;
+        }
+        track.clips = rest.into_iter().collect();
+        moved.push((track.id, ours));
+    }
+    for (track, clips) in moved {
+        let target = track_mut(seq, track)?;
+        for mut c in clips {
+            c.start = c.start + by;
+            if c.start.is_negative() {
+                return Err(
+                    AppError::new("The clip can't move there").why("That is before the timeline starts.")
+                );
+            }
+            insert_clip(target, c)?;
+        }
+    }
+    Ok(())
+}
+
+fn trim(p: &mut Project, sequence: SequenceId, clip: ClipId, edge: Edge, to: Time) -> diag::Result<()> {
+    let media_lengths: Vec<(MediaId, Time)> = p.media.values().map(|m| (m.id, m.duration)).collect();
+    let still = |id: MediaId| p.media.get(&id).is_some_and(|m| m.kind == MediaKind::Image);
+    let stills: Vec<MediaId> = p.media.keys().copied().filter(|id| still(*id)).collect();
+    let seq = sequence_mut(p, sequence)?;
+    let reference = seq
+        .tracks()
+        .flat_map(|t| t.clips.iter())
+        .find(|c| c.id == clip)
+        .cloned()
+        .ok_or_else(|| missing("clip"))?;
+    let group = with_linked(seq, clip)?;
+    let delta = match edge {
+        Edge::Start => to - reference.start,
+        Edge::End => to - reference.end(),
+    };
+    for track in tracks_mut(seq) {
+        let mut changed = Vec::new();
+        for c in track.clips.iter().filter(|c| group.contains(&c.id)) {
+            let mut t = c.clone();
+            match edge {
+                Edge::Start => {
+                    t.start = c.start + delta;
+                    t.source_in = c.source_in + delta;
+                    t.duration = c.duration - delta;
+                }
+                Edge::End => t.duration = c.duration + delta,
+            }
+            if t.duration <= Time::ZERO {
+                return Err(AppError::new("The clip can't be trimmed that far")
+                    .why("It would have no length left.")
+                    .fix("Delete the clip instead."));
+            }
+            if t.source_in.is_negative() || t.start.is_negative() {
+                return Err(AppError::new("The clip can't be trimmed that far")
+                    .why("Its file has nothing earlier to show."));
+            }
+            let length = media_lengths
+                .iter()
+                .find(|(id, _)| *id == c.media)
+                .map(|(_, l)| *l);
+            if !stills.contains(&c.media)
+                && let Some(length) = length
+                && length > Time::ZERO
+                && t.source_in + t.duration > length
+            {
+                return Err(
+                    AppError::new("The clip can't be trimmed that far").why("Its file ends before that.")
+                );
+            }
+            changed.push(t);
+        }
+        for t in changed {
+            track.clips.retain(|c| c.id != t.id);
+            insert_clip(track, t)?;
+        }
+    }
+    Ok(())
 }
 
 /// How long a still image lasts when it is placed.
@@ -844,5 +962,139 @@ mod tests {
             .apply(&p)
             .is_err()
         );
+    }
+
+    fn imported() -> (Project, SequenceId) {
+        let p = Project::new("Test", SequenceSettings::GAME_CLIP);
+        let seq = p.active_sequence;
+        let p = Command::Import {
+            sequence: seq,
+            media: recording(&["Game", "Mic"], 30),
+        }
+        .apply(&p)
+        .unwrap();
+        let p = Command::Import {
+            sequence: seq,
+            media: recording(&["Game"], 10),
+        }
+        .apply(&p)
+        .unwrap();
+        (p, seq)
+    }
+
+    fn first_video(p: &Project, i: usize) -> Clip {
+        p.active().unwrap().video_tracks[0].clips[i].clone()
+    }
+
+    #[test]
+    fn moving_takes_linked_clips_along() {
+        let (p, seq) = imported();
+        let second = first_video(&p, 1).id;
+        let q = Command::MoveLinked {
+            sequence: seq,
+            clip: second,
+            by: Time::seconds(5),
+        }
+        .apply(&p)
+        .unwrap();
+        let s = q.active().unwrap();
+        assert_eq!(s.video_tracks[0].clips[1].start, Time::seconds(35));
+        assert_eq!(
+            s.audio_tracks[0].clips[1].start,
+            Time::seconds(35),
+            "its sound came along"
+        );
+        let back = Command::MoveLinked {
+            sequence: seq,
+            clip: second,
+            by: Time::seconds(-5),
+        }
+        .apply(&p);
+        assert!(
+            back.unwrap_err().what().contains("already a clip"),
+            "it would overlap the first"
+        );
+        let first = first_video(&p, 0).id;
+        assert!(
+            Command::MoveLinked {
+                sequence: seq,
+                clip: first,
+                by: Time::seconds(-1)
+            }
+            .apply(&p)
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn trimming_either_edge_keeps_the_picture_in_place() {
+        let (p, seq) = imported();
+        let first = first_video(&p, 0).id;
+        let q = Command::Trim {
+            sequence: seq,
+            clip: first,
+            edge: Edge::Start,
+            to: Time::seconds(4),
+        }
+        .apply(&p)
+        .unwrap();
+        let c = first_video(&q, 0);
+        assert_eq!(
+            (c.start, c.source_in, c.duration),
+            (Time::seconds(4), Time::seconds(4), Time::seconds(26))
+        );
+        let mic = &q.active().unwrap().audio_tracks[1].clips[0];
+        assert_eq!(mic.start, Time::seconds(4), "linked sound trimmed too");
+        // Back out again, but not before the file starts.
+        let r = Command::Trim {
+            sequence: seq,
+            clip: first,
+            edge: Edge::Start,
+            to: Time::seconds(1),
+        }
+        .apply(&q)
+        .unwrap();
+        assert_eq!(first_video(&r, 0).source_in, Time::seconds(1));
+        assert!(
+            Command::Trim {
+                sequence: seq,
+                clip: first,
+                edge: Edge::Start,
+                to: Time::seconds(-1)
+            }
+            .apply(&q)
+            .is_err()
+        );
+
+        let e = Command::Trim {
+            sequence: seq,
+            clip: first,
+            edge: Edge::End,
+            to: Time::seconds(20),
+        }
+        .apply(&p)
+        .unwrap();
+        assert_eq!(first_video(&e, 0).duration, Time::seconds(20));
+        let long = Command::Trim {
+            sequence: seq,
+            clip: first,
+            edge: Edge::End,
+            to: Time::seconds(31),
+        }
+        .apply(&e);
+        assert!(
+            long.unwrap_err()
+                .why_text()
+                .unwrap_or_default()
+                .contains("ends before")
+        );
+        let gone = Command::Trim {
+            sequence: seq,
+            clip: first,
+            edge: Edge::End,
+            to: Time::ZERO,
+        }
+        .apply(&p);
+        assert!(gone.is_err());
     }
 }
