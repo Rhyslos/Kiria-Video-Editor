@@ -32,6 +32,9 @@ allow-wildcard-paths = true
 
 [advisories]
 yanked = "deny"
+# Report unmaintained crates only when we depend on them directly; deep
+# dependencies of the interface libraries are their maintainers' call.
+unmaintained = "workspace"
 
 [sources]
 unknown-registry = "deny"
