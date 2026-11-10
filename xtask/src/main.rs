@@ -9,7 +9,7 @@
 //! | `manifest <out> <version> <files...>` | Writes a release manifest for the given files |
 //! | `sign <manifest>` | Signs a manifest with `RELEASE_SIGNING_KEY` (base64) |
 //! | `verify <manifest>` | Checks a manifest's signature against the key built into the app |
-//! | `icons <out-dir>` | Draws the app icon as PNG and ICO |
+//! | `icons` | Draws the app icon (PNG, ICO and the interface mark) from `packaging/icons/icon.svg` |
 
 mod icons;
 mod media;

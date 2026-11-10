@@ -8,4 +8,4 @@ Project chores written in Rust, so they run the same on Windows and Linux. Run t
 | `brand` | Prints the app's name, id and version as `KEY=value` lines for CI |
 | `beta-version <run>` | Prints the version, `BUILD_VERSION` and tag of an automatic beta (next patch, `-beta.<run>`) |
 | `keygen`, `manifest`, `sign`, `verify` | The release signing key and the signed file list (see `RELEASING.md`) |
-| `icons <folder>` | Draws the app icons |
+| `icons` | Draws the app icon files from `packaging/icons/icon.svg` |

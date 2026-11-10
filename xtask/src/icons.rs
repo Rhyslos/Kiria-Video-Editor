@@ -1,81 +1,96 @@
-//! `cargo xtask icons <out-dir>`: draws the app icon.
+//! `cargo xtask icons`: draws the app icon from `packaging/icons/icon.svg`.
 //!
-//! The mark is the accent-coloured rounded square from the interface with a
-//! dark play triangle. Writes `icon.png` (256 px) and `icon.ico` (16 to 256 px).
+//! Every size is drawn straight from the drawing (never scaled down from a big
+//! picture), so small sizes stay sharp. Writes:
+//! - `packaging/icons/icon.png` (256 px: window, launcher and Linux icon),
+//! - `packaging/icons/icon.ico` (16 to 256 px: Windows shortcuts and installer),
+//! - `crates/ui-kit/assets/icon/icon-64.png` (the mark in the interface's top bar).
 
-use image::{ImageFormat, Rgba, RgbaImage, imageops::FilterType};
+use image::{ImageFormat, RgbaImage};
 use std::path::Path;
 
-const ACCENT: Rgba<u8> = Rgba([0xED, 0xE6, 0xD6, 0xFF]);
-const INK: Rgba<u8> = Rgba([0x1A, 0x1B, 0x1C, 0xFF]);
+/// The drawing every icon comes from, relative to the repository root.
+const SOURCE: &str = "packaging/icons/icon.svg";
+
+/// Sizes inside the Windows icon file.
+const ICO_SIZES: [u32; 7] = [16, 24, 32, 48, 64, 128, 256];
+
+/// Where the files go, relative to the repository root.
+const PACKAGING: &str = "packaging/icons";
+const INTERFACE: &str = "crates/ui-kit/assets/icon";
 
 pub fn write(args: &[String]) -> Result<(), String> {
-    let [out] = args else {
-        return Err("Usage: cargo xtask icons <out-dir>".into());
-    };
-    let out = Path::new(out);
-    std::fs::create_dir_all(out).map_err(|e| format!("Can't create {}: {e}", out.display()))?;
-    let big = draw(1024);
-    let png = image::imageops::resize(&big, 256, 256, FilterType::Lanczos3);
-    png.save_with_format(out.join("icon.png"), ImageFormat::Png)
-        .map_err(|e| format!("Can't write icon.png: {e}"))?;
+    if !args.is_empty() {
+        return Err("Usage: cargo xtask icons".into());
+    }
+    let out = Path::new(PACKAGING);
+    let svg = std::fs::read(SOURCE).map_err(|e| format!("Can't read {SOURCE}: {e}"))?;
+    let tree = resvg::usvg::Tree::from_data(&svg, &resvg::usvg::Options::default())
+        .map_err(|e| format!("{SOURCE} is not a valid drawing: {e}"))?;
 
-    let ico = image::codecs::ico::IcoEncoder::new(
-        std::fs::File::create(out.join("icon.ico")).map_err(|e| format!("Can't write icon.ico: {e}"))?,
-    );
-    let frames = [16u32, 24, 32, 48, 64, 128, 256]
+    for (path, size) in [
+        (out.join("icon.png"), 256),
+        (Path::new(INTERFACE).join("icon-64.png"), 64),
+    ] {
+        draw(&tree, size)?
+            .save_with_format(&path, ImageFormat::Png)
+            .map_err(|e| format!("Can't write {}: {e}", path.display()))?;
+    }
+
+    let file =
+        std::fs::File::create(out.join("icon.ico")).map_err(|e| format!("Can't write icon.ico: {e}"))?;
+    let frames = ICO_SIZES
         .iter()
         .map(|&size| {
-            let img = image::imageops::resize(&big, size, size, FilterType::Lanczos3);
+            let img = draw(&tree, size)?;
             image::codecs::ico::IcoFrame::as_png(img.as_raw(), size, size, image::ExtendedColorType::Rgba8)
+                .map_err(|e| format!("Can't encode the {size} px icon: {e}"))
         })
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("Can't encode the icon: {e}"))?;
-    ico.encode_images(&frames)
+        .collect::<Result<Vec<_>, _>>()?;
+    image::codecs::ico::IcoEncoder::new(file)
+        .encode_images(&frames)
         .map_err(|e| format!("Can't write icon.ico: {e}"))?;
-    println!("Wrote icon.png and icon.ico to {}.", out.display());
+    println!("Wrote {PACKAGING}/icon.png, {PACKAGING}/icon.ico and {INTERFACE}/icon-64.png.");
     Ok(())
 }
 
-/// Draws the icon at `size`, smoothing edges by sampling 4×4 points per pixel.
-fn draw(size: u32) -> RgbaImage {
-    let s = size as f32;
-    let (margin, radius) = (s * 0.06, s * 0.22);
-    // Play triangle, pointing right, optically centred.
-    let (tx0, tx1, ty0, ty1) = (s * 0.40, s * 0.70, s * 0.30, s * 0.70);
-    RgbaImage::from_fn(size, size, |x, y| {
-        let mut square: f32 = 0.0;
-        let mut triangle: f32 = 0.0;
-        for sy in 0..4 {
-            for sx in 0..4 {
-                let px = x as f32 + (sx as f32 + 0.5) / 4.0;
-                let py = y as f32 + (sy as f32 + 0.5) / 4.0;
-                if in_rounded_square(px, py, margin, s - margin, radius) {
-                    square += 1.0 / 16.0;
-                    let mid = (ty0 + ty1) / 2.0;
-                    let half_height = (ty1 - ty0) / 2.0 * (1.0 - (px - tx0) / (tx1 - tx0));
-                    if px >= tx0 && px <= tx1 && (py - mid).abs() <= half_height {
-                        triangle += 1.0 / 16.0;
-                    }
-                }
-            }
-        }
-        let ink = triangle / square.max(1e-6);
-        let mix = |a: u8, b: u8| (f32::from(a) * (1.0 - ink) + f32::from(b) * ink) as u8;
-        Rgba([
-            mix(ACCENT[0], INK[0]),
-            mix(ACCENT[1], INK[1]),
-            mix(ACCENT[2], INK[2]),
-            (square * 255.0) as u8,
-        ])
-    })
+/// Draws the icon at `size` × `size` pixels.
+fn draw(tree: &resvg::usvg::Tree, size: u32) -> Result<RgbaImage, String> {
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(size, size).ok_or("The icon size must not be zero.")?;
+    let scale = size as f32 / tree.size().width();
+    resvg::render(
+        tree,
+        resvg::tiny_skia::Transform::from_scale(scale, scale),
+        &mut pixmap.as_mut(),
+    );
+    // The drawing library keeps colours premultiplied by transparency; image files don't.
+    let pixels: Vec<u8> = pixmap
+        .pixels()
+        .iter()
+        .flat_map(|p| {
+            let c = p.demultiply();
+            [c.red(), c.green(), c.blue(), c.alpha()]
+        })
+        .collect();
+    RgbaImage::from_raw(size, size, pixels).ok_or_else(|| "The drawn icon has the wrong size.".into())
 }
 
-fn in_rounded_square(x: f32, y: f32, lo: f32, hi: f32, r: f32) -> bool {
-    if x < lo || x > hi || y < lo || y > hi {
-        return false;
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_icon_drawing_renders_at_every_size() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let svg = std::fs::read(root.join(SOURCE)).unwrap();
+        let tree = resvg::usvg::Tree::from_data(&svg, &resvg::usvg::Options::default()).unwrap();
+        for size in ICO_SIZES {
+            let img = draw(&tree, size).unwrap();
+            assert_eq!(img.dimensions(), (size, size));
+            let centre = img.get_pixel(size / 2, size / 2);
+            assert_eq!(centre[3], 255, "the middle of the icon is opaque");
+            let corner = img.get_pixel(0, 0);
+            assert_eq!(corner[3], 0, "the rounded corner is transparent");
+        }
     }
-    let cx = x.clamp(lo + r, hi - r);
-    let cy = y.clamp(lo + r, hi - r);
-    (x - cx).powi(2) + (y - cy).powi(2) <= r * r
 }

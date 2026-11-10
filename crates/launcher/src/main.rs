@@ -185,7 +185,7 @@ fn browse(data_dir: std::path::PathBuf, options: Options, notes: Vec<Note>) -> E
         update_preview: options.update_window,
     };
     let window_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
+        viewport: ui_kit::icon::with_window_icon(egui::ViewportBuilder::default())
             .with_title(brand::APP_NAME)
             .with_inner_size([1180.0, 760.0])
             .with_min_inner_size([900.0, 560.0]),
