@@ -161,10 +161,11 @@ Phase 0 builds everything later phases stand on and that is painful to add after
 
 **0.5 Jobs and resources (`jobs`)**
 
-- [ ] Thread pools for decode, render, analysis and export; one thread always kept free for the UI.
-- [ ] Priorities: playback > interactive > background; background jobs pause while playing (setting).
-- [ ] Budgets for worker threads, RAM cache and disk cache, read from settings with Auto defaults.
-- [ ] Live usage numbers (CPU, GPU, RAM) published for the top-bar readout.
+- [x] Thread pools for decode, render, analysis and export; one thread always kept free for the UI.
+- [x] Priorities: playback > interactive > background; background jobs pause while playing (setting).
+- [x] Budgets for worker threads, RAM cache and disk cache, read from settings with Auto defaults.
+- [x] Live usage numbers (CPU, GPU, RAM) published for the top-bar readout. (GPU use is filled in once the GPU layer exists.)
+- [x] Full saves run on a worker: the interface hands out a snapshot, numbered journal entries make sure nothing is lost or applied twice.
 
 **0.6 App shell (`ui-kit`, `app`)**
 

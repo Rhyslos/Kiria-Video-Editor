@@ -54,6 +54,8 @@ impl Summary {
 struct FileOut<'a> {
     format_version: u32,
     summary: Option<Summary>,
+    /// The last autosave-journal entry already included in this file.
+    journal_seq: u64,
     project: &'a Project,
 }
 
@@ -63,6 +65,9 @@ struct FileIn {
     format_version: u32,
     #[allow(dead_code)]
     summary: Option<Summary>,
+    #[allow(dead_code)]
+    #[serde(default)]
+    journal_seq: u64,
     project: Project,
 }
 
@@ -71,12 +76,20 @@ struct Header {
     format_version: u32,
     #[serde(default)]
     summary: Option<Summary>,
+    #[serde(default)]
+    journal_seq: u64,
 }
 
 /// Saves `project` to `path`, replacing any existing file only once the new one is complete.
 pub fn save(project: &Project, path: &Path) -> diag::Result<()> {
+    save_with_journal_seq(project, path, 0)
+}
+
+/// Like [`save`], also recording that autosave-journal entries up to
+/// `journal_seq` are included, so recovery never applies them twice.
+pub fn save_with_journal_seq(project: &Project, path: &Path, journal_seq: u64) -> diag::Result<()> {
     project.validate()?;
-    let text = to_string(project)?;
+    let text = to_string_with_journal_seq(project, journal_seq)?;
     let temp = temp_path(path);
     let explain_write = || {
         AppError::new("The project can't be saved")
@@ -93,9 +106,14 @@ pub fn save(project: &Project, path: &Path) -> diag::Result<()> {
 
 /// The file text for `project` in the current format.
 pub fn to_string(project: &Project) -> diag::Result<String> {
+    to_string_with_journal_seq(project, 0)
+}
+
+fn to_string_with_journal_seq(project: &Project, journal_seq: u64) -> diag::Result<String> {
     let file = FileOut {
         format_version: FORMAT_VERSION,
         summary: Summary::of(project),
+        journal_seq,
         project,
     };
     let config = ron::ser::PrettyConfig::new().indentor("  ".to_owned());
@@ -106,12 +124,18 @@ pub fn to_string(project: &Project) -> diag::Result<String> {
 
 /// Opens a project file, migrating it from an older format if needed.
 pub fn load(path: &Path) -> diag::Result<Project> {
+    Ok(load_with_journal_seq(path)?.0)
+}
+
+/// Like [`load`], also returning the last autosave-journal entry the file includes.
+pub fn load_with_journal_seq(path: &Path) -> diag::Result<(Project, u64)> {
     let text = fs::read_to_string(path).or_explain(|| {
         AppError::new("The project can't be opened")
             .why(format!("{} could not be read.", path.display()))
             .fix("Check that the file still exists and that you can open it.")
     })?;
-    from_str(&text)
+    let journal_seq = parse_header(&text)?.journal_seq;
+    Ok((from_str(&text)?, journal_seq))
 }
 
 /// Reads only the summary block, for project lists. Cheap even for big projects.
@@ -120,6 +144,14 @@ pub fn read_summary(path: &Path) -> diag::Result<Option<Summary>> {
         AppError::new("The project can't be read").why(format!("{} could not be read.", path.display()))
     })?;
     Ok(parse_header(&text)?.summary)
+}
+
+/// The last autosave-journal entry included in the file, read from the header only.
+pub fn read_journal_seq(path: &Path) -> diag::Result<u64> {
+    let text = fs::read_to_string(path).or_explain(|| {
+        AppError::new("The project can't be read").why(format!("{} could not be read.", path.display()))
+    })?;
+    Ok(parse_header(&text)?.journal_seq)
 }
 
 /// Parses project file text, migrating it from an older format if needed.

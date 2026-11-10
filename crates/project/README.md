@@ -6,8 +6,6 @@ The project model, edit commands, undo/redo and autosave.
 
 Done (Phases 0.3 and 0.4): model, project file, commands, undo/redo, autosave journal and crash recovery.
 
-Full saves currently run on the calling thread; Phase 0.5 moves them to a background job so the interface never waits on the disk.
-
 ## Files
 
 | File | What it holds |
@@ -54,7 +52,8 @@ RON text with the extension from `brand::PROJECT_FILE_EXTENSION`:
 ## Autosave and recovery
 
 - Every change, undo and redo is appended to `<project file>.journal` (one line each, flushed to disk) the moment it happens.
-- `Document::tick(now, idle)` does a full save when changes are 30 seconds old, or straight away when the app is idle. A full save writes the project file and empties the journal.
+- Journal entries are numbered. A full save writes the project file plus the number of the last entry it includes, so recovery replays only newer entries: nothing is lost and nothing is applied twice.
+- `Document::tick(now, idle)` returns a `SaveJob` when changes are 30 seconds old, or straight away when the app is idle. The job holds its own snapshot and runs on a worker (`jobs` crate); `Document::finish_save` then empties the journal if nothing changed meanwhile. `Document::save()` does the same on the calling thread.
 - On open, `Document::check` reports how many unsaved changes a crash left. `Document::open` then either replays them (`Recovery::Recover`, which also saves them into the project file) or sets the journal aside as `<file>.journal.discarded` (`Recovery::OpenLastSave`). Nothing is ever deleted.
 - A half-written last journal line (power cut mid-write) is ignored; entries that no longer apply are skipped and logged.
 
