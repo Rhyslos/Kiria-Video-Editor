@@ -11,6 +11,7 @@ The Cargo workspace members. One engine with no interface, and thin pages on top
 | [ui-kit](ui-kit/) | Themes, top bar, shortcuts, shared timeline widget | 0.6 (done), 4 |
 | [app](app/) | The editor window and its five pages (binary `editor`) | 0.6 (done), 4 onwards |
 | [updater](updater/) | Release checks, signatures, safe installs, rollback | 1 (done), 3 |
+| [project-index](project-index/) | The launcher's list of known projects and folders (SQLite) | 2 |
 | [launcher](launcher/) | Project browser and update panel (binary `launcher`) | 2 |
 | [media](media/) | Probe, demux, decode, encode (FFmpeg wrapper) | 4A |
 | [cache](cache/) | RAM, GPU and disk caches, proxies, thumbnails, waveforms | 4A |

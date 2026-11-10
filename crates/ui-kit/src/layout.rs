@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 pub const TOP_BAR_HEIGHT: f32 = 48.0;
 /// Width of the right-hand panel (inspector, details, settings of the current tool).
 pub const RIGHT_PANEL_WIDTH: f32 = 292.0;
+/// Width of the left-hand panel of windows with a folder tree (the launcher).
+pub const LEFT_PANEL_WIDTH: f32 = 240.0;
 /// Width of the master column next to the timeline.
 pub const MASTER_WIDTH: f32 = 80.0;
 

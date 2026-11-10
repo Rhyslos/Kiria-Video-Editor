@@ -226,23 +226,23 @@ Phase 2 builds the launcher exactly as in the agreed mockup: name and logo centr
 
 **2.1 Project index**
 
-- [ ] Small SQLite file in the user's data folder: known projects, path, thumbnail, length, settings, last opened, folder.
-- [ ] Projects found by: created here, opened from disk, or found in a watched project folder.
-- [ ] Reading a project's summary never loads the whole project (summary block at the top of the file).
+- [x] Small SQLite file in the user's data folder: known projects, path, thumbnail, length, settings, last opened, folder. (`crates/project-index`; thumbnails are read from beside the project file once the editor writes them.)
+- [x] Projects found by: created here, opened from disk, or found in a watched project folder.
+- [x] Reading a project's summary never loads the whole project (summary block at the top of the file). (`project::file::read_info` stops reading where the project starts.)
 
 **2.2 Layout**
 
-- [ ] Top bar from `ui-kit` with the name and logo from `brand`, centred; settings cog right.
-- [ ] Left: folder tree with three groups (Projects, Media folders, Other folders) and "+ Add folder". Media folders are remembered for later import.
-- [ ] Main: "All projects", search, Open…, New project; 3-wide grid of 16:9 thumbnails, scrolling down; each card shows length, resolution, frame rate, last used and any issue line.
-- [ ] Bottom left: version, "x.y.z available", Update, Skip this version, Automatic updates tick box (wired to phase 1).
+- [x] Top bar from `ui-kit` with the name and logo from `brand`, centred; settings cog right.
+- [x] Left: folder tree with three groups (Projects, Media folders, Other folders) and "+ Add folder". Media folders are remembered for later import.
+- [x] Main: "All projects", search, Open…, New project; 3-wide grid of 16:9 thumbnails, scrolling down; each card shows length, resolution, frame rate, last used and any issue line.
+- [x] Bottom left: version, "x.y.z available", Update, Skip this version, Automatic updates tick box (wired to phase 1).
 
 **2.3 Behaviour**
 
-- [ ] New project dialog with presets: Game clip (1080p 60), High frame rate (1440p 144), Vertical short (1080×1920 60), Match the first clip.
-- [ ] Issue checks before opening: missing media (with a relink suggestion), file saved by a newer version, file damaged.
+- [x] New project dialog with presets: Game clip (1080p 60), High frame rate (1440p 144), Vertical short (1080×1920 60), Match the first clip.
+- [ ] Issue checks before opening: missing media (with a relink suggestion), file saved by a newer version, file damaged. (Newer version, damaged and missing project files are done; missing media and relinking are next.)
 - [ ] Crash recovery prompt (from phase 0) shown here when the last session crashed.
-- [ ] Opening a project starts the editor process with the project path, then the launcher closes.
+- [x] Opening a project starts the editor process with the project path, then the launcher closes.
 - [ ] Thumbnails: the editor writes one on every save; the launcher only reads it.
 
 **Gate 2**

@@ -13,7 +13,7 @@ A fast, light, native video editor written in Rust. A hobby project, open source
 ## How we work together
 
 - **Chores happen directly:** fixing CI, dependency and tooling updates, documentation, merging finished pull requests. Commit to `main` (or merge) without asking.
-- **Features come as pull requests, one feature each.** The description says what the feature does, how to try it in the app step by step, and what is not done yet. The owner tests and merges; the pull requests double as a guided tour of the app.
+- **Features come as pull requests, one feature each.** The description says what the feature does, how to try it in the app step by step, and what is not done yet. Every pull request builds a test installer (the Release workflow's `windows` artifact); the description links to it. The owner tests and merges; the pull requests double as a guided tour of the app.
 - **Releases:** when asked to release, bump the version and `CHANGELOG.md` (a small pull request or a direct commit), then start the Release workflow with the new tag. The workflow publishes on its own once everything passes.
 
 ## Working rules
@@ -54,7 +54,7 @@ RELEASING.md         how to make a release; CHANGELOG.md what each release chang
 
 Binaries: `cargo run -p app` (the editor, binary `editor`) and `cargo run -p launcher`.
 
-To see the window without a screen (Linux): `xvfb-run -a -s "-screen 0 1600x1000x24" target/debug/editor --screenshot out.png`. CI also runs `--smoke-test` on Windows and Linux.
+To see a window without a screen (Linux): `xvfb-run -a -s "-screen 0 1600x1000x24" target/debug/editor --screenshot out.png`, or `target/debug/launcher --demo 14 --screenshot out.png` for the project browser with sample projects. CI also runs `--smoke-test` for both on Windows and Linux.
 
 ## Commands
 

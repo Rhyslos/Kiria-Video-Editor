@@ -15,7 +15,7 @@ Phase 1 done: checking GitHub, verifying the signed manifest, resumable verified
 | `src/download.rs` | `download()`: resumes a `.part` file, verifies size and checksum, only then renames it into place |
 | `src/fetch.rs` | `fetch()`: manifest and signature first, then the package for this platform |
 | `src/install.rs` | `Layout`: `current` file and `versions/<version>/` folders; finds the editor to start |
-| `src/prefs.rs` | `UpdatePrefs`: automatic on/off, channel, skipped version |
+| `src/prefs.rs` | `UpdatePrefs`: automatic on/off, channel, skipped version; `load` / `save` to `updates.ron` in the data folder |
 
 ## Trust
 

@@ -39,6 +39,32 @@ impl SequenceSettings {
         frame_rate: Rate::FPS_60,
         sample_rate: 48_000,
     };
+
+    /// 2560×1440 at 144 fps, 48 kHz: the "High frame rate" preset.
+    pub const HIGH_FRAME_RATE: SequenceSettings = SequenceSettings {
+        width: 2560,
+        height: 1440,
+        frame_rate: Rate::FPS_144,
+        sample_rate: 48_000,
+    };
+
+    /// 1080×1920 (portrait) at 60 fps, 48 kHz: the "Vertical short" preset.
+    pub const VERTICAL_SHORT: SequenceSettings = SequenceSettings {
+        width: 1080,
+        height: 1920,
+        frame_rate: Rate::FPS_60,
+        sample_rate: 48_000,
+    };
+
+    /// A short description such as "1080p 60" or "1080×1920 60" (portrait).
+    pub fn short_label(&self) -> String {
+        let fps = self.frame_rate.nominal_fps();
+        if self.width >= self.height {
+            format!("{}p {fps}", self.height)
+        } else {
+            format!("{}×{} {fps}", self.width, self.height)
+        }
+    }
 }
 
 /// A source file the project uses. The file itself is never changed.
@@ -317,6 +343,13 @@ impl Project {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settings_have_short_labels() {
+        assert_eq!(SequenceSettings::GAME_CLIP.short_label(), "1080p 60");
+        assert_eq!(SequenceSettings::HIGH_FRAME_RATE.short_label(), "1440p 144");
+        assert_eq!(SequenceSettings::VERTICAL_SHORT.short_label(), "1080×1920 60");
+    }
 
     pub(crate) fn sample() -> Project {
         let mut p = Project::new("Lofoten trip", SequenceSettings::GAME_CLIP);
