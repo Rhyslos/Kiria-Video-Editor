@@ -1,8 +1,9 @@
 name: Release
 
-# A tag like v0.1.0 (stable) or v0.2.0-beta.1 (beta) builds both installers,
-# tests them, signs the manifest and drafts a GitHub release. Publishing the
-# draft is the only manual step (see RELEASING.md).
+# A tag like v0.1.0 (stable) or v0.2.0-beta.1 (beta), or "Run workflow" with
+# a tag typed in, builds both installers, tests them, signs the manifest and
+# publishes the GitHub release. Installed copies pick it up on their next start.
+# Nothing is published if any build, test or signature check fails.
 on:
   push:
     tags: ["v*"]
@@ -124,13 +125,13 @@ jobs:
           fi
           cargo xtask sign dist/manifest.json
           cargo xtask verify dist/manifest.json
-      - name: Draft the release
+      - name: Publish the release
         if: env.RELEASE_TAG != ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           prerelease=""
           case "$APP_VERSION" in *-*) prerelease="--prerelease" ;; esac
-          # For a hand-started run the tag is created on this commit when the draft is published.
-          gh release create "$RELEASE_TAG" --draft $prerelease --target "${{ github.sha }}" \
+          # For a hand-started run the tag is created on this commit.
+          gh release create "$RELEASE_TAG" $prerelease --target "${{ github.sha }}" \
             --title "$APP_NAME $APP_VERSION" --notes-file CHANGELOG.md dist/*

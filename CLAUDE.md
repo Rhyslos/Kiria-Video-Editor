@@ -10,6 +10,12 @@ A fast, light, native video editor written in Rust. A hobby project, open source
 
 [docs/project-plan.md](docs/project-plan.md) says *what* the app is; [docs/build-plan.md](docs/build-plan.md) says *how* and *in what order*. If work would contradict the project plan, update the plan first and say so.
 
+## How we work together
+
+- **Chores happen directly:** fixing CI, dependency and tooling updates, documentation, merging finished pull requests. Commit to `main` (or merge) without asking.
+- **Features come as pull requests, one feature each.** The description says what the feature does, how to try it in the app step by step, and what is not done yet. The owner tests and merges; the pull requests double as a guided tour of the app.
+- **Releases:** when asked to release, bump the version and `CHANGELOG.md` (a small pull request or a direct commit), then start the Release workflow with the new tag. The workflow publishes on its own once everything passes.
+
 ## Working rules
 
 1. **Uniform controls.** A tool behaves the same and uses the same shortcut on every page. Shared parts (playhead, edit needle, region, timeline labels, transport, the shortcut table) are built once in `crates/ui-kit` and reused, never re-implemented per page.
@@ -68,5 +74,5 @@ cargo xtask check-media
 - The project file is versioned from its first commit; every format change gets a migration and a stored sample.
 - FFmpeg is linked dynamically and its licence text ships with the app.
 - Every program calls `diag::start(env!("CARGO_PKG_VERSION"))` first and `finish()` on a clean exit (logging, crash reports, crash detection).
-- Releases are tagged `vX.Y.Z`; the release workflow does everything except pressing Publish. Updates are trusted only with a valid signature from the `RELEASE_SIGNING_KEY` secret.
+- Releases are tagged `vX.Y.Z` (pushed, or typed into "Run workflow"); the release workflow builds, tests, signs and publishes. Updates are trusted only with a valid signature from the `RELEASE_SIGNING_KEY` secret.
 - Licence: GPL-3.0-or-later (`LICENSE`). Dependencies must have GPL-compatible licences; `deny.toml` checks this in CI. Never copy code whose licence is incompatible.

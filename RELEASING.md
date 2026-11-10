@@ -1,6 +1,6 @@
 # Releasing
 
-Every release is built, tested, signed and drafted by GitHub Actions. Publishing the draft is the only manual step.
+Every release is built, tested, signed and published by GitHub Actions. Starting it is the only manual step.
 
 ## Version numbers
 
@@ -23,8 +23,8 @@ Every release is built, tested, signed and drafted by GitHub Actions. Publishing
    - installs the Windows build silently, starts it, and uninstalls it again,
    - starts the Linux build on a virtual screen,
    - writes `manifest.json` (every file's size and checksum), signs it, and checks the signature,
-   - drafts a GitHub release with all files.
-6. Open the draft on GitHub, read it over, and press **Publish**. Installed copies find it the next time they open.
+   - publishes the GitHub release with all files, but only if every step above passed.
+6. Installed copies find it the next time they open.
 
 ## The signing key
 
