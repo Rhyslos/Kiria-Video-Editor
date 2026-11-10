@@ -100,7 +100,17 @@ Software decoding can be measured on any machine. B and C need the real GPU, so 
 
 ## 4. Result
 
-Not measured yet.
+**Software decoding on a 2-thread cloud machine** (no GPU; FFmpeg 8.1; 20-second synthetic clips; frames not uploaded):
+
+| Clip | Play fps | CPU % (100 = one thread) | Jump median ms | Jump worst ms | 2 streams fps | 4 streams fps |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| H.264 1080p 60 | 278 | 162 | 207 | 388 | 337 | 309 |
+| H.265 1440p 60 | 93 | 175 | 785 | 1361 | 100 | 97 |
+| AV1 1440p 60 | 154 | 158 | 450 | 774 | 204 | 195 |
+| H.265 1440p 144 | 126 | 175 | 1124 | 2302 | 138 | 139 |
+
+Even where playing keeps up, a jump takes 0.2 to 2.3 seconds, because every frame from the key frame before the target is decoded on the CPU. That is 4 to 46 times the 50 ms target. A desktop CPU with more cores is faster, but not by that much, so software decoding alone can't meet the scrubbing target; it stays as the fallback. Approaches B and C need the real GPU and are measured with the Windows package from the "Decoding spike" workflow.
+
 
 Expectation before measuring, to be proven or disproven: B is enough for one 1440p 60 stream and keeps the code simple, A is the required fallback, and C is the only way to keep 4 streams and fast scrubbing cheap. If B meets every target in the table above, it gets built first and C waits until a measured need appears.
 
