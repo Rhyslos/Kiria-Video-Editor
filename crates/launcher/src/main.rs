@@ -7,7 +7,7 @@
 //! newer version in the background and, with automatic updates on, downloads
 //! and verifies it; installing it arrives in Phase 3.
 //!
-//! Usage: `launcher [project file] [--no-update-check] [--smoke-test | --screenshot <file.png>] [--demo <count>] [--update-window <available | downloading | ready>] [--demo-crash]`.
+//! Usage: `launcher --self-test` (answers and stops), or `launcher [project file] [--no-update-check] [--smoke-test | --screenshot <file.png>] [--demo <count>] [--update-window <available | downloading | ready>] [--demo-crash]`.
 
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
@@ -33,6 +33,11 @@ use updater::{CheckResult, UpdatePrefs};
 pub(crate) const VERSION: &str = brand::VERSION;
 
 fn main() -> ExitCode {
+    // Asked by an older launcher before it lets this one replace it: answer and stop.
+    if std::env::args().nth(1).as_deref() == Some("--self-test") {
+        println!("{} launcher {VERSION}", brand::APP_NAME);
+        return ExitCode::SUCCESS;
+    }
     let options = match Options::parse(std::env::args().skip(1)) {
         Ok(options) => options,
         Err(message) => {
@@ -124,16 +129,21 @@ fn install_waiting_update(data_dir: &Path) -> diag::Result<Installed> {
     }
     let downloads = data_dir.join("downloads");
     let mut installed = None;
+    let mut launcher_needed = false;
     let bad = UpdatePrefs::load(data_dir).bad_versions;
     if let Some(ready) = apply::pending(&downloads, &current, &bad) {
         tracing::info!(from = %current, to = %ready.version, "installing an update");
         apply::install(&kind, &ready)?;
+        launcher_needed = apply::needs_newer_launcher(&ready, VERSION);
         // Earlier versions stay until the new one has started properly (health::after_start).
         apply::forget_download(&downloads, &ready.version);
         installed = Some(ready.version);
     }
     let restart = match &kind {
-        InstallKind::Folders(layout) => apply::replace_launcher(layout, VERSION)?,
+        // Normally the launcher is replaced only after the new version has
+        // started properly (watch_editor); a version that needs it goes first.
+        InstallKind::Folders(layout) if launcher_needed => apply::replace_launcher(layout, VERSION)?,
+        InstallKind::Folders(_) => false,
         // The AppImage file was replaced; the running copy is the old one.
         InstallKind::AppImage(_) => installed.is_some(),
         InstallKind::Development => false,
@@ -279,6 +289,14 @@ fn watch_editor(data_dir: &Path, mut child: std::process::Child) {
     };
     let outcome = health::watch_start(data_dir, &mut child, health::START_TIMEOUT);
     tracing::info!(?outcome, %version, "editor start");
+    if outcome == health::StartOutcome::Started {
+        // The version works: now its launcher may replace this one (used from the next start).
+        match updater::apply::replace_launcher(&layout, VERSION) {
+            Ok(true) => tracing::info!(%version, "launcher updated"),
+            Ok(false) => {}
+            Err(err) => tracing::warn!("{}", err.report()),
+        }
+    }
     match health::after_start(data_dir, &layout, &version, outcome) {
         Ok(Some(notice)) => {
             tracing::warn!(failed = %notice.failed, restored = %notice.restored, "rolled back");

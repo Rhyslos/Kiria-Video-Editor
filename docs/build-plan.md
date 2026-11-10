@@ -32,7 +32,7 @@ The platform (project file, errors, installs, safe updates) comes before any pag
 | 0 | Foundations | Workspace, engine core, errors, resources, app shell | Empty app opens, autosaves, recovers from a forced crash | Gate passed |
 | 1 | Installer and updates | Signed builds, installers, GitHub releases | A tagged build installs on a clean Windows and Linux machine | Gate passed |
 | 2 | Launcher | Project browser, folders, update panel | Create, find and open projects; manual update works | In progress |
-| 3 | Update safety | Side-by-side installs, rollback, project migrations | A broken update rolls back by itself; old projects open | Started early (installing updates) |
+| 3 | Update safety | Side-by-side installs, rollback, project migrations | A broken update rolls back by itself; old projects open | Built; gate tests by the owner |
 | 4 | Edit page | Media pipeline, playback, timeline, editing, inspector | Cut a 20-minute game recording smoothly at 1440p 60 | Not started |
 | 5 | Library | Import, index, tabs, lists, labels, prune | 500 clips import, filter and search instantly | Not started |
 | 6 | Export | Encode pipeline, presets, checks, queue | Exports match the timeline frame for frame | Not started |
@@ -272,8 +272,8 @@ Automatic test builds (added in Phase 2 so features can be tried through updates
 
 **3.3 Launcher self-update**
 
-- [ ] The launcher updates itself in a separate, rarer step, using a temporary copy so it can never break its own recovery. (Started: every version carries its launcher; a newer one is swapped in by renaming the running one aside, then the new one restarts. Making it a separate, rarer step is still to do.)
-- [ ] Manifest field "minimum launcher version" forces this step first when needed.
+- [x] The launcher updates itself in a separate, rarer step, using a temporary copy so it can never break its own recovery. (Every version carries its launcher. It replaces the installed one only after that version has started properly, and only if it passes `--self-test`; the replaced launcher is kept aside until the new one has run.)
+- [x] Manifest field "minimum launcher version" forces this step first when needed. (`brand::MIN_LAUNCHER_VERSION`.)
 
 **3.4 Project safety across versions**
 

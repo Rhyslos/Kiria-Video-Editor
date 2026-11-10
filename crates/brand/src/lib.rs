@@ -32,6 +32,11 @@ pub const VERSION: &str = match option_env!("BUILD_VERSION") {
     None => env!("CARGO_PKG_VERSION"),
 };
 
+/// The oldest launcher that can install and start this version. Raise it when
+/// a version needs something only a newer launcher does; installed copies then
+/// replace their launcher before anything else (`updater::apply`).
+pub const MIN_LAUNCHER_VERSION: &str = "0.1.0";
+
 /// Title for a window, for example `window_title("Lofoten trip")`
 /// gives "Lofoten trip – Kiria".
 pub fn window_title(document: &str) -> String {
