@@ -190,28 +190,28 @@ Phase 1 makes every tagged commit a signed, installable release that the app can
 
 **1.1 Packaging**
 
-- [ ] FFmpeg: a shared-library build (LGPL or GPL, both fit the project's GPL-3.0 licence) pinned to one version, fetched by a build script and bundled next to the binaries (Windows DLLs, Linux AppImage libs). Licence texts shipped in `licenses/`.
-- [ ] `cargo-dist` config producing a Windows per-user installer (MSI) and a Linux AppImage containing both `app` and `launcher`.
-- [ ] Install layout: `<install>/versions/<x.y.z>/` holds each version; `<install>/launcher` stays outside it (needed for phase 3).
-- [ ] Start-menu / desktop entry points at the launcher, never directly at the editor.
+- [x] FFmpeg: a shared-library build (LGPL or GPL, both fit the project's GPL-3.0 licence) pinned to one version, fetched by a build script and bundled next to the binaries (Windows DLLs, Linux AppImage libs). Licence texts shipped in `licenses/`.
+- [x] A Windows per-user installer (Inno Setup, see decision 0002) and a Linux AppImage, each containing both `app` and `launcher`.
+- [x] Install layout: `<install>/versions/<x.y.z>/` holds each version; `<install>/launcher` stays outside it (needed for phase 3).
+- [x] Start-menu / desktop entry points at the launcher, never directly at the editor.
 
 **1.2 Signing**
 
-- [ ] Generate an ed25519 release key; private key only in GitHub Actions secrets, public key compiled into `updater`.
-- [ ] Release workflow signs a `manifest.json` (version, channel, file hashes, minimum launcher version).
-- [ ] Windows code-signing certificate for the installer (avoids SmartScreen warnings); until it is bought, the README explains the warning.
+- [x] Generate an ed25519 release key; private key only in GitHub Actions secrets, public key compiled into `updater`.
+- [x] Release workflow signs a `manifest.json` (version, channel, file hashes, minimum launcher version).
+- [x] Windows code-signing certificate: skipped for a hobby project (decision 0002); `RELEASING.md` explains the SmartScreen warning.
 
 **1.3 Release check (`updater`)**
 
-- [ ] Query the GitHub Releases API with a 3-second timeout; Stable and Beta channels (Beta = pre-releases).
-- [ ] Download in the background with resume; verify every hash and the manifest signature before anything is unpacked.
-- [ ] Settings stored: automatic updates on/off, skipped version, channel.
-- [ ] Every failure becomes a what / why / fix error (offline, rate-limited, bad signature, disk full); none of them blocks opening.
+- [x] Query the GitHub Releases API with a 3-second timeout; Stable and Beta channels (Beta = pre-releases).
+- [x] Download in the background with resume; verify every hash and the manifest signature before anything is unpacked.
+- [x] Settings stored: automatic updates on/off, skipped version, channel.
+- [x] Every failure becomes a what / why / fix error (offline, rate-limited, bad signature, disk full); none of them blocks opening.
 
 **1.4 Release routine**
 
-- [ ] `RELEASING.md`: bump version, changelog entry, tag, check CI, publish the draft.
-- [ ] Version scheme: `0.x.y` until 1.0; the project file format version is separate and only goes up.
+- [x] `RELEASING.md`: bump version, changelog entry, tag, check CI, publish the draft.
+- [x] Version scheme: `0.x.y` until 1.0; the project file format version is separate and only goes up.
 
 **Gate 1**
 

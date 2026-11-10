@@ -3,6 +3,9 @@
 //! Usage: `editor [project file] [--smoke-test | --responsiveness-test | --screenshot <file.png>]`.
 //! The extra options are for automated checks; normal use needs none.
 
+// Release builds on Windows open no console window next to the editor.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod editor;
 mod run_mode;
 mod settings;

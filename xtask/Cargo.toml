@@ -8,7 +8,12 @@ license.workspace = true
 publish = false
 
 [dependencies]
+base64 = "0.22"
+brand = { path = "../crates/brand" }
+getrandom = "0.3"
+image = { version = "0.25", default-features = false, features = ["png", "ico"] }
 sha2 = "0.10"
+updater = { path = "../crates/updater" }
 
 [lints]
 workspace = true

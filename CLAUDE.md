@@ -40,8 +40,10 @@ docs/                project plan, build plan, research notes, decisions
 spikes/              throwaway prototypes (not built)
 tests/               cross-crate tests
 test-media/          shared test recordings (only the manifest is in git)
-xtask/               chores: `cargo xtask check-media`
-.github/workflows/   CI on Windows and Linux
+xtask/               chores: `cargo xtask <check-media | brand | keygen | manifest | sign | verify | icons>`
+packaging/           installers: Windows (Inno Setup), Linux (AppImage), icons, FFmpeg pin
+.github/workflows/   CI on Windows and Linux; release.yml builds, tests, signs and drafts releases
+RELEASING.md         how to make a release; CHANGELOG.md what each release changed
 ```
 
 Binaries: `cargo run -p app` (the editor, binary `editor`) and `cargo run -p launcher`.
@@ -66,4 +68,5 @@ cargo xtask check-media
 - The project file is versioned from its first commit; every format change gets a migration and a stored sample.
 - FFmpeg is linked dynamically and its licence text ships with the app.
 - Every program calls `diag::start(env!("CARGO_PKG_VERSION"))` first and `finish()` on a clean exit (logging, crash reports, crash detection).
+- Releases are tagged `vX.Y.Z`; the release workflow does everything except pressing Publish. Updates are trusted only with a valid signature from the `RELEASE_SIGNING_KEY` secret.
 - Licence: GPL-3.0-or-later (`LICENSE`). Dependencies must have GPL-compatible licences; `deny.toml` checks this in CI. Never copy code whose licence is incompatible.

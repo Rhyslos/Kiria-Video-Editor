@@ -23,9 +23,15 @@ pub struct LogGuard(#[allow(dead_code)] tracing_appender::non_blocking::WorkerGu
 
 /// Starts logging to daily files in `logs_dir`. Call once per process.
 pub fn init(logs_dir: &Path, days_kept: usize) -> Result<LogGuard> {
+    init_named(logs_dir, days_kept, FILE_PREFIX)
+}
+
+/// Like [`init`], for a helper program that keeps its own log files
+/// (`<name>.YYYY-MM-DD.log`), such as the launcher.
+pub fn init_named(logs_dir: &Path, days_kept: usize, name: &str) -> Result<LogGuard> {
     let appender = RollingFileAppender::builder()
         .rotation(Rotation::DAILY)
-        .filename_prefix(FILE_PREFIX)
+        .filename_prefix(name)
         .filename_suffix(FILE_SUFFIX)
         .max_log_files(days_kept)
         .build(logs_dir)

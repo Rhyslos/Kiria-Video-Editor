@@ -1,0 +1,128 @@
+name: Release
+
+# A tag like v0.1.0 (stable) or v0.2.0-beta.1 (beta) builds both installers,
+# tests them, signs the manifest and drafts a GitHub release. Publishing the
+# draft is the only manual step (see RELEASING.md).
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows:
+    name: Windows installer
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Name and version
+        shell: pwsh
+        run: cargo xtask brand | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+      - name: Version matches the tag
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}".TrimStart('v')
+          if ($tag -ne $env:APP_VERSION) { throw "The tag says $tag but Cargo.toml says $env:APP_VERSION. Bump the version first (RELEASING.md)." }
+      - name: Build
+        run: cargo build --release -p app -p launcher
+      - name: Stage files and FFmpeg
+        shell: pwsh
+        run: packaging/windows/stage.ps1 -Stage target/stage-windows -Out target/dist
+      - name: Build the installer
+        shell: pwsh
+        run: |
+          $env:STAGE_DIR = (Resolve-Path target/stage-windows).Path
+          $env:OUT_DIR = (Resolve-Path target/dist).Path
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" packaging\windows\installer.iss
+      - name: Install silently, start the editor, uninstall
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP "install-test"
+          $setup = "target/dist/$env:APP_NAME-Setup-$env:APP_VERSION.exe"
+          Start-Process -Wait $setup -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER", "/DIR=$dir"
+          if (-not (Test-Path "$dir/launcher.exe")) { throw "The launcher was not installed." }
+          if ((Get-Content "$dir/current") -ne $env:APP_VERSION) { throw "The current-version file is wrong." }
+          $editor = "$dir/versions/$env:APP_VERSION/editor.exe"
+          $run = Start-Process -Wait -PassThru $editor -ArgumentList "--smoke-test"
+          if ($run.ExitCode -ne 0) { throw "The installed editor failed its smoke test (exit $($run.ExitCode))." }
+          Start-Process -Wait "$dir/unins000.exe" -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES"
+          Start-Sleep -Seconds 3
+          if (Test-Path "$dir/versions") { throw "Uninstalling left the versions folder behind." }
+          Write-Host "Installed, started and uninstalled cleanly."
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: |
+            target/dist/*.exe
+            target/dist/*.zip
+
+  linux:
+    name: Linux AppImage
+    runs-on: ubuntu-22.04 # the oldest supported base keeps the AppImage working on older distributions
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Tools for building and testing
+        run: sudo apt-get update && sudo apt-get install -y xvfb libegl1 libgl1-mesa-dri libxkbcommon-x11-0 file
+      - name: Name and version
+        run: cargo xtask brand >> "$GITHUB_ENV"
+      - name: Build
+        run: cargo build --release -p app -p launcher
+      - name: Build the AppImage
+        run: packaging/linux/build-appimage.sh
+      - name: Start the editor from the AppImage
+        run: |
+          cd target/dist
+          ./"$APP_NAME-$APP_VERSION-linux-x86_64.AppImage" --appimage-extract >/dev/null
+          LD_LIBRARY_PATH=squashfs-root/usr/lib xvfb-run -a -s "-screen 0 1600x1000x24" squashfs-root/usr/bin/editor --smoke-test
+          rm -rf squashfs-root
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: target/dist/*.AppImage
+
+  publish:
+    name: Sign and draft the release
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Name and version
+        run: cargo xtask brand >> "$GITHUB_ENV"
+      - name: Manifest and signature
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          cargo xtask manifest dist/manifest.json "$APP_VERSION" dist/*.zip dist/*.AppImage dist/*.exe
+          if [ -z "$RELEASE_SIGNING_KEY" ] && [ "${{ github.ref_type }}" != "tag" ]; then
+            echo "::warning::RELEASE_SIGNING_KEY is not set; a test run skips signing. A tagged release fails without it."
+            exit 0
+          fi
+          cargo xtask sign dist/manifest.json
+          cargo xtask verify dist/manifest.json
+      - name: Draft the release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prerelease=""
+          case "$APP_VERSION" in *-*) prerelease="--prerelease" ;; esac
+          gh release create "${{ github.ref_name }}" --draft $prerelease \
+            --title "$APP_NAME $APP_VERSION" --notes-file CHANGELOG.md dist/*

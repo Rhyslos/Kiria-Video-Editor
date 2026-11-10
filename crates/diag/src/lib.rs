@@ -52,6 +52,15 @@ pub fn start(app_version: &'static str) -> Result<Diagnostics> {
     })
 }
 
+/// Folders and logging for a helper program such as the launcher. No crash
+/// detection: only the editor's own runs count as sessions.
+pub fn start_helper(name: &str) -> Result<(AppDirs, logging::LogGuard)> {
+    let dirs = AppDirs::locate()?;
+    dirs.create()?;
+    let log = logging::init_named(&dirs.logs, LOG_DAYS_KEPT, name)?;
+    Ok((dirs, log))
+}
+
 impl Diagnostics {
     /// Marks the run as closed cleanly and flushes the log.
     pub fn finish(self) -> Result<()> {
