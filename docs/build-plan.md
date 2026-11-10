@@ -169,12 +169,12 @@ Phase 0 builds everything later phases stand on and that is painful to add after
 
 **0.6 App shell (`ui-kit`, `app`)**
 
-- [ ] wgpu + egui window; Ash and Carbon theme tokens copied from the mockups; Inter and a monospace font bundled.
-- [ ] Shared top bar: project name left, page tabs centred over the viewport position, search button, resource readout, settings cog.
-- [ ] Empty pages for Library, Edit, Color, Audio, Export that switch instantly.
-- [ ] Shortcut system: one table of actions and default keys (Space, S, Delete, Backspace, M so far), used by every page.
-- [ ] Settings window skeleton: theme, resources, "Edit at the playhead".
-- [ ] Inline error display component (what / why / fix + button) and a Diagnostics panel listing the session's errors.
+- [x] wgpu + egui window; Ash and Carbon theme tokens copied from the mockups; Inter and a monospace font bundled.
+- [x] Shared top bar: project name left, page tabs centred over the viewport position, search button, resource readout, settings cog.
+- [x] Empty pages for Library, Edit, Color, Audio, Export that switch instantly.
+- [x] Shortcut system: one table of actions and default keys (Space, S, Delete, Backspace, M so far), used by every page.
+- [x] Settings window skeleton: theme, resources, "Edit at the playhead".
+- [x] Inline error display component (what / why / fix + button) and a Diagnostics panel listing the session's errors.
 
 **Gate 0**
 

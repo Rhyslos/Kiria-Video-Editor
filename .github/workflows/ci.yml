@@ -29,6 +29,41 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
+  window:
+    name: Window smoke test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Software graphics and a virtual screen (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y xvfb libegl1 libgl1-mesa-dri libxkbcommon-x11-0
+      - name: Build the editor
+        run: cargo build -p app
+      - name: Open the window, draw, close (Windows)
+        if: runner.os == 'Windows'
+        run: target/debug/editor.exe --smoke-test
+      - name: Open the window, draw, close (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a -s "-screen 0 1600x1000x24" target/debug/editor --smoke-test
+      - name: Interface stays responsive during an 8-second job (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a -s "-screen 0 1600x1000x24" target/debug/editor --responsiveness-test
+      - name: Screenshot
+        if: runner.os == 'Linux'
+        run: xvfb-run -a -s "-screen 0 1600x1000x24" target/debug/editor --screenshot editor.png
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Linux'
+        with:
+          name: editor-screenshot
+          path: editor.png
+
   licences:
     name: Dependency licences
     runs-on: ubuntu-latest

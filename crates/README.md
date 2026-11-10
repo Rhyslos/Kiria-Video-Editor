@@ -8,8 +8,8 @@ The Cargo workspace members. One engine with no interface, and thin pages on top
 | [diag](diag/) | Explained errors, logging, crash reports | 0.2 (done) |
 | [project](project/) | Project model, commands, undo/redo, autosave | 0.3 – 0.4 (done) |
 | [jobs](jobs/) | Worker pools, priorities, resource budgets | 0.5 (done) |
-| [ui-kit](ui-kit/) | Themes, top bar, shortcuts, shared timeline widget | 0.6 onwards |
-| [app](app/) | The editor window and its five pages (binary `editor`) | 0.6 onwards |
+| [ui-kit](ui-kit/) | Themes, top bar, shortcuts, shared timeline widget | 0.6 (done), 4 |
+| [app](app/) | The editor window and its five pages (binary `editor`) | 0.6 (done), 4 onwards |
 | [updater](updater/) | Release checks, signatures, safe installs, rollback | 1, 3 |
 | [launcher](launcher/) | Project browser and update panel (binary `launcher`) | 2 |
 | [media](media/) | Probe, demux, decode, encode (FFmpeg wrapper) | 4A |

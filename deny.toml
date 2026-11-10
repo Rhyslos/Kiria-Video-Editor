@@ -16,6 +16,11 @@ allow = [
     "LGPL-2.1-or-later",
     "LGPL-3.0-or-later",
     "GPL-3.0-or-later",
+    "BSL-1.0",
+]
+# The interface library's built-in fallback fonts (symbols, emoji) carry font licences.
+exceptions = [
+    { allow = ["OFL-1.1", "Ubuntu-font-1.0"], crate = "epaint_default_fonts" },
 ]
 # Our own crates are not published to crates.io.
 private = { ignore = true }

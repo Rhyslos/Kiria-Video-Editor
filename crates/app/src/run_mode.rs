@@ -1,0 +1,62 @@
+//! Command-line options. Normal use needs none; the others exist for automated checks.
+
+use std::path::PathBuf;
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Options {
+    /// A project to open (created if it does not exist yet).
+    pub project: Option<PathBuf>,
+    pub mode: RunMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum RunMode {
+    #[default]
+    Normal,
+    /// Open the window, draw a few frames, close. Used by CI to catch start-up crashes.
+    SmokeTest,
+    /// Draw the window, save a PNG of it, close.
+    Screenshot(PathBuf),
+    /// Run an 8-second background job and measure how long the interface
+    /// takes per frame meanwhile (Gate 0).
+    ResponsivenessTest,
+}
+
+impl Options {
+    pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Options, String> {
+        let mut options = Options::default();
+        let mut args = args.into_iter();
+        while let Some(arg) = args.next() {
+            match arg.as_str() {
+                "--smoke-test" => options.mode = RunMode::SmokeTest,
+                "--responsiveness-test" => options.mode = RunMode::ResponsivenessTest,
+                "--screenshot" => {
+                    let path = args.next().ok_or("--screenshot needs a file name")?;
+                    options.mode = RunMode::Screenshot(path.into());
+                }
+                other if other.starts_with("--") => return Err(format!("unknown option {other}")),
+                path => options.project = Some(path.into()),
+            }
+        }
+        Ok(options)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Result<Options, String> {
+        Options::parse(args.iter().map(|s| s.to_string()))
+    }
+
+    #[test]
+    fn options_parse() {
+        assert_eq!(parse(&[]).unwrap(), Options::default());
+        let o = parse(&["trip.project", "--screenshot", "shot.png"]).unwrap();
+        assert_eq!(o.project, Some("trip.project".into()));
+        assert_eq!(o.mode, RunMode::Screenshot("shot.png".into()));
+        assert!(parse(&["--screenshot"]).is_err());
+        assert!(parse(&["--nope"]).is_err());
+    }
+}

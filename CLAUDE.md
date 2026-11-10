@@ -46,6 +46,8 @@ xtask/               chores: `cargo xtask check-media`
 
 Binaries: `cargo run -p app` (the editor, binary `editor`) and `cargo run -p launcher`.
 
+To see the window without a screen (Linux): `xvfb-run -a -s "-screen 0 1600x1000x24" target/debug/editor --screenshot out.png`. CI also runs `--smoke-test` on Windows and Linux.
+
 ## Commands
 
 ```sh
