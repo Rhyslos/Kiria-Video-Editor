@@ -241,16 +241,15 @@ Phase 2 builds the launcher exactly as in the agreed mockup: name and logo centr
 
 - [x] Choosing where projects are saved: a default folder (Settings, or right-click a folder) and Browse… for any folder in New project.
 - [x] New project dialog with presets: Game clip (1080p 60), High frame rate (1440p 144), Vertical short (1080×1920 60), Match the first clip.
-- [ ] Issue checks before opening: missing media (with a relink suggestion), file saved by a newer version, file damaged. (Newer version, damaged and missing project files are done; missing media and relinking are next.)
+- [x] Issue checks before opening: file saved by a newer version, file damaged, project file missing. (Missing media with a relink suggestion moved to 4A, where importing arrives.)
 - [ ] Crash recovery prompt (from phase 0) shown here when the last session crashed.
 - [x] Opening a project starts the editor process with the project path, then the launcher closes.
-- [ ] Thumbnails: the editor writes one on every save; the launcher only reads it.
 
 **Gate 2**
 
 - [ ] Cold start to a usable launcher in under 1 second on both machines.
 - [ ] Create, rename, move to a folder, search and open projects; 200 fake projects scroll smoothly.
-- [ ] Missing media and newer-version issues show on the right cards.
+- [ ] Newer-version, damaged and missing-file issues show on the right cards.
 - [ ] Update, Skip and the Automatic tick box behave as labelled against a test release.
 
 ## Phase 3 · Update safety
@@ -300,6 +299,8 @@ Phase 4 is the heart of the app and the longest phase, so it runs as three parts
 - [ ] **Audio clock as master:** `cpal` output with lock-free ring buffers; video frames scheduled against the audio clock.
 - [ ] **Caches** (research workflow): RAM frame cache ahead of the playhead in the play direction, GPU texture cache, disk render cache keyed by input hash; budgets from phase 0.
 - [ ] **Thumbnails, waveforms and proxies** built in the background; proxy Off / On / Auto; export always uses originals.
+- [ ] **Project thumbnails:** the editor writes one on every save; the launcher's cards show it (moved here from phase 2: there is no picture to show before playback).
+- [ ] **Missing media:** the launcher's cards and the editor say which clips are missing and suggest relinking them (moved here from phase 2: there is no media before importing).
 - [ ] **Preview quality:** Full, 1/2, 1/4, Auto; drop resolution before dropping frames; the viewport says when and why.
 - [ ] **Viewport and transport:** single view, Display menu, preview-resolution dropdown, zoom; floating squircle transport with play centred; pause returns to where playback started, stop holds; Space plays/pauses.
 
