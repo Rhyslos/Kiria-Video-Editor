@@ -7,7 +7,7 @@
 //! put together and what is kept between pictures of that size, and
 //! [`Shower`] draws a finished frame into whatever target shows it.
 
-use crate::frame::{Area, Part};
+use crate::geometry::{Area, Part};
 
 /// Seven rows of four numbers: see `Layer` in the shader.
 const LAYER_BYTES: u64 = 7 * 4 * 4;

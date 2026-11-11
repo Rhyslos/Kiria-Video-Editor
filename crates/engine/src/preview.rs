@@ -40,10 +40,13 @@
 //! the CPU. Stepping down is logged with the reason and shows no error; only
 //! the last way's failure does.
 
+use crate::compose::{Composed, Composer, Composing};
+use crate::frame::{self, FrameDescription};
 use crate::frames::FrameCache;
 use crate::timeline::video_at;
 use media::{Decoded, Decoding, GpuFrame, Level, Newer, Reached, VideoDecoder, WindowDevice, Work};
 use project::{MediaId, Project, SequenceId, Time};
+use render::Area;
 use std::collections::{HashSet, VecDeque};
 use std::path::Path;
 use std::sync::Arc;
@@ -128,8 +131,17 @@ pub fn below(ladder: &'static [Level], failed: Level) -> &'static [Level] {
 pub struct Picture {
     /// The timeline time asked for.
     pub at: Time,
-    /// `None` in a gap (black), or when the frame couldn't be decoded (see `error`).
+    /// The top clip's picture, when the worker doesn't put pictures
+    /// together itself. `None` in a gap (black), or when the frame couldn't
+    /// be decoded (see `error`).
     pub frame: Option<Decoded>,
+    /// The timeline's whole picture, put together on the window's device,
+    /// when the worker was started with one ([`Preview::start_composing`]).
+    /// `None` in a gap (black) or when nothing could be decoded.
+    pub composed: Option<Composed>,
+    /// The renderer could not take a picture decoded on the window's device:
+    /// whoever started the worker starts one that decodes the usual way.
+    pub refused: bool,
     pub error: Option<diag::AppError>,
     /// How long decoding took, with copying the planes out or converting to RGBA.
     pub took: Duration,
@@ -170,6 +182,21 @@ impl Preview {
         on_device: Option<OnDevice>,
         notify: impl Fn() + Send + 'static,
     ) -> Preview {
+        Preview::start_composing(decoding, convert, on_device, None, notify)
+    }
+
+    /// Like [`Preview::start`]. With `composing` (the device the window is
+    /// drawn with) the worker puts every visible layer together into the
+    /// timeline's picture there, and pictures come back as
+    /// [`Picture::composed`]; without, the top clip's picture comes back
+    /// alone as [`Picture::frame`].
+    pub fn start_composing(
+        decoding: Decoding,
+        convert: Convert,
+        on_device: Option<OnDevice>,
+        composing: Option<Composing>,
+        notify: impl Fn() + Send + 'static,
+    ) -> Preview {
         let (requests, inbox) = channel::<Request>();
         let (outbox, pictures) = channel::<Picture>();
         let worker = Worker {
@@ -180,6 +207,8 @@ impl Preview {
             decoders: VecDeque::new(),
             off_device: HashSet::new(),
             gave_up_last: false,
+            composing,
+            composer: None,
             playhead: None,
             filler: None,
             unfillable: HashSet::new(),
@@ -368,6 +397,10 @@ struct Worker {
     off_device: HashSet<(MediaId, u32)>,
     /// The last decode was given up for a newer request: the next one is finished.
     gave_up_last: bool,
+    /// The window's device, when pictures are put together here.
+    composing: Option<Composing>,
+    /// Made from it on this thread, the first time a picture is needed.
+    composer: Option<Composer>,
     /// Frames decoded on the window's device, kept there.
     frames: FrameCache<(MediaId, u32), GpuFrame>,
     /// Where the playhead last was in a file whose frames are kept: what
@@ -413,30 +446,129 @@ impl Worker {
     /// `None` when the decode was given up for a newer request it can't serve.
     fn picture(&mut self, r: &Request, waiting: &mut Waiting<'_>) -> Option<Picture> {
         let started = Instant::now();
-        let mut out = Picture {
-            at: r.at,
-            frame: None,
-            error: None,
-            took: Duration::ZERO,
-            work: None,
-            method: None,
-        };
         // Whatever is answered without decoding counts as a finished answer.
         let gave_up_last = std::mem::take(&mut self.gave_up_last);
         self.playhead = None;
         let Some(sequence) = r.project.sequences.iter().find(|s| s.id == r.sequence) else {
-            return Some(out);
+            return Some(Picture::black(r.at));
         };
+        if self.composing.is_some() {
+            return self.composed(r, sequence, waiting, !gave_up_last, started);
+        }
         let Some(showing) = video_at(&r.project, sequence, r.at) else {
-            return Some(out); // a gap: black
+            return Some(Picture::black(r.at)); // a gap: black
         };
-        let key = (showing.media.id, showing.clip.stream);
-        let file = File {
+        let target = Target {
+            key: (showing.media.id, showing.clip.stream),
             path: &showing.media.path,
-            stream: showing.clip.stream,
             rotation: showing.media.info.video.as_ref().map_or(0, |v| v.rotation),
+            moment: showing.source_time.as_secs_f64(),
+            size: (r.max_width, r.max_height),
         };
-        let at = showing.source_time.as_secs_f64();
+        let mut out = self.decoded(r.at, &target, waiting, Role::ALONE.give_up(!gave_up_last))?;
+        out.took = started.elapsed();
+        Some(out)
+    }
+
+    /// The timeline's whole picture for `r`: every layer that is seen,
+    /// decoded and put together on the window's device.
+    fn composed(
+        &mut self,
+        r: &Request,
+        sequence: &project::Sequence,
+        waiting: &mut Waiting<'_>,
+        give_up: bool,
+        started: Instant,
+    ) -> Option<Picture> {
+        let size = preview_size(
+            (sequence.settings.width, sequence.settings.height),
+            (r.max_width, r.max_height),
+        );
+        let mut description = frame::describe(&r.project, sequence, r.at).at_size(size);
+        let mut out = Picture::black(r.at);
+        if description.layers.is_empty() {
+            return Some(out); // a gap: black
+        }
+        // One layer is the usual case and behaves as a picture alone does:
+        // given up for a newer request, or carried on to it. With more, each
+        // is decoded to the end, so they all show the same moment.
+        let alone = description.layers.len() == 1;
+        let top = description.layers.len() - 1;
+        let mut pictures = Vec::with_capacity(description.layers.len());
+        for (index, layer) in description.layers.iter().enumerate() {
+            let Some(media) = r.project.media.get(&layer.media) else {
+                continue;
+            };
+            let target = Target {
+                key: (layer.media, layer.stream),
+                path: &media.path,
+                rotation: media.info.video.as_ref().map_or(0, |v| v.rotation),
+                moment: layer.source_time.as_secs_f64(),
+                size: pixels_needed(layer),
+            };
+            let role = Role {
+                leads: index == top,
+                follows: alone,
+                give_up: alone && give_up,
+            };
+            let mut got = self.decoded(r.at, &target, waiting, role)?;
+            if let Some(decoded) = got.frame.take() {
+                pictures.push((index, decoded));
+            }
+            // The corner and Diagnostics describe the top layer; any
+            // layer's problem is told.
+            if index == top {
+                out.at = got.at;
+                out.work = got.work;
+                out.method = got.method;
+            }
+            out.error = out.error.or(got.error);
+        }
+        // Reached a newer request's moment on the way: the layer sits where
+        // it does at that moment.
+        if out.at != r.at {
+            let there = frame::describe(&r.project, sequence, out.at).at_size(size);
+            if same_layers(&there, &description) {
+                description = there;
+            }
+        }
+        if pictures.is_empty() {
+            out.took = started.elapsed();
+            return Some(out);
+        }
+        let layers = pictures
+            .into_iter()
+            .map(|(index, decoded)| (description.layers[index].clone(), decoded))
+            .collect();
+        let composing = self.composing.clone()?;
+        let composer = self.composer.get_or_insert_with(|| Composer::new(composing));
+        match composer.compose(size, layers) {
+            Ok(composed) => out.composed = Some(composed),
+            Err(_) => out.refused = true,
+        }
+        out.took = started.elapsed();
+        Some(out)
+    }
+
+    /// The picture of one file at one moment: kept, or decoded. `None` when
+    /// the decode was given up for a newer request.
+    fn decoded(
+        &mut self,
+        on_timeline: Time,
+        target: &Target<'_>,
+        waiting: &mut Waiting<'_>,
+        role: Role,
+    ) -> Option<Picture> {
+        let mut out = Picture::black(on_timeline);
+        let (key, at) = (target.key, target.moment);
+        let file = File {
+            path: target.path,
+            stream: key.1,
+            rotation: target.rotation,
+        };
+        if !role.leads {
+            return self.decoded_below(out, target, &file, waiting);
+        }
         // The frames around the playhead are the last to make room, and
         // what is filled in behind when nothing else is going on.
         self.frames.look_at(key, at);
@@ -445,13 +577,12 @@ impl Worker {
             path: file.path.to_path_buf(),
             rotation: file.rotation,
             moment: at,
-            size: (r.max_width, r.max_height),
+            size: target.size,
         });
         // Decoded before and still kept: nothing to decode.
         if let Some(frame) = self.frames.get(key, at) {
             out.frame = Some(Decoded::Gpu(frame));
             out.method = Some(KEPT.to_owned());
-            out.took = started.elapsed();
             return Some(out);
         }
         let found = self.decoders.iter().position(|(k, _)| *k == key);
@@ -474,9 +605,10 @@ impl Worker {
         // A decode that follows one that was given up is finished, whatever
         // arrives: requests that keep coming must not keep pictures from
         // coming.
-        let give_up = !gave_up_last;
+        let give_up = role.give_up;
         let mut newer = || {
             if waiting.take_in()
+                && role.follows
                 && let Some(next) = &waiting.newest
             {
                 now_wanted = match source_of(next) {
@@ -513,9 +645,9 @@ impl Worker {
                 self.on_device.as_ref(),
                 &mut decoder,
                 at,
-                r,
+                target.size,
                 &mut newer,
-                &mut keep,
+                Some(&mut keep),
             );
             match decoded {
                 Ok(Reached::Shown { picture, at: reached }) => {
@@ -572,8 +704,94 @@ impl Worker {
         if waiting.newest.as_ref().is_some_and(|next| next.at == out.at) {
             waiting.newest = None;
         }
-        out.took = started.elapsed();
         Some(out)
+    }
+
+    /// The picture of a layer under the top one: kept, or decoded to the
+    /// end whatever is asked for meanwhile (only closing stops it). It
+    /// leaves the playhead, and so what is filled in behind it, alone.
+    fn decoded_below(
+        &mut self,
+        mut out: Picture,
+        target: &Target<'_>,
+        file: &File<'_>,
+        waiting: &mut Waiting<'_>,
+    ) -> Option<Picture> {
+        let (key, at) = (target.key, target.moment);
+        if let Some(frame) = self.frames.get(key, at) {
+            out.frame = Some(Decoded::Gpu(frame));
+            out.method = Some(KEPT.to_owned());
+            return Some(out);
+        }
+        let found = self.decoders.iter().position(|(k, _)| *k == key);
+        let mut decoder = match found.and_then(|i| self.decoders.remove(i)) {
+            Some((_, decoder)) => decoder,
+            None => match self.open(key, file, self.ladder_for(key)) {
+                Ok(decoder) => decoder,
+                Err(err) => {
+                    out.error = Some(err);
+                    return Some(out);
+                }
+            },
+        };
+        let mut newer = || {
+            waiting.take_in();
+            if waiting.closed {
+                Newer::Elsewhere
+            } else {
+                Newer::Nothing
+            }
+        };
+        let mut closing = false;
+        loop {
+            let decoded = decode(
+                self.convert,
+                self.on_device.as_ref(),
+                &mut decoder,
+                at,
+                target.size,
+                &mut newer,
+                None,
+            );
+            match decoded {
+                Ok(Reached::Shown { picture, .. }) => {
+                    out.frame = Some(picture);
+                    break;
+                }
+                Ok(Reached::Dropped) => {
+                    closing = true;
+                    break;
+                }
+                Err(err) => {
+                    let failed = decoder.level();
+                    if failed == Level::Device {
+                        self.off_device.insert(key);
+                        if let Some(on_device) = &self.on_device {
+                            on_device.watch.reported_an_error();
+                        }
+                    }
+                    let lower = below(self.ladder, failed);
+                    let next = if lower.is_empty() {
+                        None
+                    } else {
+                        tracing::warn!(file = %file.path.display(), "decoding with {} failed, stepping down: {}", decoder.method, err.report());
+                        self.open(key, file, lower).ok()
+                    };
+                    match next {
+                        Some(next) => decoder = next,
+                        None => {
+                            out.error = Some(err);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        out.method = Some(decoder.method.clone());
+        out.work = Some(decoder.last_work());
+        self.decoders.push_front((key, decoder));
+        self.decoders.truncate(OPEN_DECODERS);
+        (!closing).then_some(out)
     }
 
     /// Fills in behind the playhead: decodes the stretch before the frames
@@ -739,11 +957,10 @@ fn decode(
     on_device: Option<&OnDevice>,
     decoder: &mut VideoDecoder,
     at: f64,
-    r: &Request,
+    (w, h): (u32, u32),
     newer: &mut dyn FnMut() -> Newer,
-    keep: &mut dyn FnMut(Decoded, f64),
+    keep: Option<&mut dyn FnMut(Decoded, f64)>,
 ) -> diag::Result<Reached<Decoded>> {
-    let (w, h) = (r.max_width, r.max_height);
     let rgba = |reached: Reached<media::Frame>| match reached {
         Reached::Shown { picture, at } => Reached::Shown {
             picture: Decoded::Rgba(picture),
@@ -761,7 +978,7 @@ fn decode(
     if let Some(watch) = watch {
         watch.about_to_decode();
     }
-    let reached = decoder.picture_at_while(at, w, h, newer, Some(keep));
+    let reached = decoder.picture_at_while(at, w, h, newer, keep);
     if let (Some(watch), Ok(_)) = (watch, &reached) {
         watch.answered(); // an error is reported by the caller
     }
@@ -783,6 +1000,87 @@ fn decode(
         picture => picture,
     };
     Ok(Reached::Shown { picture, at })
+}
+
+/// One file's picture at one moment, as a layer needs it.
+struct Target<'a> {
+    key: (MediaId, u32),
+    path: &'a Path,
+    rotation: u16,
+    /// Seconds from the start of the file.
+    moment: f64,
+    /// The size the picture is asked for at.
+    size: (u32, u32),
+}
+
+/// What a decode is to the request it is made for.
+#[derive(Debug, Clone, Copy)]
+struct Role {
+    /// The top layer: the playhead is here, and what is filled in behind it.
+    leads: bool,
+    /// Reaching a moment a newer request asks for makes it that request's picture.
+    follows: bool,
+    /// A newer request that can't use the decode ends it.
+    give_up: bool,
+}
+
+impl Role {
+    /// The only picture of its request.
+    const ALONE: Role = Role {
+        leads: true,
+        follows: true,
+        give_up: true,
+    };
+
+    fn give_up(self, give_up: bool) -> Role {
+        Role { give_up, ..self }
+    }
+}
+
+impl Picture {
+    /// Nothing to see at `at`, and nothing wrong.
+    fn black(at: Time) -> Picture {
+        Picture {
+            at,
+            frame: None,
+            composed: None,
+            refused: false,
+            error: None,
+            took: Duration::ZERO,
+            work: None,
+            method: None,
+        }
+    }
+}
+
+/// The size the timeline's picture is put together at for a viewer of
+/// `room` pixels: the timeline's shape, as large as fits the room, never
+/// larger than the timeline's own size.
+fn preview_size(timeline: (u32, u32), room: (u32, u32)) -> (u32, u32) {
+    let fitted = Area::fitted(timeline, (room.0.max(1), room.1.max(1)));
+    let (w, h) = fitted.size();
+    let (w, h) = (
+        (w.round() as u32).min(timeline.0),
+        (h.round() as u32).min(timeline.1),
+    );
+    (w.max(2), h.max(2))
+}
+
+/// The size a layer's whole picture is needed at for the part shown to
+/// have a pixel for every pixel of its area.
+fn pixels_needed(layer: &frame::Layer) -> (u32, u32) {
+    let (w, h) = layer.area.size();
+    let whole = |shown: f32, part: f32| (shown / part.clamp(0.01, 1.0)).ceil().clamp(2.0, 16_384.0) as u32;
+    (whole(w, layer.part.width), whole(h, layer.part.height))
+}
+
+/// Whether two descriptions show the same clips' files, layer for layer.
+fn same_layers(a: &FrameDescription, b: &FrameDescription) -> bool {
+    a.layers.len() == b.layers.len()
+        && a.layers
+            .iter()
+            .zip(&b.layers)
+            .all(|(x, y)| (x.media, x.stream) == (y.media, y.stream))
 }
 
 /// The file a request shows.
@@ -838,6 +1136,190 @@ mod tests {
         assert!(
             gap.frame.is_none() && gap.error.is_none(),
             "after the last clip is black"
+        );
+    }
+
+    /// The device a window would be drawn with, here without a window (a
+    /// software one will do). `None` when this machine has none at all.
+    fn composing() -> Option<Composing> {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
+        Some(Composing {
+            device,
+            queue,
+            wrap: None,
+        })
+    }
+
+    /// Red, green, blue and alpha of one pixel of a composed frame.
+    fn pixel(composing: &Composing, composed: &Composed, (x, y): (u32, u32)) -> [f32; 4] {
+        let buffer = composing.device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: 256,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = composing
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: composed.texture(),
+                mip_level: 0,
+                origin: wgpu::Origin3d { x, y, z: 0 },
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(256),
+                    rows_per_image: Some(1),
+                },
+            },
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+        );
+        composing.queue.submit([encoder.finish()]);
+        buffer.map_async(wgpu::MapMode::Read, .., |result| result.unwrap());
+        composing
+            .device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+        let bytes = buffer.get_mapped_range(..).unwrap();
+        // Four 16-bit floats.
+        let half = |i: usize| {
+            let bits = u16::from_le_bytes([bytes[i * 2], bytes[i * 2 + 1]]);
+            let (exponent, fraction) = (i32::from((bits >> 10) & 0x1f), f32::from(bits & 0x3ff));
+            let value = if exponent == 0 {
+                fraction / 1024.0 * 2f32.powi(-14)
+            } else {
+                (1.0 + fraction / 1024.0) * 2f32.powi(exponent - 15)
+            };
+            if bits & 0x8000 != 0 { -value } else { value }
+        };
+        [half(0), half(1), half(2), half(3)]
+    }
+
+    #[test]
+    fn the_timelines_whole_picture_is_put_together_on_the_device() {
+        let Some(composing) = composing() else {
+            eprintln!("no graphics device here: putting pictures together isn't checked");
+            return;
+        };
+        // A wide recording on a tall timeline: bars above and below it.
+        let project = Project::new("T", project::SequenceSettings::VERTICAL_SHORT);
+        let seq = project.active_sequence;
+        let media = media::describe(&fixture("game-3-audio.mkv")).unwrap();
+        let project = Command::Import { sequence: seq, media }.apply(&project).unwrap();
+        for convert in [PLANES, Convert::OnCpu] {
+            let preview =
+                Preview::start_composing(Decoding::Software, convert, None, Some(composing.clone()), || {});
+            preview.show(&project, seq, Time::seconds(1), 400, 480);
+            let p = wait(&preview);
+            assert!(
+                p.frame.is_none() && p.error.is_none() && !p.refused,
+                "{convert:?}"
+            );
+            let composed = p.composed.expect("a picture");
+            // The timeline's shape, as large as fits the room.
+            assert_eq!(composed.size(), (270, 480), "{convert:?}");
+            assert!(!composed.on_device);
+            assert_eq!(
+                pixel(&composing, &composed, (135, 20)),
+                [0.0, 0.0, 0.0, 1.0],
+                "above the picture"
+            );
+            assert_eq!(
+                pixel(&composing, &composed, (135, 460)),
+                [0.0, 0.0, 0.0, 1.0],
+                "below it"
+            );
+            let middle = pixel(&composing, &composed, (135, 240));
+            assert!(
+                middle[..3].iter().any(|&light| light > 0.01),
+                "{convert:?}: {middle:?}"
+            );
+            assert!(p.method.is_some() && p.work.is_some());
+
+            preview.show(&project, seq, Time::seconds(30), 400, 480);
+            let gap = wait(&preview);
+            assert!(
+                gap.composed.is_none() && gap.error.is_none(),
+                "after the last clip is black"
+            );
+        }
+    }
+
+    #[test]
+    fn a_picture_that_shows_through_bars_has_the_one_below_under_it() {
+        let Some(composing) = composing() else {
+            return;
+        };
+        // On a tall timeline the clip on top leaves bars; what is below it
+        // is decoded too, at the same moment, and both are in the picture.
+        let project = Project::new("T", project::SequenceSettings::VERTICAL_SHORT);
+        let seq = project.active_sequence;
+        let media = media::describe(&fixture("game-3-audio.mkv")).unwrap();
+        let mut project = Command::Import { sequence: seq, media }.apply(&project).unwrap();
+        project = Command::AddTrack {
+            sequence: seq,
+            kind: project::TrackKind::Video,
+            name: "V2".into(),
+        }
+        .apply(&project)
+        .unwrap();
+        let sequence = project.active().unwrap();
+        let (track, mut clip) = (
+            sequence.video_tracks[1].id,
+            sequence.video_tracks[0].clips[0].clone(),
+        );
+        clip.id = project.allocate_id();
+        clip.link = None;
+        let project = Command::PlaceClip {
+            sequence: seq,
+            track,
+            clip,
+        }
+        .apply(&project)
+        .unwrap();
+        let described = frame::describe(&project, project.active().unwrap(), Time::seconds(1));
+        assert_eq!(
+            described.layers.len(),
+            2,
+            "the top clip has bars, so the lower one is seen"
+        );
+
+        let preview =
+            Preview::start_composing(Decoding::Software, PLANES, None, Some(composing.clone()), || {});
+        preview.show(&project, seq, Time::seconds(1), 270, 480);
+        let p = wait(&preview);
+        assert!(p.error.is_none());
+        let composed = p.composed.expect("a picture");
+        let middle = pixel(&composing, &composed, (135, 240));
+        assert!(middle[..3].iter().any(|&light| light > 0.01), "{middle:?}");
+        assert_eq!(pixel(&composing, &composed, (135, 20))[3], 1.0);
+    }
+
+    #[test]
+    fn the_preview_has_the_timelines_shape_and_never_more_than_its_size() {
+        assert_eq!(preview_size((1920, 1080), (960, 960)), (960, 540));
+        assert_eq!(preview_size((1080, 1920), (400, 480)), (270, 480));
+        assert_eq!(
+            preview_size((1920, 1080), (4000, 4000)),
+            (1920, 1080),
+            "never enlarged"
+        );
+        assert_eq!(
+            preview_size((1920, 1080), (0, 0)),
+            (2, 2),
+            "a viewer with no room yet"
         );
     }
 
@@ -961,6 +1443,8 @@ mod tests {
             decoders: VecDeque::new(),
             off_device: HashSet::new(),
             gave_up_last: false,
+            composing: None,
+            composer: None,
             frames: FrameCache::new(0),
             playhead: None,
             filler: None,
@@ -1007,6 +1491,8 @@ mod tests {
             decoders: VecDeque::new(),
             off_device: HashSet::new(),
             gave_up_last: false,
+            composing: None,
+            composer: None,
             frames: FrameCache::new(0),
             playhead: None,
             filler: None,

@@ -1361,10 +1361,13 @@ dependencies = [
  "diag",
  "image",
  "media",
+ "pollster",
  "project",
+ "render",
  "rtrb",
  "tracing",
  "video-device",
+ "wgpu",
 ]
 
 [[package]]
@@ -3690,7 +3693,6 @@ name = "render"
 version = "0.1.0"
 dependencies = [
  "pollster",
- "project",
  "wgpu",
 ]
 

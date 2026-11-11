@@ -4,9 +4,7 @@
 //! by anything else that needs the picture.
 
 use project::{Clip, ClipId, MediaId, MediaRef, Project, Sequence, Time};
-
-/// A point or a step in the frame, in frame pixels: x to the right, y down.
-pub type Point = (f32, f32);
+use render::{Area, Part};
 
 /// What to draw for one moment of a timeline.
 #[derive(Debug, Clone, PartialEq)]
@@ -15,6 +13,20 @@ pub struct FrameDescription {
     pub size: (u32, u32),
     /// What is seen, bottom layer first. Empty in a gap: the frame is black.
     pub layers: Vec<Layer>,
+}
+
+impl FrameDescription {
+    /// The same picture drawn at another size (a preview smaller than the
+    /// timeline's): everything keeps its place in the frame.
+    pub fn at_size(mut self, size: (u32, u32)) -> FrameDescription {
+        let x = size.0 as f32 / self.size.0.max(1) as f32;
+        let y = size.1 as f32 / self.size.1.max(1) as f32;
+        for layer in &mut self.layers {
+            layer.area = layer.area.scaled(x, y);
+        }
+        self.size = size;
+        self
+    }
 }
 
 /// One clip's picture in the frame.
@@ -32,76 +44,6 @@ pub struct Layer {
     pub part: Part,
     /// 1 hides what is below it, 0 is not seen at all.
     pub opacity: f32,
-}
-
-/// A rectangle in the frame that may be turned: its top left corner and its
-/// two edges from there.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Area {
-    pub origin: Point,
-    /// From the top left corner to the top right.
-    pub across: Point,
-    /// From the top left corner to the bottom left.
-    pub down: Point,
-}
-
-/// A part of a picture: its left and top edge and its size, each in 0-1.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Part {
-    pub left: f32,
-    pub top: f32,
-    pub width: f32,
-    pub height: f32,
-}
-
-impl Part {
-    pub const WHOLE: Part = Part {
-        left: 0.0,
-        top: 0.0,
-        width: 1.0,
-        height: 1.0,
-    };
-}
-
-impl Area {
-    /// The largest upright rectangle of a picture's shape that fits in the
-    /// frame, centred: bars at the sides or above and below when the shapes
-    /// differ, never a cut-off or stretched picture.
-    pub fn fitted(picture: (u32, u32), frame: (u32, u32)) -> Area {
-        let (pw, ph) = (picture.0.max(1) as f32, picture.1.max(1) as f32);
-        let (fw, fh) = (frame.0 as f32, frame.1 as f32);
-        // The side that limits the size is the frame's own, exactly.
-        let (w, h) = if fw * ph <= fh * pw {
-            (fw, ph * fw / pw)
-        } else {
-            (pw * fh / ph, fh)
-        };
-        Area {
-            origin: ((fw - w) / 2.0, (fh - h) / 2.0),
-            across: (w, 0.0),
-            down: (0.0, h),
-        }
-    }
-
-    /// Whether nothing of a frame of `frame` pixels shows past this area.
-    /// Only said of upright areas: a turned one is taken not to.
-    pub fn covers(&self, frame: (u32, u32)) -> bool {
-        // Half a pixel of slack: a fitted picture may miss the edge by rounding.
-        const SLACK: f32 = 0.5;
-        let upright = self.across.1 == 0.0 && self.down.0 == 0.0;
-        let (left, right) = ends(self.origin.0, self.across.0);
-        let (top, bottom) = ends(self.origin.1, self.down.1);
-        upright
-            && left <= SLACK
-            && top <= SLACK
-            && right >= frame.0 as f32 - SLACK
-            && bottom >= frame.1 as f32 - SLACK
-    }
-}
-
-/// The lower and higher end of a side that starts at `from` and goes `by`.
-fn ends(from: f32, by: f32) -> (f32, f32) {
-    (from.min(from + by), from.max(from + by))
 }
 
 impl Layer {
@@ -231,41 +173,6 @@ mod tests {
     }
 
     #[test]
-    fn a_picture_of_the_frames_shape_fills_it() {
-        let area = Area::fitted((2560, 1440), (1920, 1080));
-        assert_eq!(area.origin, (0.0, 0.0));
-        assert_eq!(area.across, (1920.0, 0.0));
-        assert_eq!(area.down, (0.0, 1080.0));
-        assert!(area.covers((1920, 1080)));
-    }
-
-    #[test]
-    fn a_wider_picture_gets_bars_above_and_below() {
-        // 21:9 into 16:9.
-        let area = Area::fitted((3440, 1440), (1920, 1080));
-        assert_eq!(area.across, (1920.0, 0.0));
-        let height = 1920.0 * 1440.0 / 3440.0;
-        assert!((area.down.1 - height).abs() < 0.01);
-        assert!((area.origin.1 - (1080.0 - height) / 2.0).abs() < 0.01);
-        assert!(!area.covers((1920, 1080)));
-    }
-
-    #[test]
-    fn a_wide_picture_in_a_tall_frame_sits_in_the_middle() {
-        let area = Area::fitted((1920, 1080), (1080, 1920));
-        assert_eq!(area.across, (1080.0, 0.0));
-        assert!((area.down.1 - 607.5).abs() < 0.01);
-        assert!((area.origin.1 - 656.25).abs() < 0.01);
-    }
-
-    #[test]
-    fn a_turned_area_never_counts_as_covering() {
-        let mut area = Area::fitted((1920, 1080), (1920, 1080));
-        area.across.1 = 1.0;
-        assert!(!area.covers((1920, 1080)));
-    }
-
-    #[test]
     fn a_gap_is_an_empty_frame_of_the_timelines_size() {
         let project = import(
             &Project::new("T", SequenceSettings::GAME_CLIP),
@@ -336,6 +243,19 @@ mod tests {
             "bottom first"
         );
         assert_eq!(frame.layers[1].clip, sequence.video_tracks[1].clips[0].id);
+    }
+
+    #[test]
+    fn a_smaller_preview_keeps_everything_in_its_place() {
+        let project = import(
+            &Project::new("T", SequenceSettings::GAME_CLIP),
+            media("wide.mkv", (3440, 1440), 0),
+        );
+        let frame = describe(&project, project.active().unwrap(), Time::seconds(1)).at_size((960, 540));
+        assert_eq!(frame.size, (960, 540));
+        let area = frame.layers[0].area;
+        assert_eq!(area.across, (960.0, 0.0));
+        assert!((area.down.1 - 960.0 * 1440.0 / 3440.0).abs() < 0.01);
     }
 
     #[test]

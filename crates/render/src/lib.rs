@@ -1,10 +1,10 @@
-//! The timeline's picture: what it is made of at a moment, and (from the
-//! compositor on) putting it together on the graphics card.
+//! Putting the timeline's picture together on the graphics card: layers
+//! drawn into a frame, and a frame shown.
 //!
 //! See this crate's README.md for what lives here and what is still to come.
 
 pub mod compositor;
-pub mod frame;
+pub mod geometry;
 
 pub use compositor::{Compositor, Drawn, Frame, Pixels, Shower, Showing, Working};
-pub use frame::{Area, FrameDescription, Layer, Part, describe};
+pub use geometry::{Area, Part, Point};
