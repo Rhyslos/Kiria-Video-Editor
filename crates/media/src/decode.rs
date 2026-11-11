@@ -121,6 +121,60 @@ const HARDWARE: &str = if cfg!(windows) { "d3d11va" } else { "vaapi" };
 /// The FFmpeg build loads the GPU decoding libraries on first use and stops
 /// the program if they are missing, so check first. On Windows the
 /// Direct3D 11 libraries are always there; on Linux VA-API may not be installed.
+/// The GPU decoding interface for this system, if FFmpeg and the system
+/// have it.
+fn hardware_kind() -> Option<ff::AVHWDeviceType> {
+    if !hardware_libraries_present() {
+        return None;
+    }
+    let name = std::ffi::CString::new(HARDWARE).ok()?;
+    // SAFETY: a plain lookup by name.
+    let kind = unsafe { ff::av_hwdevice_find_type_by_name(name.as_ptr()) };
+    (kind != ff::AVHWDeviceType::AV_HWDEVICE_TYPE_NONE).then_some(kind)
+}
+
+/// A decoder for `codec` that can decode on the GPU through this system's
+/// interface, and the frame format it delivers there. FFmpeg can have
+/// several decoders for one codec; the default one isn't always the one
+/// with GPU support (for AV1 it is a software decoder).
+pub(crate) fn hardware_decoder(codec: ff::AVCodecID) -> Option<(*const ff::AVCodec, ff::AVPixelFormat)> {
+    decoder_for(codec, hardware_kind()?)
+}
+
+/// A decoder for `codec` that can decode through the GPU interface `kind`.
+fn decoder_for(
+    codec: ff::AVCodecID,
+    kind: ff::AVHWDeviceType,
+) -> Option<(*const ff::AVCodec, ff::AVPixelFormat)> {
+    // SAFETY: iterating FFmpeg's static list of codecs and their static
+    // hardware configurations; nothing is kept but pointers to them.
+    unsafe {
+        let mut opaque = ptr::null_mut();
+        loop {
+            let c = ff::av_codec_iterate(&mut opaque);
+            if c.is_null() {
+                return None;
+            }
+            if (*c).id != codec || ff::av_codec_is_decoder(c) == 0 {
+                continue;
+            }
+            let mut i = 0;
+            loop {
+                let cfg = ff::avcodec_get_hw_config(c, i);
+                if cfg.is_null() {
+                    break;
+                }
+                if (*cfg).device_type == kind
+                    && (*cfg).methods & ff::AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX as i32 != 0
+                {
+                    return Some((c, (*cfg).pix_fmt));
+                }
+                i += 1;
+            }
+        }
+    }
+}
+
 fn hardware_libraries_present() -> bool {
     if cfg!(windows) {
         return true;
@@ -155,7 +209,18 @@ impl VideoDecoder {
             }
             let st = *(*raw).streams.add(stream as usize);
             let par = (*st).codecpar;
-            let decoder = ff::avcodec_find_decoder((*par).codec_id);
+            // The decoder that can use the GPU, when hardware is wanted: for
+            // AV1 that is FFmpeg's own decoder, not the default one, which is
+            // software only.
+            let hardware = if decoding == Decoding::Best {
+                hardware_decoder((*par).codec_id)
+            } else {
+                None
+            };
+            let decoder = match hardware {
+                Some((d, _)) => d,
+                None => ff::avcodec_find_decoder((*par).codec_id),
+            };
             if decoder.is_null() {
                 return Err(AppError::new("The video can't be shown")
                     .why(format!(
@@ -196,8 +261,12 @@ impl VideoDecoder {
             }
             (*codec).thread_count = 0;
             (*codec).thread_type = ff::FF_THREAD_FRAME | ff::FF_THREAD_SLICE;
-            if decoding == Decoding::Best {
-                this.try_hardware(decoder);
+            if let Some((_, format)) = hardware
+                && !this.try_hardware(format)
+            {
+                // No GPU device after all: the default decoder, in software.
+                drop(this);
+                return VideoDecoder::open(path, stream, rotation, Decoding::Software);
             }
             let r = ff::avcodec_open2(codec, decoder, ptr::null_mut());
             if r < 0 {
@@ -207,43 +276,23 @@ impl VideoDecoder {
         }
     }
 
-    /// Asks FFmpeg for the GPU decoder; leaves the CPU path when it isn't there.
-    unsafe fn try_hardware(&mut self, decoder: *const ff::AVCodec) {
-        if !hardware_libraries_present() {
-            return;
-        }
+    /// Hands the codec a GPU device producing `format` frames. False when
+    /// no device could be made.
+    unsafe fn try_hardware(&mut self, format: ff::AVPixelFormat) -> bool {
         // SAFETY: called before avcodec_open2 on a fresh context; the device
         // reference is handed to the codec context, which owns it from then on.
         unsafe {
-            let Ok(name) = std::ffi::CString::new(HARDWARE) else {
-                return;
-            };
-            let kind = ff::av_hwdevice_find_type_by_name(name.as_ptr());
-            if kind == ff::AVHWDeviceType::AV_HWDEVICE_TYPE_NONE {
-                return;
-            }
-            let mut i = 0;
-            let format = loop {
-                let cfg = ff::avcodec_get_hw_config(decoder, i);
-                if cfg.is_null() {
-                    return;
-                }
-                if (*cfg).device_type == kind
-                    && (*cfg).methods & ff::AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX as i32 != 0
-                {
-                    break (*cfg).pix_fmt;
-                }
-                i += 1;
-            };
+            let Some(kind) = hardware_kind() else { return false };
             let mut device = ptr::null_mut();
             if ff::av_hwdevice_ctx_create(&mut device, kind, ptr::null(), ptr::null_mut(), 0) < 0 {
-                return;
+                return false;
             }
             (*self.codec).hw_device_ctx = device;
             (*self.codec).opaque = format as i32 as isize as *mut std::ffi::c_void;
             (*self.codec).get_format = Some(pick_format);
             self.hw_format = Some(format);
             self.method = format!("hardware ({HARDWARE})");
+            true
         }
     }
 
@@ -496,6 +545,36 @@ impl Drop for VideoDecoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn av1_on_the_gpu_uses_the_decoder_that_supports_it() {
+        let kinds = [
+            ff::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI,
+            ff::AVHWDeviceType::AV_HWDEVICE_TYPE_D3D11VA,
+            ff::AVHWDeviceType::AV_HWDEVICE_TYPE_VULKAN,
+        ];
+        // Whichever GPU interfaces this FFmpeg build has, the AV1 decoder
+        // offered for them is FFmpeg's own, never the software-only default.
+        let found: Vec<String> = kinds
+            .iter()
+            .filter_map(|k| decoder_for(ff::AVCodecID::AV_CODEC_ID_AV1, *k))
+            .map(|(c, _)| {
+                unsafe { std::ffi::CStr::from_ptr((*c).name) }
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        assert!(!found.is_empty(), "this FFmpeg build has a GPU AV1 decoder");
+        assert!(found.iter().all(|n| n == "av1"), "{found:?}");
+        let default = unsafe {
+            std::ffi::CStr::from_ptr((*ff::avcodec_find_decoder(ff::AVCodecID::AV_CODEC_ID_AV1)).name)
+        };
+        assert_eq!(
+            default.to_str().unwrap(),
+            "libdav1d",
+            "the default stays software"
+        );
+    }
 
     #[test]
     fn turning_moves_pixels_clockwise() {

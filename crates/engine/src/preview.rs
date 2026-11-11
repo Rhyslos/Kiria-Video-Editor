@@ -147,8 +147,29 @@ fn picture(
         decoders.push_front(entry);
     }
     if let Some((_, decoder)) = decoders.front_mut() {
-        match decoder.frame_at(showing.source_time.as_secs_f64(), r.max_width, r.max_height) {
+        let at = showing.source_time.as_secs_f64();
+        match decoder.frame_at(at, r.max_width, r.max_height) {
             Ok(frame) => out.frame = Some(frame),
+            // The GPU couldn't decode this file (an unusual profile, a driver
+            // problem): the CPU takes over for this file from now on.
+            Err(err) if decoder.method.starts_with("hardware") => {
+                tracing::warn!(file = %showing.media.path.display(), "hardware decoding failed, using software: {}", err.report());
+                match VideoDecoder::open(
+                    &showing.media.path,
+                    showing.clip.stream,
+                    rotation,
+                    Decoding::Software,
+                ) {
+                    Ok(mut software) => {
+                        match software.frame_at(at, r.max_width, r.max_height) {
+                            Ok(frame) => out.frame = Some(frame),
+                            Err(err) => out.error = Some(err),
+                        }
+                        *decoder = software;
+                    }
+                    Err(_) => out.error = Some(err),
+                }
+            }
             Err(err) => out.error = Some(err),
         }
         out.method = Some(decoder.method.clone());
