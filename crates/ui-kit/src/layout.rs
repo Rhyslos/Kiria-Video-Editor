@@ -8,6 +8,10 @@ pub const TOP_BAR_HEIGHT: f32 = 48.0;
 pub const RIGHT_PANEL_WIDTH: f32 = 292.0;
 /// Width of the left-hand panel of windows with a folder tree (the launcher).
 pub const LEFT_PANEL_WIDTH: f32 = 240.0;
+/// Width of the drawer that slides out from the left edge (media, effects).
+pub const DRAWER_WIDTH: f32 = 264.0;
+/// Width of the tab on the left edge that opens the drawer.
+pub const EDGE_TAB_WIDTH: f32 = 22.0;
 /// Width of the master column next to the timeline.
 pub const MASTER_WIDTH: f32 = 80.0;
 

@@ -9,6 +9,7 @@
 mod editor;
 mod import;
 mod looping;
+mod media_drawer;
 mod relink;
 mod run_mode;
 mod settings;
@@ -68,6 +69,7 @@ fn main() -> ExitCode {
         import: options.import.clone(),
         playhead: options.playhead,
         play: options.play,
+        media_drawer: options.media_drawer,
     });
     // If this run crashes, the launcher offers to recover this project.
     if let (Some(diagnostics), Some(project)) = (&diagnostics, &project)

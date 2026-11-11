@@ -15,6 +15,8 @@ pub struct Options {
     pub playhead: Option<f64>,
     /// Start playing once the project and its imports are ready (`--play`, for checks).
     pub play: bool,
+    /// Open the media drawer (`--media-drawer`, for screenshots).
+    pub media_drawer: bool,
     pub mode: RunMode,
 }
 
@@ -45,6 +47,7 @@ impl Options {
                     options.import.push(path.into());
                 }
                 "--play" => options.play = true,
+                "--media-drawer" => options.media_drawer = true,
                 "--playhead" => {
                     let secs = args
                         .next()
