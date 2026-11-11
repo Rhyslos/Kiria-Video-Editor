@@ -12,6 +12,7 @@ pub enum Hit {
     Clip { id: ClipId, name: String, at: f64 },
     Settings,
     TimelineSettings,
+    Shortcuts,
 }
 
 impl Hit {
@@ -27,6 +28,7 @@ impl Hit {
             }
             Hit::Settings => "Settings: theme, editing, resources".into(),
             Hit::TimelineSettings => "Timeline settings: picture size, frame rate, sound rate".into(),
+            Hit::Shortcuts => "Keyboard shortcuts: every key, drawn".into(),
         }
     }
 }
@@ -58,6 +60,7 @@ pub fn results(
     for (hit, words) in [
         (Hit::Settings, "settings preferences theme"),
         (Hit::TimelineSettings, "timeline settings resolution frame rate"),
+        (Hit::Shortcuts, "keyboard shortcuts keybinds hotkeys keys"),
     ] {
         if matches(words) {
             hits.push(hit);
@@ -132,6 +135,7 @@ mod tests {
         );
         assert!(find("theme").contains(&Hit::Settings));
         assert!(find("frame rate").contains(&Hit::TimelineSettings));
+        assert!(find("hotkeys").contains(&Hit::Shortcuts));
         assert!(find("zzzz").is_empty());
     }
 }

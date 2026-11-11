@@ -19,6 +19,8 @@ pub struct Options {
     pub media_drawer: bool,
     /// Start with the viewer full screen (`--full-screen`, for screenshots).
     pub full_screen: bool,
+    /// Commands to run once open, by name (`--action KeyboardShortcuts`, repeatable, for screenshots).
+    pub actions: Vec<String>,
     pub mode: RunMode,
 }
 
@@ -51,6 +53,10 @@ impl Options {
                 "--play" => options.play = true,
                 "--media-drawer" => options.media_drawer = true,
                 "--full-screen" => options.full_screen = true,
+                "--action" => {
+                    let name = args.next().ok_or("--action needs a command name")?;
+                    options.actions.push(name);
+                }
                 "--playhead" => {
                     let secs = args
                         .next()
