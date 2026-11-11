@@ -11,6 +11,7 @@
 //! - [`document`]: an open project on disk, with the autosave journal and crash recovery.
 //! - [`versions`]: named copies of a project to go back to.
 //! - [`side_files`]: the files that belong to a project besides the project file.
+//! - [`templates`]: stretches of a timeline saved to drop into any project.
 
 pub mod command;
 pub mod document;
@@ -21,6 +22,7 @@ pub mod ids;
 pub mod look;
 pub mod model;
 pub mod side_files;
+pub mod templates;
 pub mod time;
 pub mod tracks;
 pub mod versions;
@@ -35,6 +37,7 @@ pub use model::{
     SequenceSettings, TimelineLabel, Track, TrackKind, VideoStream,
 };
 pub use side_files::SideFile;
+pub use templates::Template;
 pub use time::{Rate, Speed, Time};
 
 /// File extension for project files, without the dot.

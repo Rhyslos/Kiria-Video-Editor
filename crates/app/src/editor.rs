@@ -85,6 +85,7 @@ pub struct Editor {
     label_editor: Option<crate::label_editor::LabelEditor>,
     master: ui_kit::master::MasterColumn,
     versions: crate::versions_window::VersionsWindow,
+    templates: crate::templates_window::TemplatesWindow,
     shortcuts_page: Option<ui_kit::keyboard::ShortcutsPage>,
     cheat_sheet: crate::cheat_sheet::CheatSheet,
     /// Commands asked for on the command line, run on the first frames.
@@ -257,6 +258,7 @@ impl Editor {
             label_editor: None,
             master: ui_kit::master::MasterColumn::default(),
             versions: crate::versions_window::VersionsWindow::default(),
+            templates: crate::templates_window::TemplatesWindow::default(),
             shortcuts_page,
             cheat_sheet: crate::cheat_sheet::CheatSheet::default(),
             startup_actions,
@@ -361,6 +363,9 @@ impl Editor {
                 self.versions.open = true;
                 self.versions.show_again();
             }),
+            Action::Templates | Action::SaveTemplate => self
+                .with_document(|_| Ok(()))
+                .map(|()| self.templates.show(action == Action::SaveTemplate)),
             Action::KeyboardShortcuts => {
                 self.shortcuts_page.get_or_insert_with(Default::default);
                 Ok(())
@@ -1199,6 +1204,55 @@ impl Editor {
         }
     }
 
+    /// The Templates window, and what it asks for.
+    fn templates_window(&mut self, ctx: &egui::Context) {
+        use crate::templates_window::Asked;
+        if !self.templates.open {
+            return;
+        }
+        let Some(document) = &self.document else {
+            self.templates.open = false;
+            return;
+        };
+        let dir = project::templates::folder(&self.data_dir);
+        match self
+            .templates
+            .ui(ctx, &self.theme, &self.jobs, document.project(), &dir)
+        {
+            Asked::Nothing => {}
+            Asked::Said(text) => self.status = text,
+            Asked::Insert { name, template, spot } => {
+                let edit_point = self.edit_point();
+                let result = self.with_document(|d| {
+                    let Some(seq) = d.project().active() else {
+                        return Ok(());
+                    };
+                    let (sequence, at) = (seq.id, spot.time(edit_point, seq.length()));
+                    d.apply(Command::InsertTemplate {
+                        sequence,
+                        template,
+                        at,
+                    })
+                });
+                match result {
+                    Ok(()) => {
+                        self.fitted = false;
+                        self.status = format!(
+                            "Inserted the template \"{name}\" {}. {} takes it out again.",
+                            spot.said(),
+                            self.shortcuts.keys_or_name(Action::Undo)
+                        );
+                    }
+                    Err(err) => {
+                        self.templates.failed(&err);
+                        self.errors.push(&err);
+                    }
+                }
+            }
+            Asked::Failed(err) => self.errors.push(&err),
+        }
+    }
+
     /// The Remove silence window, and the cut it asks for.
     fn silence_window(&mut self, ctx: &egui::Context) {
         if !self.silence.open {
@@ -1477,6 +1531,13 @@ impl Editor {
             }
             if ui.button("Timeline settings…").clicked() {
                 self.show_timeline_settings = true;
+            }
+            if ui
+                .button("Templates…")
+                .on_hover_text(self.shortcuts.tip(Action::Templates))
+                .clicked()
+            {
+                self.run_action(Action::Templates);
             }
             if let Some(document) = &self.document
                 && !self.relink.missing.is_empty()
@@ -2128,6 +2189,7 @@ impl eframe::App for Editor {
         self.silence_window(&ctx);
         self.label_window(&ctx);
         self.versions_window(&ctx);
+        self.templates_window(&ctx);
         self.shortcuts_window(&ctx);
         if let Some(err) = self.graphics.show_warning(&ctx, &self.theme) {
             self.errors.push(&err);

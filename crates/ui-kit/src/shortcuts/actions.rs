@@ -91,6 +91,8 @@ actions! {
     KeyboardShortcuts, Anywhere, "Keyboard shortcuts";
     Import, Anywhere, "Import media";
     Versions, Anywhere, "Saved versions: keep this version, or go back to one…";
+    Templates, Anywhere, "Templates: drop in an intro or outro…";
+    SaveTemplate, Anywhere, "Save as a template: the region, or the whole timeline…";
     PlayPause, Viewer, "Play / pause";
     Stop, Viewer, "Stop playing here";
     PreviousFrame, Viewer, "Back one frame";

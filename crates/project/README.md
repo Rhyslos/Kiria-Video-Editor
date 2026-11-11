@@ -16,15 +16,16 @@ Done (Phases 0.3 and 0.4): model, project file, commands, undo/redo, autosave jo
 | `src/model.rs` | `Project`, `Sequence` (a timeline), `Track`, `Clip`, `MediaRef` + `Fingerprint` + `MediaInfo` (the file's video and sound streams, read on import), `TimelineLabel`, `Region`, the edit needle, and the `SequenceSettings` presets (Game clip, High frame rate, Vertical short). `Project::problems()` / `validate()` check the rules |
 | `src/file.rs` | The project file: save (atomic), load, the summary block, format versions and migrations. `read_info` reads only the format version and summary (the text before the project), for project lists (from format 5 the summary also lists the media files, so lists can say which are missing; format 6 adds the timeline's master volume; format 7 each clip's speed; format 8 each clip's look). `back_up_before_upgrade` keeps `<file>.backup-v<old>` before an older file is upgraded; `load_newer` reads a newer file for viewing |
 | `src/versions.rs` | Saved versions: named copies in `<file>.versions/`, listed newest first; restoring one is the undoable `Restore` command. `is_folder` knows such a folder by its name, so project lists leave its files out |
+| `src/templates.rs` | Templates: a stretch of a timeline (`Template`: its clips on every track, placed from zero, and the media they use) saved as `<name>.template` in the app's data folder, with its own format version; `capture` cuts one out of a timeline, `InsertTemplate` drops one in, and `list`, `save`, `rename` and `delete` look after the files. See Templates below |
 | `src/edits.rs` | The trim tools beyond a plain trim: ripple trim, roll, slip and slide; `RemoveRanges`, which cuts stretches out of every track and closes the gaps; and the room-making behind `InsertMedia` (pushes everything later), `OverwriteMedia` (cuts away what it covers on every track) and `DropMedia` (cuts away what it covers on the tracks the file lands on). Each checks every clip it touches before changing any |
 | `src/tracks.rs` | Tracks as a whole: adding one (after the others of its kind), removing an empty one, renaming one, hiding a video track; `Sequence::next_track_name` ("V2", "A3", never a name in use) |
-| `src/command.rs` | `Command`: every change (import, place, drop on a track, move, move to another track, trim, remove or ripple-remove, split, labels, region, edit needle, tracks, media, relink). `apply` returns a new snapshot or an explained error and no change |
+| `src/command.rs` | `Command`: every change (import, place, drop on a track, move, move to another track, trim, remove or ripple-remove, split, labels, region, edit needle, tracks, media, relink, restoring a saved version, inserting a template). `apply` returns a new snapshot or an explained error and no change |
 | `src/history.rs` | `History`: unlimited undo and redo as a stack of snapshots |
 | `src/document.rs` | `Document`: an open project on disk. Records every change in the autosave journal, does full saves, and recovers after a crash. Opening an older format makes a backup copy first; a newer one opens read-only (`is_read_only`: changes and saves are refused with an explanation, and nothing is written) |
 | `src/document.rs` (also) | `thumbnail_path`: where the launcher's picture of a project lives (`<file>.thumbnail.png`, beside the journal). `view_path`: where the editor keeps how the timeline was laid out (`<file>.view`: track heights and such; view state, never part of the project) |
 | `src/side_files.rs` | `SideFile` and `existing`: the one list of the files that belong to a project besides the project file (see below). Moving, renaming and deleting a project all go by it |
 | `tests/random_edits.rs` | Property test: random edit sessions with undo/redo stay valid, and journal replay rebuilds the exact project |
-| `tests/samples.rs` + `tests/samples/` | One stored project per released file format; all must keep opening |
+| `tests/samples.rs` + `tests/samples/` | One stored project per released file format, and one stored template per template format; all must keep opening |
 
 ## Rules the model keeps
 
@@ -67,6 +68,27 @@ RON text with the extension from `brand::PROJECT_FILE_EXTENSION`:
 2. Change the model and raise `file::FORMAT_VERSION` to `N + 1`.
 3. Add a step to `file::MIGRATIONS` that reads version `N` text into the frozen types, converts them, and writes version `N + 1` text.
 4. Write the new sample with `WRITE_SAMPLES=1 cargo test -p project --test samples`. Keep every older sample: they must still open.
+5. Templates hold the same `Clip`, `Track` and `MediaRef`. A new field with a default needs nothing: the stored template samples are never rewritten, and they prove that a template saved before the field still reads (clips gained `look` that way; a template saved now keeps each clip's look). If old template text no longer reads into the types (a stored template sample stops opening), raise `templates::FORMAT_VERSION` too and add a step to `templates::MIGRATIONS`, the same way; the command in step 4 then writes the new format's sample, once.
+
+## Templates
+
+A template is a stretch of a timeline to drop into any project: an intro, an outro, a sting between parts. Nothing about it is stored in a project file.
+
+```ron
+(
+  format_version: 1,
+  template: (
+    length: (7, 1),
+    media: [ ... ],          // the files its clips use, as a project stores them
+    video_tracks: [ ... ],   // tracks from the first up, clips placed from zero
+    audio_tracks: [ ... ],
+  ),
+)
+```
+
+- **The file** is `<name>.template` in `templates/` in the app's data folder (`templates::folder`), written like a project (temporary file, then renamed). The name is the file's name, made safe for one; names differing only in capitals count as the same. A newer or damaged file is listed with why it can't be used, never skipped silently.
+- **Saving** (`Template::capture`) takes the timeline's region, or the whole timeline without one. A clip crossing an edge of the stretch is kept cut there (a cut start also moves where in the file it begins, by the clip's speed). Tracks keep their place: empty tracks after the last used one are dropped. Ids are renumbered from 1, so the same stretch gives the same template whatever project it came from. A link left with one clip is dropped. Track switches (mute, solo, lock, hide) are not kept, and clips on a hidden or muted track are saved like any others; a track's name and volume are kept, for when the track has to be made. Timeline labels are not part of a template.
+- **Format history:** version 1 is the first format.
 
 ## Files beside the project file
 
@@ -115,4 +137,5 @@ Imported recordings are not side files: a project only points at them, and nothi
 | Track mix | A track's mute, solo and volume (-60 to +12 dB) |
 | Set look | Sets where one clip's picture sits, which part shows, its opacity and quick colour. Only clips on video tracks; values outside their range are refused. Both halves of a split keep it |
 | Set settings | Fixes a timeline's size, frame rate and sound rate; it stops being automatic |
+| Insert template | One step: everything from the chosen time on, on every track, moves later by the template's length (clips under it are split, labels move too) and the template's clips fill the room, each on the track of the same kind and number. Tracks that are missing are made after the others of their kind, as `AddTrack` does, each as loud as the template's track in that place and with its name when someone chose it ("Music") and no track of that kind has it yet; otherwise it gets the next usual name ("V2", "A3"). A template with fewer tracks than the timeline leaves the other tracks empty for its length: their clips move along like everything else. A file the project already has (same contents: size and sample hash, wherever it is now) is reused; other files are added. Every clip and link gets a new id; clips linked in the template stay linked. A timeline still on Automatic takes its settings from the template's first video. The command carries the whole template, so the journal replays it without the file |
 | Import | One step: adds the file and places it at the end of the timeline, the picture on the first video track and each sound stream on its own audio track (made when missing; an unused default track takes the stream's name), all linked. Pictures last 5 seconds. On an automatic timeline the first video also sets the settings (upright size, frame rate, first sound stream's rate) |

@@ -7,11 +7,19 @@
 //! ```sh
 //! WRITE_SAMPLES=1 cargo test -p project --test samples
 //! ```
+//!
+//! Templates have their own format and their own samples
+//! (`template-v<N>.ron`). A sample is written once, when its format is new
+//! (the same command writes it if it is not there yet), and never again:
+//! the model types a template holds may gain fields with defaults without
+//! a new template format, and the stored text is what proves that a
+//! template saved before such a field still reads.
 
 // Test helpers may panic: a failure here is a failing test.
 #![allow(clippy::expect_used)]
 
 use project::file::{self, FORMAT_VERSION};
+use project::templates::{self, Template};
 use project::{
     AudioStream, Clip, Fingerprint, LabelColor, MediaInfo, MediaKind, MediaRef, Project, Rate, Region,
     SequenceSettings, Time, TimelineLabel, VideoStream,
@@ -148,4 +156,72 @@ fn current_format_sample_matches_the_model() {
         file::save(&rich_project(), &path).expect("sample written");
     }
     assert_eq!(file::load(&path).expect("sample opens"), rich_project());
+}
+
+fn template_sample_path(version: u32) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/samples/template-v{version}.ron"))
+}
+
+/// A template cut out of the middle of the sample project's clips.
+fn rich_template() -> Template {
+    let p = rich_project();
+    let range = Region::between(Time::seconds(11), Time::seconds(18));
+    Template::capture(&p, p.active_sequence, range).expect("the stretch has clips")
+}
+
+fn read_template(version: u32) -> Template {
+    let text = std::fs::read_to_string(template_sample_path(version)).expect("the template sample is there");
+    templates::from_str(&text).expect("the template sample opens")
+}
+
+#[test]
+fn template_version_1_sample_opens() {
+    let template = read_template(1);
+    assert_eq!(template.length, Time::seconds(7));
+    assert_eq!(template.clip_count(), 2);
+    let picture = &template.video_tracks[0].clips[0];
+    assert_eq!(
+        picture.source_in,
+        Rate::NTSC_60.frame_start(90) + Time::seconds(10)
+    );
+    assert_eq!(picture.link, template.audio_tracks[0].clips[0].link);
+    assert_eq!(template.media[0].info.audio.len(), 2);
+    assert_eq!(
+        picture.look,
+        project::Look::PLAIN,
+        "saved before clips had a look"
+    );
+}
+
+/// The version 1 sample was written before clips had a `look`. Apart from
+/// that, it is the template the model gives today.
+#[test]
+fn the_stored_template_matches_the_model_but_for_what_came_later() {
+    let mut expected = rich_template();
+    let tracks = expected
+        .video_tracks
+        .iter_mut()
+        .chain(expected.audio_tracks.iter_mut());
+    for clip in tracks.flat_map(|t| t.clips.iter_mut()) {
+        clip.look = project::Look::PLAIN;
+    }
+    assert_eq!(read_template(1), expected);
+}
+
+#[test]
+fn a_template_saved_now_reads_back_the_same() {
+    let template = rich_template();
+    assert_ne!(
+        template.video_tracks[0].clips[0].look,
+        project::Look::PLAIN,
+        "the sample project's picture has a look, and the template keeps it"
+    );
+    let text = templates::to_string(&template).expect("the template becomes text");
+    assert_eq!(templates::from_str(&text).expect("it reads back"), template);
+    // A new template format gets its sample here, once.
+    let path = template_sample_path(templates::FORMAT_VERSION);
+    if std::env::var_os("WRITE_SAMPLES").is_some() && !path.exists() {
+        std::fs::write(&path, text).expect("sample written");
+    }
+    assert_eq!(read_template(templates::FORMAT_VERSION).length, template.length);
 }

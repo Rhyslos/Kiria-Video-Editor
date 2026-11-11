@@ -1,0 +1,100 @@
+(
+  format_version: 1,
+  template: (
+    length: (7, 1),
+    media: [
+      (
+        id: 1,
+        path: "recordings/match_04.mkv",
+        fingerprint: (
+          size: 2147483648,
+          sample_hash: "9f2c1a",
+        ),
+        kind: Video,
+        duration: (600, 1),
+        info: (
+          container: "matroska,webm",
+          video: Some((
+            index: 0,
+            codec: "hevc",
+            width: 2560,
+            height: 1440,
+            frame_rate: (60000, 1001),
+            variable_frame_rate: false,
+            rotation: 0,
+          )),
+          audio: [
+            (
+              index: 1,
+              codec: "aac",
+              channels: 2,
+              sample_rate: 48000,
+              name: "Game",
+            ),
+            (
+              index: 2,
+              codec: "opus",
+              channels: 1,
+              sample_rate: 48000,
+              name: "Mic",
+            ),
+          ],
+        ),
+      ),
+    ],
+    video_tracks: [
+      (
+        id: 2,
+        kind: Video,
+        name: "V1",
+        clips: [
+          (
+            id: 3,
+            media: 1,
+            stream: 0,
+            start: (0, 1),
+            source_in: (23003, 2000),
+            duration: (7, 1),
+            link: Some(4),
+            speed: (
+              num: 1,
+              den: 1,
+            ),
+          ),
+        ],
+        muted: false,
+        solo: false,
+        locked: false,
+        hidden: false,
+        gain_db: 0.0,
+      ),
+    ],
+    audio_tracks: [
+      (
+        id: 5,
+        kind: Audio,
+        name: "A1",
+        clips: [
+          (
+            id: 6,
+            media: 1,
+            stream: 1,
+            start: (0, 1),
+            source_in: (23003, 2000),
+            duration: (7, 1),
+            link: Some(4),
+            speed: (
+              num: 1,
+              den: 1,
+            ),
+          ),
+        ],
+        muted: false,
+        solo: false,
+        locked: false,
+        hidden: false,
+        gain_db: 0.0,
+      ),
+    ],
+  ),
+)

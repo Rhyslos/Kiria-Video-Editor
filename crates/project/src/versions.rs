@@ -102,7 +102,7 @@ pub fn load(version: &Version) -> diag::Result<Project> {
 
 /// A name that is safe in a file name: no path or reserved characters,
 /// trimmed, at most 60 characters.
-fn clean_name(name: &str) -> String {
+pub(crate) fn clean_name(name: &str) -> String {
     let cleaned: String = name
         .chars()
         .map(|c| {

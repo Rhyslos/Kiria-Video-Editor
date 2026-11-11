@@ -1,4 +1,4 @@
-//! Times written the same way everywhere: "2 min ago", "yesterday", "12:04".
+//! Times written the same way everywhere: "2 min ago", "yesterday", "12:04", "7.5 s".
 
 /// How long ago something happened, given the seconds since then.
 pub fn ago(secs: u64) -> String {
@@ -24,6 +24,17 @@ pub fn duration(secs: u64) -> String {
         format!("{h}:{m:02}:{s:02}")
     } else {
         format!("{m}:{s:02}")
+    }
+}
+
+/// How long something short lasts: "7.5 s" under a minute (a tenth of a
+/// second matters for an intro), then as [`duration`].
+pub fn length(seconds: f64) -> String {
+    let seconds = seconds.max(0.0);
+    if seconds < 59.95 {
+        format!("{seconds:.1} s")
+    } else {
+        duration(seconds.round() as u64)
     }
 }
 
@@ -54,6 +65,15 @@ mod tests {
         assert_eq!(ago(5 * 86_400), "5 days ago");
         assert_eq!(ago(90 * 86_400), "3 months ago");
         assert_eq!(ago(800 * 86_400), "2 years ago");
+    }
+
+    #[test]
+    fn short_lengths_show_tenths() {
+        assert_eq!(length(7.5), "7.5 s");
+        assert_eq!(length(0.04), "0.0 s");
+        assert_eq!(length(59.96), "1:00");
+        assert_eq!(length(83.4), "1:23");
+        assert_eq!(length(-1.0), "0.0 s");
     }
 
     #[test]
