@@ -103,6 +103,7 @@ fn command_for(action: &Action, p: &Project, media: MediaId) -> Option<Command> 
                     source_in: Time::ZERO,
                     duration: Time::seconds(len),
                     link: None,
+                    speed: Default::default(),
                 },
             }
         }

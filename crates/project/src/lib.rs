@@ -26,7 +26,7 @@ pub use model::{
     AudioStream, Clip, Fingerprint, LabelColor, MediaInfo, MediaKind, MediaRef, Project, Region, Sequence,
     SequenceSettings, TimelineLabel, Track, TrackKind, VideoStream,
 };
-pub use time::{Rate, Time};
+pub use time::{Rate, Speed, Time};
 
 /// File extension for project files, without the dot.
 pub const FILE_EXTENSION: &str = brand::PROJECT_FILE_EXTENSION;

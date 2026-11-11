@@ -206,6 +206,76 @@ impl Time {
     }
 }
 
+/// How fast a clip plays its file, as an exact fraction: 1/2 is half speed
+/// (slow motion), 2/1 twice as fast.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Speed {
+    num: u32,
+    den: u32,
+}
+
+impl Speed {
+    pub const NORMAL: Speed = Speed { num: 1, den: 1 };
+
+    /// `num / den` times as fast. Refused when either is zero or the speed
+    /// is outside 1/100 to 100.
+    pub fn new(num: u32, den: u32) -> diag::Result<Speed> {
+        if num == 0 || den == 0 || num > den.saturating_mul(100) || den > num.saturating_mul(100) {
+            return Err(diag::AppError::new("That speed can't be used")
+                .why("A clip can play from 1/100 to 100 times as fast."));
+        }
+        let g = gcd(u128::from(num), u128::from(den)) as u32;
+        Ok(Speed {
+            num: num / g,
+            den: den / g,
+        })
+    }
+
+    pub fn num(self) -> u32 {
+        self.num
+    }
+
+    pub fn den(self) -> u32 {
+        self.den
+    }
+
+    pub fn as_f64(self) -> f64 {
+        f64::from(self.num) / f64::from(self.den)
+    }
+
+    /// File time played in `t` of timeline time.
+    pub fn scale(self, t: Time) -> Time {
+        Time::from_i128(
+            i128::from(t.num) * i128::from(self.num),
+            i128::from(t.den) * i128::from(self.den),
+        )
+    }
+
+    /// Timeline time taken to play `t` of the file.
+    pub fn unscale(self, t: Time) -> Time {
+        Time::from_i128(
+            i128::from(t.num) * i128::from(self.den),
+            i128::from(t.den) * i128::from(self.num),
+        )
+    }
+
+    /// "50%", "200%" or "33.3%".
+    pub fn percent(self) -> String {
+        let p = self.as_f64() * 100.0;
+        if (p - p.round()).abs() < 1e-9 {
+            format!("{}%", p.round() as i64)
+        } else {
+            format!("{p:.1}%")
+        }
+    }
+}
+
+impl Default for Speed {
+    fn default() -> Self {
+        Speed::NORMAL
+    }
+}
+
 impl Ord for Time {
     fn cmp(&self, other: &Self) -> Ordering {
         let a = i128::from(self.num) * i128::from(other.den);

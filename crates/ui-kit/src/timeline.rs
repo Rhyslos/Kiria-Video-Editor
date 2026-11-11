@@ -44,6 +44,8 @@ pub struct ClipPictures {
     pub aspect: f32,
     /// Seconds into the file where the clip begins.
     pub source_in: f64,
+    /// How fast the clip plays its file.
+    pub speed: f64,
 }
 
 /// A clip's loudness: peaks of its whole file, and where in the file the clip starts.
@@ -53,6 +55,8 @@ pub struct ClipWaveform {
     pub per_second: f32,
     /// Seconds into the file where the clip begins.
     pub source_in: f64,
+    /// How fast the clip plays its file.
+    pub speed: f64,
 }
 
 /// One track as the timeline shows it.
@@ -135,6 +139,8 @@ pub enum TimelineEvent {
     /// A dragged file was dropped at `at`: over what is there, or (Ctrl
     /// held) inserted, pushing the rest later.
     DropMedia { media: u64, at: f64, insert: bool },
+    /// "Speed" from a clip's right-click menu: play it `num / den` times as fast.
+    SetSpeed { clip: u64, num: u32, den: u32 },
     /// A timeline label was double-clicked (or "Edit" chosen on it).
     EditLabel(u64),
     /// "Add a label here" from the right-click menu.
@@ -788,7 +794,7 @@ impl TimelineView {
         let mut x = area.left() + first * tile;
         let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
         while x < visible.right() {
-            let t = pics.source_in + f64::from(x + tile / 2.0 - left) / f64::from(self.zoom);
+            let t = pics.source_in + f64::from(x + tile / 2.0 - left) / f64::from(self.zoom) * pics.speed;
             let i = ((t / pics.every).round().max(0.0) as usize).min(pics.textures.len() - 1);
             let rect = Rect::from_min_size(pos2(x, area.top()), vec2(tile, area.height()));
             painter.image(pics.textures[i], rect, uv, Color32::from_white_alpha(230));
@@ -825,10 +831,10 @@ impl TimelineView {
         };
         let mut mesh = egui::Mesh::default();
         let (mid, half) = (clip_area.center().y, clip_area.height() / 2.0);
-        let per_px = f64::from(w.per_second) / f64::from(self.zoom);
+        let per_px = f64::from(w.per_second) / f64::from(self.zoom) * w.speed;
         let mut x = clip_area.left().floor();
         while x < clip_area.right() {
-            let t = w.source_in + f64::from(x - left) / f64::from(self.zoom);
+            let t = w.source_in + f64::from(x - left) / f64::from(self.zoom) * w.speed;
             let a = (t * f64::from(w.per_second)).max(0.0) as usize;
             let b = ((t * f64::from(w.per_second) + per_px).ceil() as usize)
                 .max(a + 1)
@@ -1197,6 +1203,20 @@ impl TimelineView {
                         events.push(TimelineEvent::SplitAt { at, clip: Some(id) });
                         ui.close();
                     }
+                    ui.menu_button("Speed", |ui| {
+                        for (text, num, den) in [
+                            ("25% (slow motion)", 1, 4),
+                            ("50% (slow motion)", 1, 2),
+                            ("100% (normal)", 1, 1),
+                            ("200%", 2, 1),
+                            ("400%", 4, 1),
+                        ] {
+                            if ui.button(text).clicked() {
+                                events.push(TimelineEvent::SetSpeed { clip: id, num, den });
+                                ui.close();
+                            }
+                        }
+                    });
                     if ui.button("Set the region to this clip").clicked() {
                         events.push(TimelineEvent::SetRegion(Some((start, end))));
                         ui.close();

@@ -25,7 +25,7 @@ pub fn video_at<'a>(project: &'a Project, sequence: &'a Sequence, at: Time) -> O
             Some(Showing {
                 media,
                 clip,
-                source_time: clip.source_in + (at - clip.start),
+                source_time: clip.source_at(at),
             })
         })
 }

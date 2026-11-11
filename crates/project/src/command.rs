@@ -9,7 +9,7 @@ use crate::model::{
     Clip, LabelColor, MediaKind, MediaRef, Project, Region, Sequence, SequenceSettings, TimelineLabel, Track,
     TrackKind,
 };
-use crate::time::Time;
+use crate::time::{Speed, Time};
 use diag::AppError;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -42,6 +42,14 @@ pub enum Command {
         sequence: SequenceId,
         media: MediaId,
         at: Time,
+    },
+    /// Plays `clip` (and its linked clips) at `speed`: the same part of the
+    /// file, so the clip gets longer (slower) or shorter (faster), and
+    /// everything after it on the timeline moves along.
+    SetSpeed {
+        sequence: SequenceId,
+        clip: ClipId,
+        speed: Speed,
     },
     /// Puts back a whole earlier state of the project (a saved version).
     /// Undo returns to how it was just before.
@@ -203,6 +211,13 @@ impl Command {
             Command::AddMedia { media } => {
                 let id: MediaId = p.allocate_id();
                 p.media.insert(id, MediaRef { id, ..media.clone() });
+            }
+            Command::SetSpeed {
+                sequence,
+                clip,
+                speed,
+            } => {
+                crate::edits::set_speed(&mut p, *sequence, *clip, *speed)?;
             }
             Command::Restore { project } => {
                 if project.active().is_none() {
@@ -463,7 +478,7 @@ fn trim(p: &mut Project, sequence: SequenceId, clip: ClipId, edge: Edge, to: Tim
             match edge {
                 Edge::Start => {
                     t.start = c.start + delta;
-                    t.source_in = c.source_in + delta;
+                    t.source_in = c.source_in + c.speed.scale(delta);
                     t.duration = c.duration - delta;
                 }
                 Edge::End => t.duration = c.duration + delta,
@@ -484,7 +499,7 @@ fn trim(p: &mut Project, sequence: SequenceId, clip: ClipId, edge: Edge, to: Tim
             if !stills.contains(&c.media)
                 && let Some(length) = length
                 && length > Time::ZERO
-                && t.source_in + t.duration > length
+                && t.source_in + t.source_len() > length
             {
                 return Err(
                     AppError::new("The clip can't be trimmed that far").why("Its file ends before that.")
@@ -570,6 +585,7 @@ fn place_media(p: &mut Project, sequence: SequenceId, id: MediaId, at: Option<Ti
         source_in: Time::ZERO,
         duration: length,
         link,
+        speed: Speed::NORMAL,
     };
 
     if let Some(v) = video {
@@ -644,7 +660,7 @@ pub(crate) fn split(
                 let right = Clip {
                     id: *right_id,
                     start: at,
-                    source_in: left.source_in + first,
+                    source_in: left.source_in + left.speed.scale(first),
                     duration: left.duration - first,
                     link: *right_link,
                     ..left.clone()
@@ -795,6 +811,7 @@ mod tests {
             source_in: Time::ZERO,
             duration: Time::seconds(len),
             link,
+            speed: Default::default(),
         }
     }
 
@@ -1636,5 +1653,64 @@ mod tests {
             .apply(&p)
             .is_err()
         );
+    }
+
+    #[test]
+    fn speed_keeps_the_same_part_of_the_file_and_moves_the_rest() {
+        let (p, seq) = imported(); // 0-30 s and 30-40 s
+        let first = first_video(&p, 0).id;
+        let half = Speed::new(1, 2).unwrap();
+        let slow = Command::SetSpeed {
+            sequence: seq,
+            clip: first,
+            speed: half,
+        }
+        .apply(&p)
+        .unwrap();
+        let s = slow.active().unwrap();
+        let a = &s.video_tracks[0].clips[0];
+        assert_eq!(
+            (a.duration, a.source_len(), a.speed),
+            (Time::seconds(60), Time::seconds(30), half)
+        );
+        assert_eq!(
+            s.video_tracks[0].clips[1].start,
+            Time::seconds(60),
+            "the next clip moved along"
+        );
+        assert_eq!(
+            s.audio_tracks[1].clips[0].duration,
+            Time::seconds(60),
+            "its sound slowed too"
+        );
+        assert_eq!(a.source_at(Time::seconds(10)), Time::seconds(5));
+
+        // Splitting a slowed clip keeps each half on the right part of the file.
+        let cut = Command::Split {
+            sequence: seq,
+            at: Time::seconds(20),
+            clip: Some(first),
+        }
+        .apply(&slow)
+        .unwrap();
+        let right = &cut.active().unwrap().video_tracks[0].clips[1];
+        assert_eq!(
+            (right.start, right.source_in),
+            (Time::seconds(20), Time::seconds(10))
+        );
+
+        // Twice as fast: 15 s long, and the timeline closes up.
+        let fast = Command::SetSpeed {
+            sequence: seq,
+            clip: first,
+            speed: Speed::new(2, 1).unwrap(),
+        }
+        .apply(&p)
+        .unwrap();
+        let s = fast.active().unwrap();
+        assert_eq!(s.video_tracks[0].clips[0].duration, Time::seconds(15));
+        assert_eq!(s.video_tracks[0].clips[1].start, Time::seconds(15));
+        assert!(Speed::new(0, 1).is_err() && Speed::new(1, 1000).is_err());
+        assert_eq!(Speed::new(2, 4).unwrap().percent(), "50%");
     }
 }
