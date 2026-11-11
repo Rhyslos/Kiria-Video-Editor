@@ -97,6 +97,14 @@ pub enum TimelineEvent {
     Trim { clip: u64, edge: ClipEdge, to: f64 },
     /// The blade tool cut a clip at `at`.
     Blade { clip: u64, at: f64 },
+    /// The ripple tool trimmed an edge; later clips follow.
+    RippleTrim { clip: u64, edge: ClipEdge, to: f64 },
+    /// The roll tool moved the cut after `clip` to `to`.
+    Roll { clip: u64, to: f64 },
+    /// The slip tool shifted what `clip` shows by `by` seconds of its file.
+    Slip { clip: u64, by: f64 },
+    /// The slide tool moved `clip` by `by` between its neighbours.
+    Slide { clip: u64, by: f64 },
     /// A track's mute, solo or volume changed.
     TrackMix {
         track: u64,
@@ -141,12 +149,25 @@ pub enum Tool {
     Select,
     /// Cut clips where clicked.
     Blade,
+    /// Trim an edge and move everything after it along, so no gap opens.
+    Ripple,
+    /// Drag the cut between two touching clips.
+    Roll,
+    /// Drag inside a clip to show another part of its file in the same place.
+    Slip,
+    /// Drag a clip between its neighbours; they get longer or shorter.
+    Slide,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum DragKind {
     Move,
     Trim(ClipEdge),
+    RippleTrim(ClipEdge),
+    /// The cut after the dragged clip.
+    Roll,
+    Slip,
+    Slide,
 }
 
 /// A clip being dragged: what is moving and by how much so far.
@@ -172,9 +193,13 @@ impl ClipDrag {
     fn shown(&self, c: &TimelineClip) -> (f64, f64) {
         let (s, d) = (c.start, c.duration);
         match self.kind {
-            DragKind::Move => (s + self.delta, d),
+            DragKind::Move | DragKind::Slide => (s + self.delta, d),
             DragKind::Trim(ClipEdge::Start) => (s + self.delta, (d - self.delta).max(0.0)),
-            DragKind::Trim(ClipEdge::End) => (s, (d + self.delta).max(0.0)),
+            DragKind::RippleTrim(ClipEdge::Start) => (s, (d - self.delta).max(0.0)),
+            DragKind::Trim(ClipEdge::End) | DragKind::RippleTrim(ClipEdge::End) | DragKind::Roll => {
+                (s, (d + self.delta).max(0.0))
+            }
+            DragKind::Slip => (s, d),
         }
     }
 }
@@ -913,10 +938,13 @@ impl TimelineView {
             if r.hovered() && self.clip_drag.is_none() {
                 match (self.tool, zone) {
                     (Tool::Blade, Some(_)) => ui.ctx().set_cursor_icon(CursorIcon::Crosshair),
-                    (Tool::Select, Some(DragKind::Trim(_))) => {
+                    (Tool::Select | Tool::Ripple | Tool::Roll, Some(DragKind::Trim(_))) => {
                         ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal)
                     }
-                    (Tool::Select, Some(DragKind::Move)) => ui.ctx().set_cursor_icon(CursorIcon::Grab),
+                    (Tool::Select | Tool::Ripple, Some(DragKind::Move)) => {
+                        ui.ctx().set_cursor_icon(CursorIcon::Grab)
+                    }
+                    (Tool::Slip | Tool::Slide, Some(_)) => ui.ctx().set_cursor_icon(CursorIcon::ResizeColumn),
                     _ => {}
                 }
                 if let Some(c) = hit.filter(|c| !c.info.is_empty()) {
@@ -925,8 +953,8 @@ impl TimelineView {
             }
 
             if r.drag_started()
-                && self.tool == Tool::Select
-                && let (Some(c), Some(kind)) = (hit, zone)
+                && let (Some(c), Some(zone)) = (hit, zone)
+                && let Some((c, kind)) = drag_for(self.tool, zone, c, tracks, &row_rects, p.y)
             {
                 self.clip_drag = Some(ClipDrag {
                     clip: c.id,
@@ -954,14 +982,16 @@ impl TimelineView {
                     raw
                 };
                 let delta = match drag.kind {
-                    DragKind::Move => delta.max(-drag.start),
-                    DragKind::Trim(ClipEdge::Start) => delta.max(-drag.start),
-                    DragKind::Trim(ClipEdge::End) => delta,
+                    DragKind::Move | DragKind::Slide | DragKind::Trim(ClipEdge::Start) => {
+                        delta.max(-drag.start)
+                    }
+                    _ => delta,
                 };
                 self.clip_drag = Some(ClipDrag { delta, ..drag });
                 ui.ctx().set_cursor_icon(match drag.kind {
                     DragKind::Move => CursorIcon::Grabbing,
-                    DragKind::Trim(_) => CursorIcon::ResizeHorizontal,
+                    DragKind::Slip | DragKind::Slide => CursorIcon::ResizeColumn,
+                    _ => CursorIcon::ResizeHorizontal,
                 });
             }
             if r.drag_stopped()
@@ -982,6 +1012,27 @@ impl TimelineView {
                         clip: drag.clip,
                         edge: ClipEdge::End,
                         to: drag.end + drag.delta,
+                    },
+                    DragKind::RippleTrim(edge) => TimelineEvent::RippleTrim {
+                        clip: drag.clip,
+                        edge,
+                        to: match edge {
+                            ClipEdge::Start => drag.start + drag.delta,
+                            ClipEdge::End => drag.end + drag.delta,
+                        },
+                    },
+                    DragKind::Roll => TimelineEvent::Roll {
+                        clip: drag.clip,
+                        to: drag.end + drag.delta,
+                    },
+                    // Dragging right brings earlier parts of the file into view.
+                    DragKind::Slip => TimelineEvent::Slip {
+                        clip: drag.clip,
+                        by: -drag.delta,
+                    },
+                    DragKind::Slide => TimelineEvent::Slide {
+                        clip: drag.clip,
+                        by: drag.delta,
                     },
                 });
             }
@@ -1041,9 +1092,12 @@ impl TimelineView {
             }
         }
         let edges: Vec<f64> = match drag.kind {
-            DragKind::Move => vec![drag.start + raw, drag.end + raw],
-            DragKind::Trim(ClipEdge::Start) => vec![drag.start + raw],
-            DragKind::Trim(ClipEdge::End) => vec![drag.end + raw],
+            DragKind::Move | DragKind::Slide => vec![drag.start + raw, drag.end + raw],
+            DragKind::Trim(ClipEdge::Start) | DragKind::RippleTrim(ClipEdge::Start) => vec![drag.start + raw],
+            DragKind::Trim(ClipEdge::End) | DragKind::RippleTrim(ClipEdge::End) | DragKind::Roll => {
+                vec![drag.end + raw]
+            }
+            DragKind::Slip => vec![],
         };
         let best = edges
             .iter()
@@ -1062,20 +1116,25 @@ pub enum ToolbarClick {
     Fit,
 }
 
-/// The row of tools above the timeline: Select, Blade, Snapping and Fit.
-/// `tips` gives each button's tooltip (with its shortcut).
-pub fn toolbar(ui: &mut Ui, theme: &Theme, view: &TimelineView, tips: [&str; 4]) -> Option<ToolbarClick> {
+/// The row of tools above the timeline: Select, Blade, Ripple, Roll, Slip,
+/// Slide, then Snapping and Fit. `tips` gives each button's tooltip (with
+/// its shortcut), in that order.
+pub fn toolbar(ui: &mut Ui, theme: &Theme, view: &TimelineView, tips: [&str; 8]) -> Option<ToolbarClick> {
     let mut clicked = None;
     ui.horizontal(|ui| {
         let size = vec2(30.0, 26.0);
         let items = [
             (ToolbarClick::Tool(Tool::Select), view.tool == Tool::Select, 0),
             (ToolbarClick::Tool(Tool::Blade), view.tool == Tool::Blade, 1),
-            (ToolbarClick::Snapping, view.snapping, 2),
-            (ToolbarClick::Fit, false, 3),
+            (ToolbarClick::Tool(Tool::Ripple), view.tool == Tool::Ripple, 2),
+            (ToolbarClick::Tool(Tool::Roll), view.tool == Tool::Roll, 3),
+            (ToolbarClick::Tool(Tool::Slip), view.tool == Tool::Slip, 4),
+            (ToolbarClick::Tool(Tool::Slide), view.tool == Tool::Slide, 5),
+            (ToolbarClick::Snapping, view.snapping, 6),
+            (ToolbarClick::Fit, false, 7),
         ];
         for (click, on, i) in items {
-            if i == 2 {
+            if i == 6 {
                 ui.add_space(10.0);
             }
             let (rect, r) = ui.allocate_exact_size(size, Sense::click());
@@ -1127,8 +1186,63 @@ fn tool_icon(p: &egui::Painter, which: usize, c: Pos2, colour: Color32) {
                 Stroke::new(2.0, colour),
             );
         }
-        // Snapping: a magnet.
+        // Ripple: an edge with the rest of the timeline following.
         2 => {
+            p.line_segment(
+                [c + vec2(-4.0, -7.0), c + vec2(-4.0, 7.0)],
+                Stroke::new(2.0, colour),
+            );
+            p.rect_stroke(
+                Rect::from_min_max(c + vec2(-1.0, -4.0), c + vec2(8.0, 4.0)),
+                1.5,
+                stroke,
+                egui::StrokeKind::Inside,
+            );
+            p.line_segment([c + vec2(-8.0, 0.0), c + vec2(-5.0, 0.0)], stroke);
+        }
+        // Roll: two clips meeting at a cut that moves.
+        3 => {
+            for s in [-1.0, 1.0] {
+                p.rect_stroke(
+                    Rect::from_min_max(
+                        c + vec2(if s < 0.0 { -8.0 } else { 1.0 }, -4.0),
+                        c + vec2(if s < 0.0 { -1.0 } else { 8.0 }, 4.0),
+                    ),
+                    1.5,
+                    stroke,
+                    egui::StrokeKind::Inside,
+                );
+            }
+            p.line_segment(
+                [c + vec2(0.0, -8.0), c + vec2(0.0, 8.0)],
+                Stroke::new(2.0, colour),
+            );
+        }
+        // Slip: arrows inside a clip.
+        4 => {
+            p.rect_stroke(
+                Rect::from_center_size(c, vec2(18.0, 10.0)),
+                2.0,
+                stroke,
+                egui::StrokeKind::Inside,
+            );
+            p.line_segment([c + vec2(-5.0, 0.0), c + vec2(5.0, 0.0)], stroke);
+            for s in [-1.0, 1.0] {
+                p.line_segment([c + vec2(5.0 * s, 0.0), c + vec2(3.0 * s, -2.0)], stroke);
+                p.line_segment([c + vec2(5.0 * s, 0.0), c + vec2(3.0 * s, 2.0)], stroke);
+            }
+        }
+        // Slide: a clip with arrows outside it.
+        5 => {
+            p.rect_filled(Rect::from_center_size(c, vec2(8.0, 10.0)), 1.5, colour);
+            for s in [-1.0, 1.0] {
+                p.line_segment([c + vec2(6.0 * s, 0.0), c + vec2(10.0 * s, 0.0)], stroke);
+                p.line_segment([c + vec2(10.0 * s, 0.0), c + vec2(8.0 * s, -2.0)], stroke);
+                p.line_segment([c + vec2(10.0 * s, 0.0), c + vec2(8.0 * s, 2.0)], stroke);
+            }
+        }
+        // Snapping: a magnet.
+        6 => {
             p.add(Shape::line(
                 vec![
                     c + vec2(-5.0, -6.0),
@@ -1150,6 +1264,40 @@ fn tool_icon(p: &egui::Painter, which: usize, c: Pos2, colour: Color32) {
                 p.line_segment([c + vec2(7.0 * s, 0.0), c + vec2(4.0 * s, 3.0)], stroke);
             }
         }
+    }
+}
+
+/// What dragging `c` (grabbed in `zone`) does with `tool`, and which clip
+/// it acts on: the roll tool grabbed at a clip's start acts on the cut after
+/// the clip before it. `None` when the tool does nothing there.
+fn drag_for<'a>(
+    tool: Tool,
+    zone: DragKind,
+    c: &'a TimelineClip,
+    tracks: &'a [TimelineTrack],
+    rows: &[Rect],
+    y: f32,
+) -> Option<(&'a TimelineClip, DragKind)> {
+    match (tool, zone) {
+        (Tool::Select, kind) => Some((c, kind)),
+        (Tool::Ripple, DragKind::Trim(edge)) => Some((c, DragKind::RippleTrim(edge))),
+        (Tool::Ripple, kind) => Some((c, kind)),
+        (Tool::Roll, DragKind::Trim(ClipEdge::End)) => Some((c, DragKind::Roll)),
+        (Tool::Roll, DragKind::Trim(ClipEdge::Start)) => {
+            let track = tracks
+                .iter()
+                .zip(rows)
+                .find(|(_, row)| row.y_range().contains(y))?
+                .0;
+            let before = track
+                .clips
+                .iter()
+                .find(|b| (b.start + b.duration - c.start).abs() < 1e-6 && b.id != c.id)?;
+            Some((before, DragKind::Roll))
+        }
+        (Tool::Slip, _) => Some((c, DragKind::Slip)),
+        (Tool::Slide, _) => Some((c, DragKind::Slide)),
+        _ => None,
     }
 }
 
@@ -1319,6 +1467,54 @@ fn draw_ruler(p: &egui::Painter, theme: &Theme, view: &TimelineView, layout: &La
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn clip(id: u64, start: f64, duration: f64) -> TimelineClip {
+        TimelineClip {
+            id,
+            start,
+            duration,
+            name: String::new(),
+            info: String::new(),
+            selected: false,
+            missing: false,
+            link: None,
+            waveform: None,
+        }
+    }
+
+    #[test]
+    fn each_tool_drags_the_right_thing() {
+        let track = TimelineTrack {
+            id: 1,
+            name: "V1".into(),
+            clips: vec![clip(1, 0.0, 5.0), clip(2, 5.0, 5.0)],
+            muted: false,
+            solo: false,
+            gain_db: 0.0,
+        };
+        let tracks = [track];
+        let rows = [Rect::from_min_max(pos2(0.0, 0.0), pos2(500.0, 50.0))];
+        let second = &tracks[0].clips[1];
+        let start = DragKind::Trim(ClipEdge::Start);
+        let got = |tool, zone| drag_for(tool, zone, second, &tracks, &rows, 10.0).map(|(c, k)| (c.id, k));
+        assert_eq!(got(Tool::Select, start), Some((2, start)));
+        assert_eq!(
+            got(Tool::Ripple, start),
+            Some((2, DragKind::RippleTrim(ClipEdge::Start)))
+        );
+        assert_eq!(
+            got(Tool::Roll, start),
+            Some((1, DragKind::Roll)),
+            "the cut before: the first clip's end"
+        );
+        assert_eq!(got(Tool::Roll, DragKind::Move), None);
+        assert_eq!(got(Tool::Slip, DragKind::Move), Some((2, DragKind::Slip)));
+        assert_eq!(got(Tool::Slide, start), Some((2, DragKind::Slide)));
+        assert_eq!(got(Tool::Blade, DragKind::Move), None, "the blade cuts on click");
+        // Nothing before the first clip to roll with.
+        let first = &tracks[0].clips[0];
+        assert!(drag_for(Tool::Roll, start, first, &tracks, &rows, 10.0).is_none());
+    }
 
     #[test]
     fn time_and_screen_positions_round_trip() {

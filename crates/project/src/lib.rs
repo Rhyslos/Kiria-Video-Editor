@@ -10,6 +10,7 @@
 
 pub mod command;
 pub mod document;
+mod edits;
 pub mod file;
 pub mod history;
 pub mod ids;

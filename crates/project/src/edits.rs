@@ -1,0 +1,207 @@
+//! The trim tools beyond a plain trim: ripple, roll, slip and slide.
+//!
+//! Each works out the new place of every clip it touches, checks that each
+//! still fits inside its file, then puts them all back at once, so a refused
+//! edit changes nothing.
+
+use crate::command::{Edge, insert_clip, missing, sequence_mut, tracks_mut, with_linked};
+use crate::ids::{ClipId, SequenceId, TrackId};
+use crate::model::{Clip, MediaKind, Project, Sequence};
+use crate::time::Time;
+use diag::AppError;
+
+pub(crate) fn ripple_trim(
+    p: &mut Project,
+    sequence: SequenceId,
+    clip: ClipId,
+    edge: Edge,
+    to: Time,
+) -> diag::Result<()> {
+    let seq = sequence_mut(p, sequence)?;
+    let reference = find(seq, clip)?;
+    let group = with_linked(seq, clip)?;
+    let delta = match edge {
+        Edge::Start => to - reference.start,
+        Edge::End => to - reference.end(),
+    };
+    // Everything after the clip follows its end.
+    let shift = match edge {
+        Edge::Start => Time::ZERO - delta,
+        Edge::End => delta,
+    };
+    let after = reference.end();
+    let mut changed = Vec::new();
+    for c in seq.tracks().flat_map(|t| t.clips.iter()) {
+        let mut t = c.clone();
+        if group.contains(&c.id) {
+            match edge {
+                Edge::Start => {
+                    t.source_in = c.source_in + delta;
+                    t.duration = c.duration - delta;
+                }
+                Edge::End => t.duration = c.duration + delta,
+            }
+        } else if c.start >= after {
+            t.start = c.start + shift;
+        } else {
+            continue;
+        }
+        changed.push(t);
+    }
+    put_back(p, sequence, changed)
+}
+
+pub(crate) fn roll(p: &mut Project, sequence: SequenceId, clip: ClipId, to: Time) -> diag::Result<()> {
+    let seq = sequence_mut(p, sequence)?;
+    let reference = find(seq, clip)?;
+    if next_to(seq, &reference).is_none() {
+        return Err(AppError::new("There is no cut to roll there")
+            .why("Rolling moves the cut between two clips that touch; this clip has nothing right after it.")
+            .fix("Trim the clip instead, or close the gap first."));
+    }
+    let delta = to - reference.end();
+    let mut changed = Vec::new();
+    for id in with_linked(seq, clip)? {
+        let c = find(seq, id)?;
+        if let Some(next) = next_to(seq, &c) {
+            changed.push(Clip {
+                start: next.start + delta,
+                source_in: next.source_in + delta,
+                duration: next.duration - delta,
+                ..next
+            });
+        }
+        changed.push(Clip {
+            duration: c.duration + delta,
+            ..c
+        });
+    }
+    put_back(p, sequence, changed)
+}
+
+pub(crate) fn slip(p: &mut Project, sequence: SequenceId, clip: ClipId, by: Time) -> diag::Result<()> {
+    let seq = sequence_mut(p, sequence)?;
+    let mut changed = Vec::new();
+    for id in with_linked(seq, clip)? {
+        let c = find(seq, id)?;
+        changed.push(Clip {
+            source_in: c.source_in + by,
+            ..c
+        });
+    }
+    put_back(p, sequence, changed)
+}
+
+pub(crate) fn slide(p: &mut Project, sequence: SequenceId, clip: ClipId, by: Time) -> diag::Result<()> {
+    let seq = sequence_mut(p, sequence)?;
+    let mut changed = Vec::new();
+    for id in with_linked(seq, clip)? {
+        let c = find(seq, id)?;
+        if let Some(before) = before(seq, &c) {
+            changed.push(Clip {
+                duration: before.duration + by,
+                ..before
+            });
+        }
+        if let Some(next) = next_to(seq, &c) {
+            changed.push(Clip {
+                start: next.start + by,
+                source_in: next.source_in + by,
+                duration: next.duration - by,
+                ..next
+            });
+        }
+        changed.push(Clip {
+            start: c.start + by,
+            ..c
+        });
+    }
+    put_back(p, sequence, changed)
+}
+
+fn find(seq: &Sequence, clip: ClipId) -> diag::Result<Clip> {
+    seq.tracks()
+        .flat_map(|t| t.clips.iter())
+        .find(|c| c.id == clip)
+        .cloned()
+        .ok_or_else(|| missing("clip"))
+}
+
+/// The track holding `clip`.
+fn track_of(seq: &Sequence, clip: ClipId) -> Option<TrackId> {
+    seq.tracks()
+        .find(|t| t.clips.iter().any(|c| c.id == clip))
+        .map(|t| t.id)
+}
+
+/// The clip on the same track that starts exactly where `c` ends.
+fn next_to(seq: &Sequence, c: &Clip) -> Option<Clip> {
+    let track = track_of(seq, c.id)?;
+    seq.tracks()
+        .find(|t| t.id == track)?
+        .clips
+        .iter()
+        .find(|n| n.start == c.end() && n.id != c.id)
+        .cloned()
+}
+
+/// The clip on the same track that ends exactly where `c` starts.
+fn before(seq: &Sequence, c: &Clip) -> Option<Clip> {
+    let track = track_of(seq, c.id)?;
+    seq.tracks()
+        .find(|t| t.id == track)?
+        .clips
+        .iter()
+        .find(|b| b.end() == c.start && b.id != c.id)
+        .cloned()
+}
+
+/// Checks every changed clip, then swaps them in on their own tracks.
+fn put_back(p: &mut Project, sequence: SequenceId, changed: Vec<Clip>) -> diag::Result<()> {
+    for c in &changed {
+        fits(p, c)?;
+    }
+    let seq = sequence_mut(p, sequence)?;
+    let mut placed: Vec<(TrackId, Clip)> = Vec::new();
+    for c in changed {
+        let track = track_of(seq, c.id).ok_or_else(|| missing("clip"))?;
+        placed.push((track, c));
+    }
+    for track in tracks_mut(seq) {
+        track.clips.retain(|c| !placed.iter().any(|(_, n)| n.id == c.id));
+    }
+    for (track, c) in placed {
+        let target = tracks_mut(seq)
+            .find(|t| t.id == track)
+            .ok_or_else(|| missing("track"))?;
+        insert_clip(target, c)?;
+    }
+    Ok(())
+}
+
+/// A clip must keep some length, start on the timeline, and stay inside
+/// its file (stills can be any length).
+fn fits(p: &Project, c: &Clip) -> diag::Result<()> {
+    let refuse = |why: &str| {
+        Err(AppError::new("The edit goes too far")
+            .why(why.to_owned())
+            .fix("Drag a shorter distance."))
+    };
+    if c.duration <= Time::ZERO {
+        return refuse("A clip would have no length left.");
+    }
+    if c.start.is_negative() {
+        return refuse("A clip would start before the timeline.");
+    }
+    if c.source_in.is_negative() {
+        return refuse("A clip's file has nothing earlier to show.");
+    }
+    if let Some(media) = p.media.get(&c.media)
+        && media.kind != MediaKind::Image
+        && media.duration > Time::ZERO
+        && c.source_in + c.duration > media.duration
+    {
+        return refuse("A clip's file ends before that.");
+    }
+    Ok(())
+}

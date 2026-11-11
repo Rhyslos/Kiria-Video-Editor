@@ -231,8 +231,18 @@ impl Editor {
                 self.timeline.tool = ui_kit::Tool::Select;
                 Ok(())
             }
-            Action::BladeTool => {
-                self.timeline.tool = ui_kit::Tool::Blade;
+            Action::BladeTool
+            | Action::RippleTool
+            | Action::RollTool
+            | Action::SlipTool
+            | Action::SlideTool => {
+                self.timeline.tool = match action {
+                    Action::BladeTool => ui_kit::Tool::Blade,
+                    Action::RippleTool => ui_kit::Tool::Ripple,
+                    Action::RollTool => ui_kit::Tool::Roll,
+                    Action::SlipTool => ui_kit::Tool::Slip,
+                    _ => ui_kit::Tool::Slide,
+                };
                 Ok(())
             }
             Action::ToggleSnapping => {
@@ -463,6 +473,68 @@ impl Editor {
                     drop(playback);
                     self.viewer.playhead = at;
                     self.start_playback();
+                }
+            }
+            E::RippleTrim { clip, edge, to } => {
+                let result = self.with_document(|d| {
+                    let Some(seq) = d.project().active() else {
+                        return Ok(());
+                    };
+                    let to = seq.settings.frame_rate.snap(seconds(to));
+                    let edge = match edge {
+                        ui_kit::ClipEdge::Start => project::Edge::Start,
+                        ui_kit::ClipEdge::End => project::Edge::End,
+                    };
+                    let sequence = seq.id;
+                    d.apply(Command::RippleTrim {
+                        sequence,
+                        clip: project::ClipId(clip),
+                        edge,
+                        to,
+                    })
+                });
+                if let Err(err) = result {
+                    self.errors.push(&err);
+                }
+            }
+            E::Roll { clip, to } => {
+                let result = self.with_document(|d| {
+                    let Some(seq) = d.project().active() else {
+                        return Ok(());
+                    };
+                    let to = seq.settings.frame_rate.snap(seconds(to));
+                    let sequence = seq.id;
+                    d.apply(Command::Roll {
+                        sequence,
+                        clip: project::ClipId(clip),
+                        to,
+                    })
+                });
+                if let Err(err) = result {
+                    self.errors.push(&err);
+                }
+            }
+            E::Slip { clip, by } | E::Slide { clip, by } => {
+                let slide = matches!(event, E::Slide { .. });
+                let result = self.with_document(|d| {
+                    let Some(seq) = d.project().active() else {
+                        return Ok(());
+                    };
+                    // Whole frames only, so cuts stay on frames.
+                    let step = seq.settings.frame_rate.snap(seconds(by.abs()));
+                    if step == Time::ZERO {
+                        return Ok(());
+                    }
+                    let by = if by < 0.0 { Time::ZERO - step } else { step };
+                    let (sequence, clip) = (seq.id, project::ClipId(clip));
+                    d.apply(if slide {
+                        Command::Slide { sequence, clip, by }
+                    } else {
+                        Command::Slip { sequence, clip, by }
+                    })
+                });
+                if let Err(err) = result {
+                    self.errors.push(&err);
                 }
             }
             E::SetRegion(range) => {
@@ -914,6 +986,10 @@ impl Editor {
             let tips = [
                 tip(Action::SelectTool),
                 tip(Action::BladeTool),
+                tip(Action::RippleTool),
+                tip(Action::RollTool),
+                tip(Action::SlipTool),
+                tip(Action::SlideTool),
                 tip(Action::ToggleSnapping),
                 tip(Action::ZoomToFit),
             ];
@@ -921,7 +997,9 @@ impl Editor {
                 ui,
                 &self.theme,
                 &self.timeline,
-                [&tips[0], &tips[1], &tips[2], &tips[3]],
+                [
+                    &tips[0], &tips[1], &tips[2], &tips[3], &tips[4], &tips[5], &tips[6], &tips[7],
+                ],
             );
             timeline_panel::keep_existing(&mut self.selected, seq);
             let (jobs, waveforms, ctx) = (&self.jobs, &mut self.waveforms, ui.ctx().clone());
@@ -957,6 +1035,10 @@ impl Editor {
             self.run_action(match click {
                 ui_kit::timeline::ToolbarClick::Tool(ui_kit::Tool::Select) => Action::SelectTool,
                 ui_kit::timeline::ToolbarClick::Tool(ui_kit::Tool::Blade) => Action::BladeTool,
+                ui_kit::timeline::ToolbarClick::Tool(ui_kit::Tool::Ripple) => Action::RippleTool,
+                ui_kit::timeline::ToolbarClick::Tool(ui_kit::Tool::Roll) => Action::RollTool,
+                ui_kit::timeline::ToolbarClick::Tool(ui_kit::Tool::Slip) => Action::SlipTool,
+                ui_kit::timeline::ToolbarClick::Tool(ui_kit::Tool::Slide) => Action::SlideTool,
                 ui_kit::timeline::ToolbarClick::Snapping => Action::ToggleSnapping,
                 ui_kit::timeline::ToolbarClick::Fit => Action::ZoomToFit,
             });
