@@ -2,6 +2,7 @@
 //!
 //! - [`time`]: exact time and frame rates (fractions, never floats).
 //! - [`ids`]: one id type per kind of thing.
+//! - [`look`]: how a clip's picture is placed, cut and coloured.
 //! - [`model`]: projects, timelines, tracks, clips, media, labels, the region.
 //! - [`file`]: the versioned project file, atomic saves and migrations.
 //! - [`command`]: every change is a `Command` applied to a snapshot.
@@ -16,6 +17,7 @@ mod edits;
 pub mod file;
 pub mod history;
 pub mod ids;
+pub mod look;
 pub mod model;
 pub mod side_files;
 pub mod time;
@@ -25,6 +27,7 @@ pub use command::{Command, Edge};
 pub use document::{Document, OpenCheck, Recovery, thumbnail_path, view_path};
 pub use history::History;
 pub use ids::{ClipId, LabelId, LinkId, MediaId, SequenceId, TrackId};
+pub use look::Look;
 pub use model::{
     AudioStream, Clip, Fingerprint, LabelColor, MediaInfo, MediaKind, MediaRef, Project, Region, Sequence,
     SequenceSettings, TimelineLabel, Track, TrackKind, VideoStream,

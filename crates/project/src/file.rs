@@ -22,13 +22,15 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
 /// The format this build writes.
-pub const FORMAT_VERSION: u32 = 7;
+pub const FORMAT_VERSION: u32 = 8;
 
 /// Turns the text of a version `n` file into the text of a version `n + 1` file.
 pub type Migration = fn(&str) -> diag::Result<String>;
 
 /// `MIGRATIONS[i]` upgrades version `i + 1` to `i + 2`.
-pub const MIGRATIONS: &[Migration] = &[v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7];
+pub const MIGRATIONS: &[Migration] = &[
+    v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8,
+];
 
 /// Format 2 adds `info` (the file's streams) to each media entry. The field
 /// has a default, so version 1 text is already valid version 2 text apart
@@ -66,6 +68,13 @@ fn v5_to_v6(text: &str) -> diag::Result<String> {
 /// is how every older clip played.
 fn v6_to_v7(text: &str) -> diag::Result<String> {
     set_format_version(text, 6, 7)
+}
+
+/// Format 8 adds `look` to each clip: where its picture sits, which part
+/// shows, how strong, and its quick colour. It defaults to the picture as it
+/// is, which is how every older clip was shown.
+fn v7_to_v8(text: &str) -> diag::Result<String> {
+    set_format_version(text, 7, 8)
 }
 
 /// Rewrites the `format_version` number at the top of the file.

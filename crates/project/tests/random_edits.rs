@@ -104,6 +104,7 @@ fn command_for(action: &Action, p: &Project, media: MediaId) -> Option<Command> 
                     duration: Time::seconds(len),
                     link: None,
                     speed: Default::default(),
+                    look: Default::default(),
                 },
             }
         }

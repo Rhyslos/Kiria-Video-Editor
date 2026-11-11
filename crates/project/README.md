@@ -11,9 +11,10 @@ Done (Phases 0.3 and 0.4): model, project file, commands, undo/redo, autosave jo
 | File | What it holds |
 |---|---|
 | `src/time.rs` | `Time` (exact seconds as a reduced fraction), `Rate` (frames per second as a fraction, e.g. 30000/1001) and `Speed` (how fast a clip plays, e.g. 1/2). Frame conversion, snapping, timecode |
+| `src/look.rs` | `Look`: where a clip's picture sits in the frame (position, size, turn), which part shows (crop), how strong it is (opacity) and its quick colour (exposure, contrast, saturation, temperature, tint), all in whole thousandths. `within_limits` brings values into range, `check` refuses ones outside |
 | `src/ids.rs` | One id type per kind of thing (`ClipId`, `TrackId`, ...). Ids come from one counter in the project and are never reused |
 | `src/model.rs` | `Project`, `Sequence` (a timeline), `Track`, `Clip`, `MediaRef` + `Fingerprint` + `MediaInfo` (the file's video and sound streams, read on import), `TimelineLabel`, `Region`, the edit needle, and the `SequenceSettings` presets (Game clip, High frame rate, Vertical short). `Project::problems()` / `validate()` check the rules |
-| `src/file.rs` | The project file: save (atomic), load, the summary block, format versions and migrations. `read_info` reads only the format version and summary (the text before the project), for project lists (from format 5 the summary also lists the media files, so lists can say which are missing; format 6 adds the timeline's master volume; format 7 each clip's speed). `back_up_before_upgrade` keeps `<file>.backup-v<old>` before an older file is upgraded; `load_newer` reads a newer file for viewing |
+| `src/file.rs` | The project file: save (atomic), load, the summary block, format versions and migrations. `read_info` reads only the format version and summary (the text before the project), for project lists (from format 5 the summary also lists the media files, so lists can say which are missing; format 6 adds the timeline's master volume; format 7 each clip's speed; format 8 each clip's look). `back_up_before_upgrade` keeps `<file>.backup-v<old>` before an older file is upgraded; `load_newer` reads a newer file for viewing |
 | `src/versions.rs` | Saved versions: named copies in `<file>.versions/`, listed newest first; restoring one is the undoable `Restore` command. `is_folder` knows such a folder by its name, so project lists leave its files out |
 | `src/edits.rs` | The trim tools beyond a plain trim: ripple trim, roll, slip and slide; `RemoveRanges`, which cuts stretches out of every track and closes the gaps; and the room-making behind `InsertMedia` (pushes everything later) and `OverwriteMedia` (cuts away what it covers). Each checks every clip it touches before changing any |
 | `src/command.rs` | `Command`: every change (import, place, move, trim, remove or ripple-remove, split, labels, region, edit needle, tracks, media, relink). `apply` returns a new snapshot or an explained error and no change |
@@ -54,6 +55,10 @@ RON text with the extension from `brand::PROJECT_FILE_EXTENSION`:
 | 2 | Media entries gain `info`: the file's video and sound streams | Version number only: `info` defaults to empty |
 | 3 | Timelines gain `automatic` (settings wait for the first video); the summary says so too | Version number only: `automatic` defaults to off, as older timelines had fixed settings |
 | 4 | Video streams gain `variable_frame_rate` | Version number only: defaults to off |
+| 5 | The summary lists the media files | Version number only: empty until the project is saved again |
+| 6 | Timelines gain `master_gain_db` | Version number only: defaults to 0 dB |
+| 7 | Clips gain `speed` | Version number only: defaults to normal speed |
+| 8 | Clips gain `look` (place, crop, opacity, quick colour) | Version number only: defaults to the picture as it is |
 
 ### Changing the format
 
@@ -100,5 +105,6 @@ Imported recordings are not side files: a project only points at them, and nothi
 | Move (drag) | Moves the clip and its linked clips by the same amount; refused if any would overlap or start before zero |
 | Trim (drag an edge) | Moves one edge of the clip and its linked clips; the start edge also moves where in the file it begins, so the picture stays put. Refused past the file's start or end, or to no length |
 | Track mix | A track's mute, solo and volume (-60 to +12 dB) |
+| Set look | Sets where one clip's picture sits, which part shows, its opacity and quick colour. Only clips on video tracks; values outside their range are refused. Both halves of a split keep it |
 | Set settings | Fixes a timeline's size, frame rate and sound rate; it stops being automatic |
 | Import | One step: adds the file and places it at the end of the timeline, the picture on the first video track and each sound stream on its own audio track (made when missing; an unused default track takes the stream's name), all linked. Pictures last 5 seconds. On an automatic timeline the first video also sets the settings (upright size, frame rate, first sound stream's rate) |
