@@ -11,5 +11,9 @@ publish = false
 # The Vulkan bindings the window's renderer already uses, at the same version.
 ash = "0.38"
 
+[features]
+# A device opened without a window, for other crates' tests.
+testing = []
+
 [lints]
 workspace = true

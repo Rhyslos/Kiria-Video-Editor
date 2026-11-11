@@ -75,13 +75,26 @@ mod tests {
     /// Draws `image` into a `width × height` target of `format` and reads
     /// the target back as RGBA bytes.
     fn draw(
-        (device, queue): &(wgpu::Device, wgpu::Queue),
+        gpu: &(wgpu::Device, wgpu::Queue),
         image: &YuvImage,
         format: wgpu::TextureFormat,
+        size: (u32, u32),
+    ) -> Vec<u8> {
+        draw_with(gpu, format, size, |renderer| {
+            assert!(renderer.upload(&gpu.0, &gpu.1, image), "{image:?} uploads");
+        })
+    }
+
+    /// Draws whatever `take` hands the renderer into a `width × height`
+    /// target of `format` and reads the target back as RGBA bytes.
+    fn draw_with(
+        (device, queue): &(wgpu::Device, wgpu::Queue),
+        format: wgpu::TextureFormat,
         (width, height): (u32, u32),
+        take: impl FnOnce(&mut YuvRenderer),
     ) -> Vec<u8> {
         let mut renderer = YuvRenderer::new(device, format);
-        assert!(renderer.upload(device, queue, image), "{image:?} uploads");
+        take(&mut renderer);
         let size = wgpu::Extent3d {
             width,
             height,
@@ -161,6 +174,114 @@ mod tests {
             planes: Box::new(planes),
             to_rgb: colour.rgb_rows(),
             rotation: 0,
+        }
+    }
+
+    /// A plane as a texture of the window's device, the way a picture
+    /// decoded on that device arrives.
+    fn plane_texture(
+        (device, queue): &(wgpu::Device, wgpu::Queue),
+        format: wgpu::TextureFormat,
+        (width, height): (u32, u32),
+        bytes: &[u8],
+    ) -> wgpu::Texture {
+        let size = wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        };
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            texture.as_image_copy(),
+            bytes,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(bytes.len() as u32 / height),
+                rows_per_image: Some(height),
+            },
+            size,
+        );
+        texture
+    }
+
+    #[test]
+    fn planes_that_are_textures_already_draw_the_same_picture_as_uploaded_ones() {
+        let Some(gpu) = device() else { return };
+        // An odd size, so the colour plane rounds up; every sample different.
+        let (width, height) = (37u32, 21u32);
+        let chroma = (width.div_ceil(2), height.div_ceil(2));
+        let luma: Vec<u8> = (0..width * height).map(|i| (i * 7 % 251) as u8).collect();
+        let colour: Vec<u8> = (0..chroma.0 * chroma.1 * 2)
+            .map(|i| (40 + i * 5 % 180) as u8)
+            .collect();
+        let to_rgb = Colour {
+            matrix: Matrix::Bt709,
+            range: Range::Limited,
+        }
+        .rgb_rows();
+        for rotation in [0u16, 90, 180, 270] {
+            let image = YuvImage {
+                luma_size: (width, height),
+                layout: ChromaLayout::Interleaved,
+                planes: Box::new([luma.clone(), colour.clone()].concat()),
+                to_rgb,
+                rotation,
+            };
+            let textures = ui_kit::PlaneTextures {
+                luma: plane_texture(&gpu, wgpu::TextureFormat::R8Unorm, (width, height), &luma),
+                chroma: plane_texture(&gpu, wgpu::TextureFormat::Rg8Unorm, chroma, &colour),
+                to_rgb,
+                rotation,
+            };
+            assert_eq!(textures.upright_size(), image.upright_size());
+            for format in [
+                wgpu::TextureFormat::Rgba8Unorm,
+                wgpu::TextureFormat::Rgba8UnormSrgb,
+            ] {
+                let size = image.upright_size();
+                let uploaded = draw(&gpu, &image, format, size);
+                let direct = draw_with(&gpu, format, size, |renderer| {
+                    assert!(renderer.show(&gpu.0, &gpu.1, &textures));
+                });
+                assert_eq!(direct, uploaded, "turned {rotation}, on {format:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn textures_of_another_shape_are_turned_down_and_nothing_is_drawn() {
+        let Some(gpu) = device() else { return };
+        let luma = plane_texture(&gpu, wgpu::TextureFormat::R8Unorm, (8, 4), &[90; 32]);
+        // Colour at full size, and colour with one byte a sample: neither is
+        // what the shader reads.
+        let full_size = plane_texture(&gpu, wgpu::TextureFormat::Rg8Unorm, (8, 4), &[128; 64]);
+        let one_byte = plane_texture(&gpu, wgpu::TextureFormat::R8Unorm, (4, 2), &[128; 8]);
+        for chroma in [full_size, one_byte] {
+            let textures = ui_kit::PlaneTextures {
+                luma: luma.clone(),
+                chroma,
+                to_rgb: Colour {
+                    matrix: Matrix::Bt709,
+                    range: Range::Limited,
+                }
+                .rgb_rows(),
+                rotation: 0,
+            };
+            let drawn = draw_with(&gpu, wgpu::TextureFormat::Rgba8Unorm, (8, 4), |renderer| {
+                assert!(!renderer.show(&gpu.0, &gpu.1, &textures));
+                assert!(!renderer.has_picture());
+            });
+            // The target keeps the green it was cleared to.
+            assert!(drawn.chunks_exact(4).all(|p| p == [0, 255, 0, 255]));
         }
     }
 

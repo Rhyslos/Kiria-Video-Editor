@@ -4,7 +4,7 @@ Reading and writing media files: a small, safe layer over FFmpeg. The rest of th
 
 ## Status
 
-Phase 4A in progress: probing, fingerprints, frame timing, decoding to pictures and to sound are done. Pictures come as the decoder's YUV planes for the GPU to convert, or as RGBA. Encoding comes in Phase 6; the zero-copy GPU path from `docs/research/decoding.md` comes later.
+Phase 4A in progress: probing, fingerprints, frame timing, decoding to pictures and to sound are done. Pictures come as the decoder's YUV planes for the GPU to convert, as images already on the window's graphics device (approach C in `docs/research/decoding.md`), or as RGBA. Encoding comes in Phase 6.
 
 ## Files
 
@@ -13,7 +13,8 @@ Phase 4A in progress: probing, fingerprints, frame timing, decoding to pictures 
 | `src/lib.rs` | `describe(path)`: everything the project keeps about a file, as a `project::MediaRef` ready to import |
 | `src/probe.rs` | `probe(path)`: container, streams, codecs, frame rate, length and rotation, read from headers without decoding. Names each sound stream from its title tag, else a useful handler name, else "Audio N" |
 | `src/audio.rs` | `AudioDecoder`: a sound stream as interleaved stereo float samples at any rate, from any point; placed by timestamps |
-| `src/decode.rs` | `VideoDecoder`: the frame on screen at a time (found by timestamp). `picture_at` gives it as the decoder's YUV planes (`Decoded::Yuv`) when the format is 8-bit 4:2:0 with a BT.601 or BT.709 matrix, else as RGBA; `frame_at` always gives RGBA, scaled to fit a size and turned upright, in the file's own colour matrix and range. GPU decoding (Direct3D 11 on Windows, VA-API on Linux; the decoder that supports the GPU is picked per codec, since for AV1 it isn't FFmpeg's default) with a CPU fallback per file; decodes onward for small steps and seeks for jumps |
+| `src/decode.rs` | `VideoDecoder`: the frame on screen at a time (found by timestamp). `picture_at` gives it as the decoder's YUV planes (`Decoded::Yuv`) when the format is 8-bit 4:2:0 with a BT.601 or BT.709 matrix, else as RGBA; `frame_at` always gives RGBA, scaled to fit a size and turned upright, in the file's own colour matrix and range. GPU decoding (Direct3D 11 on Windows, VA-API on Linux; the decoder that supports the GPU is picked per codec, since for AV1 it isn't FFmpeg's default) with a CPU fallback per file; decodes onward for small steps and seeks for jumps. `open_on_device` opens a decoder on the window's own graphics device instead, or fails with the reason; `level()` says which of the three ways a decoder ended on (`Level`) |
+| `src/vulkan.rs` | Decoding on the window's graphics device. `WindowDevice`: FFmpeg's device context built around the window's device (`video_device::VideoDevice`) instead of one FFmpeg creates, shared by every decoder that works this way. `GpuFrame` (`Decoded::Gpu`): a decoded picture as two images on the graphics card, with what the shader needs. The four FFmpeg structures used are declared here (the bindings leave that header out), with a test of their layout |
 | `src/yuv.rs` | `YuvFrame`: a picture's planes copied out of the decoder once, without row padding (interleaved colour as GPU decoders copy back, or planar as CPU decoders give), at the file's size or halved by averaging to suit the size asked for; `Colour` (BT.601 or BT.709 from the file, else guessed by size; limited or full range) and `Colour::rgb_rows`, the conversion the shader uses; `to_rgba`, the same conversion on the CPU for checks. Plane memory goes back to its decoder when a picture is dropped |
 | `src/timing.rs` | Reads packet times at the start, middle and end (no decoding) to tell constant from variable frame rate, and the nearest standard rate to show the file at |
 | `src/relink.rs` | `missing(project)`: media not on disk; `find(folder, wanted, cancelled)`: looks through a folder and its subfolders for files by fingerprint (only files of the right size are hashed), so moved and renamed files are found |
@@ -22,7 +23,22 @@ Phase 4A in progress: probing, fingerprints, frame timing, decoding to pictures 
 | `build.rs` | Linux debug builds: the tests find the fetched FFmpeg libraries |
 | `tests/audio.rs` | Decoding the fixtures' tones: right pitch per stream, any rate, to the end, seeking |
 | `tests/decode.rs` | Decoding the fixtures: frames by time, jumps, upright rotation, variable frame rate, the fallback without a GPU, planes that convert to the same picture as the RGBA path, and colours that follow the matrix and range the file names |
+| `src/vulkan.rs` tests | The structures' layout against FFmpeg 8.1's header; the picture's place in a padded or cropped image; and, on whatever Vulkan the machine has, FFmpeg accepting the device and a real frame from FFmpeg's own pool (in both shapes it comes in) copied out by FFmpeg's rules, with FFmpeg using the frame again afterwards |
 | `tests/probe.rs` + `tests/fixtures/` | Probing real files: a recording with three named sound streams, a rotated phone clip, an MP3, a PNG, a variable-frame-rate clip and a file that isn't media. `colour-709-full.mp4` (three squares of known colour, stored as BT.709 full range) is for the colour checks |
+
+## Decoding on the window's device
+
+Three ways to decode a file for the viewer, fastest first; `engine`'s preview tries them in this order per file:
+
+1. **On the window's graphics device** (`open_on_device`): FFmpeg's Vulkan decoder for H.264, H.265 or AV1 (found by asking each decoder what it supports, as for the other GPU path), working on the device that draws the window. Only when the editor hands that device over, the device decodes the codec, and the picture is 8-bit with colour at half size. Nothing else will do here: if FFmpeg can't decode on the device, opening fails instead of quietly decoding on the CPU.
+2. **On the GPU's video decoder with a copy back** (`Decoding::Best`).
+3. **On the CPU** (`Decoding::Software`).
+
+A picture decoded the first way stays on the graphics card. `picture_at` copies the picture's part of the decoder's image (without the padding decoders add, and from the crop's corner) into a pair of plain images there (`video_device::PlaneImages`), waits for the card to finish, and returns them as a `GpuFrame`; the decoder's own image goes straight back to its pool, so the pool can't run dry however long the viewer keeps a picture. The size asked for doesn't matter: nothing is copied to memory, so nothing is saved by halving.
+
+The copy follows the rules FFmpeg's header sets for anyone who touches one of its frames, quoted in `src/vulkan.rs` where each is followed: the frame is locked just before the submission and unlocked right after it, without waiting; the submission waits for the frame's semaphore at the frame's value and signals the next value, which is written back; the layout the image is left in is written back too; and the queue is locked with FFmpeg's own lock for the moment of submitting. One thread decodes, as in the measurements.
+
+Clip pictures, project pictures, saved frames, waveforms and export never use the first way.
 
 ## FFmpeg
 

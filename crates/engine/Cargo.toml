@@ -16,5 +16,9 @@ media = { path = "../media" }
 project = { path = "../project" }
 tracing = "0.1"
 
+[dev-dependencies]
+# A graphics device without a window, to try decoding on one.
+video-device = { path = "../video-device", features = ["testing"] }
+
 [lints]
 workspace = true

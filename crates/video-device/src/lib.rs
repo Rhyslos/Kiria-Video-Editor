@@ -27,11 +27,20 @@
 // This crate is one of the GPU wrappers the working rules allow `unsafe` in.
 #![allow(unsafe_code)]
 
+mod copier;
+mod planes;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
+
 use ash::vk;
+use planes::{RawPair, SPARE_PAIRS, Spare};
 use std::any::Any;
 use std::ffi::CString;
+use std::sync::Mutex;
 
 pub use ash;
+pub use copier::{ACCESS_AFTER_COPY, Copier, LAYOUT_AFTER_COPY, Source, SourceImage, visible_regions};
+pub use planes::{PlaneImages, chroma_size};
 
 /// A kind of video the device's decoder takes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,7 +123,21 @@ impl std::fmt::Debug for Parts {
 /// The window's Vulkan device, opened for video decoding: every fact the
 /// decoder needs to use it, and a hold on the device so it outlives every user.
 pub struct VideoDevice {
+    /// Image pairs waiting for the next picture of their size.
+    spare: Mutex<Spare<RawPair>>,
+    // Last: the device goes after everything made on it.
     parts: Parts,
+}
+
+impl Drop for VideoDevice {
+    fn drop(&mut self) {
+        let spare = self.spare.get_mut().map(|s| s.drain()).unwrap_or_default();
+        for pair in spare {
+            // SAFETY: spare pairs are used by nobody, and the device is
+            // still alive: `parts.keep_alive` is dropped after this.
+            unsafe { planes::destroy_pair(self, pair) };
+        }
+    }
 }
 
 impl std::fmt::Debug for VideoDevice {
@@ -131,7 +154,10 @@ impl VideoDevice {
     /// queue (index 0) created in the helper family and in each decode
     /// family; and nothing but the decoder's side may ever submit to those queues.
     pub unsafe fn new(parts: Parts) -> VideoDevice {
-        VideoDevice { parts }
+        VideoDevice {
+            spare: Mutex::new(Spare::new(SPARE_PAIRS)),
+            parts,
+        }
     }
 
     pub fn get_instance_proc_addr(&self) -> vk::PFN_vkGetInstanceProcAddr {

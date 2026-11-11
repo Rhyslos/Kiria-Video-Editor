@@ -22,7 +22,15 @@
 //!    after a failed start, draws the Graphics row in Settings, and tells
 //!    Diagnostics, the log and crash reports what is in use and which kinds
 //!    of video the window's device decodes.
+//! 5. Decoding video on the window's device has the same safety net, apart
+//!    from the window's: a switch in the same settings file, and a second
+//!    marker held by [`DecodeGuard`] from the first decode of a session until
+//!    pictures decoded there have been drawn. A marker found at the next start
+//!    switches that way of decoding off before the window opens, and
+//!    [`WindowGraphics`] asks whether to keep it off or to try it again.
+//!    [`plane_textures`] hands a picture decoded there to the window's renderer.
 
+mod decode_guard;
 mod marker;
 mod plan;
 mod settings;
@@ -31,12 +39,14 @@ mod video;
 mod vulkan_device;
 mod window;
 
+pub use decode_guard::{DecodeGuard, PICTURES_BEFORE_TRUSTED, STUCK_AFTER};
 pub use marker::{MarkerState, Program, StartMarker};
-pub use plan::{Backend, Plan, Platform, RunKind, plan};
+pub use plan::{Backend, DecodingFound, Plan, Platform, RunKind, plan};
 pub use settings::{GraphicsChoice, GraphicsSettings};
 pub use start::{FailedTry, Opened, Startup, open_window, prepare};
 pub use video::VideoDecoding;
-pub use window::{WarningAnswer, WindowGraphics};
+pub use vulkan_device::plane_textures;
+pub use window::{DECODING_SWITCH, DecodingAnswer, DeviceDecoding, WarningAnswer, WindowGraphics};
 
 /// Frames drawn with Vulkan before the start counts as working.
 pub const FRAMES_BEFORE_TRUSTED: u64 = 3;

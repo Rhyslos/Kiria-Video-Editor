@@ -1,6 +1,9 @@
-//! The start marker: a note in the data folder that a start with Vulkan is
-//! under way. Each program has its own, so the launcher and the editor can
-//! start at the same time without reading each other's.
+//! The markers: notes in the data folder that something a graphics driver
+//! may not survive is under way. One says a start with Vulkan has begun and
+//! hasn't drawn its first frames yet; the other that video is being decoded
+//! on the window's device and no picture has come out of it yet. Each
+//! program has its own, so the launcher and the editor can start at the
+//! same time without reading each other's.
 
 use diag::{AppError, Explain};
 use std::path::{Path, PathBuf};
@@ -13,10 +16,12 @@ pub enum Program {
 }
 
 impl Program {
-    fn marker_file(self) -> &'static str {
-        match self {
-            Program::Launcher => "launcher-vulkan.starting",
-            Program::Editor => "vulkan.starting",
+    fn marker_file(self, guarded: Guarded) -> &'static str {
+        match (self, guarded) {
+            (Program::Launcher, Guarded::VulkanStart) => "launcher-vulkan.starting",
+            (Program::Editor, Guarded::VulkanStart) => "vulkan.starting",
+            (Program::Launcher, Guarded::DeviceDecoding) => "launcher-video-decoding.starting",
+            (Program::Editor, Guarded::DeviceDecoding) => "video-decoding.starting",
         }
     }
 
@@ -43,6 +48,33 @@ impl Program {
     }
 }
 
+/// What a marker guards.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Guarded {
+    /// Opening the window with Vulkan, until its first frames are drawn.
+    VulkanStart,
+    /// Decoding video on the window's device, until pictures have come out of it.
+    DeviceDecoding,
+}
+
+impl Guarded {
+    /// "The app can't note that it is ...".
+    fn doing(self) -> &'static str {
+        match self {
+            Guarded::VulkanStart => "starting with Vulkan",
+            Guarded::DeviceDecoding => "decoding video on the window's graphics device",
+        }
+    }
+
+    /// What is used when the note can't be written.
+    fn instead(self) -> &'static str {
+        match self {
+            Guarded::VulkanStart => "Direct3D 12 is used meanwhile.",
+            Guarded::DeviceDecoding => "Video is decoded the usual way meanwhile.",
+        }
+    }
+}
+
 /// What a start finds where the marker would be.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MarkerState {
@@ -58,14 +90,26 @@ pub enum MarkerState {
 #[derive(Debug, Clone)]
 pub struct StartMarker {
     program: Program,
+    guarded: Guarded,
     path: PathBuf,
 }
 
 impl StartMarker {
+    /// The marker for `program`'s start with Vulkan.
     pub fn in_dir(program: Program, data_dir: &Path) -> StartMarker {
+        StartMarker::guarding(Guarded::VulkanStart, program, data_dir)
+    }
+
+    /// The marker for `program` decoding video on its window's device.
+    pub fn for_decoding(program: Program, data_dir: &Path) -> StartMarker {
+        StartMarker::guarding(Guarded::DeviceDecoding, program, data_dir)
+    }
+
+    fn guarding(guarded: Guarded, program: Program, data_dir: &Path) -> StartMarker {
         StartMarker {
             program,
-            path: data_dir.join(program.marker_file()),
+            guarded,
+            path: data_dir.join(program.marker_file(guarded)),
         }
     }
 
@@ -97,23 +141,28 @@ impl StartMarker {
         }
     }
 
-    /// Call before opening a window with Vulkan.
+    /// Call before what the marker guards: opening a window with Vulkan,
+    /// or decoding on the window's device.
     pub fn write(&self) -> diag::Result<()> {
         std::fs::write(&self.path, format!("pid {}\n", std::process::id())).or_explain(|| {
-            AppError::new("The app can't note that it is starting with Vulkan")
+            AppError::new(format!("The app can't note that it is {}", self.guarded.doing()))
                 .why(format!("Writing {} failed.", self.path.display()))
-                .fix("Check that the disk is not full. Direct3D 12 is used meanwhile.")
+                .fix(format!(
+                    "Check that the disk is not full. {}",
+                    self.guarded.instead()
+                ))
         })
     }
 
-    /// Call once Vulkan has drawn its first frames, or has reported an error.
+    /// Call once what the marker guards has worked (Vulkan drew its first
+    /// frames; pictures came out of the device), or has reported an error.
     pub fn clear(&self) -> diag::Result<()> {
         match std::fs::remove_file(&self.path) {
             Ok(()) => Ok(()),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(err) => Err(AppError::new("The app can't note that Vulkan started")
+            Err(err) => Err(AppError::new("The app can't remove a note it left for itself")
                 .why(format!("Removing {} failed.", self.path.display()))
-                .fix("Nothing is lost; the next start may use Direct3D 12 without need.")
+                .fix("Nothing is lost; the next start may play safe without need.")
                 .source(err)),
         }
     }

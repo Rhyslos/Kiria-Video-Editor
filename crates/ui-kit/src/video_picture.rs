@@ -1,10 +1,15 @@
 //! A video picture drawn by the GPU straight from the decoder's YUV planes.
 //!
-//! The page hands over the planes as a [`YuvImage`] inside a
-//! [`VideoPicture`]; the viewer draws it with a paint callback. Just before
-//! the window is drawn, the callback writes a new picture's planes into
-//! textures (the only work on the interface thread: one copy), and the
-//! shader converts colour, scales and turns the picture while drawing.
+//! The page hands over the planes inside a [`VideoPicture`]; the viewer
+//! draws it with a paint callback, and the shader converts colour, scales
+//! and turns the picture while drawing. The planes come one of two ways:
+//!
+//! - in memory, as a [`YuvImage`]: just before the window is drawn, the
+//!   callback writes them into textures (the only work on the interface
+//!   thread: one copy);
+//! - as textures already, as [`PlaneTextures`]: a picture decoded on the
+//!   window's own graphics device. Nothing is written; the textures are
+//!   drawn from as they are.
 //!
 //! [`install`] sets this up once per window. Without it (the window isn't
 //! drawn with wgpu) pages keep showing RGBA textures.
@@ -67,6 +72,34 @@ impl YuvImage {
     }
 }
 
+/// A picture whose planes are textures on the window's device already:
+/// luma with one byte a pixel, and U and V together in a texture of half
+/// the size (rounded up) with two bytes a sample.
+#[derive(Debug, Clone)]
+pub struct PlaneTextures {
+    pub luma: wgpu::Texture,
+    pub chroma: wgpu::Texture,
+    /// Red, green and blue as weights of (Y, U, V, 1), samples in 0–1.
+    pub to_rgb: [[f32; 4]; 3],
+    /// The clockwise turn (0, 90, 180 or 270) that shows it upright.
+    pub rotation: u16,
+}
+
+impl PlaneTextures {
+    /// The size on screen, after turning upright.
+    pub fn upright_size(&self) -> (u32, u32) {
+        let (w, h) = (self.luma.width(), self.luma.height());
+        if self.rotation % 180 == 90 { (h, w) } else { (w, h) }
+    }
+}
+
+/// A picture on its way to the renderer.
+#[derive(Debug)]
+enum Fresh {
+    Memory(YuvImage),
+    Textures(PlaneTextures),
+}
+
 /// Where the corners of the rectangle on screen fall in the stored picture,
 /// for a picture shown turned clockwise by `rotation`: the texture position
 /// of the rectangle's top left corner, then the step to its top right, then
@@ -104,8 +137,8 @@ pub fn install(render_state: Option<&egui_wgpu::RenderState>) -> Option<u32> {
 pub struct VideoPicture {
     id: u64,
     size: (u32, u32),
-    /// The planes, until the GPU has them.
-    fresh: Arc<Mutex<Option<YuvImage>>>,
+    /// The planes, until the renderer has them.
+    fresh: Arc<Mutex<Option<Fresh>>>,
 }
 
 impl std::fmt::Debug for VideoPicture {
@@ -115,12 +148,22 @@ impl std::fmt::Debug for VideoPicture {
 }
 
 impl VideoPicture {
+    /// A picture from planes in memory.
     pub fn new(image: YuvImage) -> VideoPicture {
+        VideoPicture::from_fresh(image.upright_size(), Fresh::Memory(image))
+    }
+
+    /// A picture whose planes are textures already.
+    pub fn from_textures(planes: PlaneTextures) -> VideoPicture {
+        VideoPicture::from_fresh(planes.upright_size(), Fresh::Textures(planes))
+    }
+
+    fn from_fresh(size: (u32, u32), fresh: Fresh) -> VideoPicture {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         VideoPicture {
             id: NEXT.fetch_add(1, Ordering::Relaxed),
-            size: image.upright_size(),
-            fresh: Arc::new(Mutex::new(Some(image))),
+            size,
+            fresh: Arc::new(Mutex::new(Some(fresh))),
         }
     }
 
@@ -143,7 +186,7 @@ impl VideoPicture {
 /// then draws it.
 struct Draw {
     id: u64,
-    fresh: Arc<Mutex<Option<YuvImage>>>,
+    fresh: Arc<Mutex<Option<Fresh>>>,
 }
 
 impl egui_wgpu::CallbackTrait for Draw {
@@ -155,15 +198,19 @@ impl egui_wgpu::CallbackTrait for Draw {
         _encoder: &mut wgpu::CommandEncoder,
         resources: &mut egui_wgpu::CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
-        let image = self.fresh.lock().ok().and_then(|mut fresh| fresh.take());
-        if let (Some(image), Some(shown)) = (image, resources.get_mut::<Shown>()) {
+        let fresh = self.fresh.lock().ok().and_then(|mut fresh| fresh.take());
+        if let (Some(fresh), Some(shown)) = (fresh, resources.get_mut::<Shown>()) {
             let started = std::time::Instant::now();
-            shown.picture = shown.renderer.upload(device, queue, &image).then_some(self.id);
+            let (taken, bytes) = match &fresh {
+                Fresh::Memory(image) => (shown.renderer.upload(device, queue, image), image.bytes().len()),
+                Fresh::Textures(planes) => (shown.renderer.show(device, queue, planes), 0),
+            };
+            shown.picture = taken.then_some(self.id);
             tracing::debug!(
                 micros = started.elapsed().as_micros() as u64,
-                bytes = image.bytes().len(),
-                shown = shown.picture.is_some(),
-                "video planes uploaded"
+                bytes,
+                shown = taken,
+                "video planes handed to the renderer"
             );
         }
         Vec::new()

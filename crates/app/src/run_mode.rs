@@ -32,6 +32,8 @@ pub struct Options {
     /// button held (`--pointer 640,420 [--drag-to 640,480]`, for
     /// screenshots of what pointing and dragging show).
     pub pointer: Option<crate::fake_pointer::FakePointer>,
+    /// Show the question about video decoding that stopped the app (`--decoding-warning`, for screenshots).
+    pub decoding_warning: bool,
     pub mode: RunMode,
 }
 
@@ -66,6 +68,7 @@ impl Options {
                 "--full-screen" => options.full_screen = true,
                 "--cpu-colour" => options.cpu_colour = true,
                 "--graphics-warning" => options.graphics_warning = true,
+                "--decoding-warning" => options.decoding_warning = true,
                 "--action" => {
                     let name = args.next().ok_or("--action needs a command name")?;
                     options.actions.push(name);
@@ -149,5 +152,6 @@ mod tests {
         );
         assert!(parse(&["p.x", "--drag-to", "640,480"]).is_err(), "from where?");
         assert!(parse(&["p.x", "--pointer", "640"]).is_err());
+        assert!(parse(&["--decoding-warning"]).unwrap().decoding_warning);
     }
 }

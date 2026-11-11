@@ -31,7 +31,7 @@ use eframe::{egui_wgpu, wgpu};
 use std::ffi::{CStr, CString};
 use std::sync::Arc;
 use video_device::ash::{self, vk};
-use video_device::{Codec, Parts, QueueFamily, VideoDevice};
+use video_device::{Codec, Parts, PlaneImages, QueueFamily, VideoDevice};
 
 /// The window's device, opened here, and what the decoder needs to share it.
 pub(crate) struct OwnDevice {
@@ -394,6 +394,86 @@ fn open_with(
     }
 }
 
+/// A pair of images holding a decoded picture, as two textures of the
+/// window's renderer: luma (one byte a pixel) and colour (two bytes a
+/// sample, at half size). Nothing is copied: the textures are the images.
+/// The pair is kept alive for as long as the renderer uses either texture,
+/// work still under way on the graphics card included, and goes back for
+/// the next picture after that.
+///
+/// `None` when `device` isn't the device the images were made on.
+pub fn plane_textures(
+    device: &wgpu::Device,
+    planes: &Arc<PlaneImages>,
+) -> Option<(wgpu::Texture, wgpu::Texture)> {
+    let size = planes.size();
+    let texture = |image: vk::Image, format: wgpu::TextureFormat, (width, height): (u32, u32)| {
+        let size = wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        };
+        let keep = Arc::clone(planes);
+        // SAFETY: the image is one of the pair's, made on this very device
+        // (checked below before anything is made) with the format and size
+        // described, for sampling, without the flag that would allow views
+        // in other formats (none are asked for). It stays valid until the
+        // callback runs, which is what drops this hold on the pair; its
+        // memory is the pair's, not the renderer's. The copy that filled it
+        // left it in the layout for sampling, which is the state named here,
+        // so the renderer's first use starts from the truth.
+        unsafe {
+            let hal_device = device.as_hal::<wgpu::hal::api::Vulkan>()?;
+            let raw = hal_device.texture_from_raw(
+                image,
+                &wgpu::hal::TextureDescriptor {
+                    label: Some("decoded video plane"),
+                    size,
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format,
+                    usage: wgpu::TextureUses::RESOURCE,
+                    memory_flags: wgpu::hal::MemoryFlags::empty(),
+                    view_formats: Vec::new(),
+                },
+                Some(Box::new(move || drop(keep))),
+                wgpu::hal::vulkan::TextureMemory::External,
+            );
+            drop(hal_device);
+            Some(device.create_texture_from_hal::<wgpu::hal::api::Vulkan>(
+                raw,
+                &wgpu::TextureDescriptor {
+                    label: Some("decoded video plane"),
+                    size,
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                },
+                wgpu::TextureUses::RESOURCE,
+            ))
+        }
+    };
+    // SAFETY: only compares the two devices' handles.
+    let same_device = unsafe {
+        let hal_device = device.as_hal::<wgpu::hal::api::Vulkan>()?;
+        hal_device.raw_device().handle() == planes.device().device().handle()
+    };
+    if !same_device {
+        return None;
+    }
+    let luma = texture(planes.luma(), wgpu::TextureFormat::R8Unorm, size)?;
+    let chroma = texture(
+        planes.chroma(),
+        wgpu::TextureFormat::Rg8Unorm,
+        video_device::chroma_size(size),
+    )?;
+    Some((luma, chroma))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -557,6 +637,9 @@ mod tests {
     fn any_vulkan_card() -> Option<(wgpu::Instance, wgpu::Adapter)> {
         let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
         descriptor.backends = wgpu::Backends::VULKAN;
+        // Without the renderer's own message handler, a validation layer
+        // switched on from outside (VK_INSTANCE_LAYERS) prints what it finds.
+        descriptor.flags = wgpu::InstanceFlags::empty();
         let instance = wgpu::Instance::new(descriptor);
         let adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::VULKAN));
         let Some(adapter) = adapters.into_iter().next() else {
@@ -681,6 +764,177 @@ mod tests {
         for row in 0..4 {
             assert_eq!(read[row * 256..row * 256 + 16], pixels[row * 16..row * 16 + 16]);
         }
+    }
+
+    /// A device opened by this module without the video parts, for a
+    /// machine whose Vulkan has none (see the test above).
+    fn plain_device() -> Option<OwnDevice> {
+        let (instance, adapter) = any_vulkan_card()?;
+        // SAFETY: only reads the adapter's own handles.
+        let found = unsafe { Found::read(&adapter.as_hal::<wgpu::hal::api::Vulkan>().unwrap()) };
+        if found.versions.0 < VULKAN_1_3 || found.versions.1 < VULKAN_1_3 {
+            eprintln!("Vulkan here is older than 1.3: not checked");
+            return None;
+        }
+        let nothing_added = Additions {
+            extensions: Vec::new(),
+            helper: QueueFamily {
+                index: WINDOW_FAMILY,
+                flags: Q::COMPUTE | Q::TRANSFER,
+                codecs: Op::empty(),
+            },
+            decode: Vec::new(),
+            codecs: Vec::new(),
+            maintenance1: false,
+        };
+        let descriptor = toolkit_descriptor(&adapter);
+        open_with(&instance, &adapter, &descriptor, &found, nothing_added).ok()
+    }
+
+    /// Draws `planes` with the viewer's shader into a target of their size
+    /// and reads it back as RGBA. The conversion is set so that red is the
+    /// luma, green is U and blue is V, to see each plane arrive.
+    fn draw(own: &OwnDevice, textures: (wgpu::Texture, wgpu::Texture), rotation: u16) -> Vec<u8> {
+        let (device, queue) = (&own.setup.device, &own.setup.queue);
+        let planes = ui_kit::PlaneTextures {
+            luma: textures.0,
+            chroma: textures.1,
+            to_rgb: [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]],
+            rotation,
+        };
+        let (width, height) = planes.upright_size();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut renderer = ui_kit::yuv_renderer::YuvRenderer::new(device, format);
+        assert!(renderer.show(device, queue, &planes));
+        let size = wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        };
+        let target = device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+        let row = (width * 4).div_ceil(256) * 256;
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: u64::from(row * height),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            renderer.draw(&mut pass);
+        }
+        encoder.copy_texture_to_buffer(
+            target.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(row),
+                    rows_per_image: Some(height),
+                },
+            },
+            size,
+        );
+        queue.submit([encoder.finish()]);
+        buffer.map_async(wgpu::MapMode::Read, .., |result| result.unwrap());
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let mapped = buffer.get_mapped_range(..).unwrap();
+        mapped
+            .chunks(row as usize)
+            .flat_map(|r| r[..width as usize * 4].to_vec())
+            .collect()
+    }
+
+    #[test]
+    fn a_picture_copied_on_the_card_is_drawn_from_its_own_images_and_given_back_after() {
+        use video_device::{Copier, Source, SourceImage, testing};
+        let Some(own) = plain_device() else { return };
+        let video = &own.video;
+        // The decoder's picture, stood in for: 16×8 decoded, of which 12×6
+        // is picture. Luma counts up; colour is the same everywhere.
+        let luma: Vec<u8> = (0..16 * 8).map(|i| i as u8).collect();
+        let chroma: Vec<u8> = [90u8, 170].repeat(8 * 4);
+        let picture = testing::stand_in_picture(video, (16, 8), &luma, &chroma);
+        let planes = Arc::new(PlaneImages::new(video, (12, 6)).unwrap());
+        let (luma_image, chroma_image) = (planes.luma(), planes.chroma());
+        let mut copier = Copier::new(video).unwrap();
+        let source = Source::TwoPlanes(SourceImage {
+            image: picture.0,
+            layout: testing::STAND_IN_LAYOUT,
+            access: vk::AccessFlags::TRANSFER_READ,
+            semaphore: vk::Semaphore::null(),
+            value: 0,
+        });
+        // SAFETY: the stand-in is this device's, 16×8, idle, in the layout
+        // named, and outlives the wait; the pair is 12×6 and only used here.
+        // This test is the only user of the device, so its one queue needs no lock.
+        unsafe {
+            copier
+                .copy(&source, (12, 6), (0, 0), &planes, &|| (), &|| ())
+                .unwrap();
+        }
+        copier.wait().unwrap();
+
+        // Another device's images are refused.
+        if let Some(other) = plain_device() {
+            assert!(plane_textures(&other.setup.device, &planes).is_none());
+        }
+        let started = std::time::Instant::now();
+        let textures = plane_textures(&own.setup.device, &planes).unwrap();
+        // On the interface thread in the editor: it has to stay small.
+        eprintln!("wrapping a picture's images took {:?}", started.elapsed());
+        assert_eq!((textures.0.width(), textures.0.height()), (12, 6));
+        assert_eq!((textures.1.width(), textures.1.height()), (6, 3));
+        drop(planes); // the textures alone keep the images now
+
+        let rgba = draw(&own, textures.clone(), 0);
+        for (i, pixel) in rgba.chunks_exact(4).enumerate() {
+            let (x, y) = (i % 12, i / 12);
+            let want = [luma[y * 16 + x], 90, 170, 255];
+            assert_eq!(pixel, want, "pixel {x},{y}: the visible part, not the padding");
+        }
+        // Turned a quarter clockwise: the stored left column ends on top.
+        let turned = draw(&own, textures.clone(), 90);
+        assert_eq!(turned.len(), 6 * 12 * 4);
+        assert_eq!(turned[0], luma[5 * 16], "top left shows the stored bottom left");
+        assert_eq!(turned[5 * 4], luma[0], "top right shows the stored top left");
+
+        // While the renderer holds the textures, the images are not handed
+        // out again; once it has let go and its work is done, they are.
+        let meanwhile = PlaneImages::new(video, (12, 6)).unwrap();
+        assert_ne!(meanwhile.luma(), luma_image);
+        drop(textures);
+        own.setup
+            .device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+        let again = PlaneImages::new(video, (12, 6)).unwrap();
+        assert_eq!((again.luma(), again.chroma()), (luma_image, chroma_image));
+
+        drop(copier);
+        testing::destroy_stand_in(video, picture);
     }
 
     #[test]

@@ -156,6 +156,8 @@ impl Editor {
             cc.wgpu_render_state.as_ref(),
             project.as_ref().is_some_and(|p| p.cpu_colour),
         );
+        let decoding =
+            crate::device_decoding::WindowDecoding::new(&graphics, cc.wgpu_render_state.as_ref(), convert);
         let shortcuts = ShortcutTable::default();
         let startup_actions: Vec<Action> = project
             .as_ref()
@@ -219,7 +221,7 @@ impl Editor {
             thumbnail_due: Thumbnail::IfMissing,
             importer,
             import_requested: false,
-            viewer: Viewer::new(&cc.egui_ctx, start_at, convert),
+            viewer: Viewer::new(&cc.egui_ctx, start_at, convert, decoding),
             playback: None,
             timeline,
             view_keeper,

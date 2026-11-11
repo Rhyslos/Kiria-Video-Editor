@@ -2,8 +2,8 @@
 //! window with the first graphics system that starts.
 
 use crate::{
-    Backend, GraphicsChoice, GraphicsSettings, MarkerState, Plan, Platform, Program, RunKind, StartMarker,
-    VideoDecoding, plan, vulkan_device,
+    Backend, DecodeGuard, DecodingFound, GraphicsChoice, GraphicsSettings, MarkerState, Plan, Platform,
+    Program, RunKind, StartMarker, VideoDecoding, plan, vulkan_device,
 };
 use diag::AppError;
 use eframe::{egui_wgpu, wgpu};
@@ -20,10 +20,13 @@ pub struct Startup {
     pub(crate) platform: Platform,
     pub(crate) plan: Plan,
     pub(crate) marker: StartMarker,
+    /// Watches over decoding video on the window's device in this session.
+    pub(crate) decode_guard: Arc<DecodeGuard>,
     pub(crate) settings: GraphicsSettings,
     pub(crate) data_dir: PathBuf,
     pub(crate) run: RunKind,
     pub(crate) warning_preview: bool,
+    pub(crate) decoding_warning_preview: bool,
 }
 
 impl Startup {
@@ -38,6 +41,13 @@ impl Startup {
         self
     }
 
+    /// Shows the question about video decoding that stopped the app although
+    /// nothing did, for screenshots.
+    pub fn with_decoding_warning_preview(mut self) -> Startup {
+        self.decoding_warning_preview = true;
+        self
+    }
+
     /// The window's share of this start, for a window opened with `backend`.
     pub(crate) fn opened(&self, backend: Backend, failed: Vec<FailedTry>) -> Opened {
         Opened {
@@ -46,6 +56,9 @@ impl Startup {
             marker: (self.plan.guard && backend == Backend::Vulkan).then(|| self.marker.clone()),
             ask: self.plan.ask || self.warning_preview,
             video: VideoDecoding::without_own_device(self.program, backend, self.platform),
+            decode_on_device: self.plan.decode_on_device && !self.decoding_warning_preview,
+            ask_decoding: self.plan.ask_decoding || self.decoding_warning_preview,
+            decode_guard: Arc::clone(&self.decode_guard),
             platform: self.platform,
             settings: self.settings,
             data_dir: self.data_dir.clone(),
@@ -63,6 +76,10 @@ impl Startup {
 /// window without answering the question then keeps the safe choice. The
 /// marker is removed only once the setting is saved, so a setting that could
 /// not be saved is caught again at the next start. Automated runs write nothing.
+///
+/// The marker left by a session that stopped while decoding its first
+/// pictures on the window's device is treated the same way: that way of
+/// decoding is switched off in the saved settings before the window opens.
 pub fn prepare(program: Program, data_dir: &Path, run: RunKind) -> (Startup, Vec<AppError>) {
     prepare_on(Platform::current(), program, data_dir, run)
 }
@@ -79,7 +96,17 @@ pub(crate) fn prepare_on(
     let adopt = GraphicsSettings::earlier(data_dir).is_some_and(|e| e != GraphicsSettings::default());
     let marker = StartMarker::in_dir(program, data_dir);
     let found = marker.state();
-    let plan = plan(platform, settings.choice, found, run);
+    let decoding_marker = StartMarker::for_decoding(program, data_dir);
+    let decoding = DecodingFound {
+        wanted: settings.decode_on_window_device,
+        // Only a program that plays video ever writes this marker.
+        marker: if program.plays_video() {
+            decoding_marker.state()
+        } else {
+            MarkerState::Absent
+        },
+    };
+    let plan = plan(platform, settings.choice, found, decoding, run);
     let mut problems = Vec::new();
     if run == RunKind::Normal {
         if plan.ask {
@@ -87,26 +114,47 @@ pub(crate) fn prepare_on(
                 "the last start with Vulkan never drew a frame: using Direct3D 12 and asking what to keep"
             );
             settings.choice = GraphicsChoice::Direct3D12;
-            problems.extend(settings.save(data_dir).and_then(|()| marker.clear()).err());
-        } else {
-            if adopt {
-                problems.extend(settings.save(data_dir).err());
-            }
-            if found == MarkerState::LeftBehind {
-                // Nothing to ask: left over from before Direct3D 12 was chosen.
-                problems.extend(marker.clear().err());
-            }
         }
+        if plan.ask_decoding {
+            tracing::warn!(
+                "the last session stopped while decoding video on the window's device: switching that off and asking what to keep"
+            );
+            settings.decode_on_window_device = false;
+        }
+        // The safe settings are saved before anything is drawn, and a marker
+        // goes only once they are: one that stays is caught again next time.
+        let saved = if plan.ask || plan.ask_decoding || adopt {
+            settings.save(data_dir)
+        } else {
+            Ok(())
+        };
+        let left_over = |state: MarkerState, asked: bool| asked || state == MarkerState::LeftBehind;
+        let cleared = saved.and_then(|()| {
+            // Asked about, or left over from before the safe choice was made.
+            if left_over(found, plan.ask) {
+                marker.clear()?;
+            }
+            if left_over(decoding.marker, plan.ask_decoding) {
+                decoding_marker.clear()?;
+            }
+            Ok(())
+        });
+        problems.extend(cleared.err());
     }
     let startup = Startup {
         program,
         platform,
         plan,
         marker,
+        // Only the editor decodes video, and an automated run writes nothing.
+        decode_guard: Arc::new(DecodeGuard::new(
+            (run == RunKind::Normal && program.plays_video()).then_some(decoding_marker),
+        )),
         settings,
         data_dir: data_dir.to_path_buf(),
         run,
         warning_preview: false,
+        decoding_warning_preview: false,
     };
     (startup, problems)
 }
@@ -148,6 +196,11 @@ pub struct Opened {
     pub(crate) ask: bool,
     /// Whether the window's device was opened for video decoding too.
     pub(crate) video: VideoDecoding,
+    /// Decode video on the window's device in this session, when there is one.
+    pub(crate) decode_on_device: bool,
+    /// Ask whether to keep decoding there off or to try it again.
+    pub(crate) ask_decoding: bool,
+    pub(crate) decode_guard: Arc<DecodeGuard>,
     pub(crate) platform: Platform,
     pub(crate) settings: GraphicsSettings,
     pub(crate) data_dir: PathBuf,
@@ -229,6 +282,9 @@ pub fn open_window<S>(
                     if guarded && let Err(err) = startup.marker.clear() {
                         tracing::warn!("{}", err.report());
                     }
+                    // Closed normally: nothing took the program down while
+                    // it was decoding its first pictures on the device.
+                    startup.decode_guard.close();
                     return Ok(());
                 }
                 // The window was open (or opening) when it failed: nothing to fall
@@ -452,6 +508,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         GraphicsSettings {
             choice: GraphicsChoice::Direct3D12,
+            ..GraphicsSettings::default()
         }
         .save(tmp.path())
         .unwrap();
@@ -512,6 +569,101 @@ mod tests {
             assert!(card_rank(Other, prefer_integrated) < card_rank(VirtualGpu, prefer_integrated));
             assert_eq!(card_rank(Cpu, prefer_integrated), None);
         }
+    }
+
+    /// A marker as a session leaves it that stopped while decoding on the device.
+    fn leave_decoding_marker(dir: &Path) -> StartMarker {
+        let marker = StartMarker::for_decoding(Program::Editor, dir);
+        marker.write().unwrap();
+        marker
+    }
+
+    #[test]
+    fn a_session_that_stopped_while_decoding_on_the_device_switches_that_off_and_asks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let marker = leave_decoding_marker(tmp.path());
+        let (startup, problems) = windows(Program::Editor, tmp.path(), RunKind::Normal);
+        assert!(problems.is_empty());
+        assert_eq!(startup.plan().order[0], Vulkan, "the window keeps Vulkan");
+        let opened = startup.opened(Vulkan, Vec::new());
+        assert!(opened.ask_decoding && !opened.decode_on_device && !opened.ask);
+        assert!(!GraphicsSettings::load(tmp.path()).decode_on_window_device);
+        assert!(!marker.is_present());
+
+        // Closed without answering: it stays off, and nothing is asked again.
+        let (later, _) = windows(Program::Editor, tmp.path(), RunKind::Normal);
+        let opened = later.opened(Vulkan, Vec::new());
+        assert!(!opened.ask_decoding && !opened.decode_on_device);
+    }
+
+    #[test]
+    fn the_launcher_leaves_the_editors_decoding_marker_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let marker = leave_decoding_marker(tmp.path());
+        let (launcher, problems) = windows(Program::Launcher, tmp.path(), RunKind::Normal);
+        assert!(problems.is_empty() && !launcher.plan().ask_decoding);
+        assert!(marker.is_present(), "left for the editor's own next start");
+        assert!(GraphicsSettings::load(tmp.path()).decode_on_window_device);
+        let (editor, _) = windows(Program::Editor, tmp.path(), RunKind::Normal);
+        assert!(editor.plan().ask_decoding);
+    }
+
+    #[test]
+    fn both_failures_at_once_are_both_made_safe_before_the_window_opens() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (vulkan, decoding) = (
+            leave_marker(Program::Editor, tmp.path()),
+            leave_decoding_marker(tmp.path()),
+        );
+        let (startup, problems) = windows(Program::Editor, tmp.path(), RunKind::Normal);
+        assert!(problems.is_empty());
+        assert!(startup.plan().ask && startup.plan().ask_decoding);
+        let saved = GraphicsSettings::load(tmp.path());
+        assert_eq!(saved.choice, GraphicsChoice::Direct3D12);
+        assert!(!saved.decode_on_window_device);
+        assert!(!vulkan.is_present() && !decoding.is_present());
+    }
+
+    #[test]
+    fn the_decoding_marker_stays_when_the_safe_setting_can_not_be_saved() {
+        let tmp = tempfile::tempdir().unwrap();
+        let marker = leave_decoding_marker(tmp.path());
+        std::fs::create_dir(GraphicsSettings::path(tmp.path())).unwrap();
+        let (startup, problems) = windows(Program::Editor, tmp.path(), RunKind::Normal);
+        assert_eq!(problems.len(), 1);
+        assert!(
+            !startup.plan().decode_on_device,
+            "off for this session all the same"
+        );
+        assert!(marker.is_present(), "so the next start is safe again");
+    }
+
+    #[test]
+    fn decoding_turned_off_in_settings_removes_a_stale_marker_and_asks_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        GraphicsSettings {
+            decode_on_window_device: false,
+            ..GraphicsSettings::default()
+        }
+        .save(tmp.path())
+        .unwrap();
+        let marker = leave_decoding_marker(tmp.path());
+        let (startup, problems) = windows(Program::Editor, tmp.path(), RunKind::Normal);
+        assert!(problems.is_empty());
+        assert!(!startup.plan().ask_decoding && !startup.plan().decode_on_device);
+        assert!(!marker.is_present());
+    }
+
+    #[test]
+    fn an_automated_run_reads_the_decoding_marker_and_writes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let marker = leave_decoding_marker(tmp.path());
+        let (startup, problems) = windows(Program::Editor, tmp.path(), RunKind::Automated);
+        assert!(problems.is_empty());
+        let opened = startup.opened(Vulkan, Vec::new());
+        assert!(!opened.decode_on_device && !opened.ask_decoding);
+        assert!(marker.is_present());
+        assert!(!GraphicsSettings::path(tmp.path()).exists());
     }
 
     #[test]

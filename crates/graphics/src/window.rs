@@ -1,14 +1,16 @@
 //! The window's side: the same in the launcher and the editor.
 
 use crate::{
-    FRAMES_BEFORE_TRUSTED, GraphicsChoice, GraphicsSettings, Opened, Platform, RunKind, StartMarker,
-    VideoDecoding,
+    DecodeGuard, FRAMES_BEFORE_TRUSTED, GraphicsChoice, GraphicsSettings, Opened, Platform, RunKind,
+    StartMarker, VideoDecoding,
 };
 use diag::AppError;
 use eframe::wgpu;
 use egui::RichText;
 use std::path::PathBuf;
+use std::sync::Arc;
 use ui_kit::{ErrorCenter, Theme};
+use video_device::VideoDevice;
 
 /// The answers to "the window didn't open last time".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,6 +19,24 @@ pub enum WarningAnswer {
     KeepDirect3D12,
     /// Back to Automatic: the next start tries Vulkan, guarded by the marker.
     TryVulkanAgain,
+}
+
+/// The answers to "video decoding stopped the app last time".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecodingAnswer {
+    /// The safe choice, already saved when the question appears.
+    KeepOff,
+    /// Switched on again: the next start decodes on the window's device,
+    /// guarded by its marker.
+    TryAgain,
+}
+
+/// What the editor needs to decode video on the window's device.
+#[derive(Debug, Clone)]
+pub struct DeviceDecoding {
+    pub device: Arc<VideoDevice>,
+    /// Told before the device is asked to decode, and of every picture drawn.
+    pub guard: Arc<DecodeGuard>,
 }
 
 /// What an open window knows and shows about graphics.
@@ -30,6 +50,12 @@ pub struct WindowGraphics {
     asking: bool,
     /// Whether the window's device can decode video itself.
     video: VideoDecoding,
+    /// Decoding on the window's device in this session.
+    decoding: Option<DeviceDecoding>,
+    /// Why not, when the device could: for Settings and Diagnostics.
+    decoding_off: Option<&'static str>,
+    /// The question about a session that stopped while decoding there is open.
+    asking_decoding: bool,
     platform: Platform,
     settings: GraphicsSettings,
     data_dir: PathBuf,
@@ -62,15 +88,38 @@ impl WindowGraphics {
         if let Some(notice) = vulkan_notice(&opened) {
             errors.push(&notice);
         }
-        WindowGraphics::from_parts(in_use, opened)
+        let window = WindowGraphics::from_parts(in_use, opened);
+        let used = window.decoding_in_use();
+        tracing::info!(in_use = %used, "decoding video on the window's device");
+        errors.set_fact(DECODING_THERE_FACT, used);
+        window
     }
 
     fn from_parts(in_use: String, opened: Opened) -> WindowGraphics {
+        let decoding_off = if opened.ask_decoding {
+            Some("off, because it stopped the app last time")
+        } else if !opened.settings.decode_on_window_device {
+            Some("off, as chosen in Settings")
+        } else if !opened.decode_on_device {
+            Some("off for now, because a session did not get through its first pictures")
+        } else {
+            None
+        };
+        let decoding = match (opened.video.device(), opened.decode_on_device) {
+            (Some(device), true) => Some(DeviceDecoding {
+                device: device.clone(),
+                guard: Arc::clone(&opened.decode_guard),
+            }),
+            _ => None,
+        };
         WindowGraphics {
             in_use,
             marker: opened.marker,
             asking: opened.ask,
             video: opened.video,
+            decoding,
+            decoding_off,
+            asking_decoding: opened.ask_decoding,
             platform: opened.platform,
             settings: opened.settings,
             data_dir: opened.data_dir,
@@ -89,9 +138,25 @@ impl WindowGraphics {
         &self.video
     }
 
-    /// Whether the question about a failed start is on screen.
+    /// What the editor decodes video on the window's device with, when the
+    /// device can, the setting allows it and it didn't fail last time.
+    pub fn device_decoding(&self) -> Option<&DeviceDecoding> {
+        self.decoding.as_ref()
+    }
+
+    /// Whether video is decoded on the window's device in this session, in
+    /// a few words: for Diagnostics, the log and Settings.
+    fn decoding_in_use(&self) -> String {
+        match (&self.video, self.decoding_off) {
+            (VideoDecoding::NotAvailable(why), _) => format!("not possible ({why})"),
+            (VideoDecoding::OnDevice(_), Some(why)) => why.to_owned(),
+            (VideoDecoding::OnDevice(device), None) => format!("on, for {}", device.codec_names()),
+        }
+    }
+
+    /// Whether one of the questions about last time is on screen.
     pub fn is_asking(&self) -> bool {
-        self.asking
+        self.asking || self.asking_decoding
     }
 
     /// Call at the top of every frame with the number of frames drawn so far.
@@ -115,7 +180,8 @@ impl WindowGraphics {
     /// outside or Escape keeps Direct3D 12. Returns a problem saving the answer.
     pub fn show_warning(&mut self, ctx: &egui::Context, theme: &Theme) -> Option<AppError> {
         if !self.asking {
-            return None;
+            // One question at a time: this one first.
+            return self.show_decoding_warning(ctx, theme);
         }
         let mut answer = None;
         let modal = ui_kit::dialog(ctx, theme, "graphics-warning", |ui| {
@@ -172,10 +238,81 @@ impl WindowGraphics {
 
     fn choose(&mut self, choice: GraphicsChoice) -> diag::Result<()> {
         self.settings.choice = choice;
+        self.save()
+    }
+
+    fn save(&self) -> diag::Result<()> {
         match self.run {
             RunKind::Normal => self.settings.save(&self.data_dir),
             RunKind::Automated => Ok(()),
         }
+    }
+
+    /// Draws the question about a session that stopped while decoding video
+    /// on the window's device: what happened, what is done now, and the two
+    /// choices. Clicking outside or Escape keeps it off.
+    fn show_decoding_warning(&mut self, ctx: &egui::Context, theme: &Theme) -> Option<AppError> {
+        if !self.asking_decoding {
+            return None;
+        }
+        let mut answer = None;
+        let modal = ui_kit::dialog(ctx, theme, "decoding-warning", |ui| {
+            ui.set_width(440.0);
+            ui.label(
+                RichText::new("The app stopped while showing video last time")
+                    .family(ui_kit::fonts::semibold())
+                    .size(16.0),
+            );
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new(
+                    "It was decoding video on the window's graphics device, the fastest way, and stopped before the first pictures were shown, which usually means a problem in the graphics driver. That way of decoding is switched off now, and stays off until you choose otherwise. Video still plays: it is decoded the way it was before.",
+                )
+                .color(theme.text_secondary),
+            );
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new("You can change this later in Settings, under Graphics.").color(theme.muted),
+            );
+            ui.add_space(14.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui_kit::accent_button(ui, theme, "Keep it off").clicked() {
+                    answer = Some(DecodingAnswer::KeepOff);
+                }
+                if ui
+                    .button("Try it again next time")
+                    .on_hover_text(
+                        "The next start decodes on the graphics device again. If the app stops then too, the start after it switches this off and asks again.",
+                    )
+                    .clicked()
+                {
+                    answer = Some(DecodingAnswer::TryAgain);
+                }
+            });
+        });
+        if modal.should_close() && answer.is_none() {
+            answer = Some(DecodingAnswer::KeepOff);
+        }
+        answer.and_then(|answer| self.answer_decoding(answer).err())
+    }
+
+    /// Takes the answer and closes the question. Nothing is saved in an automated run.
+    pub fn answer_decoding(&mut self, answer: DecodingAnswer) -> diag::Result<()> {
+        self.asking_decoding = false;
+        tracing::info!(
+            ?answer,
+            "answered the question about decoding on the window's device"
+        );
+        match answer {
+            DecodingAnswer::KeepOff => Ok(()),
+            DecodingAnswer::TryAgain => self.decode_on_device(true),
+        }
+    }
+
+    /// Saves the setting. This session keeps decoding the way it started.
+    fn decode_on_device(&mut self, wanted: bool) -> diag::Result<()> {
+        self.settings.decode_on_window_device = wanted;
+        self.save()
     }
 
     /// The Graphics row in Settings: the choice (Windows only), when it
@@ -204,9 +341,38 @@ impl WindowGraphics {
         };
         ui.label(RichText::new(hint).color(theme.muted));
         ui.label(RichText::new(format!("In use now: {}", self.in_use)).color(theme.muted));
-        (chosen != shown).then(|| self.choose(chosen).err()).flatten()
+        let changed = (chosen != shown).then(|| self.choose(chosen).err()).flatten();
+        ui.add_space(8.0);
+        changed.or(self.decoding_row(ui, theme))
+    }
+
+    /// The switch for decoding video on the window's device, and whether it
+    /// is in use. Returns a problem saving a change.
+    fn decoding_row(&mut self, ui: &mut egui::Ui, theme: &Theme) -> Option<AppError> {
+        let mut wanted = self.settings.decode_on_window_device;
+        let changed = ui
+            .add_enabled(
+                self.run == RunKind::Normal,
+                egui::Checkbox::new(&mut wanted, DECODING_SWITCH),
+            )
+            .changed();
+        ui.label(
+            RichText::new(
+                "Pictures then go from the decoder to the screen without leaving the graphics card. Turn this off if video shows wrong colours, stutters or stops the app. A change applies from the next time the editor starts.",
+            )
+            .color(theme.muted),
+        );
+        ui.label(RichText::new(format!("In this window: {}", self.decoding_in_use())).color(theme.muted));
+        changed.then(|| self.decode_on_device(wanted).err()).flatten()
     }
 }
+
+/// The words on the switch in Settings.
+pub const DECODING_SWITCH: &str = "Decode video on the window's graphics device (fastest)";
+
+/// The name of the Diagnostics line that says whether video is decoded on
+/// the window's device in this session.
+const DECODING_THERE_FACT: &str = "Viewer decodes on this device";
 
 /// The name of the Diagnostics line that says which kinds of video the
 /// window's device decodes, or why none.
@@ -341,6 +507,134 @@ mod tests {
         assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 0);
     }
 
+    /// The editor's window on Windows after its last session stopped while
+    /// decoding its first pictures on the device.
+    fn asking_after_decoding_stopped(dir: &std::path::Path) -> WindowGraphics {
+        StartMarker::for_decoding(Program::Editor, dir).write().unwrap();
+        let (startup, problems) = prepare_on(Platform::Windows, Program::Editor, dir, RunKind::Normal);
+        assert!(problems.is_empty());
+        let window = WindowGraphics::from_parts("Vulkan".into(), startup.opened(Vulkan, Vec::new()));
+        assert!(window.is_asking() && window.device_decoding().is_none());
+        window
+    }
+
+    #[test]
+    fn keeping_decoding_off_asks_no_more_and_trying_again_guards_the_next_session() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut window = asking_after_decoding_stopped(tmp.path());
+        window.answer_decoding(DecodingAnswer::KeepOff).unwrap();
+        assert!(!window.is_asking());
+        let plan = next_start(Program::Editor, tmp.path());
+        assert!(!plan.decode_on_device && !plan.ask_decoding);
+        assert_eq!(plan.order[0], Vulkan, "the window itself was never the problem");
+
+        // Switched on again in Settings: the next session is guarded, and
+        // one that stops too brings the question back.
+        window.decode_on_device(true).unwrap();
+        assert!(next_start(Program::Editor, tmp.path()).decode_on_device);
+        let mut window = asking_after_decoding_stopped(tmp.path());
+        assert!(!GraphicsSettings::load(tmp.path()).decode_on_window_device);
+
+        // The other answer switches it on again as well.
+        window.answer_decoding(DecodingAnswer::TryAgain).unwrap();
+        assert!(GraphicsSettings::load(tmp.path()).decode_on_window_device);
+        let plan = next_start(Program::Editor, tmp.path());
+        assert!(plan.decode_on_device && !plan.ask_decoding);
+    }
+
+    #[test]
+    fn the_question_about_vulkan_comes_before_the_one_about_decoding() {
+        let tmp = tempfile::tempdir().unwrap();
+        StartMarker::for_decoding(Program::Editor, tmp.path())
+            .write()
+            .unwrap();
+        let mut window = asking_after_a_crash(Program::Editor, tmp.path());
+        assert!(window.asking && window.asking_decoding);
+        window.answer(WarningAnswer::KeepDirect3D12).unwrap();
+        assert!(window.is_asking(), "the second question is still open");
+        window.answer_decoding(DecodingAnswer::KeepOff).unwrap();
+        assert!(!window.is_asking());
+    }
+
+    #[test]
+    fn the_switch_in_settings_is_saved_and_says_what_this_window_does() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (startup, _) = prepare_on(Platform::Windows, Program::Editor, tmp.path(), RunKind::Normal);
+        let mut window = WindowGraphics::from_parts("Vulkan".into(), startup.opened(Vulkan, Vec::new()));
+        // The toolkit opened this device, so there is nothing to decode on.
+        assert_eq!(
+            window.decoding_in_use(),
+            "not possible (the device was not opened for it)"
+        );
+        window.decode_on_device(false).unwrap();
+        assert!(!GraphicsSettings::load(tmp.path()).decode_on_window_device);
+        assert!(!next_start(Program::Editor, tmp.path()).decode_on_device);
+        // The other setting in the same file is left as it was.
+        assert_eq!(
+            GraphicsSettings::load(tmp.path()).choice,
+            GraphicsChoice::Automatic
+        );
+        window.decode_on_device(true).unwrap();
+        assert!(next_start(Program::Editor, tmp.path()).decode_on_device);
+    }
+
+    #[test]
+    fn a_device_that_can_decode_is_handed_out_only_when_the_plan_allows() {
+        let Some(device) = video_device::testing::device() else {
+            eprintln!("no Vulkan device here: handing it out isn't checked");
+            return;
+        };
+        let opened = |dir: &std::path::Path, run| {
+            let (startup, _) = prepare_on(Platform::Windows, Program::Editor, dir, run);
+            let mut opened = startup.opened(Vulkan, Vec::new());
+            opened.video = VideoDecoding::OnDevice(device.clone());
+            opened
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let window = WindowGraphics::from_parts("Vulkan".into(), opened(tmp.path(), RunKind::Normal));
+        let decoding = window.device_decoding().unwrap();
+        assert!(window.decoding_in_use().starts_with("on, for "));
+        // The guard it comes with writes the editor's marker.
+        decoding.guard.about_to_decode();
+        let marker = StartMarker::for_decoding(Program::Editor, tmp.path());
+        assert!(marker.is_present());
+        decoding.guard.reported_an_error();
+        assert!(!marker.is_present());
+
+        // An automated run decodes there too, and writes nothing.
+        let quiet = tempfile::tempdir().unwrap();
+        let window = WindowGraphics::from_parts("Vulkan".into(), opened(quiet.path(), RunKind::Automated));
+        window.device_decoding().unwrap().guard.about_to_decode();
+        assert_eq!(std::fs::read_dir(quiet.path()).unwrap().count(), 0);
+
+        // Turned off, or stopped last time: no handle.
+        window_off(tmp.path());
+        let window = WindowGraphics::from_parts("Vulkan".into(), opened(tmp.path(), RunKind::Normal));
+        assert!(window.device_decoding().is_none());
+        assert_eq!(window.decoding_in_use(), "off, as chosen in Settings");
+        let stopped = tempfile::tempdir().unwrap();
+        marker_left(stopped.path());
+        let window = WindowGraphics::from_parts("Vulkan".into(), opened(stopped.path(), RunKind::Normal));
+        assert!(window.device_decoding().is_none() && window.is_asking());
+        assert_eq!(
+            window.decoding_in_use(),
+            "off, because it stopped the app last time"
+        );
+    }
+
+    fn window_off(dir: &std::path::Path) {
+        GraphicsSettings {
+            decode_on_window_device: false,
+            ..GraphicsSettings::default()
+        }
+        .save(dir)
+        .unwrap();
+    }
+
+    fn marker_left(dir: &std::path::Path) {
+        StartMarker::for_decoding(Program::Editor, dir).write().unwrap();
+    }
+
     #[test]
     fn a_change_in_settings_is_saved_for_both_programs() {
         let tmp = tempfile::tempdir().unwrap();
@@ -385,6 +679,7 @@ mod tests {
 
         GraphicsSettings {
             choice: GraphicsChoice::Vulkan,
+            ..GraphicsSettings::default()
         }
         .save(tmp.path())
         .unwrap();

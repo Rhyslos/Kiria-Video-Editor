@@ -1,12 +1,13 @@
 //! The editor: window, pages and the start-up sequence.
 //!
-//! Usage: `editor [project file] [--open-last-save] [--import <media file>]... [--playhead <seconds>] [--play] [--cpu-colour] [--smoke-test | --responsiveness-test | --screenshot <file.png>]`.
+//! Usage: `editor [project file] [--open-last-save] [--import <media file>]... [--playhead <seconds>] [--play] [--cpu-colour] [--graphics-warning] [--decoding-warning] [--smoke-test | --responsiveness-test | --screenshot <file.png>]`.
 //! The extra options are for automated checks; normal use needs none.
 
 // Release builds on Windows open no console window next to the editor.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod clip_pictures;
+mod device_decoding;
 mod editor;
 mod fake_pointer;
 mod frame_grab;
@@ -81,6 +82,9 @@ fn main() -> ExitCode {
     problems.extend(graphics_problems);
     if options.graphics_warning {
         graphics_start = graphics_start.with_warning_preview();
+    }
+    if options.decoding_warning {
+        graphics_start = graphics_start.with_decoding_warning_preview();
     }
 
     let project = options.project.clone().map(|path| ProjectToOpen {
