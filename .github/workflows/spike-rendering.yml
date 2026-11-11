@@ -1,0 +1,40 @@
+# Builds the rendering measurement program (spikes/rendering) for Windows as a
+# ready-to-run zip. Started by hand, or when the spike changes.
+name: Rendering spike
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ["spikes/rendering/**", ".github/workflows/spike-rendering.yml"]
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+      - name: Toolchain
+        run: rustup toolchain install stable --profile minimal
+      - name: Build
+        working-directory: spikes/rendering
+        env:
+          RUSTUP_TOOLCHAIN: stable
+        run: cargo build --release --locked
+      - name: A short run
+        working-directory: spikes/rendering
+        # The build machine has no graphics card: this measures the software
+        # driver, and only shows that the program works.
+        run: target/release/render-bench.exe --quick
+      - name: Package
+        run: |
+          mkdir -p pkg/bin
+          cp spikes/rendering/run.ps1 spikes/rendering/run.bat pkg/
+          cp spikes/rendering/target/release/render-bench.exe pkg/bin/
+          cp LICENSE pkg/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: render-bench-windows
+          path: pkg/

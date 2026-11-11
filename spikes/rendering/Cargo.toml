@@ -1,0 +1,17 @@
+# Spike: not part of the workspace (see spikes/README.md).
+[package]
+name = "render-bench"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "GPL-3.0-or-later"
+
+[workspace]
+
+[dependencies]
+# The same graphics library, at the same version, as the editor's windows.
+wgpu = "30"
+pollster = "1"
+
+[profile.release]
+debug = false

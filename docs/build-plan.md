@@ -328,6 +328,7 @@ Phase 4 is the heart of the app and the longest phase, so it runs as three parts
 
 ### 4C · Page completion and extras
 
+- [ ] **Compositor** (`crates/render`): the timeline's picture put together on the GPU from every visible layer (place, crop, opacity, quick colour), at the timeline's size; the viewer shows it and export will read it. Everything below that changes the picture is built on it. (Done so far: the research note and the measuring program, `docs/research/rendering.md` and `spikes/rendering/`. Still to do: measure on the test machine, choose, build.)
 - [ ] **Inspector** (right, fixed width): Transform, Crop, Quick color, Speed, Effects, Audio; one-line summaries in collapsed headers; keyframe diamonds.
 - [ ] **Split view:** Source (raw clip) beside Program (final), off by default, from the Display menu.
 - [x] **Media pool drawer:** left edge tab sliding out a compact media list (full library comes in phase 5) with the Media / Effects switch in place. (Done: the Media tab on the left edge; files by name with a filter, missing ones marked; double-click or + places one at the end of the timeline. Dragging onto the timeline comes with insert and overwrite.)
