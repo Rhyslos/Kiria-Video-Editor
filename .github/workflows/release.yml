@@ -1,7 +1,7 @@
 name: Release
 
 # A tag like v0.1.0 (stable) or v0.2.0-beta.1 (beta), or "Run workflow" with
-# a tag typed in, builds both installers, tests them, signs the manifest and
+# a tag typed in, builds the installers, tests them, signs the manifest and
 # publishes the GitHub release. Installed copies pick it up on their next start.
 # Nothing is published if any build, test or signature check fails.
 # Every push to main publishes an automatic beta (e.g. 0.1.1-beta.12) that beta
@@ -97,8 +97,12 @@ jobs:
             target/dist/*.exe
             target/dist/*.zip
 
+  # Paused (November 2026): releases are Windows only for now. To turn the
+  # AppImage back on, delete the `if: false` line and put `linux` back into the
+  # publish job's `needs`.
   linux:
     name: Linux AppImage
+    if: false
     runs-on: ubuntu-22.04 # the oldest supported base keeps the AppImage working on older distributions
     steps:
       - uses: actions/checkout@v5
@@ -129,7 +133,7 @@ jobs:
 
   publish:
     name: Sign and publish the release
-    needs: [windows, linux]
+    needs: [windows] # and linux, when the AppImage is turned back on
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -148,6 +152,7 @@ jobs:
         env:
           RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
         run: |
+          shopt -s nullglob # no AppImage while the Linux build is paused
           cargo xtask manifest dist/manifest.json "$APP_VERSION" dist/*.zip dist/*.AppImage dist/*.exe
           if [ -z "$RELEASE_SIGNING_KEY" ] && [ -z "$RELEASE_TAG" ]; then
             echo "::warning::RELEASE_SIGNING_KEY is not set; a test run skips signing. A tagged release fails without it."

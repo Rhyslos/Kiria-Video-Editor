@@ -4,7 +4,9 @@ Every release is built, tested, signed and published by GitHub Actions. Starting
 
 ## Test builds
 
-Every pull request runs the same Release workflow without publishing anything. Its run page has a `windows` artifact (the installer and update package) and a `linux` artifact (the AppImage) for trying the change before it is merged.
+Every pull request runs the same Release workflow without publishing anything. Its run page has a `windows` artifact (the installer and update package) for trying the change before it is merged.
+
+The Linux AppImage is paused for now: releases and betas are Windows only. The workflow keeps the Linux job, switched off, with a comment saying how to turn it back on; the Linux lines below apply again then.
 
 ## Automatic betas
 
