@@ -34,7 +34,7 @@ The last three are for CI and for checking the look without a screen (`xvfb-run`
 | `src/frame_grab.rs` | Save this frame as a picture (Ctrl+Shift+E): asks where, then writes the frame at the playhead at full size on a worker |
 | `src/import.rs` | `Importer`: the file dialog (its own thread), reading dropped or chosen files on workers, and applying them in the order chosen; `summary` describes an imported file in one line |
 | `src/timeline_panel.rs` | The open timeline as the timeline widget's data (linked clips show selected together), label colours, the selection |
-| `src/media_drawer.rs` | The Edit page's media drawer: the project's files by name with a filter; double-click or + places one at the end of the timeline; right-click to insert or overwrite at the edit point |
+| `src/media_drawer.rs` | The Edit page's media drawer: the project's files by name with a filter; double-click or + places one at the end of the timeline; right-click to insert or overwrite at the edit point, or drag it onto the timeline (overwrite there; Ctrl inserts) |
 | `src/search.rs` | The search palette (Ctrl+K): commands with their shortcuts, both settings windows, timeline labels and clips; Enter picks the first |
 | `src/silence_panel.rs` | The Remove silence window (Ctrl+Shift+R): track, threshold, minimum length and edge to keep; marks what it found on the timeline and cuts it all out as one step |
 | `src/relink.rs` | Missing media: checked on a worker whenever the project's media changes; the banner on the Edit page and "Find them…", which searches a picked folder and relinks what it finds |
