@@ -18,6 +18,7 @@ diag = { path = "../diag" }
 eframe = "0.37"
 engine = { path = "../engine" }
 egui = "0.37"
+graphics = { path = "../graphics" }
 image = { version = "0.25", default-features = false, features = ["png"] }
 jobs = { path = "../jobs" }
 media = { path = "../media" }

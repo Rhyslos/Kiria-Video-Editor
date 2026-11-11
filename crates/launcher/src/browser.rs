@@ -100,6 +100,9 @@ pub struct Browser {
     shortcuts: ShortcutTable,
     show_diagnostics: bool,
     show_settings: bool,
+    /// What draws the window: the first-frames check, the question after a
+    /// failed start with Vulkan, and the Graphics row in Settings.
+    graphics: graphics::WindowGraphics,
     folders: Vec<Folder>,
     projects: Vec<ProjectEntry>,
     view: View,
@@ -141,7 +144,7 @@ impl std::fmt::Debug for Browser {
 }
 
 impl Browser {
-    pub fn new(cc: &eframe::CreationContext<'_>, start: Start) -> Browser {
+    pub fn new(cc: &eframe::CreationContext<'_>, start: Start, opened: graphics::Opened) -> Browser {
         let ctx = &cc.egui_ctx;
         ui_kit::setup(ctx, start.theme);
         let index_file = start.data_dir.join(project_index::INDEX_FILE_NAME);
@@ -153,6 +156,7 @@ impl Browser {
                 None
             }
         };
+        let graphics = graphics::WindowGraphics::new(cc, opened, &mut errors);
         let mut updates = Updates::start(
             ctx,
             crate::version_in_use(),
@@ -172,6 +176,7 @@ impl Browser {
             shortcuts: ShortcutTable::default(),
             show_diagnostics: false,
             show_settings: false,
+            graphics,
             folders: Vec::new(),
             projects: Vec::new(),
             view: View::All,
@@ -958,6 +963,14 @@ impl Browser {
             }
         }
 
+        // One question at a time: this one waits for the two above.
+        if self.rollback.is_none()
+            && self.recovery.is_none()
+            && let Some(err) = self.graphics.show_warning(ctx, &self.theme)
+        {
+            self.errors.push(&err);
+        }
+
         if let Some(dialog) = &mut self.rename {
             let mut done = false;
             let mut confirmed = false;
@@ -1034,6 +1047,11 @@ impl Browser {
                 ui.heading("Look");
                 ui.label(RichText::new("The theme follows the editor's Settings.").color(self.theme.muted));
                 ui.add_space(8.0);
+                ui.heading("Graphics");
+                if let Some(err) = self.graphics.settings_row(ui, &self.theme) {
+                    self.errors.push(&err);
+                }
+                ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     if ui.button("Diagnostics…").clicked() {
                         self.show_diagnostics = true;
@@ -1057,7 +1075,8 @@ impl Browser {
         let dialog_open = self.new_project.is_some()
             || self.rename.is_some()
             || self.recovery.is_some()
-            || self.rollback.is_some();
+            || self.rollback.is_some()
+            || self.graphics.is_asking();
         for action in self.shortcuts.pressed(ctx) {
             match action {
                 Action::OpenSettings => self.show_settings = true,
@@ -1131,6 +1150,7 @@ impl Browser {
 impl eframe::App for Browser {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        self.graphics.frame(&ctx, self.frames);
         self.poll_work(&ctx);
         self.keyboard(&ctx);
 

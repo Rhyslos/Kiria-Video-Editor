@@ -9,6 +9,7 @@ The Cargo workspace members. One engine with no interface, and thin pages on top
 | [project](project/) | Project model, commands, undo/redo, autosave | 0.3 – 0.4 (done) |
 | [jobs](jobs/) | Worker pools, priorities, resource budgets | 0.5 (done) |
 | [ui-kit](ui-kit/) | Themes, top bar, shortcuts, shared timeline widget | 0.6 (done), 4 |
+| [graphics](graphics/) | Which graphics system draws the windows: the shared setting, the start plan, the safety net around Vulkan | 4A |
 | [app](app/) | The editor window and its five pages (binary `editor`) | 0.6 (done), 4 onwards |
 | [updater](updater/) | Release checks, signatures, safe installs, rollback | 1 (done), 3 |
 | [project-index](project-index/) | The launcher's list of known projects and folders (SQLite) | 2 |

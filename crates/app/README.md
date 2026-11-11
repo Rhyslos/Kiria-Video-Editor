@@ -21,16 +21,16 @@ cargo run -p app -- trip.kiria --cpu-colour        # converts the viewer's colou
 cargo run -p app -- --smoke-test         # open, draw 30 frames, close; exit code 1 on failure
 cargo run -p app -- --responsiveness-test  # 8-second background job; fails unless 99 frames in 100 take under 16 ms of interface work (and none over 50 ms)
 cargo run -p app -- --screenshot out.png # save a PNG of the window and close (waits for imports and the viewer's picture first)
+cargo run -p app -- --graphics-warning --screenshot out.png  # with the question about a failed start with Vulkan
 ```
 
-The last three are for CI and for checking the look without a screen (`xvfb-run` on Linux).
+The last four are for CI and for checking the look without a screen (`xvfb-run` on Linux).
 
 ## Files
 
 | File | What it holds |
 |---|---|
-| `src/main.rs` | Start-up: options, diagnostics, settings, the window (opened with the first graphics system that starts), exit code |
-| `src/graphics.rs` | Which graphics system draws the window: the Graphics setting, `plan` (what a start tries, in order), the marker that catches a start with Vulkan that never drew a frame, and the line Diagnostics shows |
+| `src/main.rs` | Start-up: options, diagnostics, settings, the window (opened with the first graphics system that starts, see Graphics below), exit code |
 | `src/clip_pictures.rs` | The pictures inside video clips: each file's strip read once on a worker, then uploaded 24 a frame so the interface never stalls |
 | `src/editor.rs` | `Editor`: the window's state, shortcuts, autosave hand-off to workers, pages, Settings and Search windows, the automated runs |
 | `src/frame_grab.rs` | Save this frame as a picture (Ctrl+Shift+E): asks where, then writes the frame at the playhead at full size on a worker |
@@ -47,7 +47,7 @@ The last three are for CI and for checking the look without a screen (`xvfb-run`
 | `src/timeline_panel.rs` (also) | `fold_sound`: the rough cut view (Ctrl+Shift+T) folds each video clip's linked sound into it |
 | `src/viewer.rs` | The Edit page's viewer: asks the engine for the picture at the playhead (only when something changed) and shows the newest, as YUV planes the GPU converts or as an RGBA texture; the scrub bar and preview quality under it (planes come halved to suit the size wanted; on Auto, RGBA pictures are lowered further when playback can't keep up) |
 | `src/video_picture.rs` | Whether this window converts colour on the GPU (`--cpu-colour` or a window without wgpu says no), and a decoded frame's planes as the viewer's picture; its tests draw the shader into a texture and compare with the CPU's conversion |
-| `src/settings.rs` | `Settings` (theme, resource budgets, "Edit at the playhead", Graphics), saved as `settings.ron` in the app's data folder |
+| `src/settings.rs` | `Settings` (theme, resource budgets, "Edit at the playhead"), saved as `settings.ron` in the app's data folder. The Graphics choice has its own file, shared with the launcher |
 | `src/run_mode.rs` | Command-line options |
 
 ## Notes
@@ -57,10 +57,4 @@ The last three are for CI and for checking the look without a screen (`xvfb-run`
 
 ## Graphics
 
-On Windows the window is drawn through Vulkan, so that video can later be decoded straight into the window's own device (`docs/research/decoding.md`). Settings has the choice: Automatic (the default), Vulkan, or Direct3D 12. On Linux nothing changed: the window toolkit picks (Vulkan, then OpenGL) and the row is greyed out.
-
-- **Order.** Automatic and Vulkan try Vulkan, then Direct3D 12, then whatever the window toolkit picks by itself. Direct3D 12 skips the first step. Each is tried alone, so falling back to Direct3D 12 never loads the Vulkan driver. Vulkan only counts with a real graphics card: software drawing through Vulkan is passed over.
-- **An error is followed in the same start.** No Vulkan driver, no card that can draw to the window, or a device that can't be created: the next in the order opens instead. Automatic does this quietly; someone who chose Vulkan gets a notice.
-- **A crash or a freeze is caught at the next start.** `vulkan.starting` is written in the data folder before a start with Vulkan and removed once three frames are drawn (or the window closed normally, or Vulkan reported an error). If it is still there at the next start, the Graphics setting is changed to Direct3D 12, saved, and a notice says so once. Choosing Automatic or Vulkan in Settings tries Vulkan again.
-- **What is in use** is on the first line of Diagnostics (Settings, Diagnostics…), under the Graphics setting, in the log (`the window is open`) and in crash reports.
-- `WGPU_BACKEND` still works on Linux. On Windows the setting decides and the variable only affects the last resort.
+Which graphics system draws the window, the Graphics row in Settings and the question after a start with Vulkan that never drew a frame all come from the [graphics](../graphics/) crate, shared with the launcher. `main` calls `graphics::prepare` and `graphics::open_window`; the window keeps a `graphics::WindowGraphics`. Automated runs (`--smoke-test`, `--screenshot`, `--responsiveness-test`) write no marker and change no setting. What is in use is on the first line of Diagnostics (Settings, Diagnostics…), under the Graphics setting, in the log (`the window is open`) and in crash reports.
