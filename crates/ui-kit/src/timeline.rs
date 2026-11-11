@@ -26,6 +26,8 @@ pub struct TimelineClip {
     pub selected: bool,
     /// Its file can't be found.
     pub missing: bool,
+    /// Clips with the same link move and trim together.
+    pub link: Option<u64>,
 }
 
 /// One track as the timeline shows it.
@@ -76,6 +78,65 @@ pub enum TimelineEvent {
     Select { clip: u64, add: bool },
     /// Empty space was clicked.
     ClearSelection,
+    /// A clip (with its linked clips) was dragged by `by` seconds.
+    Move { clip: u64, by: f64 },
+    /// A clip's edge was dragged to `to` (seconds on the timeline).
+    Trim { clip: u64, edge: ClipEdge, to: f64 },
+    /// The blade tool cut a clip at `at`.
+    Blade { clip: u64, at: f64 },
+}
+
+/// One end of a clip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClipEdge {
+    Start,
+    End,
+}
+
+/// What a click or drag on a clip does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Tool {
+    /// Select, move, and trim at the edges.
+    #[default]
+    Select,
+    /// Cut clips where clicked.
+    Blade,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum DragKind {
+    Move,
+    Trim(ClipEdge),
+}
+
+/// A clip being dragged: what is moving and by how much so far.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ClipDrag {
+    clip: u64,
+    link: Option<u64>,
+    kind: DragKind,
+    /// Pointer time when the drag began.
+    grabbed_at: f64,
+    start: f64,
+    end: f64,
+    /// Current offset in seconds, after snapping.
+    delta: f64,
+}
+
+impl ClipDrag {
+    fn moves(&self, c: &TimelineClip) -> bool {
+        c.id == self.clip || (self.link.is_some() && c.link == self.link)
+    }
+
+    /// Where `c` is drawn while the drag lasts.
+    fn shown(&self, c: &TimelineClip) -> (f64, f64) {
+        let (s, d) = (c.start, c.duration);
+        match self.kind {
+            DragKind::Move => (s + self.delta, d),
+            DragKind::Trim(ClipEdge::Start) => (s + self.delta, (d - self.delta).max(0.0)),
+            DragKind::Trim(ClipEdge::End) => (s, (d + self.delta).max(0.0)),
+        }
+    }
 }
 
 /// Where the timeline is looking. Kept by the page between frames.
@@ -92,6 +153,10 @@ pub struct TimelineView {
     /// The edit needle while it is being dragged.
     needle_drag: Option<f64>,
     scrollbar_drag: Option<(f32, f64)>,
+    clip_drag: Option<ClipDrag>,
+    pub tool: Tool,
+    /// Moved and trimmed edges snap to clip edges, the playhead, the needle and labels.
+    pub snapping: bool,
 }
 
 impl Default for TimelineView {
@@ -104,6 +169,9 @@ impl Default for TimelineView {
             split: 0.5,
             needle_drag: None,
             scrollbar_drag: None,
+            clip_drag: None,
+            tool: Tool::Select,
+            snapping: true,
         }
     }
 }
@@ -280,11 +348,15 @@ impl TimelineView {
                 // merge into one shape, so zooming far out stays cheap.
                 let mut merged: Option<Rect> = None;
                 for clip in &track.clips {
-                    if clip.start + clip.duration < visible.0 || clip.start > visible.1 {
+                    let (start, duration) = match &self.clip_drag {
+                        Some(d) if d.moves(clip) => d.shown(clip),
+                        _ => (clip.start, clip.duration),
+                    };
+                    if start + duration < visible.0 || start > visible.1 {
                         continue;
                     }
-                    let x0 = self.x_of(left, clip.start);
-                    let x1 = self.x_of(left, clip.start + clip.duration).max(x0 + 1.0);
+                    let x0 = self.x_of(left, start);
+                    let x1 = self.x_of(left, start + duration).max(x0 + 1.0);
                     let r = Rect::from_min_max(pos2(x0, row.top() + 3.0), pos2(x1, row.bottom() - 3.0));
                     if r.width() < 4.0 && !clip.selected && !clip.missing {
                         merged = match merged {
@@ -497,19 +569,14 @@ impl TimelineView {
             self.scrollbar_drag = None;
         }
 
-        // Clicks on clips select; clicks on empty space clear the selection.
+        // Clips: click selects (or cuts, with the blade); drag moves or trims.
         for (area, tracks, height, from_bottom, scroll) in [
             (layout.video, data.video, VIDEO_TRACK, true, self.video_scroll),
             (layout.audio, data.audio, AUDIO_TRACK, false, self.audio_scroll),
         ] {
             let time_area = Rect::from_min_max(pos2(left, area.top()), area.max);
-            let r = ui.interact(time_area, id.with(("area", from_bottom)), Sense::click());
-            let pointer = if r.clicked() {
-                r.interact_pointer_pos()
-            } else {
-                r.hover_pos()
-            };
-            let Some(p) = pointer else {
+            let r = ui.interact(time_area, id.with(("area", from_bottom)), Sense::click_and_drag());
+            let Some(p) = r.interact_pointer_pos().or(r.hover_pos()) else {
                 continue;
             };
             let row_rects = rows(&area, tracks.len(), height, scroll, from_bottom);
@@ -520,17 +587,227 @@ impl TimelineView {
                 .filter(|(_, row)| row.y_range().contains(p.y))
                 .flat_map(|(track, _)| track.clips.iter())
                 .find(|c| c.start <= t && t < c.start + c.duration);
-            if !r.clicked() {
-                if let Some(c) = hit.filter(|c| !c.info.is_empty()) {
-                    r.on_hover_text_at_pointer(&c.info);
+            let edge_px = 6.0;
+            let zone = hit.map(|c| {
+                let (x0, x1) = (self.x_of(left, c.start), self.x_of(left, c.start + c.duration));
+                if (p.x - x0).abs() <= edge_px && x1 - x0 > edge_px * 3.0 {
+                    DragKind::Trim(ClipEdge::Start)
+                } else if (x1 - p.x).abs() <= edge_px && x1 - x0 > edge_px * 3.0 {
+                    DragKind::Trim(ClipEdge::End)
+                } else {
+                    DragKind::Move
                 }
-                continue;
-            }
-            let add = ui.input(|i| i.modifiers.shift || i.modifiers.command);
-            events.push(match hit {
-                Some(c) => TimelineEvent::Select { clip: c.id, add },
-                None => TimelineEvent::ClearSelection,
             });
+
+            if r.hovered() && self.clip_drag.is_none() {
+                match (self.tool, zone) {
+                    (Tool::Blade, Some(_)) => ui.ctx().set_cursor_icon(CursorIcon::Crosshair),
+                    (Tool::Select, Some(DragKind::Trim(_))) => {
+                        ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal)
+                    }
+                    (Tool::Select, Some(DragKind::Move)) => ui.ctx().set_cursor_icon(CursorIcon::Grab),
+                    _ => {}
+                }
+                if let Some(c) = hit.filter(|c| !c.info.is_empty()) {
+                    r.clone().on_hover_text_at_pointer(&c.info);
+                }
+            }
+
+            if r.drag_started()
+                && self.tool == Tool::Select
+                && let (Some(c), Some(kind)) = (hit, zone)
+            {
+                self.clip_drag = Some(ClipDrag {
+                    clip: c.id,
+                    link: c.link,
+                    kind,
+                    grabbed_at: t,
+                    start: c.start,
+                    end: c.start + c.duration,
+                    delta: 0.0,
+                });
+                if !c.selected {
+                    events.push(TimelineEvent::Select {
+                        clip: c.id,
+                        add: false,
+                    });
+                }
+            }
+            if r.dragged()
+                && let Some(drag) = self.clip_drag
+            {
+                let raw = t - drag.grabbed_at;
+                let delta = if self.snapping && !ui.input(|i| i.modifiers.alt) {
+                    self.snapped(raw, &drag, data, left)
+                } else {
+                    raw
+                };
+                let delta = match drag.kind {
+                    DragKind::Move => delta.max(-drag.start),
+                    DragKind::Trim(ClipEdge::Start) => delta.max(-drag.start),
+                    DragKind::Trim(ClipEdge::End) => delta,
+                };
+                self.clip_drag = Some(ClipDrag { delta, ..drag });
+                ui.ctx().set_cursor_icon(match drag.kind {
+                    DragKind::Move => CursorIcon::Grabbing,
+                    DragKind::Trim(_) => CursorIcon::ResizeHorizontal,
+                });
+            }
+            if r.drag_stopped()
+                && let Some(drag) = self.clip_drag.take()
+                && drag.delta.abs() > 1e-9
+            {
+                events.push(match drag.kind {
+                    DragKind::Move => TimelineEvent::Move {
+                        clip: drag.clip,
+                        by: drag.delta,
+                    },
+                    DragKind::Trim(ClipEdge::Start) => TimelineEvent::Trim {
+                        clip: drag.clip,
+                        edge: ClipEdge::Start,
+                        to: drag.start + drag.delta,
+                    },
+                    DragKind::Trim(ClipEdge::End) => TimelineEvent::Trim {
+                        clip: drag.clip,
+                        edge: ClipEdge::End,
+                        to: drag.end + drag.delta,
+                    },
+                });
+            }
+            if r.clicked() {
+                let add = ui.input(|i| i.modifiers.shift || i.modifiers.command);
+                events.push(match (self.tool, hit) {
+                    (Tool::Blade, Some(c)) => TimelineEvent::Blade { clip: c.id, at: t },
+                    (_, Some(c)) => TimelineEvent::Select { clip: c.id, add },
+                    (_, None) => TimelineEvent::ClearSelection,
+                });
+            }
+        }
+    }
+
+    /// `raw` (seconds) adjusted so the dragged edge lands on the nearest snap
+    /// point within a few pixels: other clips' edges, the playhead, the edit
+    /// needle, labels and the start.
+    fn snapped(&self, raw: f64, drag: &ClipDrag, data: &TimelineData, _left: f32) -> f64 {
+        let reach = 8.0 / f64::from(self.zoom);
+        let mut points = vec![0.0, data.playhead];
+        points.extend(data.needle);
+        points.extend(data.markers.iter().map(|m| m.at));
+        for track in data.video.iter().chain(data.audio) {
+            for c in track.clips.iter().filter(|c| !drag.moves(c)) {
+                points.push(c.start);
+                points.push(c.start + c.duration);
+            }
+        }
+        let edges: Vec<f64> = match drag.kind {
+            DragKind::Move => vec![drag.start + raw, drag.end + raw],
+            DragKind::Trim(ClipEdge::Start) => vec![drag.start + raw],
+            DragKind::Trim(ClipEdge::End) => vec![drag.end + raw],
+        };
+        let best = edges
+            .iter()
+            .flat_map(|e| points.iter().map(move |p| p - e))
+            .filter(|d| d.abs() <= reach)
+            .min_by(|a, b| a.abs().total_cmp(&b.abs()));
+        raw + best.unwrap_or(0.0)
+    }
+}
+
+/// What the timeline's toolbar asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolbarClick {
+    Tool(Tool),
+    Snapping,
+    Fit,
+}
+
+/// The row of tools above the timeline: Select, Blade, Snapping and Fit.
+/// `tips` gives each button's tooltip (with its shortcut).
+pub fn toolbar(ui: &mut Ui, theme: &Theme, view: &TimelineView, tips: [&str; 4]) -> Option<ToolbarClick> {
+    let mut clicked = None;
+    ui.horizontal(|ui| {
+        let size = vec2(30.0, 26.0);
+        let items = [
+            (ToolbarClick::Tool(Tool::Select), view.tool == Tool::Select, 0),
+            (ToolbarClick::Tool(Tool::Blade), view.tool == Tool::Blade, 1),
+            (ToolbarClick::Snapping, view.snapping, 2),
+            (ToolbarClick::Fit, false, 3),
+        ];
+        for (click, on, i) in items {
+            if i == 2 {
+                ui.add_space(10.0);
+            }
+            let (rect, r) = ui.allocate_exact_size(size, Sense::click());
+            let r = r.on_hover_text(tips[i]);
+            let fill = if on {
+                theme.accent.gamma_multiply(0.25)
+            } else if r.hovered() {
+                theme.line
+            } else {
+                Color32::TRANSPARENT
+            };
+            ui.painter().rect_filled(rect, 6.0, fill);
+            let colour = if on { theme.accent } else { theme.text_secondary };
+            tool_icon(ui.painter(), i, rect.center(), colour);
+            if r.clicked() {
+                clicked = Some(click);
+            }
+        }
+    });
+    clicked
+}
+
+fn tool_icon(p: &egui::Painter, which: usize, c: Pos2, colour: Color32) {
+    let stroke = Stroke::new(1.6, colour);
+    match which {
+        // Pointer arrow.
+        0 => {
+            p.add(Shape::convex_polygon(
+                vec![
+                    c + vec2(-4.0, -7.0),
+                    c + vec2(5.0, 1.0),
+                    c + vec2(0.5, 1.5),
+                    c + vec2(-1.5, 6.5),
+                ],
+                colour,
+                Stroke::NONE,
+            ));
+        }
+        // Blade: a cut line through a clip.
+        1 => {
+            p.rect_stroke(
+                Rect::from_center_size(c, vec2(16.0, 9.0)),
+                2.0,
+                stroke,
+                egui::StrokeKind::Inside,
+            );
+            p.line_segment(
+                [c + vec2(0.0, -8.0), c + vec2(0.0, 8.0)],
+                Stroke::new(2.0, colour),
+            );
+        }
+        // Snapping: a magnet.
+        2 => {
+            p.add(Shape::line(
+                vec![
+                    c + vec2(-5.0, -6.0),
+                    c + vec2(-5.0, 1.0),
+                    c + vec2(-3.0, 5.0),
+                    c + vec2(0.0, 6.0),
+                    c + vec2(3.0, 5.0),
+                    c + vec2(5.0, 1.0),
+                    c + vec2(5.0, -6.0),
+                ],
+                Stroke::new(2.4, colour),
+            ));
+        }
+        // Fit: arrows out to both sides.
+        _ => {
+            p.line_segment([c + vec2(-7.0, 0.0), c + vec2(7.0, 0.0)], stroke);
+            for s in [-1.0, 1.0] {
+                p.line_segment([c + vec2(7.0 * s, 0.0), c + vec2(4.0 * s, -3.0)], stroke);
+                p.line_segment([c + vec2(7.0 * s, 0.0), c + vec2(4.0 * s, 3.0)], stroke);
+            }
         }
     }
 }

@@ -211,6 +211,24 @@ impl Editor {
                 self.fitted = false;
                 Ok(())
             }
+            Action::SelectTool => {
+                self.timeline.tool = ui_kit::Tool::Select;
+                Ok(())
+            }
+            Action::BladeTool => {
+                self.timeline.tool = ui_kit::Tool::Blade;
+                Ok(())
+            }
+            Action::ToggleSnapping => {
+                self.timeline.snapping = !self.timeline.snapping;
+                self.status = if self.timeline.snapping {
+                    "Snapping on"
+                } else {
+                    "Snapping off"
+                }
+                .into();
+                Ok(())
+            }
             Action::PlayPause => {
                 match self.playback.take() {
                     // Pause: back to where playback started, to watch it again.
@@ -312,6 +330,71 @@ impl Editor {
             }
             E::Select { clip, add } => timeline_panel::select(&mut self.selected, project::ClipId(clip), add),
             E::ClearSelection => self.selected.clear(),
+            E::Move { clip, by } => {
+                let result = self.with_document(|d| {
+                    let Some(seq) = d.project().active() else {
+                        return Ok(());
+                    };
+                    let clip = project::ClipId(clip);
+                    let Some(start) = seq
+                        .tracks()
+                        .flat_map(|t| t.clips.iter())
+                        .find(|c| c.id == clip)
+                        .map(|c| c.start)
+                    else {
+                        return Ok(());
+                    };
+                    let target = seq.settings.frame_rate.snap(start + seconds(by)).max(Time::ZERO);
+                    let sequence = seq.id;
+                    d.apply(Command::MoveLinked {
+                        sequence,
+                        clip,
+                        by: target - start,
+                    })
+                });
+                if let Err(err) = result {
+                    self.errors.push(&err);
+                }
+            }
+            E::Trim { clip, edge, to } => {
+                let result = self.with_document(|d| {
+                    let Some(seq) = d.project().active() else {
+                        return Ok(());
+                    };
+                    let to = seq.settings.frame_rate.snap(seconds(to));
+                    let edge = match edge {
+                        ui_kit::ClipEdge::Start => project::Edge::Start,
+                        ui_kit::ClipEdge::End => project::Edge::End,
+                    };
+                    let sequence = seq.id;
+                    d.apply(Command::Trim {
+                        sequence,
+                        clip: project::ClipId(clip),
+                        edge,
+                        to,
+                    })
+                });
+                if let Err(err) = result {
+                    self.errors.push(&err);
+                }
+            }
+            E::Blade { clip, at } => {
+                let result = self.with_document(|d| {
+                    let Some(seq) = d.project().active() else {
+                        return Ok(());
+                    };
+                    let at = seq.settings.frame_rate.snap(seconds(at));
+                    let sequence = seq.id;
+                    d.apply(Command::Split {
+                        sequence,
+                        at,
+                        clip: Some(project::ClipId(clip)),
+                    })
+                });
+                if let Err(err) = result {
+                    self.errors.push(&err);
+                }
+            }
         }
     }
 
@@ -405,6 +488,8 @@ impl Editor {
                         Ok(())
                     })
                     .map(|()| {
+                        // Show the whole timeline again with the new file in it.
+                        self.fitted = false;
                         self.status = match settled {
                             Some(s) => format!(
                                 "Imported {line}. The timeline is now {} at {} kHz to match it (Timeline settings to change).",
@@ -551,6 +636,7 @@ impl Editor {
     fn edit_page(&mut self, ui: &mut egui::Ui) {
         let mut transport_click = None;
         let mut timeline_events = Vec::new();
+        let mut toolbar_click = None;
         let shortcut = self
             .shortcuts
             .shortcut_for(Action::Import)
@@ -608,7 +694,26 @@ impl Editor {
             {
                 self.errors.push(&err);
             }
-            ui.add_space(6.0);
+            ui.add_space(4.0);
+            let tip = |a: Action| {
+                let key = self
+                    .shortcuts
+                    .shortcut_for(a)
+                    .map_or_else(String::new, |s| format!(" ({})", s.label()));
+                format!("{}{key}", a.label())
+            };
+            let tips = [
+                tip(Action::SelectTool),
+                tip(Action::BladeTool),
+                tip(Action::ToggleSnapping),
+                tip(Action::ZoomToFit),
+            ];
+            toolbar_click = ui_kit::timeline::toolbar(
+                ui,
+                &self.theme,
+                &self.timeline,
+                [&tips[0], &tips[1], &tips[2], &tips[3]],
+            );
             timeline_panel::keep_existing(&mut self.selected, seq);
             let drawn = timeline_panel::drawn(p, seq, &self.selected);
             let length = seq.length().as_secs_f64();
@@ -634,6 +739,14 @@ impl Editor {
         }
         for event in timeline_events {
             self.timeline_event(event);
+        }
+        if let Some(click) = toolbar_click {
+            self.run_action(match click {
+                ui_kit::timeline::ToolbarClick::Tool(ui_kit::Tool::Select) => Action::SelectTool,
+                ui_kit::timeline::ToolbarClick::Tool(ui_kit::Tool::Blade) => Action::BladeTool,
+                ui_kit::timeline::ToolbarClick::Snapping => Action::ToggleSnapping,
+                ui_kit::timeline::ToolbarClick::Fit => Action::ZoomToFit,
+            });
         }
         if let Some(click) = transport_click {
             self.run_action(match click {
@@ -1015,6 +1128,11 @@ where
             ui.add(egui::Slider::new(value, min..=max));
         }
     });
+}
+
+/// Seconds (as the timeline widget gives them) as exact time, to the microsecond.
+fn seconds(s: f64) -> Time {
+    Time::from_ratio((s * 1_000_000.0).round() as i64, 1_000_000).unwrap_or(Time::ZERO)
 }
 
 /// A project named on the command line, and what to do with unsaved work from a crash.

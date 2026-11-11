@@ -16,7 +16,7 @@ pub mod ids;
 pub mod model;
 pub mod time;
 
-pub use command::Command;
+pub use command::{Command, Edge};
 pub use document::{Document, OpenCheck, Recovery};
 pub use history::History;
 pub use ids::{ClipId, LabelId, LinkId, MediaId, SequenceId, TrackId};

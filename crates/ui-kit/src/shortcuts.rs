@@ -28,6 +28,9 @@ pub enum Action {
     Stop,
     ClearSelection,
     ZoomToFit,
+    SelectTool,
+    BladeTool,
+    ToggleSnapping,
 }
 
 impl Action {
@@ -51,6 +54,9 @@ impl Action {
             Action::Stop => "Stop playing here",
             Action::ClearSelection => "Select nothing",
             Action::ZoomToFit => "Show the whole timeline",
+            Action::SelectTool => "Select tool: pick, move and trim clips",
+            Action::BladeTool => "Blade tool: cut clips where clicked",
+            Action::ToggleSnapping => "Snapping on or off",
         }
     }
 }
@@ -141,6 +147,9 @@ impl Default for ShortcutTable {
                 (Action::GoToEnd, Shortcut::key(Key::End)),
                 (Action::ClearSelection, Shortcut::key(Key::Escape)),
                 (Action::ZoomToFit, Shortcut::key(Key::Backslash)),
+                (Action::SelectTool, Shortcut::key(Key::V)),
+                (Action::BladeTool, Shortcut::key(Key::B)),
+                (Action::ToggleSnapping, Shortcut::key(Key::N)),
             ],
         }
     }

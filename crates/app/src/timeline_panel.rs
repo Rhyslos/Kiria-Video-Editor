@@ -42,6 +42,7 @@ pub fn drawn(project: &Project, seq: &Sequence, selected: &[ClipId]) -> Drawn {
                     name,
                     selected: selected.contains(&c.id) || c.link.is_some_and(|l| links.contains(&l)),
                     missing: media.is_none(),
+                    link: c.link.map(|l| l.0),
                 }
             })
             .collect(),
