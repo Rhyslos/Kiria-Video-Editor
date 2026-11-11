@@ -340,9 +340,45 @@ pub fn remove_old_launcher(layout: &Layout) {
     }
 }
 
+/// The shortcuts made by the installer show `<root>/icon.ico`, which
+/// updates don't otherwise touch. Each version carries its own copy; this
+/// puts the current version's in place when it differs. Best effort.
+pub fn refresh_icon(layout: &Layout) {
+    let Some(version) = layout.current_version() else {
+        return;
+    };
+    let new = layout.version_dir(&version).join("icon.ico");
+    let installed = layout.root().join("icon.ico");
+    let Ok(bytes) = fs::read(&new) else { return };
+    if fs::read(&installed).ok().as_deref() != Some(bytes.as_slice()) {
+        match fs::write(&installed, &bytes) {
+            Ok(()) => tracing::info!("shortcut icon updated"),
+            Err(err) => tracing::warn!("the shortcut icon could not be updated: {err}"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_shortcut_icon_follows_the_current_version() {
+        let tmp = tempfile::tempdir().unwrap();
+        let layout = Layout::at(tmp.path());
+        fs::write(tmp.path().join(crate::install::CURRENT_FILE), "0.2.0").unwrap();
+        fs::write(tmp.path().join("icon.ico"), b"old").unwrap();
+        refresh_icon(&layout);
+        assert_eq!(
+            fs::read(tmp.path().join("icon.ico")).unwrap(),
+            b"old",
+            "no new icon: left alone"
+        );
+        fs::create_dir_all(layout.version_dir("0.2.0")).unwrap();
+        fs::write(layout.version_dir("0.2.0").join("icon.ico"), b"new").unwrap();
+        refresh_icon(&layout);
+        assert_eq!(fs::read(tmp.path().join("icon.ico")).unwrap(), b"new");
+    }
 
     #[test]
     fn the_version_in_use_is_the_installed_one_not_the_launchers() {

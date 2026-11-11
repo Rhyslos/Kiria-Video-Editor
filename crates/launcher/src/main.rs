@@ -140,6 +140,9 @@ fn install_waiting_update(data_dir: &Path) -> diag::Result<Installed> {
         apply::forget_download(&downloads, &ready.version);
         installed = Some(ready.version);
     }
+    if let InstallKind::Folders(layout) = &kind {
+        apply::refresh_icon(layout);
+    }
     let restart = match &kind {
         // Normally the launcher is replaced only after the new version has
         // started properly (watch_editor); a version that needs it goes first.
