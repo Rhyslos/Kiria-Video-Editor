@@ -40,6 +40,7 @@ pub enum Action {
     RemoveSilence,
     FullScreenViewer,
     Versions,
+    RoughCut,
     ClearRegion,
 }
 
@@ -71,6 +72,7 @@ impl Action {
             Action::RollTool => "Roll tool: move the cut between two clips",
             Action::SlipTool => "Slip tool: show another part of a clip",
             Action::SlideTool => "Slide tool: move a clip between its neighbours",
+            Action::RoughCut => "Timeline view: rough cut or full",
             Action::Versions => "Saved versions: keep this version, or go back to one…",
             Action::FullScreenViewer => "Viewer full screen (Escape returns)",
             Action::RemoveSilence => "Remove silence…",
@@ -179,6 +181,7 @@ impl Default for ShortcutTable {
                 (Action::RemoveSilence, Shortcut::ctrl_shift(Key::R)),
                 (Action::FullScreenViewer, Shortcut::key(Key::F)),
                 (Action::Versions, Shortcut::ctrl_shift(Key::V)),
+                (Action::RoughCut, Shortcut::ctrl_shift(Key::T)),
             ],
         }
     }

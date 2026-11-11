@@ -254,6 +254,8 @@ pub struct TimelineView {
     pub tool: Tool,
     /// Moved and trimmed edges snap to clip edges, the playhead, the needle and labels.
     pub snapping: bool,
+    /// The rough cut view: taller video rows, each clip's sound drawn inside it.
+    pub rough_cut: bool,
 }
 
 impl Default for TimelineView {
@@ -272,6 +274,7 @@ impl Default for TimelineView {
             menu_at: None,
             tool: Tool::Select,
             snapping: true,
+            rough_cut: false,
         }
     }
 }
@@ -283,6 +286,8 @@ const DIVIDER: f32 = 6.0;
 const SCROLLBAR: f32 = 14.0;
 pub const VIDEO_TRACK: f32 = 54.0;
 pub const AUDIO_TRACK: f32 = 58.0;
+/// Height of a video row in the rough cut view, with its sound folded in.
+pub const ROUGH_CUT_TRACK: f32 = 96.0;
 const MIN_ZOOM: f32 = 0.02;
 const MAX_ZOOM: f32 = 2400.0;
 
@@ -409,7 +414,7 @@ impl TimelineView {
         let video_rows = rows(
             &layout.video,
             data.video.len(),
-            VIDEO_TRACK,
+            self.video_row(),
             self.video_scroll,
             true,
         );
@@ -483,11 +488,24 @@ impl TimelineView {
                         clip_painter.rect_filled(m, 1.0, tiny_fill(theme, colour, audio));
                     }
                     draw_clip_body(&clip_painter, theme, r, colour, audio);
+                    // With both (the rough cut view), pictures fill the top
+                    // and the sound the bottom of the clip.
+                    let (pic_r, wave_r) = match (&clip.pictures, &clip.waveform) {
+                        (Some(_), Some(_)) => {
+                            let split = r.top() + r.height() * 0.62;
+                            (
+                                Rect::from_min_max(r.min, pos2(r.right(), split)),
+                                Rect::from_min_max(pos2(r.left(), split - 17.0), r.max),
+                            )
+                        }
+                        _ => (r, r),
+                    };
                     if let Some(pictures) = &clip.pictures {
-                        self.draw_pictures(&clip_painter, r, clip, start, pictures);
+                        self.draw_pictures(&clip_painter, pic_r, clip, start, pictures);
                     }
                     if let Some(w) = &clip.waveform {
-                        self.draw_waveform(&clip_painter, r, clip, start, w, colour, track.muted);
+                        let wave_colour = if audio { colour } else { AUDIO_COLOURS[0] };
+                        self.draw_waveform(&clip_painter, wave_r, clip, start, w, wave_colour, track.muted);
                     }
                     draw_clip_marks(&clip_painter, theme, r, clip);
                 }
@@ -847,7 +865,7 @@ impl TimelineView {
                 let dx = if mods.shift { wheel.y } else { wheel.x };
                 self.scroll = (self.scroll - f64::from(dx) / f64::from(self.zoom)).max(0.0);
             } else if layout.video.contains(pos) {
-                let content = data.video.len() as f32 * VIDEO_TRACK;
+                let content = data.video.len() as f32 * self.video_row();
                 self.video_scroll =
                     (self.video_scroll + wheel.y).clamp(0.0, (content - layout.video.height()).max(0.0));
             } else if layout.audio.contains(pos) {
@@ -1011,7 +1029,13 @@ impl TimelineView {
 
         // Clips: click selects (or cuts, with the blade); drag moves or trims.
         for (area, tracks, height, from_bottom, scroll) in [
-            (layout.video, data.video, VIDEO_TRACK, true, self.video_scroll),
+            (
+                layout.video,
+                data.video,
+                self.video_row(),
+                true,
+                self.video_scroll,
+            ),
             (layout.audio, data.audio, AUDIO_TRACK, false, self.audio_scroll),
         ] {
             let time_area = Rect::from_min_max(pos2(left, area.top()), area.max);
@@ -1198,6 +1222,15 @@ impl TimelineView {
         }
     }
 
+    /// Height of a video row in the current view.
+    fn video_row(&self) -> f32 {
+        if self.rough_cut {
+            ROUGH_CUT_TRACK
+        } else {
+            VIDEO_TRACK
+        }
+    }
+
     /// The label drawn nearest to `x`, if one is within a few pixels.
     fn marker_near<'m>(
         &self,
@@ -1250,12 +1283,13 @@ pub enum ToolbarClick {
     Tool(Tool),
     Snapping,
     Fit,
+    RoughCut,
 }
 
 /// The row of tools above the timeline: Select, Blade, Ripple, Roll, Slip,
-/// Slide, then Snapping and Fit. `tips` gives each button's tooltip (with
-/// its shortcut), in that order.
-pub fn toolbar(ui: &mut Ui, theme: &Theme, view: &TimelineView, tips: [&str; 8]) -> Option<ToolbarClick> {
+/// Slide, then Snapping, Fit and the rough cut view. `tips` gives each
+/// button's tooltip (with its shortcut), in that order.
+pub fn toolbar(ui: &mut Ui, theme: &Theme, view: &TimelineView, tips: [&str; 9]) -> Option<ToolbarClick> {
     let mut clicked = None;
     ui.horizontal(|ui| {
         let size = vec2(30.0, 26.0);
@@ -1268,6 +1302,7 @@ pub fn toolbar(ui: &mut Ui, theme: &Theme, view: &TimelineView, tips: [&str; 8])
             (ToolbarClick::Tool(Tool::Slide), view.tool == Tool::Slide, 5),
             (ToolbarClick::Snapping, view.snapping, 6),
             (ToolbarClick::Fit, false, 7),
+            (ToolbarClick::RoughCut, view.rough_cut, 8),
         ];
         for (click, on, i) in items {
             if i == 6 {
@@ -1391,6 +1426,21 @@ fn tool_icon(p: &egui::Painter, which: usize, c: Pos2, colour: Color32) {
                 ],
                 Stroke::new(2.4, colour),
             ));
+        }
+        // Rough cut: a picture with its sound underneath, as one strip.
+        8 => {
+            p.rect_filled(
+                Rect::from_min_max(c + vec2(-8.0, -6.0), c + vec2(8.0, 0.0)),
+                1.5,
+                colour,
+            );
+            for (i, h) in [2.0f32, 4.0, 3.0, 5.0, 2.0, 4.0, 3.0].iter().enumerate() {
+                let x = c.x - 7.0 + i as f32 * 2.3;
+                p.line_segment(
+                    [pos2(x, c.y + 4.0 - h / 2.0), pos2(x, c.y + 4.0 + h / 2.0)],
+                    stroke,
+                );
+            }
         }
         // Fit: arrows out to both sides.
         _ => {

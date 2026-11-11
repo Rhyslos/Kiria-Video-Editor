@@ -19,12 +19,21 @@ pub struct MeterLevels {
 }
 
 /// Kept by the page between frames.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct MasterColumn {
     /// The fader while it is being dragged.
     drag: Option<f32>,
     /// Peaks drawn, falling slowly so they can be read.
     shown: [f32; 2],
+}
+
+impl Default for MasterColumn {
+    fn default() -> Self {
+        MasterColumn {
+            drag: None,
+            shown: [BOTTOM_DB; 2],
+        }
+    }
 }
 
 /// y on the scale for `db` within `bar`.
@@ -124,7 +133,8 @@ impl MasterColumn {
                 }
             }
         }
-        if levels.is_some() {
+        // Keep drawing while playing, and until the bars have fallen.
+        if levels.is_some() || self.shown.iter().any(|s| *s > BOTTOM_DB) {
             ui.ctx().request_repaint();
         }
         // The fader handle rides on the same scale.

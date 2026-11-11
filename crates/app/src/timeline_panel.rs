@@ -91,6 +91,33 @@ pub fn drawn(
     }
 }
 
+/// The rough cut view: each video clip shows its sound inside it (the first
+/// sound clip linked to it), and sound clips that belong to a video clip
+/// leave the audio area. Tracks left empty there are not shown.
+pub fn fold_sound(drawn: &mut Drawn) {
+    let video_links: Vec<u64> = drawn
+        .video
+        .iter()
+        .flat_map(|t| t.clips.iter())
+        .filter_map(|c| c.link)
+        .collect();
+    for clip in drawn.video.iter_mut().flat_map(|t| t.clips.iter_mut()) {
+        let Some(link) = clip.link else { continue };
+        clip.waveform = drawn
+            .audio
+            .iter()
+            .flat_map(|t| t.clips.iter())
+            .find(|a| a.link == Some(link))
+            .and_then(|a| a.waveform.clone());
+    }
+    for track in &mut drawn.audio {
+        track
+            .clips
+            .retain(|c| c.link.is_none_or(|l| !video_links.contains(&l)));
+    }
+    drawn.audio.retain(|t| !t.clips.is_empty());
+}
+
 /// The colour each timeline-label colour is drawn in.
 pub fn label_colour(c: LabelColor) -> egui::Color32 {
     use egui::Color32 as C;
@@ -137,5 +164,56 @@ mod tests {
         assert_eq!(s, [ClipId(2)]);
         select(&mut s, ClipId(3), false);
         assert_eq!(s, [ClipId(3)]);
+    }
+
+    fn clip(id: u64, link: Option<u64>, peaks: Option<f32>) -> ui_kit::TimelineClip {
+        ui_kit::TimelineClip {
+            id,
+            start: 0.0,
+            duration: 1.0,
+            name: String::new(),
+            info: String::new(),
+            selected: false,
+            missing: false,
+            link,
+            waveform: peaks.map(|p| ui_kit::ClipWaveform {
+                peaks: vec![p].into(),
+                per_second: 1.0,
+                source_in: 0.0,
+            }),
+            pictures: None,
+        }
+    }
+
+    fn track(id: u64, clips: Vec<ui_kit::TimelineClip>) -> TimelineTrack {
+        TimelineTrack {
+            id,
+            name: String::new(),
+            clips,
+            muted: false,
+            solo: false,
+            gain_db: 0.0,
+        }
+    }
+
+    #[test]
+    fn the_rough_cut_folds_linked_sound_into_its_picture() {
+        let mut d = Drawn {
+            video: vec![track(1, vec![clip(10, Some(1), None)])],
+            audio: vec![
+                track(2, vec![clip(20, Some(1), Some(0.5))]),
+                track(3, vec![clip(30, Some(1), Some(0.9)), clip(31, None, Some(0.2))]),
+            ],
+            markers: Vec::new(),
+        };
+        fold_sound(&mut d);
+        let w = d.video[0].clips[0].waveform.as_ref().unwrap();
+        assert_eq!(w.peaks[0], 0.5, "the first sound track's");
+        assert_eq!(d.audio.len(), 1, "the emptied track is gone");
+        assert_eq!(
+            d.audio[0].clips.iter().map(|c| c.id).collect::<Vec<_>>(),
+            [31],
+            "unlinked sound stays"
+        );
     }
 }

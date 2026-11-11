@@ -263,6 +263,17 @@ impl Editor {
                 self.versions.open = true;
                 self.versions.show_again();
             }),
+            Action::RoughCut => {
+                self.settings.rough_cut = !self.settings.rough_cut;
+                self.timeline.rough_cut = self.settings.rough_cut;
+                self.status = if self.settings.rough_cut {
+                    "Rough cut view: each clip's sound is drawn inside it"
+                } else {
+                    "Full timeline view"
+                }
+                .into();
+                self.settings.save(&self.data_dir)
+            }
             Action::FullScreenViewer => {
                 self.set_full_screen(!self.full_screen);
                 Ok(())
@@ -1255,13 +1266,14 @@ impl Editor {
                 tip(Action::SlideTool),
                 tip(Action::ToggleSnapping),
                 tip(Action::ZoomToFit),
+                tip(Action::RoughCut),
             ];
             toolbar_click = ui_kit::timeline::toolbar(
                 ui,
                 &self.theme,
                 &self.timeline,
                 [
-                    &tips[0], &tips[1], &tips[2], &tips[3], &tips[4], &tips[5], &tips[6], &tips[7],
+                    &tips[0], &tips[1], &tips[2], &tips[3], &tips[4], &tips[5], &tips[6], &tips[7], &tips[8],
                 ],
             );
             timeline_panel::keep_existing(&mut self.selected, seq);
@@ -1272,7 +1284,7 @@ impl Editor {
                 ui.ctx().clone(),
             );
             let missing = &self.relink.missing;
-            let drawn = timeline_panel::drawn(
+            let mut drawn = timeline_panel::drawn(
                 p,
                 seq,
                 &self.selected,
@@ -1280,6 +1292,10 @@ impl Editor {
                 |m, stream| waveforms.get(jobs, &ctx, m, stream).cloned(),
                 |m, stream| pictures.get(jobs, &ctx, m, stream),
             );
+            self.timeline.rough_cut = self.settings.rough_cut;
+            if self.settings.rough_cut {
+                timeline_panel::fold_sound(&mut drawn);
+            }
             let length = seq.length().as_secs_f64();
             let width = ui.available_width();
             if !self.fitted {
@@ -1347,6 +1363,7 @@ impl Editor {
                 ui_kit::timeline::ToolbarClick::Tool(ui_kit::Tool::Slide) => Action::SlideTool,
                 ui_kit::timeline::ToolbarClick::Snapping => Action::ToggleSnapping,
                 ui_kit::timeline::ToolbarClick::Fit => Action::ZoomToFit,
+                ui_kit::timeline::ToolbarClick::RoughCut => Action::RoughCut,
             });
         }
         if let Some(click) = transport_click {

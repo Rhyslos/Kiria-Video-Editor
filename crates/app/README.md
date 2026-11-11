@@ -42,6 +42,7 @@ The last three are for CI and for checking the look without a screen (`xvfb-run`
 | `src/looping.rs` | Looping playback inside the region (L): where it starts and when it jumps back |
 | `src/waveforms.rs` | Waveforms for the timeline: each file's sound stream read once on a worker, kept for the session |
 | `src/versions_window.rs` | Saved versions (Ctrl+Shift+V): save the project under a name and restore any earlier one, both on workers |
+| `src/timeline_panel.rs` (also) | `fold_sound`: the rough cut view (Ctrl+Shift+T) folds each video clip's linked sound into it |
 | `src/viewer.rs` | The Edit page's viewer: asks the engine for the picture at the playhead (only when something changed) and shows the newest; the scrub bar and preview quality under it |
 | `src/settings.rs` | `Settings` (theme, resource budgets, "Edit at the playhead"), saved as `settings.ron` in the app's data folder |
 | `src/run_mode.rs` | Command-line options |
