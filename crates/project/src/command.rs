@@ -29,6 +29,20 @@ pub enum Command {
         sequence: SequenceId,
         media: MediaId,
     },
+    /// Places a file of the project at `at`, pushing everything from there
+    /// on later to make room (clips under `at` are split).
+    InsertMedia {
+        sequence: SequenceId,
+        media: MediaId,
+        at: Time,
+    },
+    /// Places a file of the project at `at` over whatever is there: the
+    /// clips it covers are cut away, nothing else moves.
+    OverwriteMedia {
+        sequence: SequenceId,
+        media: MediaId,
+        at: Time,
+    },
     /// Points a media file at where it is now (it was moved or renamed).
     Relink {
         media: MediaId,
@@ -184,7 +198,17 @@ impl Command {
                 p.media.get_mut(media).ok_or_else(|| missing("media file"))?.path = path.clone();
             }
             Command::Import { sequence, media } => import(&mut p, *sequence, media)?,
-            Command::PlaceMedia { sequence, media } => place_media(&mut p, *sequence, *media)?,
+            Command::PlaceMedia { sequence, media } => place_media(&mut p, *sequence, *media, None)?,
+            Command::InsertMedia { sequence, media, at } => {
+                let length = placed_length(p.media.get(media).ok_or_else(|| missing("media file"))?);
+                crate::edits::open_space(&mut p, *sequence, *at, length)?;
+                place_media(&mut p, *sequence, *media, Some(*at))?;
+            }
+            Command::OverwriteMedia { sequence, media, at } => {
+                let length = placed_length(p.media.get(media).ok_or_else(|| missing("media file"))?);
+                crate::edits::clear_space(&mut p, *sequence, *at, length)?;
+                place_media(&mut p, *sequence, *media, Some(*at))?;
+            }
             Command::AddTrack { sequence, kind, name } => {
                 let track = p.new_track(*kind, name);
                 let seq = sequence_mut(&mut p, *sequence)?;
@@ -467,13 +491,21 @@ fn import(p: &mut Project, sequence: SequenceId, media: &MediaRef) -> diag::Resu
     }
     let id: MediaId = p.allocate_id();
     p.media.insert(id, MediaRef { id, ..media.clone() });
-    place_media(p, sequence, id)
+    place_media(p, sequence, id, None)
+}
+
+/// How long a file's clips are when placed.
+fn placed_length(media: &MediaRef) -> Time {
+    match media.kind {
+        MediaKind::Image => STILL_LENGTH,
+        MediaKind::Video | MediaKind::Audio => media.duration,
+    }
 }
 
 /// Places a file of the project at the end of the timeline: its picture on
 /// the first video track and each sound stream on its own audio track (made
 /// when missing, named after the stream), all linked.
-fn place_media(p: &mut Project, sequence: SequenceId, id: MediaId) -> diag::Result<()> {
+fn place_media(p: &mut Project, sequence: SequenceId, id: MediaId, at: Option<Time>) -> diag::Result<()> {
     let media = p.media.get(&id).cloned().ok_or_else(|| missing("media file"))?;
     let media = &media;
     let length = match media.kind {
@@ -501,7 +533,10 @@ fn place_media(p: &mut Project, sequence: SequenceId, id: MediaId) -> diag::Resu
         );
     }
     let link: Option<LinkId> = (usize::from(video.is_some()) + audio.len() > 1).then(|| p.allocate_id());
-    let at = sequence_ref(p, sequence)?.length();
+    let at = match at {
+        Some(at) => at,
+        None => sequence_ref(p, sequence)?.length(),
+    };
     let clip = |p: &mut Project, stream: u32| Clip {
         id: p.allocate_id(),
         media: id,
@@ -1497,5 +1532,63 @@ mod tests {
         let l = &q.active().unwrap().labels[0];
         assert_eq!((l.name.as_str(), l.color), ("Clutch", LabelColor::Red));
         assert!(edit("   ").apply(&p).is_err());
+    }
+
+    #[test]
+    fn insert_pushes_later_and_overwrite_covers() {
+        let (p, seq) = imported(); // 0-30 s (video, game, mic) and 30-40 s (video, game)
+        let short = first_video(&p, 1).media; // the 10 s file
+        let ins = Command::InsertMedia {
+            sequence: seq,
+            media: short,
+            at: Time::seconds(10),
+        }
+        .apply(&p)
+        .unwrap();
+        let s = ins.active().unwrap();
+        assert_eq!(s.length(), Time::seconds(50), "ten seconds longer");
+        let starts: Vec<Time> = s.video_tracks[0].clips.iter().map(|c| c.start).collect();
+        assert_eq!(
+            starts,
+            [
+                Time::ZERO,
+                Time::seconds(10),
+                Time::seconds(20),
+                Time::seconds(40)
+            ]
+        );
+        assert_eq!(
+            s.audio_tracks[1].clips[1].start,
+            Time::seconds(20),
+            "the mic's second half moved too"
+        );
+
+        let over = Command::OverwriteMedia {
+            sequence: seq,
+            media: short,
+            at: Time::seconds(25),
+        }
+        .apply(&p)
+        .unwrap();
+        let s = over.active().unwrap();
+        assert_eq!(s.length(), Time::seconds(40), "nothing moved");
+        let v: Vec<(Time, Time)> = s.video_tracks[0]
+            .clips
+            .iter()
+            .map(|c| (c.start, c.end()))
+            .collect();
+        assert_eq!(
+            v,
+            [
+                (Time::ZERO, Time::seconds(25)),
+                (Time::seconds(25), Time::seconds(35)),
+                (Time::seconds(35), Time::seconds(40)),
+            ]
+        );
+        assert_eq!(
+            s.audio_tracks[1].clips.last().unwrap().end(),
+            Time::seconds(25),
+            "the mic under it was cut"
+        );
     }
 }

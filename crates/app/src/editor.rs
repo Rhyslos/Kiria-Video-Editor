@@ -947,10 +947,16 @@ impl Editor {
                 }
             });
         self.drawer.open = open;
-        if let Some(media) = picked {
+        if let Some((media, placement)) = picked {
+            use crate::media_drawer::Placement;
+            let at = self.edit_point();
             let result = self.with_document(|d| {
                 let sequence = d.project().active_sequence;
-                d.apply(Command::PlaceMedia { sequence, media })
+                d.apply(match placement {
+                    Placement::End => Command::PlaceMedia { sequence, media },
+                    Placement::Insert => Command::InsertMedia { sequence, media, at },
+                    Placement::Overwrite => Command::OverwriteMedia { sequence, media, at },
+                })
             });
             match result {
                 Ok(()) => self.fitted = false,

@@ -6,6 +6,16 @@ use project::{MediaId, MediaRef, Project};
 use ui_kit::Theme;
 use ui_kit::drawer::DrawerTab;
 
+/// Where a picked file goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Placement {
+    End,
+    /// At the edit point, pushing everything after it later.
+    Insert,
+    /// At the edit point, over whatever is there.
+    Overwrite,
+}
+
 /// The drawer's state, kept by the page.
 #[derive(Default)]
 pub struct MediaDrawer {
@@ -35,14 +45,15 @@ fn name(m: &MediaRef) -> String {
 }
 
 impl MediaDrawer {
-    /// Draws the drawer's contents. Returns the file to place, if one was picked.
+    /// Draws the drawer's contents. Returns the file to place and where, if
+    /// one was picked.
     pub fn ui(
         &mut self,
         ui: &mut egui::Ui,
         theme: &Theme,
         project: &Project,
         missing: &[MediaId],
-    ) -> Option<MediaId> {
+    ) -> Option<(MediaId, Placement)> {
         ui_kit::drawer::tab_switch(ui, &mut self.tab);
         ui.add_space(6.0);
         if self.tab == DrawerTab::Effects {
@@ -66,8 +77,8 @@ impl MediaDrawer {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 for media in list {
-                    if row(ui, theme, media, missing.contains(&media.id)) {
-                        picked = Some(media.id);
+                    if let Some(placement) = row(ui, theme, media, missing.contains(&media.id)) {
+                        picked = Some((media.id, placement));
                     }
                 }
             });
@@ -75,12 +86,13 @@ impl MediaDrawer {
     }
 }
 
-/// One file: name, details, and a + to place it. True when asked to place it.
-fn row(ui: &mut egui::Ui, theme: &Theme, media: &MediaRef, missing: bool) -> bool {
+/// One file: name, details, and a + to place it at the end; right-click to
+/// insert or overwrite at the edit point. Returns where it was asked to go.
+fn row(ui: &mut egui::Ui, theme: &Theme, media: &MediaRef, missing: bool) -> Option<Placement> {
     let width = ui.available_width();
     let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 42.0), egui::Sense::click());
     let response = response.on_hover_text(format!(
-        "{}\nDouble-click to place it at the end of the timeline.",
+        "{}\nDouble-click to place it at the end of the timeline; right-click to insert or overwrite at the edit point.",
         media.path.display()
     ));
     let painter = ui.painter_at(rect);
@@ -134,7 +146,20 @@ fn row(ui: &mut egui::Ui, theme: &Theme, media: &MediaRef, missing: bool) -> boo
             },
         );
     }
-    response.double_clicked() || add.clicked()
+    let mut placed = (response.double_clicked() || add.clicked()).then_some(Placement::End);
+    response.context_menu(|ui| {
+        for (placement, text) in [
+            (Placement::End, "Place at the end"),
+            (Placement::Insert, "Insert at the edit point"),
+            (Placement::Overwrite, "Overwrite at the edit point"),
+        ] {
+            if ui.button(text).clicked() {
+                placed = Some(placement);
+                ui.close();
+            }
+        }
+    });
+    placed
 }
 
 #[cfg(test)]

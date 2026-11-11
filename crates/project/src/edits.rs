@@ -122,6 +122,46 @@ pub(crate) fn slide(p: &mut Project, sequence: SequenceId, clip: ClipId, by: Tim
     put_back(p, sequence, changed)
 }
 
+/// Makes `length` of room at `at` on every track: clips under `at` are
+/// split and everything from `at` on moves later. Labels move too.
+pub(crate) fn open_space(p: &mut Project, sequence: SequenceId, at: Time, length: Time) -> diag::Result<()> {
+    split_where_crossing(p, sequence, at)?;
+    let seq = sequence_mut(p, sequence)?;
+    for track in tracks_mut(seq) {
+        for c in track.clips.iter_mut().filter(|c| c.start >= at) {
+            c.start = c.start + length;
+        }
+    }
+    for label in seq.labels.iter_mut().filter(|l| l.at >= at) {
+        label.at = label.at + length;
+    }
+    Ok(())
+}
+
+/// Empties `at`..`at + length` on every track, leaving the gap.
+pub(crate) fn clear_space(p: &mut Project, sequence: SequenceId, at: Time, length: Time) -> diag::Result<()> {
+    let end = at + length;
+    split_where_crossing(p, sequence, end)?;
+    split_where_crossing(p, sequence, at)?;
+    let seq = sequence_mut(p, sequence)?;
+    for track in tracks_mut(seq) {
+        track.clips.retain(|c| c.end() <= at || c.start >= end);
+    }
+    Ok(())
+}
+
+/// Splits every clip that crosses `at`, if any does.
+fn split_where_crossing(p: &mut Project, sequence: SequenceId, at: Time) -> diag::Result<()> {
+    let crosses = sequence_ref(p, sequence)?
+        .tracks()
+        .flat_map(|t| t.clips.iter())
+        .any(|c| c.start < at && at < c.end());
+    if crosses {
+        split(p, sequence, at, None)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn remove_ranges(p: &mut Project, sequence: SequenceId, ranges: &[Region]) -> diag::Result<()> {
     if ranges.is_empty() {
         return Err(AppError::new("Nothing to remove").why("No stretches were given."));
@@ -140,15 +180,8 @@ pub(crate) fn remove_ranges(p: &mut Project, sequence: SequenceId, ranges: &[Reg
         }
     }
     for r in merged.iter().rev() {
-        for at in [r.end, r.start] {
-            let crosses = sequence_ref(p, sequence)?
-                .tracks()
-                .flat_map(|t| t.clips.iter())
-                .any(|c| c.start < at && at < c.end());
-            if crosses {
-                split(p, sequence, at, None)?;
-            }
-        }
+        split_where_crossing(p, sequence, r.end)?;
+        split_where_crossing(p, sequence, r.start)?;
         let length = r.length();
         let seq = sequence_mut(p, sequence)?;
         for track in tracks_mut(seq) {
