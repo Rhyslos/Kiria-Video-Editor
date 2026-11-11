@@ -31,5 +31,9 @@ ui-kit = { path = "../ui-kit" }
 [dev-dependencies]
 tempfile = "3"
 
+[build-dependencies]
+# Builds the app icon into the Windows program.
+winresource = "0.1"
+
 [lints]
 workspace = true

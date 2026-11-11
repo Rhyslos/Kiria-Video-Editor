@@ -21,8 +21,10 @@ $licenses = Join-Path $versionDir "licenses"
 New-Item -ItemType Directory -Force $licenses, $Out | Out-Null
 
 Copy-Item target/release/launcher.exe $Stage
-# Shortcuts and the uninstall entry show this icon (the programs carry none of their own).
+# Shortcuts and the uninstall entry show this icon; both programs also carry
+# it built in. Each version brings a copy so updates can refresh it.
 Copy-Item packaging/icons/icon.ico $Stage
+Copy-Item packaging/icons/icon.ico $versionDir
 Copy-Item target/release/editor.exe $versionDir
 # A copy of the launcher travels in every version, so an update can replace the installed one.
 Copy-Item target/release/launcher.exe $versionDir
