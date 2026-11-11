@@ -22,27 +22,29 @@ cargo run -p app -- --smoke-test         # open, draw 30 frames, close; exit cod
 cargo run -p app -- --responsiveness-test  # 8-second background job; fails unless 99 frames in 100 take under 16 ms of interface work (and none over 50 ms)
 cargo run -p app -- --screenshot out.png # save a PNG of the window and close (waits for imports and the viewer's picture first)
 cargo run -p app -- --graphics-warning --screenshot out.png  # with the question about a failed start with Vulkan
+cargo run -p app -- trip.kiria --import match.mkv --hold-reading 0.4 --screenshot out.png  # with waveforms and clip pictures stopped 40 % read, to see reading in progress
 ```
 
-The last four are for CI and for checking the look without a screen (`xvfb-run` on Linux).
+The last five are for CI and for checking the look without a screen (`xvfb-run` on Linux).
 
 ## Files
 
 | File | What it holds |
 |---|---|
 | `src/main.rs` | Start-up: options, diagnostics, settings, the window (opened with the first graphics system that starts, see Graphics below), exit code |
-| `src/clip_pictures.rs` | The pictures inside video clips: each file's strip read once on a worker, then uploaded 24 a frame so the interface never stalls |
+| `src/clip_pictures.rs` | The pictures inside video clips: each file's strip read once on a worker, then uploaded 24 a frame so the interface never stalls; says how far the reading is |
+| `src/reading.rs` | How far background reading has come, the way the timeline shows it: `Pace` turns a job's progress into waiting or reading with the time left (only once it can be told steadily) |
 | `src/editor.rs` | `Editor`: the window's state, shortcuts, autosave hand-off to workers, pages, Settings and Search windows, the automated runs |
 | `src/frame_grab.rs` | Save this frame as a picture (Ctrl+Shift+E): asks where, then writes the frame at the playhead at full size on a worker |
 | `src/import.rs` | `Importer`: the file dialog (its own thread), reading dropped or chosen files on workers, and applying them in the order chosen; `summary` describes an imported file in one line |
-| `src/timeline_panel.rs` | The open timeline as the timeline widget's data (linked clips show selected together), label colours, the selection |
+| `src/timeline_panel.rs` | The open timeline as the timeline widget's data (linked clips show selected together), label colours, the selection; which clips are still waiting for their waveform or pictures, and how much of each track is ready (`TrackPaces` adds the time left) |
 | `src/media_drawer.rs` | The Edit page's media drawer: the project's files by name with a filter; double-click or + places one at the end of the timeline; right-click to insert or overwrite at the edit point, or drag it onto the timeline (overwrite there; Ctrl inserts) |
 | `src/search.rs` | The search palette (Ctrl+K): commands with their shortcuts, both settings windows, the keyboard shortcuts page, timeline labels and clips; Enter picks the first |
 | `src/silence_panel.rs` | The Remove silence window (Ctrl+Shift+R): track, threshold, minimum length and edge to keep; marks what it found on the timeline and cuts it all out as one step |
 | `src/relink.rs` | Missing media: checked on a worker whenever the project's media changes; the banner on the Edit page and "Find them…", which searches a picked folder and relinks what it finds |
 | `src/label_editor.rs` | The window for one timeline label (double-click it): name, colour, or remove |
 | `src/looping.rs` | Looping playback inside the region (L): where it starts and when it jumps back |
-| `src/waveforms.rs` | Waveforms for the timeline: each file's sound stream read once on a worker, kept for the session |
+| `src/waveforms.rs` | Waveforms for the timeline: each file's sound stream read once on a worker, kept for the session. While a stream is being read it gives the peaks read so far (copied a few times a second from a list shared with the worker, never waiting for it), how far the reading is and the time left; a reading still under way is stopped when its file is forgotten or the app closes |
 | `src/view_state.rs` | How a project's timeline was laid out when last open (track heights, the divider between video and audio), kept in `<project file>.view` beside the project: read on opening, written on a worker a moment after the layout stops changing and on closing. Not part of the project file or its undo history |
 | `src/versions_window.rs` | Saved versions (Ctrl+Shift+V): save the project under a name and restore any earlier one, both on workers |
 | `src/timeline_panel.rs` (also) | `fold_sound`: the rough cut view (Ctrl+Shift+T) folds each video clip's linked sound into it |

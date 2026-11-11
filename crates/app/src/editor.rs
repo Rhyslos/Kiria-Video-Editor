@@ -68,6 +68,8 @@ pub struct Editor {
     fitted: bool,
     waveforms: crate::waveforms::Waveforms,
     pictures: crate::clip_pictures::ClipPictures,
+    /// How fast each track's waveforms or pictures are being read, for the time left.
+    track_paces: timeline_panel::TrackPaces,
     relink: crate::relink::Relinker,
     drawer: crate::media_drawer::MediaDrawer,
     frame_grab: crate::frame_grab::FrameGrab,
@@ -142,6 +144,7 @@ impl Editor {
         let play_when_ready = project.as_ref().is_some_and(|p| p.play);
         let drawer_open = project.as_ref().is_some_and(|p| p.media_drawer);
         let full_screen = project.as_ref().is_some_and(|p| p.full_screen);
+        let hold_reading = project.as_ref().and_then(|p| p.hold_reading);
         let convert = crate::video_picture::conversion(
             cc.wgpu_render_state.as_ref(),
             project.as_ref().is_some_and(|p| p.cpu_colour),
@@ -215,8 +218,9 @@ impl Editor {
             view_keeper,
             selected: Vec::new(),
             fitted: false,
-            waveforms: crate::waveforms::Waveforms::default(),
-            pictures: crate::clip_pictures::ClipPictures::default(),
+            waveforms: crate::waveforms::Waveforms::holding_at(hold_reading),
+            pictures: crate::clip_pictures::ClipPictures::holding_at(hold_reading),
+            track_paces: timeline_panel::TrackPaces::default(),
             relink: crate::relink::Relinker::default(),
             frame_grab: crate::frame_grab::FrameGrab::default(),
             silence: crate::silence_panel::SilencePanel::default(),
@@ -1057,7 +1061,7 @@ impl Editor {
         };
         let (jobs, waveforms) = (&self.jobs, &mut self.waveforms);
         let ready = self.silence.refresh(document.project(), |m, stream| {
-            waveforms.get(jobs, ctx, m, stream).cloned()
+            waveforms.whole(jobs, ctx, m, stream)
         });
         let asked = self.silence.ui(ctx, &self.theme, document.project(), ready);
         if let crate::silence_panel::Asked::Remove(ranges) = asked {
@@ -1418,13 +1422,16 @@ impl Editor {
                 seq,
                 &self.selected,
                 missing,
-                |m, stream| waveforms.get(jobs, &ctx, m, stream).cloned(),
+                |m, stream| waveforms.get(jobs, &ctx, m, stream),
                 |m, stream| pictures.get(jobs, &ctx, m, stream),
             );
             self.timeline.rough_cut = self.settings.rough_cut;
             if self.settings.rough_cut {
                 timeline_panel::fold_sound(&mut drawn);
             }
+            let now = Instant::now();
+            self.track_paces.time(&mut drawn.video, now);
+            self.track_paces.time(&mut drawn.audio, now);
             let length = seq.length().as_secs_f64();
             let width = ui.available_width();
             if !self.fitted {
@@ -1854,8 +1861,8 @@ impl eframe::App for Editor {
             self.run_action(Action::PlayPause);
         }
         self.follow_playback(&ctx);
-        self.waveforms.poll();
-        self.pictures.poll(&ctx);
+        self.waveforms.poll(&ctx, now);
+        self.pictures.poll(&ctx, now);
         self.relinking(&ctx);
         self.frame_grabs(&ctx);
         if let Some(err) = self.viewer.poll(&ctx, self.settings.preview_quality)
@@ -1918,6 +1925,10 @@ impl eframe::App for Editor {
     }
 
     fn on_exit(&mut self) {
+        // Background reading nobody will look at any more stops here, so
+        // closing never waits for a long file.
+        self.waveforms.stop();
+        self.pictures.stop();
         if let Some(keeper) = &mut self.view_keeper {
             keeper.close(&self.timeline);
         }
@@ -1998,6 +2009,8 @@ pub struct ProjectToOpen {
     pub actions: Vec<String>,
     /// Convert the viewer's colour on the CPU even when the GPU could.
     pub cpu_colour: bool,
+    /// Stop background reading at this share, for screenshots of it in progress.
+    pub hold_reading: Option<f32>,
 }
 
 /// Opens a project, or creates it if it doesn't exist.

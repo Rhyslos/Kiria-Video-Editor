@@ -20,11 +20,17 @@
 //! Alt+wheel makes every track of the area under the pointer taller or
 //! shorter. Heights are view state the page keeps; they are never edits.
 //!
+//! Clips whose waveform or pictures are still being read in the background
+//! say so ([`Loading`]): a slim bar with a percentage on the clip, and a
+//! short line by the track's name while any of its clips is being read.
+//!
 //! The widget knows nothing about projects: the page hands it plain data
 //! (seconds as `f64`, for drawing only) and gets back [`TimelineEvent`]s.
 
+mod loading;
 mod rows;
 
+pub use loading::{LoadKind, LoadState, Loading};
 pub use rows::{MAX_TRACK, MIN_TRACK, TrackHeights};
 
 use crate::Theme;
@@ -49,6 +55,9 @@ pub struct TimelineClip {
     pub waveform: Option<ClipWaveform>,
     /// Pictures to draw inside the clip (video clips), once they have been read.
     pub pictures: Option<ClipPictures>,
+    /// Background reading the clip's waveform or pictures still wait for
+    /// (or that failed): shown as a slim bar with a percentage on the clip.
+    pub loading: Option<Loading>,
 }
 
 /// Small pictures along a clip's file: one every `every` seconds from the
@@ -86,6 +95,9 @@ pub struct TimelineTrack {
     pub solo: bool,
     /// Volume in decibels.
     pub gain_db: f32,
+    /// Background reading still going on for clips of this track: shown
+    /// as a short line by the track's name, gone when it is done.
+    pub loading: Option<Loading>,
 }
 
 /// A timeline label (a named, coloured marker).
@@ -658,15 +670,20 @@ impl TimelineView {
                     FontId::proportional(12.5),
                     if track.muted { theme.faint } else { theme.text },
                 );
+                let header = Rect::from_min_max(pos2(layout.header_x, row.top()), pos2(left, row.bottom()))
+                    .intersect(area);
+                if let Some(loading) = &track.loading
+                    && let Some(line) = loading::draw_in_header(&header_painter, theme, header, loading)
+                {
+                    ui.interact(
+                        line.expand(3.0).intersect(header),
+                        ui.scope_id().with(("track loading", track.id)),
+                        Sense::hover(),
+                    )
+                    .on_hover_text(loading.explanation());
+                }
                 if audio {
-                    self.track_controls(
-                        ui,
-                        theme,
-                        track,
-                        Rect::from_min_max(pos2(layout.header_x, row.top()), pos2(left, row.bottom()))
-                            .intersect(area),
-                        &mut events,
-                    );
+                    self.track_controls(ui, theme, track, header, &mut events);
                 }
                 let colour = if audio {
                     AUDIO_COLOURS[i % AUDIO_COLOURS.len()]
@@ -722,6 +739,9 @@ impl TimelineView {
                         self.draw_waveform(&clip_painter, wave_r, clip, start, w, wave_colour, track.muted);
                     }
                     draw_clip_marks(&clip_painter, theme, r, clip);
+                    if let Some(loading) = &clip.loading {
+                        loading::draw_on_clip(&clip_painter, theme, r, loading);
+                    }
                 }
                 if let Some(m) = merged {
                     clip_painter.rect_filled(m, 1.0, tiny_fill(theme, colour, audio));
@@ -2044,6 +2064,7 @@ mod tests {
             link: None,
             waveform: None,
             pictures: None,
+            loading: None,
         }
     }
 
@@ -2055,6 +2076,7 @@ mod tests {
             muted: false,
             solo: false,
             gain_db: 0.0,
+            loading: None,
         }
     }
 
@@ -2346,6 +2368,7 @@ mod tests {
             muted: false,
             solo: false,
             gain_db: 0.0,
+            loading: None,
         };
         let tracks = [track];
         let rows = [Rect::from_min_max(pos2(0.0, 0.0), pos2(500.0, 50.0))];

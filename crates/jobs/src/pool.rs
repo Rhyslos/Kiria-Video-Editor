@@ -1,6 +1,6 @@
 //! One pool of worker threads with a priority queue.
 
-use crate::{JobContext, JobHandle, Priority};
+use crate::{JobContext, JobHandle, Priority, ProgressCell};
 use diag::AppError;
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
@@ -95,12 +95,16 @@ impl Pool {
     {
         let (sender, receiver) = mpsc::sync_channel(1);
         let cancelled = Arc::new(AtomicBool::new(false));
+        let progress = Arc::new(ProgressCell::waiting());
         let context = JobContext {
             cancelled: Arc::clone(&cancelled),
+            progress: Arc::clone(&progress),
         };
         let name = name.to_owned();
         let work: Work = Box::new(move || {
             let _span = tracing::debug_span!("job", name = %name).entered();
+            // From here the handle sees it as running.
+            context.set_progress(0.0);
             let result = catch_unwind(AssertUnwindSafe(|| job(&context))).unwrap_or_else(|_| {
                 Err(AppError::new("A background task failed")
                     .why(format!("The task \"{name}\" stopped unexpectedly."))
@@ -119,7 +123,11 @@ impl Pool {
         });
         drop(state);
         self.shared.wake.notify_one();
-        JobHandle { receiver, cancelled }
+        JobHandle {
+            receiver,
+            cancelled,
+            progress,
+        }
     }
 
     pub(crate) fn set_background_paused(&self, paused: bool) {

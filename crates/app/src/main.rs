@@ -13,6 +13,7 @@ mod import;
 mod label_editor;
 mod looping;
 mod media_drawer;
+mod reading;
 mod relink;
 mod run_mode;
 mod search;
@@ -95,6 +96,7 @@ fn main() -> ExitCode {
         full_screen: options.full_screen,
         actions: options.actions.clone(),
         cpu_colour: options.cpu_colour,
+        hold_reading: options.hold_reading,
     });
     // If this run crashes, the launcher offers to recover this project.
     if let (Some(diagnostics), Some(project)) = (&diagnostics, &project)

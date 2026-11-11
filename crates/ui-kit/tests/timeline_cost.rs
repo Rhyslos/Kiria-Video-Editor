@@ -24,11 +24,13 @@ fn tracks(count: usize, clips_each: usize, clip_len: f64) -> Vec<TimelineTrack> 
                     link: None,
                     waveform: None,
                     pictures: None,
+                    loading: None,
                 })
                 .collect(),
             muted: false,
             solo: false,
             gain_db: 0.0,
+            loading: None,
         })
         .collect()
 }

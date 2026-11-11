@@ -17,7 +17,7 @@ use diag::AppError;
 use pool::Pool;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError};
 
 /// How urgent a job is. Lower variants run first.
@@ -40,16 +40,64 @@ pub enum PoolKind {
     Export,
 }
 
+/// How far a job has come, as its handle sees it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum JobProgress {
+    /// Not started: in the queue, or held back while the timeline plays.
+    Waiting,
+    /// Running: the share done, 0 to 1, as the job last reported it (0 for
+    /// a job that reports nothing).
+    Running(f32),
+}
+
+/// A job's progress, shared between its worker and its handle: the share
+/// done as the bits of an `f32`, negative until the job starts. One atomic
+/// number, so neither side ever waits for the other.
+#[derive(Debug)]
+pub(crate) struct ProgressCell(AtomicU32);
+
+impl ProgressCell {
+    pub(crate) fn waiting() -> ProgressCell {
+        ProgressCell(AtomicU32::new((-1.0f32).to_bits()))
+    }
+
+    fn set(&self, done: f32) {
+        let done = if done.is_finite() {
+            done.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        self.0.store(done.to_bits(), Ordering::Relaxed);
+    }
+
+    fn get(&self) -> JobProgress {
+        let done = f32::from_bits(self.0.load(Ordering::Relaxed));
+        if done < 0.0 {
+            JobProgress::Waiting
+        } else {
+            JobProgress::Running(done)
+        }
+    }
+}
+
 /// Handed to every job.
 #[derive(Debug, Clone)]
 pub struct JobContext {
     cancelled: Arc<AtomicBool>,
+    progress: Arc<ProgressCell>,
 }
 
 impl JobContext {
     /// Long jobs check this now and then and stop early when it is true.
     pub fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::Relaxed)
+    }
+
+    /// Says how much of the job is done, from 0 to 1. Costs next to
+    /// nothing, so long jobs can call it as often as is handy; the handle
+    /// reads it with [`JobHandle::progress`].
+    pub fn set_progress(&self, done: f32) {
+        self.progress.set(done);
     }
 }
 
@@ -58,6 +106,7 @@ impl JobContext {
 pub struct JobHandle<T> {
     receiver: Receiver<diag::Result<T>>,
     cancelled: Arc<AtomicBool>,
+    progress: Arc<ProgressCell>,
 }
 
 impl<T> JobHandle<T> {
@@ -79,6 +128,12 @@ impl<T> JobHandle<T> {
     /// sees the request and can return straight away.
     pub fn cancel(&self) {
         self.cancelled.store(true, Ordering::Relaxed);
+    }
+
+    /// Whether the job has started and how far it says it has come. Never
+    /// blocks: safe to ask every frame.
+    pub fn progress(&self) -> JobProgress {
+        self.progress.get()
     }
 }
 
@@ -300,6 +355,54 @@ mod tests {
         };
         assert!(receiver_result.unwrap());
         assert!(start.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn a_job_reports_how_far_it_is() {
+        // One analysis thread, so the second job waits behind the first.
+        let jobs = system(1, BackgroundPolicy::Always);
+        let gate = Arc::new(AtomicBool::new(false));
+        let reporting = |gate: Arc<AtomicBool>| {
+            move |ctx: &JobContext| {
+                ctx.set_progress(0.25);
+                while !gate.load(Ordering::Relaxed) {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                ctx.set_progress(7.0);
+                Ok(())
+            }
+        };
+        let first = jobs.submit(
+            PoolKind::Analysis,
+            Priority::Interactive,
+            "first",
+            reporting(Arc::clone(&gate)),
+        );
+        let second = jobs.submit(
+            PoolKind::Analysis,
+            Priority::Interactive,
+            "second",
+            reporting(Arc::clone(&gate)),
+        );
+        let start = Instant::now();
+        while first.progress() != JobProgress::Running(0.25) && start.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(first.progress(), JobProgress::Running(0.25));
+        assert_eq!(second.progress(), JobProgress::Waiting, "still in the queue");
+        gate.store(true, Ordering::Relaxed);
+        while first.try_result().is_none() || second.try_result().is_none() {
+            assert!(start.elapsed() < Duration::from_secs(5));
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(first.progress(), JobProgress::Running(1.0), "kept within 0 to 1");
+        // A job that reports nothing is running at 0 once it has started.
+        let quiet = jobs.submit(PoolKind::Analysis, Priority::Interactive, "quiet", |_| Ok(()));
+        while quiet.try_result().is_none() {
+            assert!(start.elapsed() < Duration::from_secs(5));
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(quiet.progress(), JobProgress::Running(0.0));
     }
 
     #[test]

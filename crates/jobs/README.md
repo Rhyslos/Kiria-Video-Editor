@@ -30,6 +30,7 @@ if let Some(result) = handle.try_result() { /* ... */ }
 | Background policy | `Always`, `PauseWhilePlaying` (default) or `OnlyWhenIdle`. Tell it with `set_playing` and `set_idle` |
 | Results | `JobHandle::try_result()` (never blocks) or `wait()` (workers and tests only). Errors and panics come back as explained `AppError`s |
 | Cancelling | `JobHandle::cancel()` sets a flag the job reads with `ctx.is_cancelled()` |
+| Progress | A job says how far it is with `ctx.set_progress(0.0..=1.0)`; `JobHandle::progress()` reads it without blocking: `Waiting` until the job starts, then `Running(share done)`. One atomic number per job |
 | Budgets | `Budgets` is what Settings stores (`Auto` or a manual number). `resolve(&Machine)` turns it into safe numbers: workers 1 to CPU threads − 1, RAM cache ¼ of memory by default (at most ¾), disk cache 20 GB or ¼ of free space |
 | Usage readout | `UsageMonitor` samples CPU and memory once a second on its own thread; `latest()` is cheap to call every frame |
 
@@ -37,7 +38,7 @@ if let Some(result) = handle.try_result() { /* ... */ }
 
 | File | What it holds |
 |---|---|
-| `src/lib.rs` | `JobSystem`, `Priority`, `PoolKind`, `JobHandle`, `JobContext` |
+| `src/lib.rs` | `JobSystem`, `Priority`, `PoolKind`, `JobHandle`, `JobContext`, `JobProgress` |
 | `src/pool.rs` | One pool: threads and a priority queue that can hold back background work |
 | `src/budget.rs` | `Budgets`, `Limit`, `BackgroundPolicy`, `Machine`, `Resolved` |
 | `src/usage.rs` | `UsageMonitor` and `Usage` for the top-bar readout |

@@ -24,13 +24,15 @@ pub fn spacing(duration: f64) -> f64 {
 }
 
 /// Reads the pictures of a file's video stream. Slow (one seek per picture):
-/// run it on a worker. `cancelled` is asked between pictures.
+/// run it on a worker. `cancelled` is asked between pictures, and `progress`
+/// is told the share read (0 to 1) after each one.
 pub fn strip(
     path: &Path,
     stream: u32,
     rotation: u16,
     duration: f64,
     cancelled: impl Fn() -> bool,
+    progress: impl Fn(f32),
 ) -> diag::Result<Strip> {
     let every = spacing(duration);
     let mut decoder = VideoDecoder::open(path, stream, rotation, Decoding::Software)?;
@@ -44,6 +46,7 @@ pub fn strip(
             Err(err) => return Err(err),
         }
         t += every;
+        progress((t / duration.max(0.001)).min(1.0) as f32);
     }
     Ok(Strip { every, frames })
 }
@@ -63,8 +66,20 @@ mod tests {
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../media/tests/fixtures/game-3-audio.mkv");
         let info = media::probe(&fixture).unwrap();
         let index = info.info.video.as_ref().unwrap().index;
-        let s = strip(&fixture, index, 0, info.duration.as_secs_f64(), || false).unwrap();
+        let told = std::cell::RefCell::new(Vec::new());
+        let s = strip(
+            &fixture,
+            index,
+            0,
+            info.duration.as_secs_f64(),
+            || false,
+            |done| told.borrow_mut().push(done),
+        )
+        .unwrap();
         assert!(!s.frames.is_empty());
+        let told = told.into_inner();
+        assert_eq!(told.len(), s.frames.len(), "told after every picture");
+        assert!(told.windows(2).all(|w| w[0] <= w[1]) && told.last() == Some(&1.0));
         assert!(s.frames.iter().all(|f| f.width <= WIDTH && f.height <= HEIGHT));
     }
 }

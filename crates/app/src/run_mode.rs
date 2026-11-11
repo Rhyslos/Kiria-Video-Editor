@@ -25,6 +25,9 @@ pub struct Options {
     pub cpu_colour: bool,
     /// Show the question about a failed start with Vulkan (`--graphics-warning`, for screenshots).
     pub graphics_warning: bool,
+    /// Stop the background reading of waveforms and clip pictures at this
+    /// share, 0 to 1 (`--hold-reading 0.4`, for screenshots of reading in progress).
+    pub hold_reading: Option<f32>,
     pub mode: RunMode,
 }
 
@@ -62,6 +65,13 @@ impl Options {
                 "--action" => {
                     let name = args.next().ok_or("--action needs a command name")?;
                     options.actions.push(name);
+                }
+                "--hold-reading" => {
+                    let share = args
+                        .next()
+                        .and_then(|s| s.parse().ok())
+                        .ok_or("--hold-reading needs a share between 0 and 1")?;
+                    options.hold_reading = Some(share);
                 }
                 "--playhead" => {
                     let secs = args
@@ -104,5 +114,10 @@ mod tests {
         assert!(parse(&["--import"]).is_err());
         assert!(parse(&["p.x", "--cpu-colour"]).unwrap().cpu_colour);
         assert!(!parse(&["p.x"]).unwrap().cpu_colour);
+        assert_eq!(
+            parse(&["p.x", "--hold-reading", "0.4"]).unwrap().hold_reading,
+            Some(0.4)
+        );
+        assert!(parse(&["p.x", "--hold-reading", "soon"]).is_err());
     }
 }
