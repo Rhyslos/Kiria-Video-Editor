@@ -2,7 +2,7 @@
 
 Turning what is on the timeline at a moment into one picture: every visible clip placed, cropped, scaled, coloured and laid over the ones below it. The viewer shows that picture; export, project pictures and the Color page's scopes will read the same one. Build plan steps 4C "Inspector", "Split view", "Facecam layouts", titles, speed ramps with frame blending, nested timelines, and everything in phases 6, 7 and 9 that touches pixels.
 
-Status: the prototypes are written (`spikes/rendering/`, section 3) and wait to be run on the test machine. Nothing is chosen or built yet.
+Status: measured on the test machine and chosen (section 4): a worker composes into a floating-point frame in linear light on the window's device. The frame description and the compositor are being built in `crates/render`.
 
 ## 1. Problem
 
@@ -104,4 +104,49 @@ What does not wait for the measurements, because every approach needs it: where 
 
 ## 4. Result
 
-Still to come.
+Measured on the test machine (a current desktop GPU, a 24-thread CPU) through Vulkan, as the editor draws there. Every picture is the median of 40.
+
+### What a picture costs
+
+Milliseconds on the card by its own clock, from the start of the first pass to the end of the last, with showing the frame included:
+
+| Layers into frame | Layers | A straight to the window | 8-bit frame | Float frame | Float, a target per layer |
+| --- | --- | --- | --- | --- | --- |
+| 1080p into 1080p | 1 | 0.02 | 0.04 | 0.03 | 0.05 |
+| 1080p into 1080p | 4 | 0.02 | 0.03 | 0.05 | 0.12 |
+| 1440p into 1440p | 1 | 0.02 | 0.04 | 0.05 | 0.09 |
+| 1440p into 1440p | 2 | 0.02 | 0.04 | 0.05 | 0.11 |
+| 1440p into 1440p | 4 | 0.04 | 0.05 | 0.08 | 0.20 |
+| 4K into 4K | 1 | 0.06 | 0.08 | 0.12 | 0.62 |
+| 4K into 4K | 2 | 0.04 | 0.07 | 0.14 | 0.65 |
+| 4K into 4K | 4 | 0.08 | 0.12 | 0.28 | 1.25 |
+| 4K into 1440p | 4 | 0.04 | 0.06 | 0.09 | 0.26 |
+
+- The asking thread's own time (building the commands and handing them over) was 0.05 to 0.14 ms for every row, growing a little with the number of passes.
+- From asking to finished, one picture at a time, the worst row (4K, four layers, a target each) took 1.5 ms; a typical edit (1440p, a recording and a facecam, float frame) 0.18 ms.
+- The first picture after start took up to 2.6 ms, and making the shaders and pipelines 34 ms, once.
+
+### While the interface draws
+
+A stand-in for the interface drew 60 and 144 frames a second for 4 s while 60 pictures a second were composed (float frame). No frame was late or lost in any run. The interface thread's own time per frame, median / worst, in ms:
+
+| Picture | Interface | Nobody composing | B the interface thread | C a worker |
+| --- | --- | --- | --- | --- |
+| 1440p, 2 layers | 60 a second | 0.14 / 0.28 | 0.18 / 0.28 | 0.14 / 0.26 |
+| 1440p, 2 layers | 144 a second | 0.08 / 0.15 | 0.10 / 0.23 | 0.07 / 0.16 |
+| 4K, 4 layers | 60 a second | 0.13 / 0.23 | 0.22 / 0.37 | 0.14 / 0.32 |
+| 4K, 4 layers | 144 a second | 0.09 / 0.17 | 0.10 / 0.31 | 0.07 / 0.20 |
+
+The time until the card had finished an interface frame went from 0.66 ms (nobody composing) to 1.09 ms with B and 0.68 ms with C for the 4K picture at 60 a second.
+
+### The choice
+
+**C: a worker composes, on the window's device, into a floating-point frame in linear light.**
+
+- **Where:** both B and C are far inside the 2 ms the interface thread may spend, so the numbers alone would allow either. C leaves the interface's frames as they are with nobody composing (0.14 against 0.13 ms; B adds half again), and its real reasons are the ones from section 2: the preview worker already holds the decoded pictures, on the card for the zero-copy way; it can compose before the interface asks; and export needs the same pictures with no interface at all. Sharing one queue between two threads cost nothing that could be measured.
+- **What in:** floating point in linear light costs 0.01 to 0.16 ms a picture over 8 bits. That is nothing next to decoding (3 ms a frame), and it is what makes mixing and scaling right (the check: half white over mid grey is 191 of 255 mixed as numbers, 205 mixed as light) and what the Color page needs. There is no reason left to build an 8-bit way for cards. `render::Working::Display` stays for software drawing, where the difference is large, should it prove worth having there.
+- **Passes:** a target of its own for a layer costs about 0.03 ms at 1080p and 0.3 ms at 4K. So an effect that needs one is affordable, a dozen of them at 4K are a few milliseconds, and the graph does not have to be clever: draw plain layers in one pass, break where something needs it.
+- **A straight to the window** is cheapest by a few hundredths of a millisecond and can do none of what is needed. Dropped.
+- **Pipelines** are made once when the worker starts (34 ms, off the interface thread), never when a picture is first needed.
+
+What the measurement did not cover: the interface's own drawing and a real window's waiting for the screen (the same for every approach), and cards much weaker than the test machine's. Software drawing is two to three thousand times slower per picture, so there the preview size carries the load, as it already does for decoding.
