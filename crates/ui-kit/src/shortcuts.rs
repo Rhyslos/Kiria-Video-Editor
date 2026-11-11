@@ -36,6 +36,7 @@ pub enum Action {
     SlipTool,
     SlideTool,
     ToggleLoop,
+    SaveFrame,
     ClearRegion,
 }
 
@@ -67,6 +68,7 @@ impl Action {
             Action::RollTool => "Roll tool: move the cut between two clips",
             Action::SlipTool => "Slip tool: show another part of a clip",
             Action::SlideTool => "Slide tool: move a clip between its neighbours",
+            Action::SaveFrame => "Save this frame as a picture…",
             Action::ToggleLoop => "Loop playback inside the region",
             Action::ClearRegion => "Clear the region",
         }
@@ -167,6 +169,7 @@ impl Default for ShortcutTable {
                 (Action::SlipTool, Shortcut::key(Key::Y)),
                 (Action::SlideTool, Shortcut::key(Key::U)),
                 (Action::ToggleLoop, Shortcut::key(Key::L)),
+                (Action::SaveFrame, Shortcut::ctrl_shift(Key::E)),
             ],
         }
     }

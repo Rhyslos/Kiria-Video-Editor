@@ -48,27 +48,63 @@ pub fn write(project: &Project, sequence: SequenceId, at: Time, out: &Path) -> d
     )?;
     let frame = decoder.frame_at(showing.source_time.as_secs_f64(), WIDTH, HEIGHT)?;
     let picture = letterbox(&frame.rgba, frame.width, frame.height);
-    // Written beside, then renamed, so the launcher never reads half a file.
+    save_png(&picture, WIDTH, HEIGHT, out, "The project picture can't be saved")?;
+    Ok(true)
+}
+
+/// Saves the timeline's frame at `at` at the full size of its file, as a
+/// PNG. Refused in a gap, where there is no picture.
+pub fn save_frame(project: &Project, sequence: SequenceId, at: Time, out: &Path) -> diag::Result<()> {
+    let showing = project
+        .sequences
+        .iter()
+        .find(|s| s.id == sequence)
+        .and_then(|seq| video_at(project, seq, at))
+        .ok_or_else(|| {
+            AppError::new("There is no picture here")
+                .why("The playhead is in a gap or on sound only.")
+                .fix("Move the playhead onto a video clip.")
+        })?;
+    let video = showing.media.info.video.as_ref();
+    let rotation = video.map_or(0, |v| v.rotation);
+    let (w, h) = video.map_or((u32::MAX, u32::MAX), |v| v.display_size());
+    let mut decoder = VideoDecoder::open(
+        &showing.media.path,
+        showing.clip.stream,
+        rotation,
+        Decoding::Software,
+    )?;
+    let frame = decoder.frame_at(showing.source_time.as_secs_f64(), w, h)?;
+    save_png(
+        &frame.rgba,
+        frame.width,
+        frame.height,
+        out,
+        "The frame can't be saved",
+    )
+}
+
+/// Writes beside `out`, then renames, so nobody reads half a file.
+fn save_png(rgba: &[u8], w: u32, h: u32, out: &Path, what: &str) -> diag::Result<()> {
     let partial = out.with_extension("partial.png");
     image::save_buffer_with_format(
         &partial,
-        &picture,
-        WIDTH,
-        HEIGHT,
+        rgba,
+        w,
+        h,
         image::ExtendedColorType::Rgba8,
         image::ImageFormat::Png,
     )
     .map_err(|e| {
-        AppError::new("The project picture can't be saved")
+        AppError::new(what)
             .why(format!("Writing {} failed: {e}.", partial.display()))
-            .fix("Check that the project folder can be written to.")
+            .fix("Check that the folder can be written to and the drive has space.")
     })?;
     std::fs::rename(&partial, out).or_explain(|| {
-        AppError::new("The project picture can't be saved")
+        AppError::new(what)
             .why(format!("Renaming it to {} failed.", out.display()))
-            .fix("Check that the project folder can be written to.")
-    })?;
-    Ok(true)
+            .fix("Check that the folder can be written to.")
+    })
 }
 
 /// `rgba` (`w` × `h`, at most [`WIDTH`] × [`HEIGHT`]) centred on black.
@@ -123,9 +159,19 @@ mod tests {
         assert!(write(&p, seq, Time::ZERO, &out).unwrap());
         let img = image::open(&out).unwrap();
         assert_eq!((img.width(), img.height()), (WIDTH, HEIGHT));
-        std::fs::remove_dir_all(&dir).unwrap();
+
+        let full = dir.join("frame.png");
+        save_frame(&p, seq, Time::ZERO, &full).unwrap();
+        let v = p.media.values().next().unwrap().info.video.clone().unwrap();
+        let img = image::open(&full).unwrap();
+        assert_eq!((img.width(), img.height()), v.display_size(), "full size");
+        assert!(
+            save_frame(&p, seq, Time::from_ratio(100, 1).unwrap(), &full).is_err(),
+            "a gap"
+        );
 
         let empty = Project::new_automatic("E");
         assert!(!write(&empty, empty.active_sequence, Time::ZERO, &out).unwrap());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
