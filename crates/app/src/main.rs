@@ -6,6 +6,7 @@
 // Release builds on Windows open no console window next to the editor.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod clip_pictures;
 mod editor;
 mod frame_grab;
 mod import;

@@ -49,6 +49,7 @@ pub struct Editor {
     /// The timeline was fitted to the project once already.
     fitted: bool,
     waveforms: crate::waveforms::Waveforms,
+    pictures: crate::clip_pictures::ClipPictures,
     relink: crate::relink::Relinker,
     drawer: crate::media_drawer::MediaDrawer,
     frame_grab: crate::frame_grab::FrameGrab,
@@ -150,6 +151,7 @@ impl Editor {
             selected: Vec::new(),
             fitted: false,
             waveforms: crate::waveforms::Waveforms::default(),
+            pictures: crate::clip_pictures::ClipPictures::default(),
             relink: crate::relink::Relinker::default(),
             frame_grab: crate::frame_grab::FrameGrab::default(),
             silence: crate::silence_panel::SilencePanel::default(),
@@ -941,6 +943,7 @@ impl Editor {
                 return;
             }
             self.waveforms.forget(*media);
+            self.pictures.forget(*media);
         }
         self.status = crate::relink::outcome(&found);
     }
@@ -1156,11 +1159,21 @@ impl Editor {
                 ],
             );
             timeline_panel::keep_existing(&mut self.selected, seq);
-            let (jobs, waveforms, ctx) = (&self.jobs, &mut self.waveforms, ui.ctx().clone());
+            let (jobs, waveforms, pictures, ctx) = (
+                &self.jobs,
+                &mut self.waveforms,
+                &mut self.pictures,
+                ui.ctx().clone(),
+            );
             let missing = &self.relink.missing;
-            let drawn = timeline_panel::drawn(p, seq, &self.selected, missing, |m, stream| {
-                waveforms.get(jobs, &ctx, m, stream).cloned()
-            });
+            let drawn = timeline_panel::drawn(
+                p,
+                seq,
+                &self.selected,
+                missing,
+                |m, stream| waveforms.get(jobs, &ctx, m, stream).cloned(),
+                |m, stream| pictures.get(jobs, &ctx, m, stream),
+            );
             let length = seq.length().as_secs_f64();
             let width = ui.available_width();
             if !self.fitted {
@@ -1537,6 +1550,7 @@ impl eframe::App for Editor {
         }
         self.follow_playback(&ctx);
         self.waveforms.poll();
+        self.pictures.poll(&ctx);
         self.relinking(&ctx);
         self.frame_grabs(&ctx);
         if let Some(err) = self.viewer.poll(&ctx, self.settings.preview_quality)

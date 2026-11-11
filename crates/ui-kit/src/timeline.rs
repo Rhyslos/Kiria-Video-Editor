@@ -30,6 +30,20 @@ pub struct TimelineClip {
     pub link: Option<u64>,
     /// Loudness to draw inside the clip (audio clips), once it has been read.
     pub waveform: Option<ClipWaveform>,
+    /// Pictures to draw inside the clip (video clips), once they have been read.
+    pub pictures: Option<ClipPictures>,
+}
+
+/// Small pictures along a clip's file: one every `every` seconds from the
+/// file's start, already uploaded as textures.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClipPictures {
+    pub every: f64,
+    pub textures: std::sync::Arc<[egui::TextureId]>,
+    /// Width over height of each picture.
+    pub aspect: f32,
+    /// Seconds into the file where the clip begins.
+    pub source_in: f64,
 }
 
 /// A clip's loudness: peaks of its whole file, and where in the file the clip starts.
@@ -461,10 +475,14 @@ impl TimelineView {
                     if let Some(m) = merged.take() {
                         clip_painter.rect_filled(m, 1.0, tiny_fill(theme, colour, audio));
                     }
-                    draw_clip(&clip_painter, theme, r, clip, colour, audio);
+                    draw_clip_body(&clip_painter, theme, r, colour, audio);
+                    if let Some(pictures) = &clip.pictures {
+                        self.draw_pictures(&clip_painter, r, clip, start, pictures);
+                    }
                     if let Some(w) = &clip.waveform {
                         self.draw_waveform(&clip_painter, r, clip, start, w, colour, track.muted);
                     }
+                    draw_clip_marks(&clip_painter, theme, r, clip);
                 }
                 if let Some(m) = merged {
                     clip_painter.rect_filled(m, 1.0, tiny_fill(theme, colour, audio));
@@ -718,6 +736,39 @@ impl TimelineView {
             Stroke::new(1.0, theme.muted),
         );
         p.circle_filled(pos2(to_x(db), bar.center().y), 5.0, theme.text);
+    }
+
+    /// Pictures side by side across the clip, each the one nearest its
+    /// place in the file. Only the visible ones are drawn.
+    fn draw_pictures(
+        &self,
+        p: &egui::Painter,
+        r: Rect,
+        clip: &TimelineClip,
+        shown_start: f64,
+        pics: &ClipPictures,
+    ) {
+        let area = Rect::from_min_max(
+            pos2(r.left() + 1.0, r.top() + 3.0),
+            pos2(r.right() - 1.0, r.bottom() - 1.0),
+        );
+        let visible = p.clip_rect().intersect(area);
+        if visible.width() < 1.0 || pics.textures.is_empty() || pics.every <= 0.0 {
+            return;
+        }
+        let tile = (area.height() * pics.aspect).max(8.0);
+        let left = r.left() - ((shown_start - clip.start) * f64::from(self.zoom)) as f32;
+        let painter = p.with_clip_rect(visible);
+        let first = ((visible.left() - area.left()) / tile).floor().max(0.0);
+        let mut x = area.left() + first * tile;
+        let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+        while x < visible.right() {
+            let t = pics.source_in + f64::from(x + tile / 2.0 - left) / f64::from(self.zoom);
+            let i = ((t / pics.every).round().max(0.0) as usize).min(pics.textures.len() - 1);
+            let rect = Rect::from_min_size(pos2(x, area.top()), vec2(tile, area.height()));
+            painter.image(pics.textures[i], rect, uv, Color32::from_white_alpha(230));
+            x += tile;
+        }
     }
 
     /// The clip's loudness as one bar per pixel column, centred in the clip.
@@ -1387,7 +1438,7 @@ fn tiny_fill(theme: &Theme, colour: Color32, audio: bool) -> Color32 {
     }
 }
 
-fn draw_clip(p: &egui::Painter, theme: &Theme, r: Rect, clip: &TimelineClip, colour: Color32, audio: bool) {
+fn draw_clip_body(p: &egui::Painter, theme: &Theme, r: Rect, colour: Color32, audio: bool) {
     let fill = if audio {
         colour.gamma_multiply(0.55)
     } else {
@@ -1402,6 +1453,10 @@ fn draw_clip(p: &egui::Painter, theme: &Theme, r: Rect, clip: &TimelineClip, col
             colour,
         );
     }
+}
+
+/// What goes over a clip's contents: missing and selected outlines, and its name.
+fn draw_clip_marks(p: &egui::Painter, theme: &Theme, r: Rect, clip: &TimelineClip) {
     if clip.missing {
         p.rect_stroke(
             r,
@@ -1421,7 +1476,13 @@ fn draw_clip(p: &egui::Painter, theme: &Theme, r: Rect, clip: &TimelineClip, col
         };
         let galley = p.layout_no_wrap(text, FontId::proportional(11.0), theme.text);
         let pos = pos2(r.left() + 6.0, r.top() + 6.0);
-        p.with_clip_rect(r.shrink(2.0)).galley(pos, galley, theme.text);
+        let inside = p.with_clip_rect(r.shrink(2.0));
+        if clip.pictures.is_some() {
+            // A dark pill keeps the name readable over the pictures.
+            let pill = Rect::from_min_size(pos - vec2(3.0, 1.0), galley.size() + vec2(6.0, 2.0));
+            inside.rect_filled(pill, 3.0, Color32::from_black_alpha(150));
+        }
+        inside.galley(pos, galley, theme.text);
     }
 }
 
@@ -1540,6 +1601,7 @@ mod tests {
             missing: false,
             link: None,
             waveform: None,
+            pictures: None,
         }
     }
 
