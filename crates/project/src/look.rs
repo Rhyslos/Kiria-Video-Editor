@@ -1,14 +1,15 @@
 //! How a clip's picture is placed, cut and coloured.
 //!
-//! Every value is a whole number of thousandths (of the frame, of the
+//! Every value is a whole number of millionths (of the frame, of the
 //! picture, of a degree, of a stop), so two clips compare exactly and a file
-//! saved and opened again says the same. Convert to floats only to draw.
+//! saved and opened again says the same, and fine enough that a picture can
+//! be placed to a fraction of a pixel. Convert to floats only to draw.
 
 use diag::AppError;
 use serde::{Deserialize, Serialize};
 
-/// One whole, in the thousandths every value here is counted in.
-pub const ONE: i32 = 1000;
+/// One whole, in the millionths every value here is counted in.
+pub const ONE: i32 = 1_000_000;
 
 /// A clip's picture in the frame: where, how large, which part, how strong,
 /// and its quick colour. The default leaves the picture as it is: fitted in
@@ -16,30 +17,30 @@ pub const ONE: i32 = 1000;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Look {
-    /// The picture's centre, from the frame's centre: thousandths of the
+    /// The picture's centre, from the frame's centre: millionths of the
     /// frame's width to the right and of its height down.
     pub x: i32,
     pub y: i32,
-    /// Size, in thousandths of the size that just fits the frame.
+    /// Size, in millionths of the size that just fits the frame.
     pub scale: i32,
-    /// Turn around the picture's centre, in thousandths of a degree clockwise.
+    /// Turn around the picture's centre, in millionths of a degree clockwise.
     pub turn: i32,
-    /// Cut off each side, in thousandths of the picture's width or height.
+    /// Cut off each side, in millionths of the picture's width or height.
     pub crop_left: i32,
     pub crop_top: i32,
     pub crop_right: i32,
     pub crop_bottom: i32,
-    /// 1000 hides what is below, 0 can't be seen.
+    /// `ONE` hides what is below, 0 can't be seen.
     pub opacity: i32,
-    /// Brighter or darker, in thousandths of a stop.
+    /// Brighter or darker, in millionths of a stop.
     pub exposure: i32,
-    /// -1000 (flat) to 1000 (hard); 0 leaves it.
+    /// -`ONE` (flat) to `ONE` (hard); 0 leaves it.
     pub contrast: i32,
-    /// -1000 (no colour) to 1000 (twice the colour); 0 leaves it.
+    /// -`ONE` (no colour) to `ONE` (twice the colour); 0 leaves it.
     pub saturation: i32,
-    /// -1000 (cooler, bluer) to 1000 (warmer); 0 leaves it.
+    /// -`ONE` (cooler, bluer) to `ONE` (warmer); 0 leaves it.
     pub temperature: i32,
-    /// -1000 (greener) to 1000 (more magenta); 0 leaves it.
+    /// -`ONE` (greener) to `ONE` (more magenta); 0 leaves it.
     pub tint: i32,
 }
 
@@ -69,12 +70,12 @@ impl Look {
     };
 
     /// The smallest and largest size: 1% to 100 times the fitted size.
-    pub const SCALE: (i32, i32) = (10, 100 * ONE);
+    pub const SCALE: (i32, i32) = (ONE / 100, 100 * ONE);
     /// How far the centre may be from the frame's centre: ten frames.
     pub const AWAY: i32 = 10 * ONE;
     /// The most that can be cut off the two opposite sides together: a
     /// hundredth of the picture always stays.
-    pub const MOST_CROP: i32 = ONE - 10;
+    pub const MOST_CROP: i32 = ONE - ONE / 100;
     /// Five stops either way.
     pub const EXPOSURE: i32 = 5 * ONE;
 
@@ -153,11 +154,11 @@ mod tests {
     fn values_out_of_range_are_brought_back_and_refused_as_they_are() {
         let wild = Look {
             scale: 0,
-            opacity: 1500,
-            crop_left: 700,
-            crop_right: 700,
+            opacity: ONE + ONE / 2,
+            crop_left: 700_000,
+            crop_right: 700_000,
             turn: 370 * ONE,
-            exposure: -9000,
+            exposure: -9 * ONE,
             ..Look::PLAIN
         };
         assert!(wild.check().is_err());
@@ -166,7 +167,7 @@ mod tests {
         assert_eq!(tamed.opacity, ONE);
         assert_eq!(
             (tamed.crop_left, tamed.crop_right),
-            (700, 290),
+            (700_000, 290_000),
             "a hundredth stays"
         );
         assert_eq!(tamed.turn, 10 * ONE);
@@ -182,12 +183,12 @@ mod tests {
         };
         assert!(moved.is_placed() && !moved.is_coloured());
         let cut = Look {
-            crop_top: 100,
+            crop_top: 100_000,
             ..Look::PLAIN
         };
         assert!(cut.is_placed() && cut.is_cropped());
         let warm = Look {
-            temperature: 200,
+            temperature: 200_000,
             ..Look::PLAIN
         };
         assert!(warm.is_coloured() && !warm.is_placed());
@@ -196,12 +197,12 @@ mod tests {
     #[test]
     fn a_file_without_some_values_reads_them_as_plain() {
         // What a later format may leave out, or an earlier one never had.
-        let look: Look = ron::from_str("(x: 250, opacity: 500)").unwrap();
+        let look: Look = ron::from_str("(x: 250000, opacity: 500000)").unwrap();
         assert_eq!(
             look,
             Look {
-                x: 250,
-                opacity: 500,
+                x: 250_000,
+                opacity: 500_000,
                 ..Look::PLAIN
             }
         );

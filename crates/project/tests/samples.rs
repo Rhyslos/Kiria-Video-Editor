@@ -85,15 +85,15 @@ fn rich_project() -> Project {
     };
     // The picture in a corner, cut a little, slightly see-through and warmer.
     let look = project::Look {
-        x: 320,
-        y: 280,
-        scale: 300,
-        turn: -2_500,
-        crop_left: 120,
-        crop_bottom: 50,
-        opacity: 900,
-        exposure: 250,
-        temperature: 150,
+        x: 320_000,
+        y: 280_000,
+        scale: 300_000,
+        turn: -2_500_000,
+        crop_left: 120_000,
+        crop_bottom: 50_000,
+        opacity: 900_000,
+        exposure: 250_000,
+        temperature: 150_000,
         ..project::Look::PLAIN
     };
     seq.video_tracks[0].clips.push_back(Clip {

@@ -103,14 +103,14 @@ fn layer(clip: &Clip, media: &MediaRef, frame: (u32, u32), at: Time) -> Option<L
         source_time: clip.source_at(at),
         area: Area::of_part(placement(&look, video.display_size(), frame), part),
         part,
-        opacity: thousandths(look.opacity),
+        opacity: fraction(look.opacity),
         colour: colour(&look),
     })
 }
 
-/// A whole number of thousandths as a fraction.
-fn thousandths(value: i32) -> f32 {
-    value as f32 / project::look::ONE as f32
+/// One of a look's whole numbers (millionths) as a fraction.
+fn fraction(value: i32) -> f32 {
+    (f64::from(value) / f64::from(project::look::ONE)) as f32
 }
 
 /// Where a clip's whole picture sits in a frame of `frame` pixels: fitted,
@@ -118,23 +118,23 @@ fn thousandths(value: i32) -> f32 {
 pub fn placement(look: &Look, picture: (u32, u32), frame: (u32, u32)) -> Placement {
     let fitted = Area::fitted(picture, frame);
     let (w, h) = fitted.size();
-    let scale = thousandths(look.scale);
+    let scale = fraction(look.scale);
     let (fw, fh) = (frame.0 as f32, frame.1 as f32);
     Placement {
-        centre: (fw * (0.5 + thousandths(look.x)), fh * (0.5 + thousandths(look.y))),
+        centre: (fw * (0.5 + fraction(look.x)), fh * (0.5 + fraction(look.y))),
         size: (w * scale, h * scale),
-        degrees: thousandths(look.turn),
+        degrees: fraction(look.turn),
     }
 }
 
 /// The part of the picture left after what its look cuts off each side.
 pub fn shown_part(look: &Look) -> Part {
-    let (left, top) = (thousandths(look.crop_left), thousandths(look.crop_top));
+    let (left, top) = (fraction(look.crop_left), fraction(look.crop_top));
     Part {
         left,
         top,
-        width: (1.0 - left - thousandths(look.crop_right)).max(0.01),
-        height: (1.0 - top - thousandths(look.crop_bottom)).max(0.01),
+        width: (1.0 - left - fraction(look.crop_right)).max(0.01),
+        height: (1.0 - top - fraction(look.crop_bottom)).max(0.01),
     }
 }
 
@@ -144,11 +144,11 @@ pub fn colour(look: &Look) -> Colour {
         return Colour::NEUTRAL;
     }
     Colour::from_sliders(
-        thousandths(look.exposure),
-        thousandths(look.contrast),
-        thousandths(look.saturation),
-        thousandths(look.temperature),
-        thousandths(look.tint),
+        fraction(look.exposure),
+        fraction(look.contrast),
+        fraction(look.saturation),
+        fraction(look.temperature),
+        fraction(look.tint),
     )
 }
 
@@ -331,9 +331,9 @@ mod tests {
         );
         // A third of the size, towards the bottom right corner.
         let small = Look {
-            scale: 300,
-            x: 320,
-            y: 280,
+            scale: 300_000,
+            x: 320_000,
+            y: 280_000,
             ..Look::PLAIN
         };
         let frame_of = |p: &Project| describe(p, p.active().unwrap(), Time::seconds(1));
@@ -349,7 +349,7 @@ mod tests {
 
         // A fifth cut off the left: the rest stays where it was.
         let cut = Look {
-            crop_left: 200,
+            crop_left: 200_000,
             ..Look::PLAIN
         };
         let layer = &frame_of(&with_look(&project, cut)).layers[0];
@@ -363,12 +363,12 @@ mod tests {
 
         // Larger than the frame still hides what is below; see-through doesn't.
         let large = Look {
-            scale: 1500,
+            scale: 1_500_000,
             ..Look::PLAIN
         };
         assert!(frame_of(&with_look(&project, large)).layers[0].hides_what_is_below((1920, 1080)));
         let faint = Look {
-            opacity: 500,
+            opacity: 500_000,
             ..Look::PLAIN
         };
         let layer = &frame_of(&with_look(&project, faint)).layers[0];
@@ -389,8 +389,8 @@ mod tests {
             media("cam.mkv", (1920, 1080), 0),
         );
         let turned = Look {
-            turn: 90_000,
-            temperature: 400,
+            turn: 90_000_000,
+            temperature: 400_000,
             ..Look::PLAIN
         };
         let changed = with_look(&project, turned);

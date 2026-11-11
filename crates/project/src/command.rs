@@ -1693,12 +1693,12 @@ mod tests {
         let (p, seq) = imported(); // 0-30 s and 30-40 s
         let first = first_video(&p, 0).id;
         let look = Look {
-            x: 320,
-            y: -280,
-            scale: 300,
-            crop_left: 100,
-            opacity: 900,
-            temperature: 150,
+            x: 320_000,
+            y: -280_000,
+            scale: 300_000,
+            crop_left: 100_000,
+            opacity: 900_000,
+            temperature: 150_000,
             ..Look::PLAIN
         };
         let set = Command::SetLook {
