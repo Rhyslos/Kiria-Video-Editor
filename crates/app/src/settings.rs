@@ -1,5 +1,6 @@
 //! Settings: what people change in the Settings window, saved between runs.
 
+use crate::graphics::GraphicsChoice;
 use diag::{AppError, Explain};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -17,6 +18,8 @@ pub struct Settings {
     pub preview_quality: ui_kit::PreviewQuality,
     /// The timeline in the rough cut view (sound folded into the pictures).
     pub rough_cut: bool,
+    /// Which graphics system draws the window (Windows; applies on the next start).
+    pub graphics: GraphicsChoice,
 }
 
 impl Settings {
@@ -74,6 +77,23 @@ mod tests {
         let (loaded, problem) = Settings::load(tmp.path());
         assert_eq!(loaded, Settings::default());
         assert!(problem.is_some());
+    }
+
+    #[test]
+    fn settings_saved_before_the_graphics_choice_existed_still_load() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(Settings::path(tmp.path()), "(edit_at_playhead: true)").unwrap();
+        let (loaded, problem) = Settings::load(tmp.path());
+        assert!(problem.is_none());
+        assert!(loaded.edit_at_playhead);
+        assert_eq!(loaded.graphics, GraphicsChoice::Automatic);
+
+        let chosen = Settings {
+            graphics: GraphicsChoice::Direct3D12,
+            ..Settings::default()
+        };
+        chosen.save(tmp.path()).unwrap();
+        assert_eq!(Settings::load(tmp.path()).0.graphics, GraphicsChoice::Direct3D12);
     }
 
     #[test]

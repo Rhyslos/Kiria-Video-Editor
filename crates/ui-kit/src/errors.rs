@@ -41,10 +41,12 @@ pub enum ErrorResponse {
     OpenDiagnostics,
 }
 
-/// The session's errors.
+/// The session's errors, and a few facts about the session worth having
+/// beside them (which graphics system draws the window, for one).
 #[derive(Debug, Default)]
 pub struct ErrorCenter {
     errors: Vec<ShownError>,
+    facts: Vec<(String, String)>,
 }
 
 impl ErrorCenter {
@@ -56,6 +58,29 @@ impl ErrorCenter {
 
     pub fn all(&self) -> &[ShownError] {
         &self.errors
+    }
+
+    /// Sets a line at the top of the Diagnostics window that is not a
+    /// problem, such as "Graphics" and what is in use. A name set twice
+    /// keeps its place and takes the new value.
+    pub fn set_fact(&mut self, name: &str, value: impl Into<String>) {
+        let value = value.into();
+        match self.facts.iter_mut().find(|(n, _)| n == name) {
+            Some(fact) => fact.1 = value,
+            None => self.facts.push((name.to_owned(), value)),
+        }
+    }
+
+    /// Everything "Copy all details" copies: the facts, then every error.
+    pub fn all_details(&self) -> String {
+        let facts: Vec<String> = self
+            .facts
+            .iter()
+            .map(|(name, value)| format!("{name}: {value}"))
+            .collect();
+        let facts = (!facts.is_empty()).then(|| facts.join("\n"));
+        let errors = self.errors.iter().map(|e| e.details.clone());
+        facts.into_iter().chain(errors).collect::<Vec<_>>().join("\n\n")
     }
 
     /// The newest error not yet dismissed, as a strip across the page.
@@ -103,13 +128,24 @@ impl ErrorCenter {
             .open(open)
             .default_width(560.0)
             .show(ctx, |ui| {
+                for (name, value) in &self.facts {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(RichText::new(name).color(theme.muted));
+                        ui.label(value);
+                    });
+                }
+                if !self.facts.is_empty() {
+                    ui.add_space(4.0);
+                }
                 if self.errors.is_empty() {
                     ui.label(RichText::new("No problems this session.").color(theme.muted));
+                    if !self.facts.is_empty() && ui.button("Copy all details").clicked() {
+                        ctx.copy_text(self.all_details());
+                    }
                     return;
                 }
                 if ui.button("Copy all details").clicked() {
-                    let all: Vec<&str> = self.errors.iter().map(|e| e.details.as_str()).collect();
-                    ctx.copy_text(all.join("\n\n"));
+                    ctx.copy_text(self.all_details());
                 }
                 egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
                     for error in self.errors.iter().rev() {
@@ -172,5 +208,18 @@ mod tests {
         assert_eq!(shown.fix, "Relink them");
         assert_eq!(shown.action.map(|a| a.command), Some("media.relink".into()));
         assert!(shown.details.contains("Fix: Relink them"));
+    }
+
+    #[test]
+    fn facts_come_first_in_the_copied_details_and_a_name_is_kept_once() {
+        let mut center = ErrorCenter::default();
+        assert_eq!(center.all_details(), "");
+        center.set_fact("Graphics", "one");
+        center.set_fact("Tried first", "another");
+        center.set_fact("Graphics", "two");
+        assert_eq!(center.all_details(), "Graphics: two\nTried first: another");
+        center.push(&AppError::new("Export can't start").fix("Relink them"));
+        let details = center.all_details();
+        assert!(details.starts_with("Graphics: two\nTried first: another\n\nExport can't start"));
     }
 }
