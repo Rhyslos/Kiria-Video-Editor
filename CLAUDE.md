@@ -75,6 +75,7 @@ Building needs libclang (for the FFmpeg bindings); on Windows set `LIBCLANG_PATH
 
 - Time is stored as exact fractions (frames over rate), never floats.
 - The project file is versioned from its first commit; every format change gets a migration and a stored sample.
+- How a project is looked at (track heights, the video/audio divider) is view state, not an edit: it lives in `<project file>.view` beside the project, never in the project file, and makes no undo step.
 - FFmpeg is linked dynamically and its licence text ships with the app.
 - Every program calls `diag::start(brand::VERSION)` first and `finish()` on a clean exit (logging, crash reports, crash detection).
 - Releases are tagged `vX.Y.Z` (pushed, or typed into "Run workflow"); the release workflow builds, tests, signs and publishes. Pushes to `main` publish automatic betas (`brand::VERSION` comes from `BUILD_VERSION` then). Updates are trusted only with a valid signature from the `RELEASE_SIGNING_KEY` secret.
