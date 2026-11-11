@@ -7,10 +7,10 @@
 //! put together and what is kept between pictures of that size, and
 //! [`Shower`] draws a finished frame into whatever target shows it.
 
-use crate::geometry::{Area, Part};
+use crate::geometry::{Area, Colour, Part, WEIGHTS};
 
-/// Seven rows of four numbers: see `Layer` in the shader.
-const LAYER_BYTES: u64 = 7 * 4 * 4;
+/// Nine rows of four numbers: see `Layer` in the shader.
+const LAYER_BYTES: u64 = 9 * 4 * 4;
 /// One row of four: see `Show` in the shader.
 const SHOW_BYTES: u64 = 4 * 4;
 
@@ -72,6 +72,8 @@ pub struct Drawn<'a> {
     /// The part of the upright picture shown.
     pub part: Part,
     pub opacity: f32,
+    /// Quick colour; [`Colour::NEUTRAL`] leaves the pixels untouched.
+    pub colour: Colour,
 }
 
 /// The pipelines that draw layers into frames of one working format.
@@ -361,7 +363,19 @@ fn layer_bytes(layer: &Drawn<'_>, frame: (u32, u32), working: Working) -> Vec<u8
         [from_origin[0], from_origin[1], from_across[0], from_across[1]],
         [from_down[0], from_down[1], kind, working.flag()],
         [to_origin[0], to_origin[1], to_across[0], to_across[1]],
-        [to_down[0], to_down[1], layer.opacity.clamp(0.0, 1.0), 0.0],
+        [
+            to_down[0],
+            to_down[1],
+            layer.opacity.clamp(0.0, 1.0),
+            if layer.colour.is_neutral() { 0.0 } else { 1.0 },
+        ],
+        [
+            layer.colour.gains[0],
+            layer.colour.gains[1],
+            layer.colour.gains[2],
+            layer.colour.saturation,
+        ],
+        [WEIGHTS[0], WEIGHTS[1], WEIGHTS[2], layer.colour.contrast],
     ];
     bytes(rows.as_flattened())
 }

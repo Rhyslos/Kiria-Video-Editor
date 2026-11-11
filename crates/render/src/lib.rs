@@ -7,4 +7,4 @@ pub mod compositor;
 pub mod geometry;
 
 pub use compositor::{Compositor, Drawn, Frame, Pixels, Shower, Showing, Working};
-pub use geometry::{Area, Part, Point};
+pub use geometry::{Area, Colour, Part, Placement, Point};
