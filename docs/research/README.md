@@ -10,4 +10,5 @@ Name each note after its system, for example `playback.md`, and give it these se
 4. **Result:** the comparison table and the choice, with the reason.
 
 - [decoding.md](decoding.md): getting video frames from files into GPU textures (4A).
+- [caching.md](caching.md): showing a frame within 50 ms while scrubbing and jumping (4A).
 - [timeline.md](timeline.md): the timeline widget (4B): painter with culling, measured.
