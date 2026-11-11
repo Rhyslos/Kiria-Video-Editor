@@ -16,6 +16,7 @@ pub mod history;
 pub mod ids;
 pub mod model;
 pub mod time;
+pub mod versions;
 
 pub use command::{Command, Edge};
 pub use document::{Document, OpenCheck, Recovery, thumbnail_path};

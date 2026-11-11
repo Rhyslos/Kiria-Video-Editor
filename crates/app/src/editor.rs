@@ -56,6 +56,7 @@ pub struct Editor {
     silence: crate::silence_panel::SilencePanel,
     label_editor: Option<crate::label_editor::LabelEditor>,
     master: ui_kit::master::MasterColumn,
+    versions: crate::versions_window::VersionsWindow,
     /// The viewer fills the screen (F; Escape returns).
     full_screen: bool,
     /// Tell the window about a full-screen change on the next frame.
@@ -163,6 +164,7 @@ impl Editor {
             silence: crate::silence_panel::SilencePanel::default(),
             label_editor: None,
             master: ui_kit::master::MasterColumn::default(),
+            versions: crate::versions_window::VersionsWindow::default(),
             full_screen,
             full_screen_changed: full_screen,
             save_frame_requested: false,
@@ -257,6 +259,10 @@ impl Editor {
                 }
                 Ok(())
             }
+            Action::Versions => self.with_document(|_| Ok(())).map(|()| {
+                self.versions.open = true;
+                self.versions.show_again();
+            }),
             Action::FullScreenViewer => {
                 self.set_full_screen(!self.full_screen);
                 Ok(())
@@ -886,6 +892,37 @@ impl Editor {
         match result {
             Ok(()) => self.label_editor = None,
             Err(err) => self.errors.push(&err),
+        }
+    }
+
+    /// The Saved versions window, and what it asks for.
+    fn versions_window(&mut self, ctx: &egui::Context) {
+        use crate::versions_window::Asked;
+        if !self.versions.open {
+            return;
+        }
+        let Some(document) = &self.document else {
+            self.versions.open = false;
+            return;
+        };
+        let file = document.path().to_path_buf();
+        match self
+            .versions
+            .ui(ctx, &self.theme, &self.jobs, document.project(), &file)
+        {
+            Asked::Nothing => {}
+            Asked::Saved(name) => self.status = format!("Saved the version \"{name}\"."),
+            Asked::Restore(name, project) => {
+                match self.with_document(|d| d.apply(Command::Restore { project })) {
+                    Ok(()) => {
+                        self.selected.clear();
+                        self.fitted = false;
+                        self.status = format!("Restored \"{name}\". Ctrl+Z returns to before.");
+                    }
+                    Err(err) => self.errors.push(&err),
+                }
+            }
+            Asked::Failed(err) => self.errors.push(&err),
         }
     }
 
@@ -1688,6 +1725,7 @@ impl eframe::App for Editor {
         self.search_window(&ctx);
         self.silence_window(&ctx);
         self.label_window(&ctx);
+        self.versions_window(&ctx);
         let mut diagnostics = self.show_diagnostics;
         self.errors
             .diagnostics_window(&ctx, &mut diagnostics, &self.theme);

@@ -43,6 +43,11 @@ pub enum Command {
         media: MediaId,
         at: Time,
     },
+    /// Puts back a whole earlier state of the project (a saved version).
+    /// Undo returns to how it was just before.
+    Restore {
+        project: Box<Project>,
+    },
     /// Points a media file at where it is now (it was moved or renamed).
     Relink {
         media: MediaId,
@@ -198,6 +203,14 @@ impl Command {
             Command::AddMedia { media } => {
                 let id: MediaId = p.allocate_id();
                 p.media.insert(id, MediaRef { id, ..media.clone() });
+            }
+            Command::Restore { project } => {
+                if project.active().is_none() {
+                    return Err(AppError::new("That version can't be restored")
+                        .why("It has no timeline open.")
+                        .fix("Pick another version."));
+                }
+                p = (**project).clone();
             }
             Command::Relink { media, path } => {
                 p.media.get_mut(media).ok_or_else(|| missing("media file"))?.path = path.clone();
@@ -1601,6 +1614,27 @@ mod tests {
             s.audio_tracks[1].clips.last().unwrap().end(),
             Time::seconds(25),
             "the mic under it was cut"
+        );
+    }
+
+    #[test]
+    fn restoring_puts_back_a_whole_project() {
+        let (p, _) = imported();
+        let earlier = Project::new_automatic("Earlier");
+        let q = Command::Restore {
+            project: Box::new(earlier.clone()),
+        }
+        .apply(&p)
+        .unwrap();
+        assert_eq!(q, earlier);
+        let mut broken = earlier;
+        broken.sequences.clear();
+        assert!(
+            Command::Restore {
+                project: Box::new(broken)
+            }
+            .apply(&p)
+            .is_err()
         );
     }
 }
