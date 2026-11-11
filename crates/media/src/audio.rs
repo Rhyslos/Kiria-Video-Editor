@@ -4,6 +4,13 @@
 //! [`AudioDecoder::seek`] goes to a time; [`AudioDecoder::read`] then fills
 //! a buffer with the samples from there on. Like pictures, sound is placed
 //! by its timestamps, so it stays in step with the picture over long files.
+//!
+//! A seek searches by the file's picture stream when it has one. Recordings
+//! often list where to jump to for the picture only; searching by a sound
+//! stream then makes FFmpeg read the file from where it last was up to the
+//! target, which takes many seconds far into a long recording. The search
+//! lands a little before the target and the sound up to it is dropped, so
+//! the first sample read is the one asked for.
 
 use crate::ffi::{Input, error_text};
 use diag::AppError;
@@ -15,10 +22,19 @@ use std::ptr;
 /// Samples come out as interleaved stereo.
 pub const CHANNELS: usize = 2;
 
+/// How far before the target a seek asks the file to go (seconds). Sound
+/// and picture for the same moment sit close together in a file but not in
+/// a fixed order; this covers the difference.
+const SEEK_MARGIN: f64 = 0.5;
+
 pub struct AudioDecoder {
     input: Input,
     codec: *mut ff::AVCodecContext,
     stream: i32,
+    /// The stream a seek searches by, and its time base: the picture when
+    /// the file has one, else the sound itself.
+    seek_stream: i32,
+    seek_time_base: f64,
     time_base: f64,
     start: f64,
     rate: u32,
@@ -31,6 +47,9 @@ pub struct AudioDecoder {
     pending_time: f64,
     /// After a seek: samples before this time are dropped.
     skip_until: Option<f64>,
+    /// Sample frames of silence to give before `pending`: the sound in the
+    /// file starts this much after the time that was asked for.
+    silence: usize,
     ended: bool,
 }
 
@@ -87,11 +106,17 @@ impl AudioDecoder {
                     .fix("Convert the file's sound to AAC, Opus or WAV first."));
             }
             let codec = ff::avcodec_alloc_context3(decoder);
+            let time_base = |st: *mut ff::AVStream| {
+                f64::from((*st).time_base.num) / f64::from((*st).time_base.den.max(1))
+            };
+            let seek_stream = picture_stream(raw).unwrap_or(stream);
             let mut this = AudioDecoder {
                 input,
                 codec,
                 stream: stream as i32,
-                time_base: f64::from((*st).time_base.num) / f64::from((*st).time_base.den.max(1)),
+                seek_stream: seek_stream as i32,
+                seek_time_base: time_base(*(*raw).streams.add(seek_stream as usize)),
+                time_base: time_base(st),
                 start: 0.0,
                 rate: rate.max(8_000),
                 resampler: ptr::null_mut(),
@@ -100,6 +125,7 @@ impl AudioDecoder {
                 pending: VecDeque::new(),
                 pending_time: 0.0,
                 skip_until: None,
+                silence: 0,
                 ended: false,
             };
             if codec.is_null() {
@@ -125,20 +151,44 @@ impl AudioDecoder {
         self.pending_time
     }
 
-    /// Goes to `seconds` from the start of the file.
+    /// Goes to `seconds` from the start of the file. The next sample read
+    /// is the one at that time; where the file has no sound there (it starts
+    /// later, or has a hole), silence comes first.
     pub fn seek(&mut self, seconds: f64) {
         let target = seconds.max(0.0);
-        let ts = ((target + self.start) / self.time_base) as i64;
+        let from = target + self.start - SEEK_MARGIN;
         // SAFETY: valid contexts owned by self; the resampler is freed and
         // made again for the next frame so no old samples leak through.
         unsafe {
-            ff::av_seek_frame(self.input.raw(), self.stream, ts, ff::AVSEEK_FLAG_BACKWARD);
+            let raw = self.input.raw();
+            let mut found = ff::av_seek_frame(
+                raw,
+                self.seek_stream,
+                (from / self.seek_time_base) as i64,
+                ff::AVSEEK_FLAG_BACKWARD,
+            );
+            if found < 0 && self.seek_stream != self.stream {
+                // The picture can't be searched by: the sound's own stream.
+                found = ff::av_seek_frame(
+                    raw,
+                    self.stream,
+                    (from / self.time_base) as i64,
+                    ff::AVSEEK_FLAG_BACKWARD,
+                );
+            }
+            if found < 0 {
+                tracing::warn!(
+                    "the sound could not jump to {target:.3} s ({}); it carries on from where it was",
+                    error_text(found)
+                );
+            }
             ff::avcodec_flush_buffers(self.codec);
             ff::swr_free(&mut self.resampler);
         }
         self.pending.clear();
         self.pending_time = target;
         self.skip_until = Some(target);
+        self.silence = 0;
         self.ended = false;
     }
 
@@ -146,18 +196,22 @@ impl AudioDecoder {
     /// many sample frames were written; fewer than asked means the end.
     pub fn read(&mut self, out: &mut [f32]) -> usize {
         let wanted = out.len() / CHANNELS;
-        while self.pending.len() < wanted * CHANNELS && !self.ended {
+        while self.silence + self.pending.len() / CHANNELS < wanted && !self.ended {
             if let Err(err) = self.decode_more() {
                 tracing::warn!("{}", err.report());
                 self.ended = true;
             }
         }
-        let frames = wanted.min(self.pending.len() / CHANNELS);
-        for (o, s) in out.iter_mut().zip(self.pending.drain(..frames * CHANNELS)) {
+        let quiet = wanted.min(self.silence);
+        self.silence -= quiet;
+        let (silent, sounding) = out.split_at_mut(quiet * CHANNELS);
+        silent.fill(0.0);
+        let frames = (wanted - quiet).min(self.pending.len() / CHANNELS);
+        for (o, s) in sounding.iter_mut().zip(self.pending.drain(..frames * CHANNELS)) {
             *o = s;
         }
-        self.pending_time += frames as f64 / f64::from(self.rate);
-        frames
+        self.pending_time += (quiet + frames) as f64 / f64::from(self.rate);
+        quiet + frames
     }
 
     /// Decodes one more frame and converts it into `pending`.
@@ -250,22 +304,61 @@ impl AudioDecoder {
             };
             let mut skip = 0usize;
             if let Some(until) = self.skip_until {
-                skip =
-                    (((until - frame_time) * f64::from(self.rate)).round().max(0.0) as usize).min(n as usize);
-                if skip < n as usize {
-                    self.skip_until = None;
-                    if self.pending.is_empty() {
-                        self.pending_time = frame_time + skip as f64 / f64::from(self.rate);
-                    }
+                match place(until, frame_time, n as usize, self.rate) {
+                    Placed::Before => return Ok(()),
+                    Placed::Across { drop } => skip = drop,
+                    Placed::After { silence } => self.silence = silence,
                 }
-            } else if self.pending.is_empty() {
+                self.skip_until = None;
+            } else if self.pending.is_empty() && self.silence == 0 {
                 self.pending_time = frame_time;
             }
-            if self.skip_until.is_none() {
-                self.pending.extend(&buf[skip * CHANNELS..]);
-            }
+            self.pending.extend(&buf[skip * CHANNELS..]);
             Ok(())
         }
+    }
+}
+
+/// Where a decoded frame lies against the time a seek asked for.
+#[derive(Debug, PartialEq, Eq)]
+enum Placed {
+    /// All of it is before the time: dropped.
+    Before,
+    /// The time is inside it: this many sample frames are dropped.
+    Across { drop: usize },
+    /// It starts after the time: this much silence comes first.
+    After { silence: usize },
+}
+
+/// After a seek the position stays the time that was asked for: sound
+/// before it is dropped, and sound that starts after it is preceded by
+/// silence. `frames` is the length of the decoded frame at `rate`.
+fn place(asked: f64, frame_time: f64, frames: usize, rate: u32) -> Placed {
+    let early = ((asked - frame_time) * f64::from(rate)).round();
+    if early >= frames as f64 {
+        Placed::Before
+    } else if early >= 0.0 {
+        Placed::Across { drop: early as usize }
+    } else {
+        Placed::After {
+            silence: (-early) as usize,
+        }
+    }
+}
+
+/// The file's first picture stream that is a real one (not a cover image).
+///
+/// # Safety
+/// `raw` must be an opened format context.
+unsafe fn picture_stream(raw: *mut ff::AVFormatContext) -> Option<u32> {
+    // SAFETY: the streams array has `nb_streams` valid entries, each with
+    // codec parameters, for as long as the context is open.
+    unsafe {
+        (0..(*raw).nb_streams).find(|&i| {
+            let st = *(*raw).streams.add(i as usize);
+            (*(*st).codecpar).codec_type == ff::AVMediaType::AVMEDIA_TYPE_VIDEO
+                && (*st).disposition & ff::AV_DISPOSITION_ATTACHED_PIC == 0
+        })
     }
 }
 
@@ -278,5 +371,37 @@ impl Drop for AudioDecoder {
             ff::av_packet_free(&mut self.packet);
             ff::avcodec_free_context(&mut self.codec);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixture(name: &str) -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures")
+            .join(name)
+    }
+
+    #[test]
+    fn a_seek_searches_by_the_picture_when_the_file_has_one() {
+        let recording = AudioDecoder::open(&fixture("game-3-audio.mkv"), 2, 48_000).unwrap();
+        assert_eq!((recording.stream, recording.seek_stream), (2, 0));
+        let sound_only = AudioDecoder::open(&fixture("voice.mp3"), 0, 48_000).unwrap();
+        assert_eq!((sound_only.stream, sound_only.seek_stream), (0, 0));
+    }
+
+    #[test]
+    fn sound_is_placed_at_the_time_asked_for() {
+        // A frame of 1024 samples at 48 kHz lasts 21.3 ms.
+        assert_eq!(place(10.0, 9.9, 1024, 48_000), Placed::Before);
+        assert_eq!(place(10.0, 10.0, 1024, 48_000), Placed::Across { drop: 0 });
+        assert_eq!(place(10.0, 9.99, 1024, 48_000), Placed::Across { drop: 480 });
+        assert_eq!(place(10.0, 10.011, 1024, 48_000), Placed::After { silence: 528 });
+        assert_eq!(
+            place(10.0, 70.0, 1024, 48_000),
+            Placed::After { silence: 2_880_000 }
+        );
     }
 }
