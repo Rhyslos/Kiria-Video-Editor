@@ -384,7 +384,7 @@ fn bytes(numbers: &[f32]) -> Vec<u8> {
     numbers.iter().flat_map(|n| n.to_ne_bytes()).collect()
 }
 
-fn uniform_entry(size: u64) -> wgpu::BindGroupLayoutEntry {
+pub(crate) fn uniform_entry(size: u64) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding: 0,
         visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
@@ -397,7 +397,7 @@ fn uniform_entry(size: u64) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
-fn sampler_entry() -> wgpu::BindGroupLayoutEntry {
+pub(crate) fn sampler_entry() -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding: 1,
         visibility: wgpu::ShaderStages::FRAGMENT,
@@ -406,7 +406,7 @@ fn sampler_entry() -> wgpu::BindGroupLayoutEntry {
     }
 }
 
-fn texture_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
+pub(crate) fn texture_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
         visibility: wgpu::ShaderStages::FRAGMENT,
@@ -419,14 +419,14 @@ fn texture_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
-fn texture_binding(binding: u32, view: &wgpu::TextureView) -> wgpu::BindGroupEntry<'_> {
+pub(crate) fn texture_binding(binding: u32, view: &wgpu::TextureView) -> wgpu::BindGroupEntry<'_> {
     wgpu::BindGroupEntry {
         binding,
         resource: wgpu::BindingResource::TextureView(view),
     }
 }
 
-fn uniform_buffer(device: &wgpu::Device, size: u64) -> wgpu::Buffer {
+pub(crate) fn uniform_buffer(device: &wgpu::Device, size: u64) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("uniforms"),
         size,
@@ -435,7 +435,7 @@ fn uniform_buffer(device: &wgpu::Device, size: u64) -> wgpu::Buffer {
     })
 }
 
-fn smooth_sampler(device: &wgpu::Device) -> wgpu::Sampler {
+pub(crate) fn smooth_sampler(device: &wgpu::Device) -> wgpu::Sampler {
     device.create_sampler(&wgpu::SamplerDescriptor {
         label: Some("smooth"),
         mag_filter: wgpu::FilterMode::Linear,
@@ -446,7 +446,7 @@ fn smooth_sampler(device: &wgpu::Device) -> wgpu::Sampler {
 
 /// A pipeline drawing one rectangle (a strip of two triangles) a draw, into
 /// targets of `target` format with one sample a pixel and no depth buffer.
-fn pipeline(
+pub(crate) fn pipeline(
     device: &wgpu::Device,
     label: &str,
     layout: &wgpu::BindGroupLayout,

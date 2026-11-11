@@ -21,6 +21,7 @@ wgpu = "30"
 tracing = "0.1"
 
 [dev-dependencies]
+tempfile = "3"
 # Waits for a graphics device without a window, to put pictures together on.
 pollster = "1"
 # A graphics device without a window, to try decoding on one.

@@ -266,6 +266,13 @@ impl Preview {
         });
     }
 
+    /// The next finished picture, waiting up to `patience` for it: for
+    /// work that asks for one picture after another (export), never for the
+    /// interface.
+    pub fn wait(&self, patience: Duration) -> Option<Picture> {
+        self.pictures.recv_timeout(patience).ok()
+    }
+
     /// The newest finished picture, if any arrived since the last call.
     pub fn latest(&self) -> Option<Picture> {
         let mut newest = None;
