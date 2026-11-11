@@ -7,8 +7,10 @@ use std::path::{Path, PathBuf};
 pub(crate) const MAX_DEPTH: usize = 3;
 
 /// Every project file in `folder` and up to three levels of subfolders.
-/// Hidden folders (starting with a dot) are skipped. Unreadable folders are
-/// skipped quietly; the folder itself being gone gives an empty list.
+/// Hidden folders (starting with a dot) are skipped, and so are the folders
+/// of saved versions: those files belong to their project and are not
+/// projects of their own. Unreadable folders are skipped quietly; the folder
+/// itself being gone gives an empty list.
 pub fn find_project_files(folder: &Path) -> Vec<PathBuf> {
     let mut found = Vec::new();
     walk(folder, 0, &mut found);
@@ -27,13 +29,19 @@ fn walk(dir: &Path, depth: usize, found: &mut Vec<PathBuf>) {
             continue;
         };
         if kind.is_dir() {
-            if !hidden && depth < MAX_DEPTH {
+            if !hidden && depth < MAX_DEPTH && !project::versions::is_folder(&path) {
                 walk(&path, depth + 1, found);
             }
         } else if !hidden && is_project_file(&path) {
             found.push(path);
         }
     }
+}
+
+/// Whether the path is a saved version: a project file in the versions
+/// folder of another.
+pub(crate) fn is_saved_version(path: &Path) -> bool {
+    path.parent().is_some_and(project::versions::is_folder)
 }
 
 /// Whether the path has the project file extension.
@@ -64,6 +72,10 @@ mod tests {
         ] {
             std::fs::write(tmp.path().join(file), "").unwrap();
         }
+        // A saved version of top: a project file, but not a project to list.
+        let versions = project::versions::folder(&tmp.path().join(format!("top.{ext}")));
+        std::fs::create_dir_all(&versions).unwrap();
+        std::fs::write(versions.join(format!("1 First cut.{ext}")), "").unwrap();
         let names: Vec<String> = find_project_files(tmp.path())
             .iter()
             .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())

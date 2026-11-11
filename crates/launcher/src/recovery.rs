@@ -49,6 +49,47 @@ pub fn unsaved_changes(project: &Path) -> usize {
     project::Document::check(project).map_or(0, |check| check.unsaved_changes)
 }
 
+/// Refuses with an explanation while the editor has `project` open: its
+/// files are in use, and the editor would go on saving to the old place.
+/// `doing` finishes "can't be … right now" ("renamed", "moved", "deleted").
+/// Asks the system about one process: run it on a worker.
+pub fn refuse_if_open_in_editor(data_dir: &Path, project: &Path, doing: &str) -> diag::Result<()> {
+    if open_in_editor(data_dir, project, editor_is_running) {
+        return Err(in_use(doing));
+    }
+    Ok(())
+}
+
+fn in_use(doing: &str) -> diag::AppError {
+    diag::AppError::new("This project is open in the editor")
+        .why(format!(
+            "The editor is working on its files, so it can't be {doing} right now."
+        ))
+        .fix("Close the editor, then try again.")
+}
+
+/// Whether the editor's session marker names `project` and that editor is
+/// still running (`is_running` answers for its process id). An editor that
+/// crashed leaves its marker too, and is not in the way.
+fn open_in_editor(data_dir: &Path, project: &Path, is_running: impl Fn(u32) -> bool) -> bool {
+    diag::session::unfinished_run(data_dir).is_some_and(|run| {
+        run.project
+            .as_deref()
+            .is_some_and(|open| same_file(open, project))
+            && run.pid.is_some_and(is_running)
+    })
+}
+
+/// Whether two paths name one file, also when they are spelled differently
+/// (another letter case, a link on the way).
+fn same_file(a: &Path, b: &Path) -> bool {
+    a == b
+        || match (a.canonicalize(), b.canonicalize()) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => false,
+        }
+}
+
 /// Whether a process with this id is running and is the editor.
 fn editor_is_running(pid: u32) -> bool {
     use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
@@ -129,6 +170,39 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         write_marker(tmp.path(), std::process::id(), None);
         assert_eq!(last_run(tmp.path()), LastRun::CrashedNothingLost);
+    }
+
+    #[test]
+    fn a_project_is_open_only_while_its_editor_runs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = crate::files::create_project(tmp.path(), "Open", None).unwrap();
+        let other = crate::files::create_project(tmp.path(), "Other", None).unwrap();
+        let (running, stopped) = (|_| true, |_| false);
+        assert!(!open_in_editor(tmp.path(), &project, running), "no editor at all");
+
+        write_marker(tmp.path(), 4242, Some(&project));
+        assert!(open_in_editor(tmp.path(), &project, |pid| pid == 4242));
+        assert!(!open_in_editor(tmp.path(), &other, running), "another project");
+        assert!(!open_in_editor(tmp.path(), &project, stopped), "it crashed");
+        // The same file, spelled another way.
+        let roundabout = tmp.path().join(".").join(project.file_name().unwrap());
+        assert!(open_in_editor(tmp.path(), &roundabout, running));
+
+        write_marker(tmp.path(), 4242, None);
+        assert!(!open_in_editor(tmp.path(), &project, running), "no project open");
+    }
+
+    #[test]
+    fn an_open_project_is_refused_with_an_explanation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = crate::files::create_project(tmp.path(), "Open", None).unwrap();
+        assert!(refuse_if_open_in_editor(tmp.path(), &project, "deleted").is_ok());
+        // This test's own process is running but is not the editor.
+        write_marker(tmp.path(), std::process::id(), Some(&project));
+        assert!(refuse_if_open_in_editor(tmp.path(), &project, "deleted").is_ok());
+        let err = in_use("deleted");
+        assert!(err.what().contains("open in the editor"));
+        assert!(err.why_text().is_some_and(|w| w.contains("can't be deleted")));
     }
 
     #[test]

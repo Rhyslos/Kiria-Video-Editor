@@ -7,6 +7,8 @@
 //! - [`command`]: every change is a `Command` applied to a snapshot.
 //! - [`history`]: unlimited undo and redo over snapshots.
 //! - [`document`]: an open project on disk, with the autosave journal and crash recovery.
+//! - [`versions`]: named copies of a project to go back to.
+//! - [`side_files`]: the files that belong to a project besides the project file.
 
 pub mod command;
 pub mod document;
@@ -15,6 +17,7 @@ pub mod file;
 pub mod history;
 pub mod ids;
 pub mod model;
+pub mod side_files;
 pub mod time;
 pub mod versions;
 
@@ -26,6 +29,7 @@ pub use model::{
     AudioStream, Clip, Fingerprint, LabelColor, MediaInfo, MediaKind, MediaRef, Project, Region, Sequence,
     SequenceSettings, TimelineLabel, Track, TrackKind, VideoStream,
 };
+pub use side_files::SideFile;
 pub use time::{Rate, Speed, Time};
 
 /// File extension for project files, without the dot.

@@ -7,12 +7,14 @@
 //! newer version in the background and, with automatic updates on, downloads
 //! and verifies it; installing it arrives in Phase 3.
 //!
-//! Usage: `launcher --self-test` (answers and stops), `launcher --update-step <report file>` (one start's worth of updating without a window, see `drill.rs`), or `launcher [project file] [--no-update-check] [--smoke-test | --screenshot <file.png>] [--demo <count>] [--update-window <available | downloading | ready>] [--demo-crash] [--graphics-warning]`.
+//! Usage: `launcher --self-test` (answers and stops), `launcher --update-step <report file>` (one start's worth of updating without a window, see `drill.rs`), or `launcher [project file] [--no-update-check] [--smoke-test | --screenshot <file.png>] [--demo <count>] [--update-window <available | downloading | ready>] [--demo-crash] [--delete-dialog] [--graphics-warning]`.
 
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod browser;
 mod cards;
+mod delete;
+mod delete_dialog;
 mod demo;
 mod drill;
 mod editor_start;
@@ -236,6 +238,12 @@ fn browse(
         restart: Arc::clone(&restart),
         update_preview: options.update_window,
         editor: Arc::clone(&editor),
+        // Sample projects never reach the person's own recycle bin.
+        bin: match options.demo {
+            Some(_) => demo::bin(&data_dir),
+            None => delete::Bin::System,
+        },
+        delete_preview: options.delete_dialog && options.demo.is_some(),
     };
     let window = || eframe::NativeOptions {
         viewport: ui_kit::icon::with_window_icon(egui::ViewportBuilder::default())

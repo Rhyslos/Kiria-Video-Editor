@@ -14,12 +14,13 @@ Done (Phases 0.3 and 0.4): model, project file, commands, undo/redo, autosave jo
 | `src/ids.rs` | One id type per kind of thing (`ClipId`, `TrackId`, ...). Ids come from one counter in the project and are never reused |
 | `src/model.rs` | `Project`, `Sequence` (a timeline), `Track`, `Clip`, `MediaRef` + `Fingerprint` + `MediaInfo` (the file's video and sound streams, read on import), `TimelineLabel`, `Region`, the edit needle, and the `SequenceSettings` presets (Game clip, High frame rate, Vertical short). `Project::problems()` / `validate()` check the rules |
 | `src/file.rs` | The project file: save (atomic), load, the summary block, format versions and migrations. `read_info` reads only the format version and summary (the text before the project), for project lists (from format 5 the summary also lists the media files, so lists can say which are missing; format 6 adds the timeline's master volume; format 7 each clip's speed). `back_up_before_upgrade` keeps `<file>.backup-v<old>` before an older file is upgraded; `load_newer` reads a newer file for viewing |
-| `src/versions.rs` | Saved versions: named copies in `<file>.versions/`, listed newest first; restoring one is the undoable `Restore` command |
+| `src/versions.rs` | Saved versions: named copies in `<file>.versions/`, listed newest first; restoring one is the undoable `Restore` command. `is_folder` knows such a folder by its name, so project lists leave its files out |
 | `src/edits.rs` | The trim tools beyond a plain trim: ripple trim, roll, slip and slide; `RemoveRanges`, which cuts stretches out of every track and closes the gaps; and the room-making behind `InsertMedia` (pushes everything later) and `OverwriteMedia` (cuts away what it covers). Each checks every clip it touches before changing any |
 | `src/command.rs` | `Command`: every change (import, place, move, trim, remove or ripple-remove, split, labels, region, edit needle, tracks, media, relink). `apply` returns a new snapshot or an explained error and no change |
 | `src/history.rs` | `History`: unlimited undo and redo as a stack of snapshots |
 | `src/document.rs` | `Document`: an open project on disk. Records every change in the autosave journal, does full saves, and recovers after a crash. Opening an older format makes a backup copy first; a newer one opens read-only (`is_read_only`: changes and saves are refused with an explanation, and nothing is written) |
 | `src/document.rs` (also) | `thumbnail_path`: where the launcher's picture of a project lives (`<file>.thumbnail.png`, beside the journal). `view_path`: where the editor keeps how the timeline was laid out (`<file>.view`: track heights and such; view state, never part of the project) |
+| `src/side_files.rs` | `SideFile` and `existing`: the one list of the files that belong to a project besides the project file (see below). Moving, renaming and deleting a project all go by it |
 | `tests/random_edits.rs` | Property test: random edit sessions with undo/redo stay valid, and journal replay rebuilds the exact project |
 | `tests/samples.rs` + `tests/samples/` | One stored project per released file format; all must keep opening |
 
@@ -60,6 +61,24 @@ RON text with the extension from `brand::PROJECT_FILE_EXTENSION`:
 2. Change the model and raise `file::FORMAT_VERSION` to `N + 1`.
 3. Add a step to `file::MIGRATIONS` that reads version `N` text into the frozen types, converts them, and writes version `N + 1` text.
 4. Write the new sample with `WRITE_SAMPLES=1 cargo test -p project --test samples`. Keep every older sample: they must still open.
+
+## Files beside the project file
+
+A project is more than one file on disk. Everything else sits beside the project file, under a name made from its name:
+
+| Name | What it is | Written by |
+|---|---|---|
+| `<file>.journal` | The autosave journal | `document.rs` |
+| `<file>.journal.discarded` | Unsaved work set aside by "Open last save" | `document.rs` |
+| `.<file>.saving` | A save in progress; only stays after a crash or power cut | `file.rs` |
+| `<file>.backup-v<N>` | The file as it was before an upgrade from format `N` | `file.rs` |
+| `<file>.thumbnail.png` | The picture on the launcher's card | the editor, on every save |
+| `<file>.view` | The timeline layout | the editor |
+| `<file>.versions/` | The folder of saved versions | `versions.rs` |
+
+`side_files::existing(project_file)` returns those that are on disk, and `SideFile::path` says where each one is for a given project file. Whatever moves, renames or deletes a project uses these two and nothing else, so no file is forgotten. **A new kind of file kept beside projects must be added to `SideFile`** (the tests in `side_files.rs` compare the list with what this crate really writes beside a project).
+
+Imported recordings are not side files: a project only points at them, and nothing that moves or deletes a project touches them. Caches (waveforms, clip thumbnails) are kept in memory per media file, so there is nothing of them on disk to list yet.
 
 ## Autosave and recovery
 

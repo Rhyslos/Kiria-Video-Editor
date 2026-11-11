@@ -139,7 +139,7 @@ impl Document {
             replay(&mut history, entries.iter().map(|(_, entry)| entry));
             seq = entries.last().map_or(seq, |(last, _)| *last);
         } else if !entries.is_empty() {
-            let kept = journal_file.with_extension("journal.discarded");
+            let kept = discarded_journal_path(path);
             fs::rename(&journal_file, &kept).or_explain(|| {
                 AppError::new("The unsaved changes can't be set aside")
                     .why(format!("Renaming {} failed.", journal_file.display()))
@@ -289,7 +289,6 @@ fn read_only() -> AppError {
         .fix("Update the app to edit it.")
 }
 
-/// `<project file>.journal`.
 /// The project's picture for the launcher: `<file>.thumbnail.png`.
 pub fn thumbnail_path(project: &Path) -> PathBuf {
     let mut name = project.as_os_str().to_owned();
@@ -306,9 +305,18 @@ pub fn view_path(project: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
+/// The autosave journal: `<project file>.journal`.
 pub fn journal_path(project: &Path) -> PathBuf {
     let mut name = project.as_os_str().to_owned();
     name.push(".journal");
+    PathBuf::from(name)
+}
+
+/// Where unsaved work goes when a project is opened as last saved:
+/// `<project file>.journal.discarded`.
+pub fn discarded_journal_path(project: &Path) -> PathBuf {
+    let mut name = project.as_os_str().to_owned();
+    name.push(".journal.discarded");
     PathBuf::from(name)
 }
 

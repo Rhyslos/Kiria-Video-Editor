@@ -157,6 +157,7 @@ The app has five pages (Library, Edit, Color, Audio, Export) switched from tabs 
 - Checks GitHub for an update first, with a short timeout; offline never blocks opening.
 - App name and logo centred in the top bar. Left side: a folder tree of project folders, media folders and any other folders added. Main area: projects in a three-wide grid of thumbnails, each showing length, settings, when it was last used and any issues (missing media, saved by a newer version), with search, Open and New project. Bottom left: the app version with manual Update, Skip this version, and an Automatic updates tick box.
 - New projects start on **Automatic** settings: the first video imported decides the size, frame rate and audio rate, so any resolution and frame rate works without choosing anything. Templates (such as Game clip, High frame rate, Vertical short) are optional, for fixing the settings up front, and the settings can be changed later.
+- Right-click a project to rename it, move it to another folder or delete it. The files that belong to a project (autosave, backups, thumbnail, timeline layout, saved versions) go with it. Deleting asks first with the list of files and moves them to the recycle bin, so it can be undone; recordings are never touched.
 - Missing-media warnings shown before a project opens.
 
 ### Library

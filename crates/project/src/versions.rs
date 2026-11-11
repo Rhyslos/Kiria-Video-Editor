@@ -21,8 +21,21 @@ pub struct Version {
 /// The folder holding a project's versions.
 pub fn folder(project_file: &Path) -> PathBuf {
     let mut name = project_file.as_os_str().to_owned();
-    name.push(".versions");
+    name.push(FOLDER_SUFFIX);
     PathBuf::from(name)
+}
+
+const FOLDER_SUFFIX: &str = ".versions";
+
+/// Whether `dir` is named like a project's versions folder. The files in
+/// one are project files, but they belong to that project: a list of
+/// projects leaves them out.
+pub fn is_folder(dir: &Path) -> bool {
+    dir.file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_suffix(FOLDER_SUFFIX))
+        .and_then(|project_file| Path::new(project_file).extension())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case(FILE_EXTENSION))
 }
 
 /// Saves `project` as a version called `name`.
@@ -122,5 +135,15 @@ mod tests {
         assert_eq!(all.len(), 2);
         assert_eq!(load(&all[0]).unwrap().name, "Trip v2", "newest first");
         assert!(save(&p, &file, "  ").is_err());
+    }
+
+    #[test]
+    fn a_versions_folder_is_known_by_its_name() {
+        let file = Path::new("clips").join(format!("p.{FILE_EXTENSION}"));
+        assert!(is_folder(&folder(&file)));
+        assert!(!is_folder(&file));
+        assert!(!is_folder(Path::new("clips")));
+        assert!(!is_folder(Path::new("old.versions")), "not beside a project file");
+        assert!(!is_folder(Path::new(&format!("p.{FILE_EXTENSION}.versions.zip"))));
     }
 }
