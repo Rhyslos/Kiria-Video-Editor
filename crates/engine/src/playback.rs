@@ -10,6 +10,7 @@
 //! short ring buffer (about a quarter of a second) filled; the sound card's
 //! callback takes from it and never waits, allocates or locks.
 
+use crate::meter::{Levels, Meter, Reading};
 use crate::mix::Mixer;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SizedSample};
@@ -39,6 +40,7 @@ pub struct Playback {
     clock: Arc<Clock>,
     stop: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
+    reading: Arc<Reading>,
 }
 
 impl Playback {
@@ -51,10 +53,11 @@ impl Playback {
             started: Instant::now(),
         });
         let stop = Arc::new(AtomicBool::new(false));
-        let (c, s) = (Arc::clone(&clock), Arc::clone(&stop));
+        let reading = Reading::new();
+        let (c, s, r) = (Arc::clone(&clock), Arc::clone(&stop), Arc::clone(&reading));
         let thread = std::thread::Builder::new()
             .name("audio".into())
-            .spawn(move || audio_thread(&project, sequence, from.as_secs_f64(), &c, &s))
+            .spawn(move || audio_thread(&project, sequence, from.as_secs_f64(), &c, &s, r))
             .map_err(|e| tracing::error!("the audio thread could not start: {e}"))
             .ok();
         Playback {
@@ -62,6 +65,7 @@ impl Playback {
             clock,
             stop,
             thread,
+            reading,
         }
     }
 
@@ -82,6 +86,11 @@ impl Playback {
         self.from
     }
 
+    /// The master output's peaks and loudness, as last measured.
+    pub fn levels(&self) -> Levels {
+        self.reading.levels()
+    }
+
     /// Whether sound is coming out (false: silent, wall clock).
     pub fn has_sound(&self) -> bool {
         self.clock.sound.load(Ordering::Acquire)
@@ -97,7 +106,14 @@ impl Drop for Playback {
     }
 }
 
-fn audio_thread(project: &Project, sequence: SequenceId, from: f64, clock: &Arc<Clock>, stop: &AtomicBool) {
+fn audio_thread(
+    project: &Project,
+    sequence: SequenceId,
+    from: f64,
+    clock: &Arc<Clock>,
+    stop: &AtomicBool,
+    reading: Arc<Reading>,
+) {
     let Some(seq) = project.sequences.iter().find(|s| s.id == sequence) else {
         return;
     };
@@ -109,6 +125,7 @@ fn audio_thread(project: &Project, sequence: SequenceId, from: f64, clock: &Arc<
         return;
     };
     let mut mixer = Mixer::new(rate);
+    let mut meter = Meter::new(rate, reading);
     let mut block = vec![0f32; BLOCK * CHANNELS];
     let mut position = from;
     // The clock starts once the first sound is queued, so the picture waits for it.
@@ -119,6 +136,7 @@ fn audio_thread(project: &Project, sequence: SequenceId, from: f64, clock: &Arc<
             continue;
         }
         mixer.mix(project, seq, position, &mut block);
+        meter.feed(&block);
         position += BLOCK as f64 / f64::from(rate);
         if let Ok(mut chunk) = producer.write_chunk(block.len()) {
             let (a, b) = chunk.as_mut_slices();

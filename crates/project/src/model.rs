@@ -187,6 +187,9 @@ pub struct Sequence {
     /// placeholder values until then). Off once settled or chosen by hand.
     #[serde(default)]
     pub automatic: bool,
+    /// Volume of the whole mix in decibels (format 6); 0 leaves it as it is.
+    #[serde(default)]
+    pub master_gain_db: f32,
 }
 
 impl Sequence {
@@ -350,6 +353,7 @@ impl Project {
             region: None,
             edit_needle: Time::ZERO,
             automatic: false,
+            master_gain_db: 0.0,
         }
     }
 

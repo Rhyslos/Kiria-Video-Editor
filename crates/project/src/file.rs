@@ -22,13 +22,13 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
 /// The format this build writes.
-pub const FORMAT_VERSION: u32 = 5;
+pub const FORMAT_VERSION: u32 = 6;
 
 /// Turns the text of a version `n` file into the text of a version `n + 1` file.
 pub type Migration = fn(&str) -> diag::Result<String>;
 
 /// `MIGRATIONS[i]` upgrades version `i + 1` to `i + 2`.
-pub const MIGRATIONS: &[Migration] = &[v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5];
+pub const MIGRATIONS: &[Migration] = &[v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6];
 
 /// Format 2 adds `info` (the file's streams) to each media entry. The field
 /// has a default, so version 1 text is already valid version 2 text apart
@@ -54,6 +54,12 @@ fn v3_to_v4(text: &str) -> diag::Result<String> {
 /// the project is saved again.
 fn v4_to_v5(text: &str) -> diag::Result<String> {
     set_format_version(text, 4, 5)
+}
+
+/// Format 6 adds `master_gain_db` to each timeline: the volume of the whole
+/// mix. It defaults to 0 dB, which is how older timelines sounded.
+fn v5_to_v6(text: &str) -> diag::Result<String> {
+    set_format_version(text, 5, 6)
 }
 
 /// Rewrites the `format_version` number at the top of the file.
