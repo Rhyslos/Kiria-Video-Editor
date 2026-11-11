@@ -1432,6 +1432,14 @@ impl TimelineView {
     ) {
         let left = layout.time_left();
         let id = ui.scope_id().with("timeline");
+        // The ruler takes the pointer first, so that the handles lying on it
+        // (the edit needle's, the region's edges) come after it and are on
+        // top: a press on a handle drags the handle, not the playhead.
+        let ruler = ui.interact(
+            layout.ruler.union(layout.labels),
+            id.with("ruler"),
+            Sense::click_and_drag(),
+        );
 
         // The edit needle's handle, dragged along the ruler.
         if let Some(needle) = data.needle {
@@ -1516,11 +1524,6 @@ impl TimelineView {
         }
 
         // Ruler: click or drag to move the playhead; Shift-drag draws the region.
-        let ruler = ui.interact(
-            layout.ruler.union(layout.labels),
-            id.with("ruler"),
-            Sense::click_and_drag(),
-        );
         // The cache bar explains its colours when pointed at.
         if let Some(p) = ruler.hover_pos()
             && layout.cache_strip().expand2(vec2(0.0, 2.0)).contains(p)
@@ -2298,6 +2301,8 @@ mod tests {
         cache: Vec<CacheRange>,
         fps: f64,
         modifiers: egui::Modifiers,
+        needle: Option<f64>,
+        region: Option<(f64, f64)>,
     }
 
     const OVER_RULER: Pos2 = pos2(640.0, 10.0);
@@ -2318,6 +2323,8 @@ mod tests {
                 cache: Vec::new(),
                 fps: 60.0,
                 modifiers: egui::Modifiers::NONE,
+                needle: None,
+                region: None,
             }
         }
 
@@ -2343,8 +2350,8 @@ mod tests {
                             length: 60.0,
                             fps: self.fps,
                             playhead: 2.0,
-                            needle: None,
-                            region: None,
+                            needle: self.needle,
+                            region: self.region,
                             markers: &[],
                             highlights: &[],
                             follow: false,
@@ -2512,6 +2519,52 @@ mod tests {
                 .any(|e| matches!(e, TimelineEvent::Seek(t) if (t - 500.0 / 60.0).abs() < 1e-6)),
             "{events:?}"
         );
+    }
+
+    #[test]
+    fn handles_on_the_ruler_drag_themselves_not_the_playhead() {
+        let primary = egui::PointerButton::Primary;
+        // Presses at `grab`, drags a second to the right and lets go.
+        let drag = |rig: &mut Rig, grab: Pos2| -> Vec<TimelineEvent> {
+            let mut events = rig.move_to(grab);
+            events.extend(rig.button(grab, primary, true));
+            events.extend(rig.move_to(grab + vec2(30.0, 0.0)));
+            events.extend(rig.move_to(grab + vec2(60.0, 0.0)));
+            events.extend(rig.button(grab + vec2(60.0, 0.0), primary, false));
+            events
+        };
+        let seeks = |events: &[TimelineEvent]| events.iter().any(|e| matches!(e, TimelineEvent::Seek(_)));
+
+        // The edit needle at 5 s is at x = 440; its handle hangs from the ruler's top to y = 26.
+        let mut rig = Rig::new(1, 1);
+        rig.needle = Some(5.0);
+        let events = drag(&mut rig, pos2(441.0, 20.0));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, TimelineEvent::MoveNeedle(t) if (t - 6.0).abs() < 0.05)),
+            "{events:?}"
+        );
+        assert!(!seeks(&events), "the playhead stays: {events:?}");
+
+        // The end of a region from 2 s to 4 s is at x = 380.
+        let mut rig = Rig::new(1, 1);
+        rig.region = Some((2.0, 4.0));
+        let events = drag(&mut rig, pos2(381.0, 22.0));
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                TimelineEvent::SetRegion(Some((a, b))) if (a - 2.0).abs() < 1e-6 && (b - 5.0).abs() < 0.05
+            )),
+            "{events:?}"
+        );
+        assert!(!seeks(&events), "the playhead stays: {events:?}");
+
+        // Beside the handles the ruler still moves the playhead.
+        let mut rig = Rig::new(1, 1);
+        rig.needle = Some(5.0);
+        let events = drag(&mut rig, pos2(300.0, 10.0));
+        assert!(seeks(&events), "{events:?}");
     }
 
     #[test]
