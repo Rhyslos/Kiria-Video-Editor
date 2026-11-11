@@ -220,6 +220,26 @@ impl VideoDevice {
     pub fn codec_names(&self) -> String {
         codec_names(&self.parts.codecs)
     }
+
+    /// The card's own memory, in bytes: its largest heap that lives on the
+    /// card. 0 when the card reports none (graphics built into the
+    /// processor share the computer's memory).
+    pub fn card_memory(&self) -> u64 {
+        // SAFETY: the instance and the physical device are alive for as
+        // long as `self` (`parts.keep_alive`); this only reads properties.
+        let memory = unsafe {
+            self.parts
+                .instance
+                .get_physical_device_memory_properties(self.parts.physical_device)
+        };
+        memory
+            .memory_heaps_as_slice()
+            .iter()
+            .filter(|heap| heap.flags.contains(vk::MemoryHeapFlags::DEVICE_LOCAL))
+            .map(|heap| heap.size)
+            .max()
+            .unwrap_or(0)
+    }
 }
 
 /// The codecs' names in one line, as Diagnostics shows them.

@@ -252,6 +252,11 @@ impl WindowDevice {
         self.device.decodes(codec)
     }
 
+    /// The graphics card's own memory, in bytes (0 when it has none of its own).
+    pub fn card_memory(&self) -> u64 {
+        self.device.card_memory()
+    }
+
     /// A new reference to FFmpeg's device context, for a codec context to
     /// own. Null when memory ran out.
     pub(crate) fn new_reference(&self) -> *mut ff::AVBufferRef {

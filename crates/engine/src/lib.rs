@@ -9,6 +9,7 @@
 //! The interface only sends requests and reads results back, so slow media
 //! can never freeze a window.
 
+pub mod frames;
 pub mod meter;
 pub mod mix;
 pub mod playback;

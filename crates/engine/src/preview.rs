@@ -14,6 +14,11 @@
 //! fast requests come (dragging the playhead), pictures keep coming too.
 //! Not every request gets an answer, but the newest always does.
 //!
+//! Frames decoded on the window's graphics device are kept there after
+//! they were decoded ([`crate::frames`]): the one shown and every one
+//! passed on the way to it. Going back over them (a step back, a drag,
+//! playing a stretch again) shows them at once, without the decoder.
+//!
 //! Decoders are kept open for the files used most recently, so moving around
 //! one recording only seeks.
 //!
@@ -28,8 +33,9 @@
 //! the CPU. Stepping down is logged with the reason and shows no error; only
 //! the last way's failure does.
 
+use crate::frames::FrameCache;
 use crate::timeline::video_at;
-use media::{Decoded, Decoding, Level, Newer, Reached, VideoDecoder, WindowDevice, Work};
+use media::{Decoded, Decoding, GpuFrame, Level, Newer, Reached, VideoDecoder, WindowDevice, Work};
 use project::{MediaId, Project, SequenceId, Time};
 use std::collections::{HashSet, VecDeque};
 use std::path::Path;
@@ -70,6 +76,9 @@ pub trait DeviceWatch: Send + Sync {
 pub struct OnDevice {
     pub device: Arc<WindowDevice>,
     pub watch: Arc<dyn DeviceWatch>,
+    /// How many bytes of decoded frames may be kept on the device
+    /// ([`crate::frames::budget_on_card`]).
+    pub frames_kept: u64,
 }
 
 impl std::fmt::Debug for OnDevice {
@@ -149,6 +158,7 @@ impl Preview {
         let worker = Worker {
             ladder: ladder(decoding, convert, on_device.is_some()),
             convert,
+            frames: FrameCache::new(on_device.as_ref().map_or(0, |d| d.frames_kept)),
             on_device,
             decoders: VecDeque::new(),
             off_device: HashSet::new(),
@@ -299,7 +309,12 @@ struct Worker {
     off_device: HashSet<(MediaId, u32)>,
     /// The last decode was given up for a newer request: the next one is finished.
     gave_up_last: bool,
+    /// Frames decoded on the window's device, kept there.
+    frames: FrameCache<(MediaId, u32), GpuFrame>,
 }
+
+/// What the viewer's corner says for a picture that was kept.
+const KEPT: &str = "kept on the graphics card";
 
 impl Worker {
     /// The picture for `r`, or for a request that arrived while it was
@@ -329,6 +344,14 @@ impl Worker {
             stream: showing.clip.stream,
             rotation: showing.media.info.video.as_ref().map_or(0, |v| v.rotation),
         };
+        let at = showing.source_time.as_secs_f64();
+        // Decoded before and still kept: nothing to decode.
+        if let Some(frame) = self.frames.get(key, at) {
+            out.frame = Some(Decoded::Gpu(frame));
+            out.method = Some(KEPT.to_owned());
+            out.took = started.elapsed();
+            return Some(out);
+        }
         let found = self.decoders.iter().position(|(k, _)| *k == key);
         let mut decoder = match found.and_then(|i| self.decoders.remove(i)) {
             Some((_, decoder)) => decoder,
@@ -340,7 +363,6 @@ impl Worker {
                 }
             },
         };
-        let at = showing.source_time.as_secs_f64();
         // What the decoder is told between frames: what the newest request
         // waiting means for this file. Moments of this file that were asked
         // for meanwhile are remembered with their place on the timeline, to
@@ -374,7 +396,26 @@ impl Worker {
         // driver problem), open it one way down and ask again.
         let mut dropped = false;
         loop {
-            match self.decode(&mut decoder, at, r, &mut newer) {
+            // Frames the decoder passes on the way are kept for going back to.
+            let tick = decoder.tick();
+            let frames = &mut self.frames;
+            let mut keep = |picture: Decoded, until: f64| {
+                if let Decoded::Gpu(frame) = picture {
+                    let (w, h) = frame.planes.size();
+                    let bytes = u64::from(w) * u64::from(h) * 3 / 2;
+                    frames.put(key, frame.time, until, tick, bytes, frame);
+                }
+            };
+            let decoded = decode(
+                self.convert,
+                self.on_device.as_ref(),
+                &mut decoder,
+                at,
+                r,
+                &mut newer,
+                &mut keep,
+            );
+            match decoded {
                 Ok(Reached::Shown { picture, at: reached }) => {
                     out.frame = Some(picture);
                     // Stopped at a moment asked for meanwhile: it is that request's picture.
@@ -489,58 +530,60 @@ impl Worker {
             diag::AppError::new("The video can't be shown").why("No way of decoding it is left to try.")
         }))
     }
+}
 
-    /// The picture at `at` from this decoder, the way the viewer takes it.
-    /// Decodes towards `at`, asking `newer` between frames whether that is
-    /// still what is wanted (`VideoDecoder::picture_at_while`).
-    fn decode(
-        &self,
-        decoder: &mut VideoDecoder,
-        at: f64,
-        r: &Request,
-        newer: &mut dyn FnMut() -> Newer,
-    ) -> diag::Result<Reached<Decoded>> {
-        let (w, h) = (r.max_width, r.max_height);
-        let rgba = |reached: Reached<media::Frame>| match reached {
-            Reached::Shown { picture, at } => Reached::Shown {
-                picture: Decoded::Rgba(picture),
-                at,
-            },
-            Reached::Dropped => Reached::Dropped,
-        };
-        let Convert::WhileDrawing { largest_side } = self.convert else {
-            return decoder.frame_at_while(at, w, h, newer).map(rgba);
-        };
-        let watch = match (&self.on_device, decoder.level()) {
-            (Some(on_device), Level::Device) => Some(&on_device.watch),
-            _ => None,
-        };
-        if let Some(watch) = watch {
-            watch.about_to_decode();
-        }
-        let reached = decoder.picture_at_while(at, w, h, newer);
-        if let (Some(watch), Ok(_)) = (watch, &reached) {
-            watch.answered(); // an error is reported by the caller
-        }
-        let (picture, at) = match reached? {
-            Reached::Shown { picture, at } => (picture, at),
-            Reached::Dropped => return Ok(Reached::Dropped),
-        };
-        let picture = match picture {
-            // The frame is held already: this only converts it.
-            Decoded::Yuv(planes) if planes.width.max(planes.height) > largest_side => {
-                Decoded::Rgba(decoder.frame_at(at, w, h)?)
-            }
-            // Pictures on the graphics card come at the file's size: one too
-            // large for a texture goes down a way instead.
-            Decoded::Gpu(frame) if frame.planes.size().0.max(frame.planes.size().1) > largest_side => {
-                return Err(diag::AppError::new("The video can't be shown")
-                    .why("The picture is larger than a texture on this graphics card can be."));
-            }
-            picture => picture,
-        };
-        Ok(Reached::Shown { picture, at })
+/// Decodes towards `at`, asking `newer` between frames whether that is
+/// still what is wanted and handing the frames passed to `keep`
+/// (`VideoDecoder::picture_at_while`).
+fn decode(
+    convert: Convert,
+    on_device: Option<&OnDevice>,
+    decoder: &mut VideoDecoder,
+    at: f64,
+    r: &Request,
+    newer: &mut dyn FnMut() -> Newer,
+    keep: &mut dyn FnMut(Decoded, f64),
+) -> diag::Result<Reached<Decoded>> {
+    let (w, h) = (r.max_width, r.max_height);
+    let rgba = |reached: Reached<media::Frame>| match reached {
+        Reached::Shown { picture, at } => Reached::Shown {
+            picture: Decoded::Rgba(picture),
+            at,
+        },
+        Reached::Dropped => Reached::Dropped,
+    };
+    let Convert::WhileDrawing { largest_side } = convert else {
+        return decoder.frame_at_while(at, w, h, newer).map(rgba);
+    };
+    let watch = match (on_device, decoder.level()) {
+        (Some(on_device), Level::Device) => Some(&on_device.watch),
+        _ => None,
+    };
+    if let Some(watch) = watch {
+        watch.about_to_decode();
     }
+    let reached = decoder.picture_at_while(at, w, h, newer, Some(keep));
+    if let (Some(watch), Ok(_)) = (watch, &reached) {
+        watch.answered(); // an error is reported by the caller
+    }
+    let (picture, at) = match reached? {
+        Reached::Shown { picture, at } => (picture, at),
+        Reached::Dropped => return Ok(Reached::Dropped),
+    };
+    let picture = match picture {
+        // The frame is held already: this only converts it.
+        Decoded::Yuv(planes) if planes.width.max(planes.height) > largest_side => {
+            Decoded::Rgba(decoder.frame_at(at, w, h)?)
+        }
+        // Pictures on the graphics card come at the file's size: one too
+        // large for a texture goes down a way instead.
+        Decoded::Gpu(frame) if frame.planes.size().0.max(frame.planes.size().1) > largest_side => {
+            return Err(diag::AppError::new("The video can't be shown")
+                .why("The picture is larger than a texture on this graphics card can be."));
+        }
+        picture => picture,
+    };
+    Ok(Reached::Shown { picture, at })
 }
 
 /// The file a request shows.
@@ -682,6 +725,7 @@ mod tests {
         let on_device = OnDevice {
             device,
             watch: Arc::clone(&watch) as Arc<dyn DeviceWatch>,
+            frames_kept: 64 << 20,
         };
         let project = Project::new_automatic("T");
         let seq = project.active_sequence;
@@ -718,6 +762,7 @@ mod tests {
             decoders: VecDeque::new(),
             off_device: HashSet::new(),
             gave_up_last: false,
+            frames: FrameCache::new(0),
         };
         assert_eq!(worker.ladder_for(failed), [Device, Hardware, Software]);
         worker.off_device.insert(failed);
@@ -759,6 +804,7 @@ mod tests {
             decoders: VecDeque::new(),
             off_device: HashSet::new(),
             gave_up_last: false,
+            frames: FrameCache::new(0),
         };
         (worker, p, seq)
     }
@@ -830,6 +876,44 @@ mod tests {
         // After a finished one, giving up is allowed again.
         requests.send(request(&p, seq, elsewhere + 2)).unwrap();
         assert!(worker.picture(&request(&p, seq, 300), &mut waiting).is_none());
+    }
+
+    /// A frame kept on the graphics card is shown without a decoder being
+    /// opened. Runs where there is a Vulkan driver (a software one will do).
+    #[test]
+    fn a_frame_kept_on_the_card_is_shown_without_decoding() {
+        let Some(device) = video_device::testing::device() else {
+            return;
+        };
+        let (mut worker, p, seq) = worker_and_project();
+        let (_requests, inbox) = channel::<Request>();
+        let mut waiting = Waiting::new(&inbox);
+        worker.frames = FrameCache::new(64 << 20);
+        let (key, moment) = source_of(&request(&p, seq, 500)).unwrap();
+        let planes = Arc::new(video_device::PlaneImages::new(&device, (64, 36)).unwrap());
+        let frame = GpuFrame {
+            planes,
+            colour: media::Colour {
+                matrix: media::Matrix::Bt709,
+                range: media::Range::Limited,
+            },
+            rotation: 0,
+            time: moment,
+        };
+        worker
+            .frames
+            .put(key, moment, moment + 1.0 / 60.0, 0.0005, 64 * 36 * 3 / 2, frame);
+        let picture = worker.picture(&request(&p, seq, 500), &mut waiting).unwrap();
+        assert!(matches!(picture.frame, Some(Decoded::Gpu(_))));
+        assert_eq!(picture.method.as_deref(), Some(KEPT));
+        assert!(
+            picture.work.is_none() && worker.decoders.is_empty(),
+            "no decoder was needed"
+        );
+        // A moment that isn't kept is decoded as always.
+        let picture = worker.picture(&request(&p, seq, 900), &mut waiting).unwrap();
+        assert!(matches!(picture.frame, Some(Decoded::Rgba(_))));
+        assert_eq!(worker.decoders.len(), 1);
     }
 
     #[test]

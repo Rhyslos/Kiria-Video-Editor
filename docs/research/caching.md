@@ -327,6 +327,14 @@ The same test found that stepping with the arrow keys showed some frames a step 
 
 It makes stepping, short scrubs, going back and forth, replaying and playing backwards instant inside the kept stretch. It does nothing for a jump to somewhere new.
 
+*Built first for frames on the graphics card (November 2026), not for memory.* The timings from the test machine (`Pictures that took long` in Diagnostics) showed that a jump there has no slow part of its own: the jump takes 0 to 4 ms and the first frame is out within 4 ms; all the time is the frames between the key frame and the target, at about 3.5 ms each (34 frames in 115 ms, 103 in 381 ms). Going forwards needs the next few frames; going back by one frame needs all of them again. So what helps most is keeping those frames, and on that machine they are decoded on the window's graphics device, where keeping one is a copy on the card that the picture shown needs anyway.
+
+- The decoder hands over every frame it passes on the way to a picture, the one shown included, each with the time the next frame starts (`VideoDecoder::picture_at_while`'s `keep`). A frame is on screen from its own time until then.
+- `engine::frames::FrameCache` keeps them by file and time, within a budget in bytes: a quarter of the card's own memory, between 256 MB and 2 GB (two seconds of 1440p at 60 frames a second is about 1 GB). The frame used longest ago goes first.
+- The preview worker looks there before it touches a decoder. A kept frame is shown in well under a millisecond; the viewer's corner says "kept on the graphics card".
+
+Not built yet: the idle fill (the group of pictures behind the playhead, so stepping back across a key frame doesn't decode that group at that moment), the same for the two ways of decoding that end in memory (planes at the viewer's size, shared between the cache and the viewer), and marking kept stretches in the timeline's cache bar.
+
 **3. C: proxies**, the build plan's Off / On / Auto. The only way to the right frame within 50 ms anywhere in a file.
 
 - 540p H.264 with a key frame every 8 frames (half the disk of every frame a key frame, 1 to 2 ms more per fetch), with exactly the original's frame times, in the disk cache under the file's fingerprint.
