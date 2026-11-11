@@ -54,6 +54,8 @@ pub struct Editor {
     search_text: String,
     status: String,
     playing: bool,
+    /// Playback loops inside the region (L).
+    looping: bool,
     last_input: Instant,
     mode: RunMode,
     frames: u64,
@@ -142,6 +144,7 @@ impl Editor {
             search_text: String::new(),
             status: String::new(),
             playing: false,
+            looping: false,
             last_input: Instant::now(),
             mode,
             frames: 0,
@@ -157,19 +160,20 @@ impl Editor {
             Action::Save => self.with_document(Document::save),
             Action::AddLabel => {
                 let at = self.edit_point();
-                self.with_document(|d| {
-                    let sequence = d.project().active_sequence;
-                    d.apply(Command::AddLabel {
-                        sequence,
-                        label: TimelineLabel {
-                            id: LabelId(0),
-                            name: "Label".into(),
-                            at,
-                            color: LabelColor::Blue,
-                        },
-                    })
-                })
+                self.add_label(at)
             }
+            Action::ToggleLoop => {
+                self.looping = !self.looping;
+                let has_region = self.region().is_some();
+                self.status = match (self.looping, has_region) {
+                    (true, true) => "Looping inside the region",
+                    (true, false) => "Looping on: Shift-drag in the ruler to mark a region",
+                    (false, _) => "Looping off",
+                }
+                .into();
+                Ok(())
+            }
+            Action::ClearRegion => self.set_region(None),
             Action::Split => {
                 let at = self.edit_point();
                 let clip = self.selected.first().copied();
@@ -296,6 +300,50 @@ impl Editor {
         }
     }
 
+    /// Adds a timeline label at `at`, named by its number.
+    fn add_label(&mut self, at: Time) -> diag::Result<()> {
+        self.with_document(|d| {
+            let Some(seq) = d.project().active() else {
+                return Ok(());
+            };
+            let (sequence, number) = (seq.id, seq.labels.len() + 1);
+            d.apply(Command::AddLabel {
+                sequence,
+                label: TimelineLabel {
+                    id: LabelId(0),
+                    name: format!("Label {number}"),
+                    at: seq.settings.frame_rate.snap(at),
+                    color: LabelColor::Blue,
+                },
+            })
+        })
+    }
+
+    /// The open timeline's region.
+    fn region(&self) -> Option<project::Region> {
+        self.document
+            .as_ref()
+            .and_then(|d| d.project().active())
+            .and_then(|s| s.region)
+    }
+
+    /// Sets (or clears) the region, on frames.
+    fn set_region(&mut self, seconds_range: Option<(f64, f64)>) -> diag::Result<()> {
+        self.with_document(|d| {
+            let Some(seq) = d.project().active() else {
+                return Ok(());
+            };
+            let rate = seq.settings.frame_rate;
+            let region = seconds_range
+                .and_then(|(a, b)| project::Region::between(rate.snap(seconds(a)), rate.snap(seconds(b))));
+            if region == seq.region {
+                return Ok(());
+            }
+            let sequence = seq.id;
+            d.apply(Command::SetRegion { sequence, region })
+        })
+    }
+
     /// Moves the playhead; while playing, playback carries on from there.
     fn seek(&mut self, seconds: f64) {
         let Some(seq) = self.document.as_ref().and_then(|d| d.project().active()) else {
@@ -407,6 +455,33 @@ impl Editor {
                     self.start_playback();
                 }
             }
+            E::SetRegion(range) => {
+                if let Err(err) = self.set_region(range) {
+                    self.errors.push(&err);
+                }
+            }
+            E::AddLabel(at) => {
+                if let Err(err) = self.add_label(seconds(at)) {
+                    self.errors.push(&err);
+                }
+            }
+            E::SplitAt { at, clip } => {
+                let result = self.with_document(|d| {
+                    let Some(seq) = d.project().active() else {
+                        return Ok(());
+                    };
+                    let at = seq.settings.frame_rate.snap(seconds(at));
+                    let sequence = seq.id;
+                    d.apply(Command::Split {
+                        sequence,
+                        at,
+                        clip: clip.map(project::ClipId),
+                    })
+                });
+                if let Err(err) = result {
+                    self.errors.push(&err);
+                }
+            }
             E::Blade { clip, at } => {
                 let result = self.with_document(|d| {
                     let Some(seq) = d.project().active() else {
@@ -442,6 +517,7 @@ impl Editor {
         } else {
             self.viewer.playhead
         };
+        let from = crate::looping::start_at(from, seq.region, self.looping);
         self.viewer.playhead = from;
         self.playback = Some(engine::Playback::start(p.clone(), seq.id, from));
     }
@@ -474,7 +550,13 @@ impl Editor {
             (s.length(), s.settings.frame_rate)
         });
         let at = playback.position();
-        if at >= length {
+        let region = seq.and_then(|s| s.region);
+        if let Some(back) = crate::looping::wrap(at, region, self.looping, length) {
+            self.playback = None;
+            self.viewer.playhead = back;
+            self.start_playback();
+            ctx.request_repaint();
+        } else if at >= length {
             self.playback = None;
             self.viewer.go_to(length, rate, length);
             self.after_play_change();
@@ -942,6 +1024,17 @@ impl Editor {
     fn search_window(&mut self, ctx: &egui::Context) {
         let mut open = self.show_search;
         let mut chosen = None;
+        let mut jump = None;
+        let seq = self.document.as_ref().and_then(|d| d.project().active());
+        let fps = seq.map_or(60.0, |s| s.settings.frame_rate.as_f64());
+        let labels: Vec<(String, f64)> = seq
+            .map(|s| {
+                s.labels
+                    .iter()
+                    .map(|l| (l.name.clone(), l.at.as_secs_f64()))
+                    .collect()
+            })
+            .unwrap_or_default();
         egui::Window::new("Search")
             .open(&mut open)
             .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 80.0))
@@ -951,7 +1044,7 @@ impl Editor {
                 let field = ui.text_edit_singleline(&mut self.search_text);
                 field.request_focus();
                 ui.label(
-                    egui::RichText::new("Commands for now; clips, labels and settings join in Phase 4.")
+                    egui::RichText::new("Commands and timeline labels; clips and settings join later.")
                         .color(self.theme.muted),
                 );
                 let needle = self.search_text.to_lowercase();
@@ -966,8 +1059,24 @@ impl Editor {
                         chosen = Some(*action);
                     }
                 }
+                for label in labels
+                    .iter()
+                    .filter(|(name, _)| name.to_lowercase().contains(&needle))
+                {
+                    let text = format!(
+                        "Go to label: {}    {}",
+                        label.0,
+                        ui_kit::timeline::timecode(label.1, fps)
+                    );
+                    if ui.selectable_label(false, text).clicked() {
+                        jump = Some(label.1);
+                    }
+                }
             });
-        self.show_search = open && chosen.is_none();
+        self.show_search = open && chosen.is_none() && jump.is_none();
+        if let Some(at) = jump {
+            self.seek(at);
+        }
         if let Some(action) = chosen {
             self.run_action(action);
         }

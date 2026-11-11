@@ -104,6 +104,26 @@ pub enum TimelineEvent {
         solo: bool,
         gain_db: f32,
     },
+    /// The region was drawn or adjusted (`None`: cleared).
+    SetRegion(Option<(f64, f64)>),
+    /// "Add a label here" from the right-click menu.
+    AddLabel(f64),
+    /// "Split here" from the right-click menu: one clip (with its linked
+    /// clips), or every clip there when `None`.
+    SplitAt { at: f64, clip: Option<u64> },
+}
+
+/// Where the right-click menu was opened: the time, and the clip under the
+/// pointer (id, start, end).
+type MenuSpot = (f64, Option<(u64, f64, f64)>);
+
+/// The region while it is being drawn or one of its handles dragged.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum RegionDrag {
+    /// Shift-drag in the ruler from this time.
+    New(f64),
+    Start,
+    End,
 }
 
 /// One end of a clip.
@@ -176,6 +196,9 @@ pub struct TimelineView {
     clip_drag: Option<ClipDrag>,
     /// A track volume being dragged: track and its value so far.
     fader_drag: Option<(u64, f32)>,
+    region_drag: Option<(RegionDrag, (f64, f64))>,
+    /// Where the right-click menu was opened: time, and the clip under it.
+    menu_at: Option<MenuSpot>,
     pub tool: Tool,
     /// Moved and trimmed edges snap to clip edges, the playhead, the needle and labels.
     pub snapping: bool,
@@ -193,6 +216,8 @@ impl Default for TimelineView {
             scrollbar_drag: None,
             clip_drag: None,
             fader_drag: None,
+            region_drag: None,
+            menu_at: None,
             tool: Tool::Select,
             snapping: true,
         }
@@ -432,14 +457,29 @@ impl TimelineView {
             theme.panel,
         );
         draw_ruler(&ui.painter_at(layout.ruler), theme, self, &layout, data.fps);
-        if let Some((a, b)) = data.region {
+        let region = self.region_drag.map(|(_, r)| r).or(data.region);
+        if let Some((a, b)) = region {
             let (x0, x1) = (self.x_of(left, a), self.x_of(left, b));
-            let r = Rect::from_min_max(
-                pos2(x0, layout.ruler.bottom() - 6.0),
-                pos2(x1, layout.ruler.bottom()),
+            // Everything outside the region is darkened.
+            let body = Rect::from_min_max(
+                pos2(left, layout.labels.bottom()),
+                pos2(rect.right(), layout.scrollbar.top()),
             );
-            ui.painter_at(layout.ruler)
-                .rect_filled(r, 2.0, theme.accent.gamma_multiply(0.5));
+            let shade = ui.painter_at(body);
+            let dim = Color32::from_black_alpha(90);
+            shade.rect_filled(Rect::from_min_max(body.min, pos2(x0, body.bottom())), 0.0, dim);
+            shade.rect_filled(Rect::from_min_max(pos2(x1, body.top()), body.max), 0.0, dim);
+            // The bar and its round handles.
+            let rp = ui.painter_at(layout.ruler.expand2(vec2(8.0, 0.0)));
+            let y = layout.ruler.bottom() - 4.0;
+            rp.rect_filled(
+                Rect::from_min_max(pos2(x0, y - 2.5), pos2(x1, y + 2.5)),
+                0.0,
+                theme.accent.gamma_multiply(0.6),
+            );
+            for x in [x0, x1] {
+                rp.circle_filled(pos2(x, y), 5.0, theme.accent);
+            }
         }
         let label_painter = ui.painter_at(layout.labels);
         for marker in data.markers {
@@ -732,13 +772,72 @@ impl TimelineView {
             }
         }
 
-        // Ruler: click or drag to move the playhead.
+        // Region handles: drag to adjust.
+        if let Some((a, b)) = data.region {
+            for (edge, x) in [
+                (RegionDrag::Start, self.x_of(left, a)),
+                (RegionDrag::End, self.x_of(left, b)),
+            ] {
+                let handle = Rect::from_center_size(pos2(x, layout.ruler.bottom() - 4.0), vec2(14.0, 14.0));
+                let r = ui
+                    .interact(
+                        handle,
+                        id.with(("region", edge == RegionDrag::Start)),
+                        Sense::drag(),
+                    )
+                    .on_hover_cursor(CursorIcon::ResizeHorizontal);
+                if r.drag_started() {
+                    self.region_drag = Some((edge, (a, b)));
+                }
+                if r.dragged()
+                    && let (Some(p), Some((kind, (ra, rb)))) = (r.interact_pointer_pos(), self.region_drag)
+                {
+                    let t = self.time_at(left, p.x).clamp(0.0, data.length.max(0.0));
+                    let next = match kind {
+                        RegionDrag::Start => (t.min(rb), rb),
+                        _ => (ra, t.max(ra)),
+                    };
+                    self.region_drag = Some((kind, next));
+                }
+                if r.drag_stopped()
+                    && let Some((_, (ra, rb))) = self.region_drag.take()
+                {
+                    events.push(TimelineEvent::SetRegion((rb - ra > 1e-6).then_some((ra, rb))));
+                }
+                if r.dragged() || r.drag_stopped() {
+                    return;
+                }
+            }
+        }
+
+        // Ruler: click or drag to move the playhead; Shift-drag draws the region.
         let ruler = ui.interact(
             layout.ruler.union(layout.labels),
             id.with("ruler"),
             Sense::click_and_drag(),
         );
-        if (ruler.clicked() || ruler.dragged())
+        let shift = ui.input(|i| i.modifiers.shift);
+        if ruler.drag_started()
+            && shift
+            && let Some(p) = ruler.interact_pointer_pos()
+        {
+            let t = self.time_at(left, p.x).clamp(0.0, data.length.max(0.0));
+            self.region_drag = Some((RegionDrag::New(t), (t, t)));
+        }
+        if let Some((RegionDrag::New(from), _)) = self.region_drag {
+            if ruler.dragged()
+                && let Some(p) = ruler.interact_pointer_pos()
+            {
+                let t = self.time_at(left, p.x).clamp(0.0, data.length.max(0.0));
+                self.region_drag = Some((RegionDrag::New(from), (from.min(t), from.max(t))));
+            }
+            if ruler.drag_stopped()
+                && let Some((_, (a, b))) = self.region_drag.take()
+                && b - a > 1e-6
+            {
+                events.push(TimelineEvent::SetRegion(Some((a, b))));
+            }
+        } else if (ruler.clicked() || ruler.dragged())
             && let Some(p) = ruler.interact_pointer_pos()
         {
             events.push(TimelineEvent::Seek(
@@ -886,6 +985,36 @@ impl TimelineView {
                     },
                 });
             }
+            if r.secondary_clicked() {
+                self.menu_at = Some((t, hit.map(|c| (c.id, c.start, c.start + c.duration))));
+            }
+            let menu_at = self.menu_at;
+            let has_region = data.region.is_some();
+            r.context_menu(|ui| {
+                let Some((at, clip)) = menu_at else { return };
+                if ui.button("Add a label here").clicked() {
+                    events.push(TimelineEvent::AddLabel(at));
+                    ui.close();
+                }
+                if let Some((id, start, end)) = clip {
+                    if ui.button("Split this clip here").clicked() {
+                        events.push(TimelineEvent::SplitAt { at, clip: Some(id) });
+                        ui.close();
+                    }
+                    if ui.button("Set the region to this clip").clicked() {
+                        events.push(TimelineEvent::SetRegion(Some((start, end))));
+                        ui.close();
+                    }
+                }
+                if ui.button("Split every track here").clicked() {
+                    events.push(TimelineEvent::SplitAt { at, clip: None });
+                    ui.close();
+                }
+                if has_region && ui.button("Clear the region").clicked() {
+                    events.push(TimelineEvent::SetRegion(None));
+                    ui.close();
+                }
+            });
             if r.clicked() {
                 let add = ui.input(|i| i.modifiers.shift || i.modifiers.command);
                 events.push(match (self.tool, hit) {
