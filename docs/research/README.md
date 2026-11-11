@@ -9,4 +9,5 @@ Name each note after its system, for example `playback.md`, and give it these se
 3. **Prototypes:** the two or three tried in `spikes/<system>/`, and how they were measured.
 4. **Result:** the comparison table and the choice, with the reason.
 
-- [decoding.md](decoding.md): getting video frames from files into GPU textures (4A). Measuring.
+- [decoding.md](decoding.md): getting video frames from files into GPU textures (4A).
+- [timeline.md](timeline.md): the timeline widget (4B): painter with culling, measured.

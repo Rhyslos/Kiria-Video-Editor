@@ -3,6 +3,7 @@
 use crate::import::{self, Importer, Read};
 use crate::run_mode::RunMode;
 use crate::settings::Settings;
+use crate::timeline_panel;
 use crate::viewer::Viewer;
 use diag::AppError;
 use jobs::{BackgroundPolicy, JobHandle, JobSystem, Limit, PoolKind, Priority, UsageMonitor};
@@ -38,6 +39,11 @@ pub struct Editor {
     import_requested: bool,
     viewer: Viewer,
     playback: Option<engine::Playback>,
+    timeline: ui_kit::TimelineView,
+    /// Clips picked on the timeline (their linked clips go with them).
+    selected: Vec<project::ClipId>,
+    /// The timeline was fitted to the project once already.
+    fitted: bool,
     /// `--play`: start playing as soon as the imports are in.
     play_when_ready: bool,
     show_timeline_settings: bool,
@@ -123,6 +129,9 @@ impl Editor {
             import_requested: false,
             viewer: Viewer::new(&cc.egui_ctx, start_at),
             playback: None,
+            timeline: ui_kit::TimelineView::default(),
+            selected: Vec::new(),
+            fitted: false,
             play_when_ready,
             show_timeline_settings: false,
             show_settings: false,
@@ -144,30 +153,62 @@ impl Editor {
             Action::Undo => self.with_document(|d| d.undo().map(|_| ())),
             Action::Redo => self.with_document(|d| d.redo().map(|_| ())),
             Action::Save => self.with_document(Document::save),
-            Action::AddLabel => self.with_document(|d| {
-                let sequence = d.project().active_sequence;
-                let at = d.project().active().map_or(Time::ZERO, |s| s.edit_needle);
-                d.apply(Command::AddLabel {
-                    sequence,
-                    label: TimelineLabel {
-                        id: LabelId(0),
-                        name: "Label".into(),
-                        at,
-                        color: LabelColor::Blue,
-                    },
+            Action::AddLabel => {
+                let at = self.edit_point();
+                self.with_document(|d| {
+                    let sequence = d.project().active_sequence;
+                    d.apply(Command::AddLabel {
+                        sequence,
+                        label: TimelineLabel {
+                            id: LabelId(0),
+                            name: "Label".into(),
+                            at,
+                            color: LabelColor::Blue,
+                        },
+                    })
                 })
-            }),
-            Action::Split => self.with_document(|d| {
-                let sequence = d.project().active_sequence;
-                let at = d.project().active().map_or(Time::ZERO, |s| s.edit_needle);
-                d.apply(Command::Split {
-                    sequence,
-                    at,
-                    clip: None,
+            }
+            Action::Split => {
+                let at = self.edit_point();
+                let clip = self.selected.first().copied();
+                self.with_document(|d| {
+                    let sequence = d.project().active_sequence;
+                    d.apply(Command::Split { sequence, at, clip })
                 })
-            }),
+            }
             Action::Delete | Action::RippleDelete => {
-                self.status = "Select a clip first. Clip selection arrives with the timeline.".into();
+                if self.selected.is_empty() {
+                    self.status = "Click a clip on the timeline first.".into();
+                    Ok(())
+                } else {
+                    let ripple = action == Action::RippleDelete;
+                    let clips = std::mem::take(&mut self.selected);
+                    self.with_document(|d| {
+                        let sequence = d.project().active_sequence;
+                        for clip in clips {
+                            // A linked clip may already have gone with an earlier one.
+                            let exists = d
+                                .project()
+                                .active()
+                                .is_some_and(|s| s.tracks().any(|t| t.clips.iter().any(|c| c.id == clip)));
+                            if exists {
+                                d.apply(Command::RemoveClip {
+                                    sequence,
+                                    clip,
+                                    ripple,
+                                })?;
+                            }
+                        }
+                        Ok(())
+                    })
+                }
+            }
+            Action::ClearSelection => {
+                self.selected.clear();
+                Ok(())
+            }
+            Action::ZoomToFit => {
+                self.fitted = false;
                 Ok(())
             }
             Action::PlayPause => {
@@ -221,6 +262,56 @@ impl Editor {
             None => Err(AppError::new("No project is open")
                 .why("This needs a project.")
                 .fix("Open a project from the launcher.")),
+        }
+    }
+
+    /// Where cuts, splits and labels happen: the edit needle, or the playhead
+    /// when they are merged (Settings).
+    fn edit_point(&self) -> Time {
+        let seq = self.document.as_ref().and_then(|d| d.project().active());
+        match seq {
+            Some(s) if !self.settings.edit_at_playhead => s.edit_needle,
+            Some(s) => s.settings.frame_rate.snap(self.viewer.playhead),
+            None => Time::ZERO,
+        }
+    }
+
+    /// Moves the playhead; while playing, playback carries on from there.
+    fn seek(&mut self, seconds: f64) {
+        let Some(seq) = self.document.as_ref().and_then(|d| d.project().active()) else {
+            return;
+        };
+        let (rate, length) = (seq.settings.frame_rate, seq.length());
+        let at = Time::from_ratio((seconds * 1_000_000.0).round() as i64, 1_000_000).unwrap_or(Time::ZERO);
+        let was_playing = self.playback.take().is_some();
+        self.viewer.go_to(at, rate, length);
+        if was_playing {
+            self.start_playback();
+        }
+        self.after_play_change();
+    }
+
+    fn timeline_event(&mut self, event: ui_kit::TimelineEvent) {
+        use ui_kit::TimelineEvent as E;
+        match event {
+            E::Seek(t) => self.seek(t),
+            E::MoveNeedle(t) => {
+                let result = self.with_document(|d| {
+                    let Some(seq) = d.project().active() else {
+                        return Ok(());
+                    };
+                    let at =
+                        Time::from_ratio((t * 1_000_000.0).round() as i64, 1_000_000).unwrap_or(Time::ZERO);
+                    let at = seq.settings.frame_rate.snap(at);
+                    let sequence = seq.id;
+                    d.apply(Command::SetEditNeedle { sequence, at })
+                });
+                if let Err(err) = result {
+                    self.errors.push(&err);
+                }
+            }
+            E::Select { clip, add } => timeline_panel::select(&mut self.selected, project::ClipId(clip), add),
+            E::ClearSelection => self.selected.clear(),
         }
     }
 
@@ -459,6 +550,7 @@ impl Editor {
     /// and a plain list of what is on the timeline.
     fn edit_page(&mut self, ui: &mut egui::Ui) {
         let mut transport_click = None;
+        let mut timeline_events = Vec::new();
         let shortcut = self
             .shortcuts
             .shortcut_for(Action::Import)
@@ -501,54 +593,47 @@ impl Editor {
             });
         } else {
             let quality_before = self.settings.preview_quality;
-            let height = (ui.available_height() * 0.6).max(220.0);
-            let click = self
-                .viewer
-                .ui(ui, &self.theme, p, &mut self.settings.preview_quality, height);
-            transport_click = click;
+            let needle = (!self.settings.edit_at_playhead).then_some(seq.edit_needle);
+            let viewer_height = (ui.available_height() * 0.55).max(220.0);
+            transport_click = self.viewer.ui(
+                ui,
+                &self.theme,
+                p,
+                &mut self.settings.preview_quality,
+                needle,
+                viewer_height,
+            );
             if self.settings.preview_quality != quality_before
                 && let Err(err) = self.settings.save(&self.data_dir)
             {
                 self.errors.push(&err);
             }
-            ui.add_space(10.0);
-            ui.label(
-                egui::RichText::new(format!("{} · {} long", seq.name, seq.length().timecode(rate)))
-                    .family(ui_kit::fonts::semibold()),
-            );
-            ui.label(egui::RichText::new("A plain list until the timeline arrives.").color(self.theme.muted));
             ui.add_space(6.0);
-            egui::Grid::new("tracks")
-                .striped(true)
-                .spacing([16.0, 6.0])
-                .show(ui, |ui| {
-                    for track in seq.tracks() {
-                        ui.label(egui::RichText::new(&track.name).family(ui_kit::fonts::semibold()));
-                        let clips: Vec<String> = track
-                            .clips
-                            .iter()
-                            .map(|c| {
-                                let name = p
-                                    .media
-                                    .get(&c.media)
-                                    .and_then(|m| m.path.file_name())
-                                    .map_or_else(|| "missing".into(), |n| n.to_string_lossy().into_owned());
-                                format!("{name}  {}–{}", c.start.timecode(rate), c.end().timecode(rate))
-                            })
-                            .collect();
-                        if clips.is_empty() {
-                            ui.label(egui::RichText::new("empty").color(self.theme.faint));
-                        } else {
-                            ui.label(clips.join("    "));
-                        }
-                        ui.end_row();
-                    }
-                });
-            ui.add_space(16.0);
-            ui.label(egui::RichText::new("Media in this project").family(ui_kit::fonts::semibold()));
-            for media in p.media.values() {
-                ui.label(egui::RichText::new(import::summary(media)).color(self.theme.text_secondary));
+            timeline_panel::keep_existing(&mut self.selected, seq);
+            let drawn = timeline_panel::drawn(p, seq, &self.selected);
+            let length = seq.length().as_secs_f64();
+            let width = ui.available_width();
+            if !self.fitted {
+                self.timeline.fit(length, width - ui_kit::timeline::HEADER_WIDTH);
+                self.fitted = true;
             }
+            let data = ui_kit::TimelineData {
+                video: &drawn.video,
+                audio: &drawn.audio,
+                length,
+                fps: rate.as_f64(),
+                playhead: self.viewer.playhead.as_secs_f64(),
+                needle: needle.map(Time::as_secs_f64),
+                region: seq.region.map(|r| (r.start.as_secs_f64(), r.end.as_secs_f64())),
+                markers: &drawn.markers,
+                follow: self.playback.is_some(),
+            };
+            let status_height = if self.status.is_empty() { 0.0 } else { 24.0 };
+            let size = egui::vec2(width, (ui.available_height() - status_height).max(160.0));
+            timeline_events = self.timeline.show(ui, &self.theme, &data, size);
+        }
+        for event in timeline_events {
+            self.timeline_event(event);
         }
         if let Some(click) = transport_click {
             self.run_action(match click {
@@ -559,7 +644,7 @@ impl Editor {
             });
         }
         if !self.status.is_empty() {
-            ui.add_space(12.0);
+            ui.add_space(4.0);
             ui.label(egui::RichText::new(&self.status).color(self.theme.text_secondary));
         }
     }

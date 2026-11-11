@@ -10,6 +10,7 @@ mod editor;
 mod import;
 mod run_mode;
 mod settings;
+mod timeline_panel;
 mod viewer;
 
 use editor::{Editor, ProjectToOpen, RunReport};

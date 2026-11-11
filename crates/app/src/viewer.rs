@@ -1,5 +1,5 @@
-//! The Edit page's viewer: the picture at the playhead, a scrub bar under it
-//! (until the timeline arrives) and the preview quality.
+//! The Edit page's viewer: the picture at the playhead, the transport over it,
+//! and under it the playhead's and edit needle's timecodes and the preview quality.
 //!
 //! Pictures are made by the engine's preview worker. This only asks for the
 //! one it needs (when the playhead, the project, the viewer's size or the
@@ -120,7 +120,7 @@ impl Viewer {
         self.playhead = rate.snap(at).max(Time::ZERO).min(last);
     }
 
-    /// Draws the viewer, its transport and the scrub bar in `height`, and asks
+    /// Draws the viewer, its transport and the timecodes in `height`, and asks
     /// for the picture it needs. Returns a transport button pressed.
     pub fn ui(
         &mut self,
@@ -128,10 +128,11 @@ impl Viewer {
         theme: &Theme,
         project: &Project,
         quality: &mut PreviewQuality,
+        needle: Option<Time>,
         height: f32,
     ) -> Option<TransportClick> {
         let seq = project.active()?;
-        let (rate, length) = (seq.settings.frame_rate, seq.length());
+        let rate = seq.settings.frame_rate;
         let timeline = (seq.settings.width, seq.settings.height);
         let size = egui::vec2(ui.available_width(), (height - 34.0).max(120.0));
         let (frame, _) = ui_kit::viewer::viewer(ui, theme, size, timeline, self.texture.as_ref(), &self.note);
@@ -139,27 +140,26 @@ impl Viewer {
 
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(self.playhead.timecode(rate)).font(ui_kit::fonts::mono(13.0)));
-            let quality_width = 110.0;
-            let mut seconds = self.playhead.as_secs_f64();
-            let end = length.as_secs_f64().max(0.001);
-            ui.spacing_mut().slider_width = (ui.available_width() - quality_width - 16.0).max(80.0);
-            let slider = ui.add_enabled(
-                length > Time::ZERO,
-                egui::Slider::new(&mut seconds, 0.0..=end).show_value(false),
-            );
-            if slider.changed() {
-                let at = Time::from_ratio((seconds * 1_000_000.0) as i64, 1_000_000).unwrap_or(Time::ZERO);
-                self.go_to(at, rate, length);
+            ui.label(egui::RichText::new(self.playhead.timecode(rate)).font(ui_kit::fonts::mono(13.0)))
+                .on_hover_text("Playhead");
+            if let Some(needle) = needle {
+                ui.label(
+                    egui::RichText::new(needle.timecode(rate))
+                        .font(ui_kit::fonts::mono(13.0))
+                        .color(ui_kit::status::EDIT_NEEDLE),
+                )
+                .on_hover_text("Edit needle: cuts, splits and labels happen here");
             }
-            egui::ComboBox::from_id_salt("preview-quality")
-                .width(quality_width - 10.0)
-                .selected_text(format!("Preview {}", quality.label()))
-                .show_ui(ui, |ui| {
-                    for q in PreviewQuality::ALL {
-                        ui.selectable_value(quality, q, q.label());
-                    }
-                });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                egui::ComboBox::from_id_salt("preview-quality")
+                    .width(100.0)
+                    .selected_text(format!("Preview {}", quality.label()))
+                    .show_ui(ui, |ui| {
+                        for q in PreviewQuality::ALL {
+                            ui.selectable_value(quality, q, q.label());
+                        }
+                    });
+            });
         });
 
         // Ask for the picture this needs, if it isn't the one already asked for.

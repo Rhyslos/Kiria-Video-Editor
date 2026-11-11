@@ -2,7 +2,7 @@
 //!
 //! Everything that must look and behave the same on every page lives here:
 //! theme colours, fonts, shared sizes, the top bar, dialogs, the shortcut
-//! table, the viewer and the way errors are shown. Pages use these instead of drawing their own.
+//! table, the viewer, the transport, the timeline and the way errors are shown. Pages use these instead of drawing their own.
 
 pub mod dialog;
 pub mod errors;
@@ -12,6 +12,7 @@ pub mod layout;
 pub mod shortcuts;
 pub mod theme;
 pub mod time_text;
+pub mod timeline;
 pub mod top_bar;
 pub mod transport;
 pub mod viewer;
@@ -21,6 +22,7 @@ pub use errors::{ErrorCenter, ErrorResponse, ShownError, accent_button};
 pub use layout::Page;
 pub use shortcuts::{Action, Shortcut, ShortcutTable};
 pub use theme::{Theme, ThemeName, status};
+pub use timeline::{TimelineClip, TimelineData, TimelineEvent, TimelineMarker, TimelineTrack, TimelineView};
 pub use top_bar::{TitleBar, TopBar, TopBarClicks, logo_mark};
 pub use transport::TransportClick;
 pub use viewer::PreviewQuality;
