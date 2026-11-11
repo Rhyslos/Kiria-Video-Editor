@@ -48,13 +48,15 @@ tests/               cross-crate tests
 test-media/          shared test recordings (only the manifest is in git)
 xtask/               chores: `cargo xtask <ffmpeg | check-media | brand | keygen | manifest | sign | verify | icons>`
 packaging/           installers: Windows (Inno Setup), Linux (AppImage), icons, FFmpeg pin
-.github/workflows/   CI on Windows and Linux; release.yml builds, tests, signs and publishes releases; spike-*.yml build spike programs to run by hand
+.github/workflows/   CI on Windows (Linux is paused, see below); release.yml builds, tests, signs and publishes releases; spike-*.yml build spike programs to run by hand
 RELEASING.md         how to make a release; CHANGELOG.md what each release changed
 ```
 
 Binaries: `cargo run -p app` (the editor, binary `editor`) and `cargo run -p launcher`.
 
-To see a window without a screen (Linux): `xvfb-run -a -s "-screen 0 1600x1000x24" target/debug/editor --screenshot out.png`, or `target/debug/launcher --demo 14 --screenshot out.png` for the project browser with sample projects. CI also runs `--smoke-test` for both on Windows and Linux.
+To see a window without a screen (Linux): `xvfb-run -a -s "-screen 0 1600x1000x24" target/debug/editor --screenshot out.png`, or `target/debug/launcher --demo 14 --screenshot out.png` for the project browser with sample projects. CI also runs `--smoke-test` for both.
+
+**Linux is paused in CI and in releases** (November 2026): only Windows is built, tested and published. The Linux steps are still in the workflows; each has a comment saying how to turn it back on. Until then nothing in CI runs `--responsiveness-test` or takes screenshots, so run both by hand with the commands above before merging interface work, and keep the code building on Linux.
 
 ## Commands
 
