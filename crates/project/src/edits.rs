@@ -180,6 +180,39 @@ pub(crate) fn clear_space(p: &mut Project, sequence: SequenceId, at: Time, lengt
     Ok(())
 }
 
+/// Empties `at`..`at + length` on `tracks` only, leaving the gap; every
+/// other track keeps what it has. A clip that is cut is cut together with
+/// the clips linked to it, wherever they are, so linked clips stay the
+/// same length as each other.
+pub(crate) fn clear_space_on(
+    p: &mut Project,
+    sequence: SequenceId,
+    at: Time,
+    length: Time,
+    tracks: &[TrackId],
+) -> diag::Result<()> {
+    let end = at + length;
+    for cut in [end, at] {
+        // One clip at a time: cutting it may cut a linked clip on another
+        // of these tracks too.
+        loop {
+            let crossing = sequence_ref(p, sequence)?
+                .tracks()
+                .filter(|t| tracks.contains(&t.id))
+                .flat_map(|t| t.clips.iter())
+                .find(|c| c.start < cut && cut < c.end())
+                .map(|c| c.id);
+            let Some(crossing) = crossing else { break };
+            split(p, sequence, cut, Some(crossing))?;
+        }
+    }
+    let seq = sequence_mut(p, sequence)?;
+    for track in tracks_mut(seq).filter(|t| tracks.contains(&t.id)) {
+        track.clips.retain(|c| c.end() <= at || c.start >= end);
+    }
+    Ok(())
+}
+
 /// Splits every clip that crosses `at`, if any does.
 fn split_where_crossing(p: &mut Project, sequence: SequenceId, at: Time) -> diag::Result<()> {
     let crosses = sequence_ref(p, sequence)?

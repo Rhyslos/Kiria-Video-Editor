@@ -6,6 +6,7 @@
 //! - [`model`]: projects, timelines, tracks, clips, media, labels, the region.
 //! - [`file`]: the versioned project file, atomic saves and migrations.
 //! - [`command`]: every change is a `Command` applied to a snapshot.
+//! - [`tracks`]: adding, removing, renaming and hiding tracks.
 //! - [`history`]: unlimited undo and redo over snapshots.
 //! - [`document`]: an open project on disk, with the autosave journal and crash recovery.
 //! - [`versions`]: named copies of a project to go back to.
@@ -21,6 +22,7 @@ pub mod look;
 pub mod model;
 pub mod side_files;
 pub mod time;
+pub mod tracks;
 pub mod versions;
 
 pub use command::{Command, Edge};

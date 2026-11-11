@@ -78,10 +78,45 @@ pub enum Command {
         sequence: SequenceId,
         media: MediaRef,
     },
+    /// Places a file of the project at `at` with its picture on the video
+    /// track `track` (the first one when `None`); its sound goes on the
+    /// audio tracks as for [`Command::Import`]. With `insert` everything
+    /// from `at` on moves later on every track to make room, as for
+    /// [`Command::InsertMedia`]. Without it the file lies over what is
+    /// there: what it covers on the tracks it lands on is cut away, and
+    /// every other track keeps what it has, so a clip dropped on a higher
+    /// track leaves the picture under it in place.
+    DropMedia {
+        sequence: SequenceId,
+        media: MediaId,
+        at: Time,
+        track: Option<TrackId>,
+        insert: bool,
+    },
+    /// Adds an empty track after the others of its kind: a video track on
+    /// top of the picture, an audio track at the bottom.
     AddTrack {
         sequence: SequenceId,
         kind: TrackKind,
         name: String,
+    },
+    /// Removes an empty track. Refused while it has clips, and for the
+    /// last track of its kind.
+    RemoveTrack {
+        sequence: SequenceId,
+        track: TrackId,
+    },
+    RenameTrack {
+        sequence: SequenceId,
+        track: TrackId,
+        name: String,
+    },
+    /// Hides a video track, so its clips are not seen in the picture, or
+    /// shows it again.
+    SetTrackHidden {
+        sequence: SequenceId,
+        track: TrackId,
+        hidden: bool,
     },
     /// Places a clip; its `id` is ignored and a new one is given.
     PlaceClip {
@@ -108,6 +143,15 @@ pub enum Command {
     MoveLinked {
         sequence: SequenceId,
         clip: ClipId,
+        by: Time,
+    },
+    /// Moves a clip to another track of its kind and, with every clip
+    /// linked to it, by `by`: the linked clips stay on their own tracks.
+    /// Refused if any would overlap or start before zero.
+    MoveToTrack {
+        sequence: SequenceId,
+        clip: ClipId,
+        track: TrackId,
         by: Time,
     },
     /// Moves one edge of a clip (and the same edge of its linked clips) to
@@ -262,25 +306,38 @@ impl Command {
                 p.media.get_mut(media).ok_or_else(|| missing("media file"))?.path = path.clone();
             }
             Command::Import { sequence, media } => import(&mut p, *sequence, media)?,
-            Command::PlaceMedia { sequence, media } => place_media(&mut p, *sequence, *media, None)?,
+            Command::PlaceMedia { sequence, media } => place_media(&mut p, *sequence, *media, None, None)?,
             Command::InsertMedia { sequence, media, at } => {
                 let length = placed_length(p.media.get(media).ok_or_else(|| missing("media file"))?);
                 crate::edits::open_space(&mut p, *sequence, *at, length)?;
-                place_media(&mut p, *sequence, *media, Some(*at))?;
+                place_media(&mut p, *sequence, *media, Some(*at), None)?;
             }
             Command::OverwriteMedia { sequence, media, at } => {
                 let length = placed_length(p.media.get(media).ok_or_else(|| missing("media file"))?);
                 crate::edits::clear_space(&mut p, *sequence, *at, length)?;
-                place_media(&mut p, *sequence, *media, Some(*at))?;
+                place_media(&mut p, *sequence, *media, Some(*at), None)?;
             }
+            Command::DropMedia {
+                sequence,
+                media,
+                at,
+                track,
+                insert,
+            } => drop_media(&mut p, *sequence, *media, *at, *track, *insert)?,
             Command::AddTrack { sequence, kind, name } => {
-                let track = p.new_track(*kind, name);
-                let seq = sequence_mut(&mut p, *sequence)?;
-                match kind {
-                    TrackKind::Video => seq.video_tracks.push_back(track),
-                    TrackKind::Audio => seq.audio_tracks.push_back(track),
-                }
+                crate::tracks::add(&mut p, *sequence, *kind, name)?;
             }
+            Command::RemoveTrack { sequence, track } => crate::tracks::remove(&mut p, *sequence, *track)?,
+            Command::RenameTrack {
+                sequence,
+                track,
+                name,
+            } => crate::tracks::rename(&mut p, *sequence, *track, name)?,
+            Command::SetTrackHidden {
+                sequence,
+                track,
+                hidden,
+            } => crate::tracks::set_hidden(&mut p, *sequence, *track, *hidden)?,
             Command::PlaceClip {
                 sequence,
                 track,
@@ -337,12 +394,17 @@ impl Command {
                 let from_kind = track_mut(seq, from)?.kind;
                 let target = track_mut(seq, to)?;
                 if target.kind != from_kind {
-                    return Err(AppError::new("The clip can't move to that track")
-                        .why("Video clips go on video tracks and audio clips on audio tracks."));
+                    return Err(wrong_kind_of_track());
                 }
                 insert_clip(target, moved)?;
             }
-            Command::MoveLinked { sequence, clip, by } => move_linked(&mut p, *sequence, *clip, *by)?,
+            Command::MoveLinked { sequence, clip, by } => move_linked(&mut p, *sequence, *clip, *by, None)?,
+            Command::MoveToTrack {
+                sequence,
+                clip,
+                track,
+                by,
+            } => move_linked(&mut p, *sequence, *clip, *by, Some(*track))?,
             Command::Trim {
                 sequence,
                 clip,
@@ -458,7 +520,15 @@ pub enum Edge {
     End,
 }
 
-fn move_linked(p: &mut Project, sequence: SequenceId, clip: ClipId, by: Time) -> diag::Result<()> {
+/// Moves `clip` and the clips linked to it by `by`. With `to`, `clip`
+/// itself lands on that track (of its own kind); the linked ones stay on theirs.
+fn move_linked(
+    p: &mut Project,
+    sequence: SequenceId,
+    clip: ClipId,
+    by: Time,
+    to: Option<TrackId>,
+) -> diag::Result<()> {
     let seq = sequence_mut(p, sequence)?;
     let group = with_linked(seq, clip)?;
     let mut moved = Vec::new();
@@ -469,10 +539,9 @@ fn move_linked(p: &mut Project, sequence: SequenceId, clip: ClipId, by: Time) ->
             continue;
         }
         track.clips = rest.into_iter().collect();
-        moved.push((track.id, ours));
+        moved.push((track.id, track.kind, ours));
     }
-    for (track, clips) in moved {
-        let target = track_mut(seq, track)?;
+    for (track, kind, clips) in moved {
         for mut c in clips {
             c.start = c.start + by;
             if c.start.is_negative() {
@@ -480,10 +549,19 @@ fn move_linked(p: &mut Project, sequence: SequenceId, clip: ClipId, by: Time) ->
                     AppError::new("The clip can't move there").why("That is before the timeline starts.")
                 );
             }
+            let target = track_mut(seq, to.filter(|_| c.id == clip).unwrap_or(track))?;
+            if target.kind != kind {
+                return Err(wrong_kind_of_track());
+            }
             insert_clip(target, c)?;
         }
     }
     Ok(())
+}
+
+fn wrong_kind_of_track() -> AppError {
+    AppError::new("The clip can't move to that track")
+        .why("Video clips go on video tracks and audio clips on audio tracks.")
 }
 
 fn trim(p: &mut Project, sequence: SequenceId, clip: ClipId, edge: Edge, to: Time) -> diag::Result<()> {
@@ -562,7 +640,7 @@ fn import(p: &mut Project, sequence: SequenceId, media: &MediaRef) -> diag::Resu
     }
     let id: MediaId = p.allocate_id();
     p.media.insert(id, MediaRef { id, ..media.clone() });
-    place_media(p, sequence, id, None)
+    place_media(p, sequence, id, None, None)
 }
 
 /// How long a file's clips are when placed.
@@ -573,21 +651,9 @@ fn placed_length(media: &MediaRef) -> Time {
     }
 }
 
-/// Places a file of the project at the end of the timeline: its picture on
-/// the first video track and each sound stream on its own audio track (made
-/// when missing, named after the stream), all linked.
-fn place_media(p: &mut Project, sequence: SequenceId, id: MediaId, at: Option<Time>) -> diag::Result<()> {
-    let media = p.media.get(&id).cloned().ok_or_else(|| missing("media file"))?;
-    let media = &media;
-    let length = match media.kind {
-        MediaKind::Image => STILL_LENGTH,
-        MediaKind::Video | MediaKind::Audio => media.duration,
-    };
-    if length <= Time::ZERO {
-        return Err(AppError::new("This file can't be placed")
-            .why("Its length could not be read, so the app doesn't know how long the clip is.")
-            .fix("Try re-saving the file with a recording or conversion tool, then import it again."));
-    }
+/// What of a file is placed: its picture stream (none for a sound file) and
+/// its sound streams (none for a still).
+fn placed_streams(media: &MediaRef) -> (Option<&crate::model::VideoStream>, &[crate::model::AudioStream]) {
     let video = media
         .info
         .video
@@ -598,6 +664,79 @@ fn place_media(p: &mut Project, sequence: SequenceId, id: MediaId, at: Option<Ti
     } else {
         &media.info.audio[..]
     };
+    (video, audio)
+}
+
+/// The video track a file's picture goes on: `chosen`, or the first one
+/// (`None` when the timeline has no video track yet: one is made).
+fn picture_track(seq: &Sequence, chosen: Option<TrackId>) -> diag::Result<Option<TrackId>> {
+    match chosen {
+        Some(id) => match seq.track(id) {
+            Some(track) if track.kind == TrackKind::Video => Ok(Some(id)),
+            Some(track) => Err(AppError::new("The picture can't go on that track")
+                .why(format!("{} is an audio track.", track.name))
+                .fix("Drop the file on a video track.")),
+            None => Err(missing("track")),
+        },
+        None => Ok(seq.video_tracks.front().map(|t| t.id)),
+    }
+}
+
+/// Places a file of the project at `at` on the track under the pointer:
+/// pushing everything later, or over what is on the tracks it lands on.
+fn drop_media(
+    p: &mut Project,
+    sequence: SequenceId,
+    id: MediaId,
+    at: Time,
+    track: Option<TrackId>,
+    insert: bool,
+) -> diag::Result<()> {
+    if at.is_negative() {
+        return Err(
+            AppError::new("The file can't be placed there").why("That is before the timeline starts.")
+        );
+    }
+    let media = p.media.get(&id).cloned().ok_or_else(|| missing("media file"))?;
+    let length = placed_length(&media);
+    let seq = sequence_ref(p, sequence)?;
+    let track = picture_track(seq, track)?;
+    if insert {
+        crate::edits::open_space(p, sequence, at, length)?;
+    } else {
+        // The tracks it lands on: its picture's, and one audio track per
+        // sound stream, from the first.
+        let (video, audio) = placed_streams(&media);
+        let landing: Vec<TrackId> = track
+            .filter(|_| video.is_some())
+            .into_iter()
+            .chain(seq.audio_tracks.iter().take(audio.len()).map(|t| t.id))
+            .collect();
+        crate::edits::clear_space_on(p, sequence, at, length, &landing)?;
+    }
+    place_media(p, sequence, id, Some(at), track)
+}
+
+/// Places a file of the project at `at` (the end of the timeline when
+/// `None`): its picture on the video track `picture_on` (the first when
+/// `None`) and each sound stream on its own audio track (made when missing,
+/// named after the stream), all linked.
+fn place_media(
+    p: &mut Project,
+    sequence: SequenceId,
+    id: MediaId,
+    at: Option<Time>,
+    picture_on: Option<TrackId>,
+) -> diag::Result<()> {
+    let media = p.media.get(&id).cloned().ok_or_else(|| missing("media file"))?;
+    let media = &media;
+    let length = placed_length(media);
+    if length <= Time::ZERO {
+        return Err(AppError::new("This file can't be placed")
+            .why("Its length could not be read, so the app doesn't know how long the clip is.")
+            .fix("Try re-saving the file with a recording or conversion tool, then import it again."));
+    }
+    let (video, audio) = placed_streams(media);
     if video.is_none() && audio.is_empty() {
         return Err(
             AppError::new("This file has nothing to place").why("No picture or sound was found in it.")
@@ -627,7 +766,11 @@ fn place_media(p: &mut Project, sequence: SequenceId, id: MediaId, at: Option<Ti
             sequence_mut(p, sequence)?.video_tracks.push_back(track);
         }
         let seq = sequence_mut(p, sequence)?;
-        insert_clip(&mut seq.video_tracks[0], c)?;
+        let track = match picture_track(seq, picture_on)? {
+            Some(id) => track_mut(seq, id)?,
+            None => return Err(missing("track")),
+        };
+        insert_clip(track, c)?;
     }
     for (i, stream) in audio.iter().enumerate() {
         let c = clip(p, stream.index);
@@ -726,7 +869,7 @@ pub(crate) fn tracks_mut(seq: &mut Sequence) -> impl Iterator<Item = &mut Track>
     seq.video_tracks.iter_mut().chain(seq.audio_tracks.iter_mut())
 }
 
-fn track_mut(seq: &mut Sequence, id: TrackId) -> diag::Result<&mut Track> {
+pub(crate) fn track_mut(seq: &mut Sequence, id: TrackId) -> diag::Result<&mut Track> {
     tracks_mut(seq)
         .find(|t| t.id == id)
         .ok_or_else(|| missing("track"))
@@ -1812,5 +1955,375 @@ mod tests {
         assert_eq!(s.video_tracks[0].clips[1].start, Time::seconds(15));
         assert!(Speed::new(0, 1).is_err() && Speed::new(1, 1000).is_err());
         assert_eq!(Speed::new(2, 4).unwrap().percent(), "50%");
+    }
+
+    /// The two imported files of [`imported`] and a second, empty video track.
+    fn with_two_video_tracks() -> (Project, SequenceId, TrackId) {
+        let (p, seq) = imported();
+        let p = Command::AddTrack {
+            sequence: seq,
+            kind: TrackKind::Video,
+            name: "V2".into(),
+        }
+        .apply(&p)
+        .unwrap();
+        let v2 = p.active().unwrap().video_tracks[1].id;
+        (p, seq, v2)
+    }
+
+    fn spans(track: &Track) -> Vec<(i64, i64)> {
+        track
+            .clips
+            .iter()
+            .map(|c| (c.start.as_secs_f64() as i64, c.end().as_secs_f64() as i64))
+            .collect()
+    }
+
+    #[test]
+    fn a_clip_moves_to_another_track_and_its_linked_clips_stay_on_theirs() {
+        let (p, seq, v2) = with_two_video_tracks();
+        let second = first_video(&p, 1); // 30-40 s, with its game sound on A1
+        let up = Command::MoveToTrack {
+            sequence: seq,
+            clip: second.id,
+            track: v2,
+            by: Time::seconds(2),
+        }
+        .apply(&p)
+        .unwrap();
+        let s = up.active().unwrap();
+        assert_eq!(spans(&s.video_tracks[0]), [(0, 30)], "it left V1");
+        assert_eq!(spans(&s.video_tracks[1]), [(32, 42)]);
+        assert_eq!(s.video_tracks[1].clips[0].id, second.id, "the same clip");
+        assert_eq!(
+            spans(&s.audio_tracks[0]),
+            [(0, 30), (32, 42)],
+            "its sound moved sideways with it, on its own track"
+        );
+        assert_eq!(
+            s.audio_tracks[0].clips[1].link, second.link,
+            "and they are still linked"
+        );
+        // Straight up, without moving sideways.
+        let straight = Command::MoveToTrack {
+            sequence: seq,
+            clip: second.id,
+            track: v2,
+            by: Time::ZERO,
+        }
+        .apply(&p)
+        .unwrap();
+        assert_eq!(spans(&straight.active().unwrap().video_tracks[1]), [(30, 40)]);
+        // And back down again.
+        let v1 = p.active().unwrap().video_tracks[0].id;
+        let back = Command::MoveToTrack {
+            sequence: seq,
+            clip: second.id,
+            track: v1,
+            by: Time::ZERO,
+        }
+        .apply(&straight)
+        .unwrap();
+        assert_eq!(back, p);
+        // To the track it is on: a plain move.
+        let same = Command::MoveToTrack {
+            sequence: seq,
+            clip: second.id,
+            track: v1,
+            by: Time::seconds(5),
+        }
+        .apply(&p)
+        .unwrap();
+        let plain = Command::MoveLinked {
+            sequence: seq,
+            clip: second.id,
+            by: Time::seconds(5),
+        }
+        .apply(&p)
+        .unwrap();
+        assert_eq!(same, plain);
+    }
+
+    #[test]
+    fn a_clip_keeps_its_look_and_speed_on_another_track_and_under_a_dropped_file() {
+        let (p, seq, v2) = with_two_video_tracks(); // 0-30 s and 30-40 s on V1
+        let (first, second) = (first_video(&p, 0), first_video(&p, 1));
+        let look = Look {
+            x: -250_000,
+            scale: 400_000,
+            crop_top: 50_000,
+            opacity: 800_000,
+            tint: -100_000,
+            ..Look::PLAIN
+        };
+        let mut p = p;
+        for clip in [first.id, second.id] {
+            p = Command::SetLook {
+                sequence: seq,
+                clip,
+                look,
+            }
+            .apply(&p)
+            .unwrap();
+        }
+        let half = Speed::new(1, 2).unwrap();
+        let p = Command::SetSpeed {
+            sequence: seq,
+            clip: second.id,
+            speed: half,
+        }
+        .apply(&p)
+        .unwrap();
+        // The second clip, now 30-50 s at half speed, goes up a track.
+        let up = Command::MoveToTrack {
+            sequence: seq,
+            clip: second.id,
+            track: v2,
+            by: Time::seconds(3),
+        }
+        .apply(&p)
+        .unwrap();
+        let moved = &up.active().unwrap().video_tracks[1].clips[0];
+        assert_eq!(
+            moved,
+            &Clip {
+                start: Time::seconds(33),
+                ..p.active().unwrap().video_tracks[0].clips[1].clone()
+            },
+            "nothing but its place changed"
+        );
+        assert_eq!((moved.look, moved.speed), (look, half));
+        // A file dropped on V2 over the first clip: the first clip is cut
+        // where its sound is covered, and every piece keeps the look.
+        let short = second.media;
+        let dropped = Command::DropMedia {
+            sequence: seq,
+            media: short,
+            at: Time::seconds(5),
+            track: Some(v2),
+            insert: false,
+        }
+        .apply(&p)
+        .unwrap();
+        let s = dropped.active().unwrap();
+        let pieces: Vec<&Clip> = s.video_tracks[0]
+            .clips
+            .iter()
+            .filter(|c| c.media == first.media)
+            .collect();
+        assert_eq!(pieces.len(), 3, "0-5, 5-15 and 15-30 s");
+        assert!(pieces.iter().all(|c| c.look == look));
+        assert_eq!(
+            s.video_tracks[1].clips[0].look,
+            Look::PLAIN,
+            "the new clip starts plain"
+        );
+    }
+
+    #[test]
+    fn a_sound_clip_moves_to_another_audio_track() {
+        let (p, seq) = imported();
+        let s = p.active().unwrap();
+        let (game, mic_track) = (s.audio_tracks[0].clips[1].clone(), s.audio_tracks[1].id);
+        let q = Command::MoveToTrack {
+            sequence: seq,
+            clip: game.id,
+            track: mic_track,
+            by: Time::ZERO,
+        }
+        .apply(&p)
+        .unwrap();
+        let s = q.active().unwrap();
+        assert_eq!(spans(&s.audio_tracks[0]), [(0, 30)]);
+        assert_eq!(spans(&s.audio_tracks[1]), [(0, 30), (30, 40)]);
+        assert_eq!(
+            spans(&s.video_tracks[0]),
+            [(0, 30), (30, 40)],
+            "its picture stayed"
+        );
+    }
+
+    #[test]
+    fn moving_to_a_track_is_refused_where_it_does_not_fit_and_nothing_changes() {
+        let (p, seq, v2) = with_two_video_tracks();
+        let second = first_video(&p, 1);
+        let to = |p: &Project, track, by| {
+            Command::MoveToTrack {
+                sequence: seq,
+                clip: second.id,
+                track,
+                by: Time::seconds(by),
+            }
+            .apply(p)
+        };
+        // Its sound would land on the first clip's sound.
+        let err = to(&p, v2, -30).unwrap_err();
+        assert!(err.what().contains("already a clip"), "{}", err.what());
+        assert!(err.report().contains("Game"), "names the track: {}", err.report());
+        // A clip is already there on the track it goes to.
+        let taken = Command::PlaceClip {
+            sequence: seq,
+            track: v2,
+            clip: Clip {
+                start: Time::seconds(35),
+                link: None,
+                ..second.clone()
+            },
+        }
+        .apply(&p)
+        .unwrap();
+        let err = to(&taken, v2, 0).unwrap_err();
+        assert!(err.report().contains("V2"), "{}", err.report());
+        // A video clip on an audio track, a track that is gone, before the start.
+        let a1 = p.active().unwrap().audio_tracks[0].id;
+        assert!(
+            to(&p, a1, 0)
+                .unwrap_err()
+                .what()
+                .contains("can't move to that track")
+        );
+        assert!(
+            to(&p, TrackId(9_999), 0)
+                .unwrap_err()
+                .what()
+                .contains("no longer exists")
+        );
+        assert!(to(&p, v2, -31).unwrap_err().what().contains("can't move there"));
+    }
+
+    #[test]
+    fn a_file_dropped_on_a_higher_track_leaves_the_picture_under_it() {
+        let (p, seq, v2) = with_two_video_tracks(); // 0-30 s (video, game, mic), 30-40 s (video, game)
+        let short = first_video(&p, 1).media; // the 10 s file, with game sound
+        let q = Command::DropMedia {
+            sequence: seq,
+            media: short,
+            at: Time::seconds(5),
+            track: Some(v2),
+            insert: false,
+        }
+        .apply(&p)
+        .unwrap();
+        let s = q.active().unwrap();
+        assert_eq!(s.length(), Time::seconds(40), "nothing moved");
+        assert_eq!(spans(&s.video_tracks[1]), [(5, 15)], "the picture is on V2");
+        assert_eq!(
+            spans(&s.video_tracks[0]),
+            [(0, 5), (5, 15), (15, 30), (30, 40)],
+            "V1 keeps its picture under it (cut where its sound was cut)"
+        );
+        assert_eq!(
+            spans(&s.audio_tracks[0]),
+            [(0, 5), (5, 15), (15, 30), (30, 40)],
+            "its sound lies over the game sound"
+        );
+        let (picture, sound) = (&s.video_tracks[1].clips[0], &s.audio_tracks[0].clips[1]);
+        assert_eq!((sound.media, sound.link), (short, picture.link));
+        assert!(picture.link.is_some());
+        assert_eq!(
+            spans(&s.audio_tracks[1]),
+            [(0, 5), (5, 15), (15, 30)],
+            "the mic, which nothing landed on, keeps going"
+        );
+        // Every piece of the first clip is still as long as the pieces linked to it.
+        for v in &s.video_tracks[0].clips {
+            for a in s.audio_tracks.iter().flat_map(|t| t.clips.iter()) {
+                if a.link == v.link {
+                    assert_eq!((a.start, a.duration), (v.start, v.duration));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_dropped_file_covers_only_the_tracks_it_lands_on() {
+        let (p, seq, v2) = with_two_video_tracks();
+        let short = first_video(&p, 1).media;
+        // Something on V2 over the place where the file is dropped on V1.
+        let p = Command::DropMedia {
+            sequence: seq,
+            media: short,
+            at: Time::seconds(40),
+            track: Some(v2),
+            insert: false,
+        }
+        .apply(&p)
+        .unwrap();
+        let q = Command::DropMedia {
+            sequence: seq,
+            media: short,
+            at: Time::seconds(35),
+            track: None,
+            insert: false,
+        }
+        .apply(&p)
+        .unwrap();
+        let s = q.active().unwrap();
+        assert_eq!(
+            spans(&s.video_tracks[0]),
+            [(0, 30), (30, 35), (35, 45)],
+            "on the first video track, over what was there"
+        );
+        assert_eq!(
+            spans(&s.video_tracks[1]),
+            [(40, 45), (45, 50)],
+            "V2 keeps its clip (cut where its sound was covered)"
+        );
+        assert_eq!(spans(&s.audio_tracks[0]), [(0, 30), (30, 35), (35, 45), (45, 50)]);
+    }
+
+    #[test]
+    fn a_file_inserted_on_a_track_pushes_every_track_later() {
+        let (p, seq, v2) = with_two_video_tracks();
+        let short = first_video(&p, 1).media;
+        let q = Command::DropMedia {
+            sequence: seq,
+            media: short,
+            at: Time::seconds(5),
+            track: Some(v2),
+            insert: true,
+        }
+        .apply(&p)
+        .unwrap();
+        let s = q.active().unwrap();
+        assert_eq!(s.length(), Time::seconds(50), "ten seconds longer");
+        assert_eq!(spans(&s.video_tracks[1]), [(5, 15)]);
+        assert_eq!(spans(&s.video_tracks[0]), [(0, 5), (15, 40), (40, 50)]);
+        assert_eq!(spans(&s.audio_tracks[0]), [(0, 5), (5, 15), (15, 40), (40, 50)]);
+        assert_eq!(spans(&s.audio_tracks[1]), [(0, 5), (15, 40)]);
+    }
+
+    #[test]
+    fn a_file_is_not_dropped_on_a_track_that_cannot_take_its_picture() {
+        let (p, seq, _) = with_two_video_tracks();
+        let short = first_video(&p, 1).media;
+        let on = |track| {
+            Command::DropMedia {
+                sequence: seq,
+                media: short,
+                at: Time::seconds(5),
+                track: Some(track),
+                insert: false,
+            }
+            .apply(&p)
+        };
+        let a1 = p.active().unwrap().audio_tracks[0].id;
+        let err = on(a1).unwrap_err();
+        assert!(err.what().contains("picture can't go"), "{}", err.what());
+        assert!(
+            on(TrackId(9_999))
+                .unwrap_err()
+                .what()
+                .contains("no longer exists")
+        );
+        let early = Command::DropMedia {
+            sequence: seq,
+            media: short,
+            at: Time::seconds(-1),
+            track: None,
+            insert: true,
+        }
+        .apply(&p);
+        assert!(early.unwrap_err().what().contains("can't be placed there"));
     }
 }
