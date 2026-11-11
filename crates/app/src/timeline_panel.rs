@@ -13,13 +13,15 @@ pub struct Drawn {
 }
 
 /// Builds the widget's data. Clips in `selected`, and clips linked to them,
-/// show as selected; clips of `missing` media show as missing. `waveform` gives a sound stream's peaks when ready.
+/// show as selected; clips of `missing` media show as missing. `pictures`
+/// gives a video stream's pictures when ready. `waveform` gives a sound stream's peaks when ready.
 pub fn drawn(
     project: &Project,
     seq: &Sequence,
     selected: &[ClipId],
     missing: &[project::MediaId],
     mut waveform: impl FnMut(&project::MediaRef, u32) -> Option<cache::Peaks>,
+    mut pictures: impl FnMut(&project::MediaRef, u32) -> Option<ui_kit::ClipPictures>,
 ) -> Drawn {
     let links: Vec<_> = seq
         .tracks()
@@ -56,6 +58,15 @@ pub fn drawn(
                                 peaks: p.values,
                                 per_second: p.per_second as f32,
                                 source_in: c.source_in.as_secs_f64(),
+                            })
+                        }
+                        _ => None,
+                    },
+                    pictures: match (t.kind, media) {
+                        (project::TrackKind::Video, Some(m)) if !missing.contains(&m.id) => {
+                            pictures(m, c.stream).map(|p| ui_kit::ClipPictures {
+                                source_in: c.source_in.as_secs_f64(),
+                                ..p
                             })
                         }
                         _ => None,
