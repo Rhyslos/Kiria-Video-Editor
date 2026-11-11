@@ -10,6 +10,7 @@ Phase 4A in progress: the picture at the playhead, the timeline's sound, and pla
 
 | File | What it holds |
 |---|---|
+| `src/silence.rs` | `find`: the quiet stretches of a sound track from its waveform peaks (gaps count as silent), with a threshold, a minimum length and a little kept at each edge |
 | `src/thumbnail.rs` | The project's picture for the launcher: one frame of the timeline (at the playhead, or the first clip's), fitted into 480×270 on black, written as `<file>.thumbnail.png`; `save_frame` writes the frame at a time at its file's full size |
 | `src/timeline.rs` | `video_at`: the top visible video clip at a time and where in its file that is |
 | `src/preview.rs` | `Preview`: a worker thread that decodes the picture at the playhead. Only the newest request counts (scrubbing never queues); decoders stay open for the four files used last; errors come back with the picture |

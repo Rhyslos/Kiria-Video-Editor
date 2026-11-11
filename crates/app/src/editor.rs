@@ -52,6 +52,7 @@ pub struct Editor {
     relink: crate::relink::Relinker,
     drawer: crate::media_drawer::MediaDrawer,
     frame_grab: crate::frame_grab::FrameGrab,
+    silence: crate::silence_panel::SilencePanel,
     /// Save this frame was asked for; the dialog opens on the next frame.
     save_frame_requested: bool,
     /// `--play`: start playing as soon as the imports are in.
@@ -150,6 +151,7 @@ impl Editor {
             waveforms: crate::waveforms::Waveforms::default(),
             relink: crate::relink::Relinker::default(),
             frame_grab: crate::frame_grab::FrameGrab::default(),
+            silence: crate::silence_panel::SilencePanel::default(),
             save_frame_requested: false,
             drawer: crate::media_drawer::MediaDrawer {
                 open: drawer_open,
@@ -195,6 +197,7 @@ impl Editor {
                 Ok(())
             }
             Action::ClearRegion => self.set_region(None),
+            Action::RemoveSilence => self.with_document(|_| Ok(())).map(|()| self.silence.open = true),
             Action::SaveFrame => self
                 .with_document(|_| Ok(()))
                 .map(|()| self.save_frame_requested = true),
@@ -805,6 +808,40 @@ impl Editor {
         }
     }
 
+    /// The Remove silence window, and the cut it asks for.
+    fn silence_window(&mut self, ctx: &egui::Context) {
+        if !self.silence.open {
+            return;
+        }
+        let Some(document) = &self.document else {
+            self.silence.open = false;
+            return;
+        };
+        let (jobs, waveforms) = (&self.jobs, &mut self.waveforms);
+        let ready = self.silence.refresh(document.project(), |m, stream| {
+            waveforms.get(jobs, ctx, m, stream).cloned()
+        });
+        let asked = self.silence.ui(ctx, &self.theme, document.project(), ready);
+        if let crate::silence_panel::Asked::Remove(ranges) = asked {
+            let count = ranges.len();
+            let result = self.with_document(|d| {
+                let sequence = d.project().active_sequence;
+                d.apply(Command::RemoveRanges { sequence, ranges })
+            });
+            match result {
+                Ok(()) => {
+                    self.selected.clear();
+                    self.fitted = false;
+                    self.status = format!(
+                        "Removed {count} quiet stretch{}.",
+                        if count == 1 { "" } else { "es" }
+                    );
+                }
+                Err(err) => self.errors.push(&err),
+            }
+        }
+    }
+
     /// The tab on the left edge and the media drawer it opens.
     fn drawer_panels(&mut self, ui: &mut egui::Ui) {
         egui::Panel::left("edge-tab")
@@ -1099,6 +1136,7 @@ impl Editor {
                 needle: needle.map(Time::as_secs_f64),
                 region: seq.region.map(|r| (r.start.as_secs_f64(), r.end.as_secs_f64())),
                 markers: &drawn.markers,
+                highlights: &self.silence.found,
                 follow: self.playback.is_some(),
             };
             let status_height = if self.status.is_empty() { 0.0 } else { 24.0 };
@@ -1484,6 +1522,7 @@ impl eframe::App for Editor {
         self.settings_window(&ctx);
         self.timeline_settings_window(&ctx);
         self.search_window(&ctx);
+        self.silence_window(&ctx);
         let mut diagnostics = self.show_diagnostics;
         self.errors
             .diagnostics_window(&ctx, &mut diagnostics, &self.theme);

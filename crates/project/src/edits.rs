@@ -1,12 +1,15 @@
-//! The trim tools beyond a plain trim: ripple, roll, slip and slide.
+//! The trim tools beyond a plain trim (ripple, roll, slip and slide), and
+//! cutting stretches out of the whole timeline.
 //!
 //! Each works out the new place of every clip it touches, checks that each
 //! still fits inside its file, then puts them all back at once, so a refused
 //! edit changes nothing.
 
-use crate::command::{Edge, insert_clip, missing, sequence_mut, tracks_mut, with_linked};
+use crate::command::{
+    Edge, insert_clip, missing, sequence_mut, sequence_ref, split, tracks_mut, with_linked,
+};
 use crate::ids::{ClipId, SequenceId, TrackId};
-use crate::model::{Clip, MediaKind, Project, Sequence};
+use crate::model::{Clip, MediaKind, Project, Region, Sequence};
 use crate::time::Time;
 use diag::AppError;
 
@@ -117,6 +120,48 @@ pub(crate) fn slide(p: &mut Project, sequence: SequenceId, clip: ClipId, by: Tim
         });
     }
     put_back(p, sequence, changed)
+}
+
+pub(crate) fn remove_ranges(p: &mut Project, sequence: SequenceId, ranges: &[Region]) -> diag::Result<()> {
+    if ranges.is_empty() {
+        return Err(AppError::new("Nothing to remove").why("No stretches were given."));
+    }
+    // Merged and from last to first, so earlier stretches keep their times.
+    let mut sorted: Vec<Region> = ranges.to_vec();
+    sorted.sort_by_key(|r| r.start);
+    let mut merged: Vec<Region> = Vec::new();
+    for r in sorted {
+        if r.start.is_negative() || r.end <= r.start {
+            return Err(AppError::new("That stretch can't be removed").why("It ends before it starts."));
+        }
+        match merged.last_mut() {
+            Some(last) if r.start <= last.end => last.end = last.end.max(r.end),
+            _ => merged.push(r),
+        }
+    }
+    for r in merged.iter().rev() {
+        for at in [r.end, r.start] {
+            let crosses = sequence_ref(p, sequence)?
+                .tracks()
+                .flat_map(|t| t.clips.iter())
+                .any(|c| c.start < at && at < c.end());
+            if crosses {
+                split(p, sequence, at, None)?;
+            }
+        }
+        let length = r.length();
+        let seq = sequence_mut(p, sequence)?;
+        for track in tracks_mut(seq) {
+            track.clips.retain(|c| c.end() <= r.start || c.start >= r.end);
+            for c in track.clips.iter_mut().filter(|c| c.start >= r.end) {
+                c.start = c.start - length;
+            }
+        }
+        for label in seq.labels.iter_mut().filter(|l| l.at > r.start) {
+            label.at = (label.at - length).max(r.start);
+        }
+    }
+    Ok(())
 }
 
 fn find(seq: &Sequence, clip: ClipId) -> diag::Result<Clip> {
