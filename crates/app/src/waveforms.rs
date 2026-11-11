@@ -44,6 +44,11 @@ impl Waveforms {
         }
     }
 
+    /// Reads this file's streams again next time (it was found somewhere else).
+    pub fn forget(&mut self, media: MediaId) {
+        self.streams.retain(|(id, _), _| *id != media);
+    }
+
     /// Collects finished readings.
     pub fn poll(&mut self) {
         for state in self.streams.values_mut() {

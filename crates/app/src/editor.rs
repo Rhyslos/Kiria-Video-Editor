@@ -49,6 +49,7 @@ pub struct Editor {
     /// The timeline was fitted to the project once already.
     fitted: bool,
     waveforms: crate::waveforms::Waveforms,
+    relink: crate::relink::Relinker,
     /// `--play`: start playing as soon as the imports are in.
     play_when_ready: bool,
     show_timeline_settings: bool,
@@ -142,6 +143,7 @@ impl Editor {
             selected: Vec::new(),
             fitted: false,
             waveforms: crate::waveforms::Waveforms::default(),
+            relink: crate::relink::Relinker::default(),
             play_when_ready,
             show_timeline_settings: false,
             show_settings: false,
@@ -692,6 +694,32 @@ impl Editor {
         ));
     }
 
+    /// Notices media that moved, and points the project at files found again.
+    fn relinking(&mut self, ctx: &egui::Context) {
+        let Some(document) = self.document.as_mut() else {
+            return;
+        };
+        self.relink.watch(&self.jobs, ctx, document.project());
+        if self.relink.searching().is_some() {
+            ctx.request_repaint_after(Duration::from_millis(100));
+        }
+        let Some(found) = self.relink.poll(&self.jobs, document.project()) else {
+            return;
+        };
+        for (media, path) in &found.files {
+            let command = Command::Relink {
+                media: *media,
+                path: path.clone(),
+            };
+            if let Err(err) = document.apply(command) {
+                self.errors.push(&err);
+                return;
+            }
+            self.waveforms.forget(*media);
+        }
+        self.status = crate::relink::outcome(&found);
+    }
+
     fn usage_text(&self) -> String {
         let u = self.usage.latest();
         let gpu = u.gpu_percent.map_or("–".to_owned(), |g| format!("{g:.0}%"));
@@ -804,6 +832,32 @@ impl Editor {
             if ui.button("Timeline settings…").clicked() {
                 self.show_timeline_settings = true;
             }
+            if let Some(document) = &self.document
+                && !self.relink.missing.is_empty()
+            {
+                ui.add_space(16.0);
+                ui_kit::status_dot(ui, ui_kit::status::WARNING);
+                let text = crate::relink::summary(document.project(), &self.relink.missing);
+                ui.label(egui::RichText::new(text).color(self.theme.text_secondary));
+                match self.relink.searching() {
+                    Some(folder) => {
+                        ui.spinner();
+                        ui.label(
+                            egui::RichText::new(format!("Looking in {}…", folder.display()))
+                                .color(self.theme.muted),
+                        );
+                    }
+                    None => {
+                        if ui
+                            .button("Find them…")
+                            .on_hover_text("Pick a folder: the files are found in it or its subfolders, even if renamed.")
+                            .clicked()
+                        {
+                            self.relink.choose_folder(ui.ctx());
+                        }
+                    }
+                }
+            }
             let busy = self.importer.busy();
             if busy > 0 {
                 ui.spinner();
@@ -871,7 +925,8 @@ impl Editor {
             );
             timeline_panel::keep_existing(&mut self.selected, seq);
             let (jobs, waveforms, ctx) = (&self.jobs, &mut self.waveforms, ui.ctx().clone());
-            let drawn = timeline_panel::drawn(p, seq, &self.selected, |m, stream| {
+            let missing = &self.relink.missing;
+            let drawn = timeline_panel::drawn(p, seq, &self.selected, missing, |m, stream| {
                 waveforms.get(jobs, &ctx, m, stream).cloned()
             });
             let length = seq.length().as_secs_f64();
@@ -1247,7 +1302,10 @@ impl eframe::App for Editor {
         }
         self.follow_playback(&ctx);
         self.waveforms.poll();
-        if let Some(err) = self.viewer.poll(&ctx, self.settings.preview_quality) {
+        self.relinking(&ctx);
+        if let Some(err) = self.viewer.poll(&ctx, self.settings.preview_quality)
+            && !self.relink.explains_errors()
+        {
             self.errors.push(&err);
         }
         self.autosave(now, idle);

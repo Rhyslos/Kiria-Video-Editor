@@ -9,6 +9,7 @@
 mod editor;
 mod import;
 mod looping;
+mod relink;
 mod run_mode;
 mod settings;
 mod timeline_panel;

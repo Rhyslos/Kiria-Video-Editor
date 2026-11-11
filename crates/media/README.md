@@ -15,6 +15,7 @@ Phase 4A in progress: probing, fingerprints, frame timing, decoding to pictures 
 | `src/audio.rs` | `AudioDecoder`: a sound stream as interleaved stereo float samples at any rate, from any point; placed by timestamps |
 | `src/decode.rs` | `VideoDecoder::frame_at`: the frame on screen at a time (found by timestamp), scaled to fit a size and turned upright, as RGBA. GPU decoding (Direct3D 11 on Windows, VA-API on Linux) with a CPU fallback per file; decodes onward for small steps and seeks for jumps |
 | `src/timing.rs` | Reads packet times at the start, middle and end (no decoding) to tell constant from variable frame rate, and the nearest standard rate to show the file at |
+| `src/relink.rs` | `missing(project)`: media not on disk; `find(folder, wanted, cancelled)`: looks through a folder and its subfolders for files by fingerprint (only files of the right size are hashed), so moved and renamed files are found |
 | `src/fingerprint.rs` | `fingerprint(path)`: size plus a hash of the first and last megabyte, to recognise a moved or renamed file |
 | `src/ffi.rs` | The raw FFmpeg calls, each wrapped with its safety reasoning |
 | `build.rs` | Linux debug builds: the tests find the fetched FFmpeg libraries |
