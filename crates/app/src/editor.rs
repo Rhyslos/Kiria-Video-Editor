@@ -1318,7 +1318,15 @@ impl Editor {
         } else {
             let quality_before = self.settings.preview_quality;
             let needle = (!self.settings.edit_at_playhead).then_some(seq.edit_needle);
-            let viewer_height = (ui.available_height() * 0.55).max(220.0);
+            // The viewer and everything under it share this height; the
+            // handle between them moves the boundary.
+            let shared_height = ui.available_height();
+            let (least_viewer, least_timeline) =
+                (ui_kit::splitter::MIN_VIEWER, ui_kit::splitter::MIN_TIMELINE);
+            let viewer_height =
+                self.settings
+                    .viewer_split
+                    .top_height(shared_height, least_viewer, least_timeline);
             transport_click = self.viewer.ui(
                 ui,
                 &self.theme,
@@ -1332,7 +1340,19 @@ impl Editor {
             {
                 self.errors.push(&err);
             }
-            ui.add_space(4.0);
+            let handle = ui_kit::splitter::splitter(
+                ui,
+                &self.theme,
+                &mut self.settings.viewer_split,
+                shared_height,
+                least_viewer,
+                least_timeline,
+            );
+            if handle.settled
+                && let Err(err) = self.settings.save(&self.data_dir)
+            {
+                self.errors.push(&err);
+            }
             let tip = |a: Action| {
                 let key = self
                     .shortcuts

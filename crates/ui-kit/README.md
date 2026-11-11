@@ -24,6 +24,7 @@ Phase 0.6 done: themes, fonts, shared sizes, the top bar, the shortcut table and
 | `src/yuv_renderer.rs` | `YuvRenderer`: the wgpu textures (remade only when the size or layout changes) and pipeline behind `VideoPicture`; draws into any target, so tests draw into a texture |
 | `src/yuv_to_rgb.wgsl` | The shader: YUV to RGB with the picture's matrix and range, smooth scaling, the turn, and the curve an sRGB target needs |
 | `src/shortcuts.rs` | `Action`, `Shortcut`, `ShortcutTable`: the one table of shortcuts, matched on physical key positions |
+| `src/splitter.rs` | `splitter`: the handle between a page's viewer and its timeline. Drag it down for a taller viewer, up for a taller timeline; double-click for the usual split. `Split` is the share the page keeps in its settings; `MIN_VIEWER` and `MIN_TIMELINE` are the least heights both parts keep |
 | `src/icon.rs` | The app icon: `logo_mark`'s picture in the top bar and `with_window_icon` for every window |
 | `src/drawer.rs` | The drawer on a page's left edge: `edge_tab` (a tall tab with its label written upward) and the Media / Effects `tab_switch`; the page fills in the list |
 | `src/dialog.rs` | `dialog`: every window that asks something and waits uses this frame, padding and dimmed backdrop |

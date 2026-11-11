@@ -13,6 +13,7 @@ pub mod keyboard;
 pub mod layout;
 pub mod master;
 pub mod shortcuts;
+pub mod splitter;
 pub mod theme;
 pub mod time_text;
 pub mod timeline;
