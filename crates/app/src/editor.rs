@@ -138,6 +138,10 @@ impl Editor {
         let play_when_ready = project.as_ref().is_some_and(|p| p.play);
         let drawer_open = project.as_ref().is_some_and(|p| p.media_drawer);
         let full_screen = project.as_ref().is_some_and(|p| p.full_screen);
+        let convert = crate::video_picture::conversion(
+            cc.wgpu_render_state.as_ref(),
+            project.as_ref().is_some_and(|p| p.cpu_colour),
+        );
         let shortcuts = ShortcutTable::default();
         let startup_actions: Vec<Action> = project
             .as_ref()
@@ -194,7 +198,7 @@ impl Editor {
             thumbnail_due: Thumbnail::IfMissing,
             importer,
             import_requested: false,
-            viewer: Viewer::new(&cc.egui_ctx, start_at),
+            viewer: Viewer::new(&cc.egui_ctx, start_at, convert),
             playback: None,
             timeline: ui_kit::TimelineView::default(),
             selected: Vec::new(),
@@ -1996,6 +2000,8 @@ pub struct ProjectToOpen {
     pub full_screen: bool,
     /// Commands to run once open, by name.
     pub actions: Vec<String>,
+    /// Convert the viewer's colour on the CPU even when the GPU could.
+    pub cpu_colour: bool,
 }
 
 /// Opens a project, or creates it if it doesn't exist.

@@ -29,6 +29,9 @@ tracing = "0.1"
 ui-kit = { path = "../ui-kit" }
 
 [dev-dependencies]
+# Waits for the graphics device in the shader checks (already in the tree
+# through the windowing crate).
+pollster = "1"
 tempfile = "3"
 
 [build-dependencies]

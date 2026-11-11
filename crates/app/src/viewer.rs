@@ -4,15 +4,35 @@
 //! Pictures are made by the engine's preview worker. This only asks for the
 //! one it needs (when the playhead, the project, the viewer's size or the
 //! quality changes) and shows the newest that came back.
+//!
+//! A picture arrives as the decoder's YUV planes, which the GPU converts
+//! while drawing (`ui_kit::video_picture`), or as RGBA for formats that can't
+//! go that way and when the window has no GPU drawing to offer.
+//!
+//! Preview quality sets the size asked for. Planes come at the nearest
+//! halving of the file's size that still fills it (less to copy and upload,
+//! and a cleaner picture than the GPU shrinking a big one in one go); RGBA
+//! pictures are scaled to it. On Auto, playback that can't keep up lowers
+//! RGBA pictures further, since scaling them is real work on the CPU;
+//! planes aren't lowered, because there is no such work left to save.
 
-use engine::Preview;
-use media::Decoding;
+use crate::video_picture;
+use engine::{Convert, Preview};
+use media::{Decoded, Decoding};
 use project::{Project, Rate, Time};
-use ui_kit::{PreviewQuality, Theme, TransportClick};
+use ui_kit::{PreviewQuality, Theme, TransportClick, VideoPicture};
+
+/// The picture on show.
+enum Shown {
+    /// RGBA, converted on the CPU.
+    Texture(egui::TextureHandle),
+    /// YUV planes, converted by the GPU while drawing.
+    Video(VideoPicture),
+}
 
 pub struct Viewer {
     preview: Preview,
-    texture: Option<egui::TextureHandle>,
+    shown: Option<Shown>,
     note: String,
     pub playhead: Time,
     /// What was last asked for, so the same request isn't sent every frame.
@@ -26,11 +46,12 @@ pub struct Viewer {
 
 impl Viewer {
     /// `start_at` places the playhead (seconds) before anything is imported.
-    pub fn new(ctx: &egui::Context, start_at: Option<f64>) -> Viewer {
+    /// `convert` says whether the window can convert colour while drawing.
+    pub fn new(ctx: &egui::Context, start_at: Option<f64>, convert: Convert) -> Viewer {
         let ctx = ctx.clone();
         Viewer {
-            preview: Preview::start(Decoding::Best, move || ctx.request_repaint()),
-            texture: None,
+            preview: Preview::start(Decoding::Best, convert, move || ctx.request_repaint()),
+            shown: None,
             note: String::new(),
             playhead: start_at
                 .and_then(|s| Time::from_ratio((s * 1000.0) as i64, 1000))
@@ -53,14 +74,22 @@ impl Viewer {
     /// Takes in a finished picture. Returns an error to show, once per new problem.
     pub fn poll(&mut self, ctx: &egui::Context, quality: PreviewQuality) -> Option<diag::AppError> {
         let picture = self.preview.latest()?;
-        // Drop resolution before dropping frames: on Auto, a picture that
-        // took longer than a frame lowers the next ones.
-        if let Some(interval) = self.frame_interval
-            && quality == PreviewQuality::Auto
-            && picture.took.as_secs_f64() > interval
-            && self.play_scale < 4
-        {
-            self.play_scale *= 2;
+        // Drop resolution before dropping frames: on Auto, an RGBA picture
+        // that took longer than a frame lowers the next ones. Planes cost
+        // the same at any size, so lowering them would only blur: they
+        // come at the size the viewer shows.
+        match &picture.frame {
+            Some(Decoded::Rgba(_)) => {
+                if let Some(interval) = self.frame_interval
+                    && quality == PreviewQuality::Auto
+                    && picture.took.as_secs_f64() > interval
+                    && self.play_scale < 4
+                {
+                    self.play_scale *= 2;
+                }
+            }
+            Some(Decoded::Yuv(_)) => self.play_scale = 1,
+            None => {}
         }
         let mut problem = None;
         if let Some(err) = picture.error {
@@ -74,38 +103,51 @@ impl Viewer {
         }
         match picture.frame {
             Some(frame) => {
-                let pixels = frame
-                    .rgba
-                    .chunks_exact(4)
-                    .map(|p| egui::Color32::from_rgb(p[0], p[1], p[2]))
-                    .collect();
-                let image = egui::ColorImage::new([frame.width as usize, frame.height as usize], pixels);
-                match &mut self.texture {
-                    Some(t) => t.set(image, egui::TextureOptions::LINEAR),
-                    None => {
-                        self.texture = Some(ctx.load_texture("viewer", image, egui::TextureOptions::LINEAR))
-                    }
-                }
+                let (width, height) = frame.size();
                 let lowered = if self.play_scale > 1 {
                     format!(" · lowered to 1/{} to keep playing smoothly", self.play_scale)
                 } else {
                     String::new()
                 };
+                // Which way the colour was converted, for telling the two apart.
+                let colour = match &frame {
+                    Decoded::Yuv(_) => "colour on the GPU",
+                    Decoded::Rgba(_) => "colour on the CPU",
+                };
                 self.note = format!(
-                    "{}{lowered} · {}×{} · {} ms · {}",
+                    "{}{lowered} · {width}×{height} · {} ms · {} · {colour}",
                     quality.label(),
-                    frame.width,
-                    frame.height,
                     picture.took.as_millis(),
                     picture.method.unwrap_or_default()
                 );
+                self.shown = Some(match frame {
+                    Decoded::Yuv(planes) => Shown::Video(VideoPicture::new(video_picture::image(planes))),
+                    Decoded::Rgba(frame) => Shown::Texture(self.texture(ctx, &frame)),
+                });
             }
             None => {
-                self.texture = None;
+                self.shown = None;
                 self.note = String::new();
             }
         }
         problem
+    }
+
+    /// An RGBA picture as a texture, written into the one on show when there is one.
+    fn texture(&mut self, ctx: &egui::Context, frame: &media::Frame) -> egui::TextureHandle {
+        let pixels = frame
+            .rgba
+            .chunks_exact(4)
+            .map(|p| egui::Color32::from_rgb(p[0], p[1], p[2]))
+            .collect();
+        let image = egui::ColorImage::new([frame.width as usize, frame.height as usize], pixels);
+        match self.shown.take() {
+            Some(Shown::Texture(mut texture)) => {
+                texture.set(image, egui::TextureOptions::LINEAR);
+                texture
+            }
+            _ => ctx.load_texture("viewer", image, egui::TextureOptions::LINEAR),
+        }
     }
 
     /// Moves the playhead by whole frames, staying within the timeline.
@@ -135,7 +177,11 @@ impl Viewer {
         let rate = seq.settings.frame_rate;
         let timeline = (seq.settings.width, seq.settings.height);
         let size = egui::vec2(ui.available_width(), (height - 34.0).max(120.0));
-        let (frame, _) = ui_kit::viewer::viewer(ui, theme, size, timeline, self.texture.as_ref(), &self.note);
+        let picture = self.shown.as_ref().map(|shown| match shown {
+            Shown::Texture(texture) => ui_kit::viewer::Picture::Texture(texture),
+            Shown::Video(video) => ui_kit::viewer::Picture::Video(video),
+        });
+        let (frame, _) = ui_kit::viewer::viewer(ui, theme, size, timeline, picture, &self.note);
         let click = ui_kit::transport::transport(ui, theme, frame, self.frame_interval.is_some());
 
         ui.add_space(6.0);

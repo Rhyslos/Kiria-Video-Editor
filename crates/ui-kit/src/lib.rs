@@ -18,7 +18,9 @@ pub mod time_text;
 pub mod timeline;
 pub mod top_bar;
 pub mod transport;
+pub mod video_picture;
 pub mod viewer;
+pub mod yuv_renderer;
 
 pub use dialog::dialog;
 pub use errors::{ErrorCenter, ErrorResponse, ShownError, accent_button, status_dot};
@@ -31,6 +33,7 @@ pub use timeline::{
 };
 pub use top_bar::{TitleBar, TopBar, TopBarClicks, logo_mark};
 pub use transport::TransportClick;
+pub use video_picture::{ChromaLayout, VideoPicture, YuvImage};
 pub use viewer::PreviewQuality;
 
 /// Sets fonts and the theme. Call once at start-up and again when the theme changes.

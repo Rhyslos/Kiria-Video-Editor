@@ -18,4 +18,4 @@ pub mod thumbnail;
 pub mod timeline;
 
 pub use playback::Playback;
-pub use preview::{Picture, Preview};
+pub use preview::{Convert, Picture, Preview};
