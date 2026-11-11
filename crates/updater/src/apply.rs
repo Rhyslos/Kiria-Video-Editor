@@ -49,6 +49,19 @@ impl InstallKind {
             InstallKind::Development
         }
     }
+
+    /// The version in use: the one the `current` file names in an installed
+    /// copy, since the launcher program itself is only replaced once a new
+    /// version has started properly and may still be the older one. Elsewhere
+    /// the launcher's own version (`launcher`). Update checks compare
+    /// against this, never against the launcher's version alone, or an
+    /// installed update would be offered again and again.
+    pub fn version_in_use(&self, launcher: &str) -> String {
+        match self {
+            InstallKind::Folders(layout) => layout.current_version().unwrap_or_else(|| launcher.to_owned()),
+            InstallKind::AppImage(_) | InstallKind::Development => launcher.to_owned(),
+        }
+    }
 }
 
 /// The launcher's file name on this platform.
@@ -330,6 +343,16 @@ pub fn remove_old_launcher(layout: &Layout) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_version_in_use_is_the_installed_one_not_the_launchers() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join(crate::install::CURRENT_FILE), "0.1.1-beta.76\n").unwrap();
+        let kind = InstallKind::detect(tmp.path());
+        // The launcher is still the older one until the new version has started.
+        assert_eq!(kind.version_in_use("0.1.1-beta.40"), "0.1.1-beta.76");
+        assert_eq!(InstallKind::Development.version_in_use("0.1.0"), "0.1.0");
+    }
     use crate::manifest::{Channel, ManifestFile, sha256_hex, sign};
     use std::io::Write;
 

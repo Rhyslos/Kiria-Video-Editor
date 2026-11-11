@@ -153,7 +153,12 @@ impl Browser {
                 None
             }
         };
-        let mut updates = Updates::start(ctx, crate::VERSION, start.data_dir.clone(), start.check_updates);
+        let mut updates = Updates::start(
+            ctx,
+            crate::version_in_use(),
+            start.data_dir.clone(),
+            start.check_updates,
+        );
         if let Some(step) = start.update_preview {
             updates.preview(step);
         }
