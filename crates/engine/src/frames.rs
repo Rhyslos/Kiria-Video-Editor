@@ -8,7 +8,10 @@
 //! A frame is found by its file and the moment asked for: it is the one on
 //! screen from its own time until the next frame's, so both are kept.
 //! Variable frame rates need nothing special. What is kept is bounded by a
-//! budget in bytes; the frame used longest ago goes first.
+//! budget in bytes. When room is needed, frames of other files go first,
+//! the one used longest ago before the others; then the frames of the file
+//! being looked at that are furthest from where it is looked at
+//! ([`FrameCache::look_at`]), so the stretch around the playhead stays.
 
 use std::collections::BTreeMap;
 use std::hash::Hash;
@@ -49,6 +52,8 @@ pub struct FrameCache<K, T> {
     held: u64,
     clock: u64,
     frames: BTreeMap<(K, i64), Kept<T>>,
+    /// The file and moment (microseconds) being looked at: what stays longest.
+    looked_at: Option<(K, i64)>,
 }
 
 impl<K: Ord + Hash + Copy, T: Clone> FrameCache<K, T> {
@@ -59,7 +64,79 @@ impl<K: Ord + Hash + Copy, T: Clone> FrameCache<K, T> {
             held: 0,
             clock: 0,
             frames: BTreeMap::new(),
+            looked_at: None,
         }
+    }
+
+    /// Says where the playhead is: frames near `moment` of `file` are the
+    /// last to make room.
+    pub fn look_at(&mut self, file: K, moment: f64) {
+        self.looked_at = Some((file, micros(moment)));
+    }
+
+    /// The frame to give up next: one of another file than the one looked
+    /// at, used longest ago; failing that, the one furthest from the moment
+    /// looked at. Never `keep`, the frame just put in.
+    fn next_to_go(&self, keep: (K, i64)) -> Option<(K, i64)> {
+        let others = self.frames.iter().filter(|(key, _)| **key != keep);
+        let Some((file, moment)) = self.looked_at else {
+            return others.min_by_key(|(_, kept)| kept.used).map(|(key, _)| *key);
+        };
+        others
+            .max_by_key(|((of, starts), kept)| {
+                if *of == file {
+                    (0, starts.abs_diff(moment), 0)
+                } else {
+                    (1, 0, u64::MAX - kept.used)
+                }
+            })
+            .map(|(key, _)| *key)
+    }
+
+    /// Whether a frame of `file` at `moment`, as large as the ones kept
+    /// around the playhead, would stay if it were put in now: there is
+    /// room, or something further from the playhead would make room for
+    /// it. When not, decoding it for keeping is wasted work.
+    pub fn would_keep(&self, file: K, moment: f64) -> bool {
+        let Some((looked_file, looked_at)) = self.looked_at else {
+            return true;
+        };
+        let at = micros(moment);
+        let like = self
+            .frames
+            .range((file, i64::MIN)..=(file, i64::MAX))
+            .next()
+            .map_or(0, |(_, kept)| kept.bytes);
+        if self.held + like <= self.budget {
+            return true;
+        }
+        if file != looked_file {
+            return false;
+        }
+        self.frames
+            .iter()
+            .any(|((of, starts), _)| *of != file || starts.abs_diff(looked_at) > at.abs_diff(looked_at))
+    }
+
+    /// Where the unbroken stretch of kept frames around `moment` of `file`
+    /// begins (seconds): the start of the earliest frame from which every
+    /// frame up to the one on screen at `moment` is kept. `None` when that
+    /// frame itself isn't kept.
+    pub fn stretch_start(&self, file: K, moment: f64) -> Option<f64> {
+        let at = micros(moment);
+        let reach = at.saturating_add(micros(0.004));
+        let mut behind = self.frames.range((file, i64::MIN)..=(file, reach)).rev();
+        let ((_, first), _) =
+            behind.find(|((_, starts), kept)| *starts <= at + kept.tick && at + kept.tick < kept.until)?;
+        let mut start = *first;
+        for ((_, starts), kept) in behind {
+            // The frame before runs up to this one, give or take a tick.
+            if (kept.until - start).abs() > kept.tick.max(1) {
+                break;
+            }
+            start = *starts;
+        }
+        Some(start as f64 / 1_000_000.0)
     }
 
     /// Bytes kept now.
@@ -78,8 +155,8 @@ impl<K: Ord + Hash + Copy, T: Clone> FrameCache<K, T> {
     /// Keeps the frame of `file` that is on screen from `time` until
     /// `until` (seconds from the start of the file; infinite for the last
     /// frame), taking `bytes`. `tick` is how far the frame's stored time
-    /// may be off (as the decoder allows when it picks a frame). Frames
-    /// used longest ago make room.
+    /// may be off (as the decoder allows when it picks a frame). Other
+    /// frames make room when the budget is passed.
     pub fn put(&mut self, file: K, time: f64, until: f64, tick: f64, bytes: u64, picture: T) {
         self.clock += 1;
         let kept = Kept {
@@ -93,17 +170,13 @@ impl<K: Ord + Hash + Copy, T: Clone> FrameCache<K, T> {
             bytes,
             used: self.clock,
         };
-        if let Some(old) = self.frames.insert((file, micros(time)), kept) {
+        let key = (file, micros(time));
+        if let Some(old) = self.frames.insert(key, kept) {
             self.held -= old.bytes;
         }
         self.held += bytes;
-        while self.held > self.budget && self.frames.len() > 1 {
-            let oldest = self
-                .frames
-                .iter()
-                .min_by_key(|(_, kept)| kept.used)
-                .map(|(key, _)| *key);
-            let Some(gone) = oldest.and_then(|key| self.frames.remove(&key)) else {
+        while self.held > self.budget {
+            let Some(gone) = self.next_to_go(key).and_then(|key| self.frames.remove(&key)) else {
                 break;
             };
             self.held -= gone.bytes;
@@ -198,6 +271,67 @@ mod tests {
         let mut small = FrameCache::new(10);
         small.put(1, 0.0, 1.0, 0.0, 1000, 7);
         assert_eq!(small.get(1, 0.5), Some(7));
+    }
+
+    #[test]
+    fn the_stretch_around_the_playhead_stays() {
+        let mut cache = FrameCache::new(100 << 20);
+        // Another file's frames, then two seconds of the file being looked at.
+        fill(&mut cache, 9, 0, 30);
+        cache.look_at(1, 1.5);
+        fill(&mut cache, 1, 0, 120);
+        assert_eq!(cache.len(), 100);
+        assert_eq!(cache.get(9, 0.0), None, "the other file's frames went first");
+        // Of this file, the ones furthest from 1.5 s went: the first twenty.
+        assert_eq!(cache.get(1, 19.0 / 60.0), None);
+        assert_eq!(cache.get(1, 20.0 / 60.0), Some(20));
+        assert_eq!(cache.get(1, 119.0 / 60.0), Some(119));
+        // Filling in behind the playhead pushes out what is furthest from
+        // it, not what was put in before: the frame at the playhead stays.
+        cache.look_at(1, 21.0 / 60.0);
+        fill(&mut cache, 1, 0, 20);
+        assert_eq!(cache.get(1, 0.0), Some(0));
+        assert_eq!(cache.get(1, 21.0 / 60.0), Some(21));
+        assert_eq!(cache.get(1, 119.0 / 60.0), None);
+    }
+
+    #[test]
+    fn a_frame_is_worth_decoding_only_if_it_would_stay() {
+        let mut cache = FrameCache::new(100 << 20);
+        cache.look_at(1, 1.0);
+        fill(&mut cache, 1, 30, 60); // 0.5 s to 1.5 s around the playhead
+        assert!(cache.would_keep(1, 0.4), "there is room");
+        fill(&mut cache, 1, 90, 40); // full now: 0.5 s to 2.17 s
+        assert_eq!(cache.len(), 100);
+        // Just behind what is kept: the frames after 2 s are further from the playhead.
+        assert!(cache.would_keep(1, 0.49));
+        // Further away than anything kept: it would go at once.
+        assert!(!cache.would_keep(1, -0.5));
+        // Another file's frames always make room for the file looked at.
+        let mut cache = FrameCache::new(100 << 20);
+        cache.look_at(1, 1.0);
+        fill(&mut cache, 2, 0, 100);
+        fill(&mut cache, 1, 60, 1);
+        assert!(cache.would_keep(1, -5.0));
+        assert!(!cache.would_keep(2, 3.0), "but not the other way round");
+    }
+
+    #[test]
+    fn the_start_of_the_stretch_kept_around_a_moment() {
+        let mut cache = FrameCache::new(1 << 30);
+        assert_eq!(cache.stretch_start(1, 1.0), None);
+        fill(&mut cache, 1, 30, 60); // frames 30 to 89: 0.5 s to 1.5 s
+        assert_eq!(cache.stretch_start(1, 1.0), Some(0.5));
+        assert_eq!(cache.stretch_start(1, 0.5), Some(0.5));
+        assert_eq!(cache.stretch_start(1, 0.4), None, "before it");
+        assert_eq!(cache.stretch_start(1, 1.6), None, "after it");
+        // An earlier stretch with a hole before this one doesn't count.
+        fill(&mut cache, 1, 0, 20);
+        assert_eq!(cache.stretch_start(1, 1.0), Some(0.5));
+        // The hole filled in: one stretch from the start.
+        fill(&mut cache, 1, 20, 10);
+        assert_eq!(cache.stretch_start(1, 1.0), Some(0.0));
+        assert_eq!(cache.stretch_start(2, 1.0), None, "another file");
     }
 
     #[test]

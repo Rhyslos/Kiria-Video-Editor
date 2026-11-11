@@ -527,6 +527,14 @@ mod tests {
             source.layout = LAYOUT_AFTER_COPY;
             source.access = ACCESS_AFTER_COPY;
             copier.wait().unwrap();
+            // The copy's fence can be seen a moment before its signal on the
+            // semaphore: wait for the value, as whoever uses the frame next does.
+            let (semaphores, values) = ([semaphore], [8 + round]);
+            let wait = vk::SemaphoreWaitInfo::default()
+                .semaphores(&semaphores)
+                .values(&values);
+            // SAFETY: the semaphore is alive, and the wait is bounded.
+            unsafe { vulkan.wait_semaphores(&wait, 5_000_000_000).unwrap() };
             // SAFETY: the semaphore is alive.
             let reached = unsafe { vulkan.get_semaphore_counter_value(semaphore).unwrap() };
             assert_eq!(reached, 8 + round, "signalled one further each time");
