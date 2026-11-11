@@ -2,6 +2,7 @@
 
 use crate::{
     FRAMES_BEFORE_TRUSTED, GraphicsChoice, GraphicsSettings, Opened, Platform, RunKind, StartMarker,
+    VideoDecoding,
 };
 use diag::AppError;
 use eframe::wgpu;
@@ -27,6 +28,8 @@ pub struct WindowGraphics {
     marker: Option<StartMarker>,
     /// The question about a failed start with Vulkan is open.
     asking: bool,
+    /// Whether the window's device can decode video itself.
+    video: VideoDecoding,
     platform: Platform,
     settings: GraphicsSettings,
     data_dir: PathBuf,
@@ -53,6 +56,9 @@ impl WindowGraphics {
                 "the window never appeared while using Vulkan, so Direct3D 12 took over",
             );
         }
+        let video = opened.video.describe();
+        tracing::info!(video_decoding = %video, "video decoding on the window's device");
+        errors.set_fact(VIDEO_DECODING_FACT, video);
         if let Some(notice) = vulkan_notice(&opened) {
             errors.push(&notice);
         }
@@ -64,6 +70,7 @@ impl WindowGraphics {
             in_use,
             marker: opened.marker,
             asking: opened.ask,
+            video: opened.video,
             platform: opened.platform,
             settings: opened.settings,
             data_dir: opened.data_dir,
@@ -74,6 +81,12 @@ impl WindowGraphics {
     /// The graphics system and card in use, as one line.
     pub fn in_use(&self) -> &str {
         &self.in_use
+    }
+
+    /// Whether the window's device was opened for decoding video too, with
+    /// the handle the decoder needs, or why not.
+    pub fn video_decoding(&self) -> &VideoDecoding {
+        &self.video
     }
 
     /// Whether the question about a failed start is on screen.
@@ -194,6 +207,10 @@ impl WindowGraphics {
         (chosen != shown).then(|| self.choose(chosen).err()).flatten()
     }
 }
+
+/// The name of the Diagnostics line that says which kinds of video the
+/// window's device decodes, or why none.
+const VIDEO_DECODING_FACT: &str = "Video decoding on this device";
 
 /// One line per graphics system that was tried first, for Diagnostics.
 fn failed_text(opened: &Opened) -> Option<String> {

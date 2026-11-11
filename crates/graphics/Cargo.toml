@@ -11,11 +11,15 @@ publish = false
 diag = { path = "../diag" }
 eframe = "0.37"
 egui = "0.37"
+# Waits for the list of graphics cards when the window's device is opened here
+# (already in the tree through the windowing crate).
+pollster = "1"
 ron = "0.12"
 serde = { version = "1", features = ["derive"] }
 sysinfo = { version = "0.40", default-features = false, features = ["system"] }
 tracing = "0.1"
 ui-kit = { path = "../ui-kit" }
+video-device = { path = "../video-device" }
 
 [dev-dependencies]
 tempfile = "3"

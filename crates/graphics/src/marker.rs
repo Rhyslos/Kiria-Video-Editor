@@ -28,6 +28,12 @@ impl Program {
         }
     }
 
+    /// Whether the program shows video, so that its window's device is worth
+    /// opening for video decoding. The launcher only lists projects.
+    pub fn plays_video(self) -> bool {
+        self == Program::Editor
+    }
+
     /// The program's window in a sentence: "The editor window could not open".
     pub fn window_name(self) -> &'static str {
         match self {

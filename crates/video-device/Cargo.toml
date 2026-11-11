@@ -1,0 +1,15 @@
+[package]
+name = "video-device"
+description = "The window's graphics device as the video decoder shares it."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# The Vulkan bindings the window's renderer already uses, at the same version.
+ash = "0.38"
+
+[lints]
+workspace = true
