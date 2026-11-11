@@ -31,6 +31,10 @@ pub enum Action {
     SelectTool,
     BladeTool,
     ToggleSnapping,
+    RippleTool,
+    RollTool,
+    SlipTool,
+    SlideTool,
     ToggleLoop,
     ClearRegion,
 }
@@ -59,6 +63,10 @@ impl Action {
             Action::SelectTool => "Select tool: pick, move and trim clips",
             Action::BladeTool => "Blade tool: cut clips where clicked",
             Action::ToggleSnapping => "Snapping on or off",
+            Action::RippleTool => "Ripple tool: trims move everything after",
+            Action::RollTool => "Roll tool: move the cut between two clips",
+            Action::SlipTool => "Slip tool: show another part of a clip",
+            Action::SlideTool => "Slide tool: move a clip between its neighbours",
             Action::ToggleLoop => "Loop playback inside the region",
             Action::ClearRegion => "Clear the region",
         }
@@ -154,6 +162,10 @@ impl Default for ShortcutTable {
                 (Action::SelectTool, Shortcut::key(Key::V)),
                 (Action::BladeTool, Shortcut::key(Key::B)),
                 (Action::ToggleSnapping, Shortcut::key(Key::N)),
+                (Action::RippleTool, Shortcut::key(Key::R)),
+                (Action::RollTool, Shortcut::key(Key::T)),
+                (Action::SlipTool, Shortcut::key(Key::Y)),
+                (Action::SlideTool, Shortcut::key(Key::U)),
                 (Action::ToggleLoop, Shortcut::key(Key::L)),
             ],
         }

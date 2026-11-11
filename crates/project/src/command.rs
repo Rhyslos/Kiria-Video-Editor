@@ -76,6 +76,37 @@ pub enum Command {
         edge: Edge,
         to: Time,
     },
+    /// Like [`Command::Trim`], but the rest of the timeline follows: every
+    /// clip after the trimmed one moves by the same amount, so no gap opens
+    /// and nothing is covered. The start edge keeps the clip where it is.
+    RippleTrim {
+        sequence: SequenceId,
+        clip: ClipId,
+        edge: Edge,
+        to: Time,
+    },
+    /// Moves the cut between `clip` and the clip right after it to `to`:
+    /// one gets longer by what the other loses. Linked clips follow.
+    Roll {
+        sequence: SequenceId,
+        clip: ClipId,
+        to: Time,
+    },
+    /// Shows a different part of the file in the same place: the clip stays
+    /// put and its contents shift by `by`. Linked clips follow.
+    Slip {
+        sequence: SequenceId,
+        clip: ClipId,
+        by: Time,
+    },
+    /// Moves a clip by `by` between its neighbours: the one before gets
+    /// longer (or shorter) and the one after shorter (or longer), so nothing
+    /// else on the timeline moves. Linked clips follow.
+    Slide {
+        sequence: SequenceId,
+        clip: ClipId,
+        by: Time,
+    },
     /// Splits at `at`: only `clip` and its linked clips, or every clip under `at` when `None`.
     Split {
         sequence: SequenceId,
@@ -209,6 +240,15 @@ impl Command {
                 edge,
                 to,
             } => trim(&mut p, *sequence, *clip, *edge, *to)?,
+            Command::RippleTrim {
+                sequence,
+                clip,
+                edge,
+                to,
+            } => crate::edits::ripple_trim(&mut p, *sequence, *clip, *edge, *to)?,
+            Command::Roll { sequence, clip, to } => crate::edits::roll(&mut p, *sequence, *clip, *to)?,
+            Command::Slip { sequence, clip, by } => crate::edits::slip(&mut p, *sequence, *clip, *by)?,
+            Command::Slide { sequence, clip, by } => crate::edits::slide(&mut p, *sequence, *clip, *by)?,
             Command::Split { sequence, at, clip } => split(&mut p, *sequence, *at, *clip)?,
             Command::AddLabel { sequence, label } => {
                 if label.at.is_negative() {
@@ -513,14 +553,14 @@ fn sequence_ref(p: &Project, id: SequenceId) -> diag::Result<&Sequence> {
         .ok_or_else(|| missing("timeline"))
 }
 
-fn sequence_mut(p: &mut Project, id: SequenceId) -> diag::Result<&mut Sequence> {
+pub(crate) fn sequence_mut(p: &mut Project, id: SequenceId) -> diag::Result<&mut Sequence> {
     p.sequences
         .iter_mut()
         .find(|s| s.id == id)
         .ok_or_else(|| missing("timeline"))
 }
 
-fn tracks_mut(seq: &mut Sequence) -> impl Iterator<Item = &mut Track> {
+pub(crate) fn tracks_mut(seq: &mut Sequence) -> impl Iterator<Item = &mut Track> {
     seq.video_tracks.iter_mut().chain(seq.audio_tracks.iter_mut())
 }
 
@@ -531,7 +571,7 @@ fn track_mut(seq: &mut Sequence, id: TrackId) -> diag::Result<&mut Track> {
 }
 
 /// `clip` and every clip linked to it, on any track.
-fn with_linked(seq: &Sequence, clip: ClipId) -> diag::Result<Vec<ClipId>> {
+pub(crate) fn with_linked(seq: &Sequence, clip: ClipId) -> diag::Result<Vec<ClipId>> {
     let link = seq
         .tracks()
         .flat_map(|t| t.clips.iter())
@@ -557,7 +597,7 @@ fn take_clip(seq: &mut Sequence, clip: ClipId) -> diag::Result<(TrackId, Clip)> 
 }
 
 /// Inserts in start order; refuses an overlap.
-fn insert_clip(track: &mut Track, clip: Clip) -> diag::Result<()> {
+pub(crate) fn insert_clip(track: &mut Track, clip: Clip) -> diag::Result<()> {
     if track
         .clips
         .iter()
@@ -585,7 +625,7 @@ fn close_gap(track: &mut Track, from: Time, by: Time) {
     }
 }
 
-fn missing(thing: &str) -> AppError {
+pub(crate) fn missing(thing: &str) -> AppError {
     AppError::new(format!("That {thing} no longer exists"))
         .why("It may have been removed by an earlier change.")
         .fix("Undo the last change if this was unexpected.")
@@ -1173,5 +1213,146 @@ mod tests {
             path: moved,
         };
         assert!(unknown.apply(&p).is_err());
+    }
+
+    fn video_and_game(p: &Project, i: usize) -> (Clip, Clip) {
+        let s = p.active().unwrap();
+        (
+            s.video_tracks[0].clips[i].clone(),
+            s.audio_tracks[0].clips[i].clone(),
+        )
+    }
+
+    #[test]
+    fn ripple_trim_moves_everything_after() {
+        let (p, seq) = imported();
+        let first = first_video(&p, 0).id;
+        let end = Command::RippleTrim {
+            sequence: seq,
+            clip: first,
+            edge: Edge::End,
+            to: Time::seconds(25),
+        }
+        .apply(&p)
+        .unwrap();
+        let (a, _) = video_and_game(&end, 0);
+        let (b, b_game) = video_and_game(&end, 1);
+        assert_eq!(a.end(), Time::seconds(25));
+        assert_eq!(
+            (b.start, b_game.start),
+            (Time::seconds(25), Time::seconds(25)),
+            "no gap"
+        );
+        assert_eq!(
+            end.active().unwrap().audio_tracks[1].clips[0].end(),
+            Time::seconds(25)
+        );
+
+        let start = Command::RippleTrim {
+            sequence: seq,
+            clip: first,
+            edge: Edge::Start,
+            to: Time::seconds(5),
+        }
+        .apply(&p)
+        .unwrap();
+        let (a, _) = video_and_game(&start, 0);
+        assert_eq!(
+            (a.start, a.source_in, a.duration),
+            (Time::ZERO, Time::seconds(5), Time::seconds(25)),
+            "stays at the start, shows from 5 s"
+        );
+        assert_eq!(video_and_game(&start, 1).0.start, Time::seconds(25));
+    }
+
+    /// The first clip (30 s) followed by 30-35 s showing 3-8 s of a 10 s file.
+    fn touching() -> (Project, SequenceId, ClipId, ClipId) {
+        let (p, seq) = imported();
+        let (a, b) = (first_video(&p, 0).id, first_video(&p, 1).id);
+        let p = Command::Trim {
+            sequence: seq,
+            clip: b,
+            edge: Edge::End,
+            to: Time::seconds(35),
+        }
+        .apply(&p)
+        .unwrap();
+        let p = Command::Slip {
+            sequence: seq,
+            clip: b,
+            by: Time::seconds(3),
+        }
+        .apply(&p)
+        .unwrap();
+        (p, seq, a, b)
+    }
+
+    #[test]
+    fn slip_shows_another_part_in_the_same_place() {
+        let (p, seq, _, b) = touching();
+        let (v, game) = video_and_game(&p, 1);
+        assert_eq!(
+            (v.start, v.source_in, v.duration),
+            (Time::seconds(30), Time::seconds(3), Time::seconds(5))
+        );
+        assert_eq!(game.source_in, Time::seconds(3), "its sound slipped too");
+        let too_far = Command::Slip {
+            sequence: seq,
+            clip: b,
+            by: Time::seconds(3),
+        };
+        assert!(too_far.apply(&p).is_err(), "the 10 s file ends at 8 + 3 = 11 s");
+    }
+
+    #[test]
+    fn roll_moves_the_cut_between_two_clips() {
+        let (p, seq, a, _) = touching();
+        let rolled = Command::Roll {
+            sequence: seq,
+            clip: a,
+            to: Time::seconds(28),
+        }
+        .apply(&p)
+        .unwrap();
+        let (va, ga) = video_and_game(&rolled, 0);
+        let (vb, gb) = video_and_game(&rolled, 1);
+        assert_eq!((va.end(), ga.end()), (Time::seconds(28), Time::seconds(28)));
+        assert_eq!(
+            (vb.start, vb.source_in, vb.end()),
+            (Time::seconds(28), Time::seconds(1), Time::seconds(35))
+        );
+        assert_eq!(gb.start, Time::seconds(28));
+        let too_far = Command::Roll {
+            sequence: seq,
+            clip: a,
+            to: Time::seconds(26),
+        };
+        assert!(too_far.apply(&p).is_err(), "the second file has only 3 s before");
+        let no_cut = Command::Roll {
+            sequence: seq,
+            clip: first_video(&p, 1).id,
+            to: Time::seconds(36),
+        };
+        assert!(no_cut.apply(&p).is_err(), "nothing after the last clip");
+    }
+
+    #[test]
+    fn slide_moves_a_clip_between_its_neighbours() {
+        let (p, seq, _, b) = touching();
+        let slid = Command::Slide {
+            sequence: seq,
+            clip: b,
+            by: Time::seconds(-2),
+        }
+        .apply(&p)
+        .unwrap();
+        let (va, _) = video_and_game(&slid, 0);
+        let (vb, gb) = video_and_game(&slid, 1);
+        assert_eq!(va.end(), Time::seconds(28), "the one before got shorter");
+        assert_eq!(
+            (vb.start, vb.source_in, vb.duration),
+            (Time::seconds(28), Time::seconds(3), Time::seconds(5))
+        );
+        assert_eq!(gb.start, Time::seconds(28));
     }
 }
