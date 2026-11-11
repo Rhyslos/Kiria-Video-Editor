@@ -19,6 +19,7 @@ mod search;
 mod settings;
 mod silence_panel;
 mod timeline_panel;
+mod versions_window;
 mod viewer;
 mod waveforms;
 

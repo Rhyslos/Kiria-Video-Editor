@@ -39,6 +39,7 @@ pub enum Action {
     SaveFrame,
     RemoveSilence,
     FullScreenViewer,
+    Versions,
     ClearRegion,
 }
 
@@ -70,6 +71,7 @@ impl Action {
             Action::RollTool => "Roll tool: move the cut between two clips",
             Action::SlipTool => "Slip tool: show another part of a clip",
             Action::SlideTool => "Slide tool: move a clip between its neighbours",
+            Action::Versions => "Saved versions: keep this version, or go back to one…",
             Action::FullScreenViewer => "Viewer full screen (Escape returns)",
             Action::RemoveSilence => "Remove silence…",
             Action::SaveFrame => "Save this frame as a picture…",
@@ -176,6 +178,7 @@ impl Default for ShortcutTable {
                 (Action::SaveFrame, Shortcut::ctrl_shift(Key::E)),
                 (Action::RemoveSilence, Shortcut::ctrl_shift(Key::R)),
                 (Action::FullScreenViewer, Shortcut::key(Key::F)),
+                (Action::Versions, Shortcut::ctrl_shift(Key::V)),
             ],
         }
     }
