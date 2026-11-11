@@ -227,6 +227,7 @@ pub fn drawn(
             name: t.name.clone(),
             muted: t.muted,
             solo: t.solo,
+            hidden: t.hidden,
             gain_db: t.gain_db,
             clips,
             loading: progress.loading(what),
@@ -311,6 +312,52 @@ pub fn select(selected: &mut Vec<ClipId>, clip: ClipId, add: bool) {
     }
 }
 
+/// What the status line says after a track called `name` was added. In the
+/// rough cut view an audio track only shows once it has sound of its own,
+/// so that is said too.
+pub fn added_track_says(name: &str, kind: project::TrackKind, rough_cut: bool) -> String {
+    match kind {
+        project::TrackKind::Video => format!("{name} added on top: its clips cover the tracks under it"),
+        project::TrackKind::Audio if rough_cut => {
+            format!("{name} added. The rough cut view shows it once it has sound that belongs to no picture")
+        }
+        project::TrackKind::Audio => format!("{name} added under the other audio tracks"),
+    }
+}
+
+/// The command for what was asked of a track in its header (remove, hide
+/// or show, rename); `None` for anything else.
+pub fn track_command(
+    sequence: project::SequenceId,
+    event: ui_kit::TimelineEvent,
+) -> Option<project::Command> {
+    use project::{Command, TrackId};
+    use ui_kit::TimelineEvent as E;
+    Some(match event {
+        E::RemoveTrack { track } => Command::RemoveTrack {
+            sequence,
+            track: TrackId(track),
+        },
+        E::HideTrack { track, hidden } => Command::SetTrackHidden {
+            sequence,
+            track: TrackId(track),
+            hidden,
+        },
+        E::RenameTrack { track, name } => Command::RenameTrack {
+            sequence,
+            track: TrackId(track),
+            name,
+        },
+        _ => return None,
+    })
+}
+
+/// The ids of every track of the timeline, for forgetting the heights of
+/// tracks that were removed.
+pub fn track_ids(seq: &Sequence) -> Vec<u64> {
+    seq.tracks().map(|t| t.id.0).collect()
+}
+
 /// Drops clips that no longer exist (after a delete or an undo).
 pub fn keep_existing(selected: &mut Vec<ClipId>, seq: &Sequence) {
     selected.retain(|id| seq.tracks().any(|t| t.clips.iter().any(|c| c.id == *id)));
@@ -360,6 +407,7 @@ mod tests {
             clips,
             muted: false,
             solo: false,
+            hidden: false,
             gain_db: 0.0,
             loading: None,
         }
@@ -467,6 +515,100 @@ mod tests {
         tracks[0].loading = None;
         paces.time(&mut tracks, start + std::time::Duration::from_secs(5));
         assert!(paces.paces.is_empty());
+    }
+
+    #[test]
+    fn every_track_is_drawn_and_a_hidden_one_says_so() {
+        use project::{Command, SequenceSettings, TrackKind};
+        let p = Project::new("Test", SequenceSettings::GAME_CLIP);
+        let sequence = p.active_sequence;
+        let p = Command::AddTrack {
+            sequence,
+            kind: TrackKind::Video,
+            name: "V2".into(),
+        }
+        .apply(&p)
+        .unwrap();
+        let v2 = p.active().unwrap().video_tracks[1].id;
+        let p = Command::SetTrackHidden {
+            sequence,
+            track: v2,
+            hidden: true,
+        }
+        .apply(&p)
+        .unwrap();
+        let seq = p.active().unwrap();
+        let d = drawn(
+            &p,
+            seq,
+            &[],
+            &[],
+            |_, _| Look {
+                peaks: None,
+                read_secs: 0.0,
+                state: None,
+            },
+            |_, _| (None, None),
+        );
+        let video: Vec<(&str, bool)> = d.video.iter().map(|t| (t.name.as_str(), t.hidden)).collect();
+        assert_eq!(video, [("V1", false), ("V2", true)], "the lowest layer first");
+        assert_eq!(d.audio.len(), 1);
+        assert_eq!(
+            track_ids(seq),
+            [seq.video_tracks[0].id.0, v2.0, seq.audio_tracks[0].id.0]
+        );
+    }
+
+    #[test]
+    fn what_is_asked_of_a_track_becomes_its_command() {
+        use project::{Command, SequenceSettings, TrackKind};
+        use ui_kit::TimelineEvent as E;
+        let p = Project::new("Test", SequenceSettings::GAME_CLIP);
+        let sequence = p.active_sequence;
+        let add = Command::AddTrack {
+            sequence,
+            kind: TrackKind::Video,
+            name: "V2".into(),
+        };
+        let p = add.apply(&p).unwrap();
+        let v2 = p.active().unwrap().video_tracks[1].id.0;
+        let ask = |p: &Project, event: E| track_command(sequence, event).unwrap().apply(p);
+
+        let p = ask(
+            &p,
+            E::RenameTrack {
+                track: v2,
+                name: "Face cam".into(),
+            },
+        )
+        .unwrap();
+        let p = ask(
+            &p,
+            E::HideTrack {
+                track: v2,
+                hidden: true,
+            },
+        )
+        .unwrap();
+        let top = &p.active().unwrap().video_tracks[1];
+        assert_eq!((top.name.as_str(), top.hidden), ("Face cam", true));
+        let p = ask(&p, E::RemoveTrack { track: v2 }).unwrap();
+        assert_eq!(p.active().unwrap().video_tracks.len(), 1);
+        let v1 = p.active().unwrap().video_tracks[0].id.0;
+        let err = ask(&p, E::RemoveTrack { track: v1 }).unwrap_err();
+        assert!(err.what().contains("the only video track"), "{}", err.what());
+        assert_eq!(track_command(sequence, E::ClearSelection), None);
+    }
+
+    #[test]
+    fn adding_a_track_says_where_it_went() {
+        use project::TrackKind;
+        assert!(added_track_says("V2", TrackKind::Video, false).starts_with("V2 added on top"));
+        assert!(added_track_says("A3", TrackKind::Audio, false).contains("under the other audio tracks"));
+        assert!(
+            added_track_says("A3", TrackKind::Audio, true).contains("rough cut view shows it once"),
+            "or it would seem that nothing happened"
+        );
     }
 
     #[test]

@@ -30,6 +30,7 @@ fn tracks(count: usize, clips_each: usize, clip_len: f64) -> Vec<TimelineTrack> 
                 .collect(),
             muted: false,
             solo: false,
+            hidden: false,
             gain_db: 0.0,
             loading: None,
         })

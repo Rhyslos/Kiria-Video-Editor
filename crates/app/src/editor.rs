@@ -380,6 +380,8 @@ impl Editor {
                 self.set_full_screen(!self.full_screen);
                 Ok(())
             }
+            Action::AddVideoTrack => self.add_track(project::TrackKind::Video),
+            Action::AddAudioTrack => self.add_track(project::TrackKind::Audio),
             Action::ZoomToFit => {
                 self.fitted = false;
                 Ok(())
@@ -534,6 +536,28 @@ impl Editor {
         })
     }
 
+    /// Adds an empty track after the others of its kind, named by its number.
+    fn add_track(&mut self, kind: project::TrackKind) -> diag::Result<()> {
+        let mut added = None;
+        self.with_document(|d| {
+            let Some(seq) = d.project().active() else {
+                return Ok(());
+            };
+            let (sequence, name) = (seq.id, seq.next_track_name(kind));
+            d.apply(Command::AddTrack {
+                sequence,
+                kind,
+                name: name.clone(),
+            })?;
+            added = Some(name);
+            Ok(())
+        })?;
+        if let Some(name) = added {
+            self.status = crate::timeline_panel::added_track_says(&name, kind, self.settings.rough_cut);
+        }
+        Ok(())
+    }
+
     /// The open timeline's region.
     fn region(&self) -> Option<project::Region> {
         self.document
@@ -595,7 +619,7 @@ impl Editor {
             }
             E::Select { clip, add } => timeline_panel::select(&mut self.selected, project::ClipId(clip), add),
             E::ClearSelection => self.selected.clear(),
-            E::Move { clip, by } => {
+            E::Move { clip, by, track } => {
                 let result = self.with_document(|d| {
                     let Some(seq) = d.project().active() else {
                         return Ok(());
@@ -610,11 +634,15 @@ impl Editor {
                         return Ok(());
                     };
                     let target = seq.settings.frame_rate.snap(start + seconds(by)).max(Time::ZERO);
-                    let sequence = seq.id;
-                    d.apply(Command::MoveLinked {
-                        sequence,
-                        clip,
-                        by: target - start,
+                    let (sequence, by) = (seq.id, target - start);
+                    d.apply(match track {
+                        Some(track) => Command::MoveToTrack {
+                            sequence,
+                            clip,
+                            track: project::TrackId(track),
+                            by,
+                        },
+                        None => Command::MoveLinked { sequence, clip, by },
                     })
                 });
                 if let Err(err) = result {
@@ -731,18 +759,45 @@ impl Editor {
                     self.errors.push(&err);
                 }
             }
-            E::DropMedia { media, at, insert } => {
+            E::DropMedia {
+                media,
+                at,
+                insert,
+                track,
+            } => {
                 let result = self.with_document(|d| {
                     let Some(seq) = d.project().active() else {
                         return Ok(());
                     };
                     let at = seq.settings.frame_rate.snap(seconds(at));
-                    let (sequence, media) = (seq.id, project::MediaId(media));
-                    d.apply(if insert {
-                        Command::InsertMedia { sequence, media, at }
-                    } else {
-                        Command::OverwriteMedia { sequence, media, at }
+                    d.apply(Command::DropMedia {
+                        sequence: seq.id,
+                        media: project::MediaId(media),
+                        at,
+                        track: track.map(project::TrackId),
+                        insert,
                     })
+                });
+                if let Err(err) = result {
+                    self.errors.push(&err);
+                }
+            }
+            E::AddTrack { audio } => {
+                let kind = if audio {
+                    project::TrackKind::Audio
+                } else {
+                    project::TrackKind::Video
+                };
+                if let Err(err) = self.add_track(kind) {
+                    self.errors.push(&err);
+                }
+            }
+            E::RemoveTrack { .. } | E::HideTrack { .. } | E::RenameTrack { .. } => {
+                let result = self.with_document(|d| {
+                    match timeline_panel::track_command(d.project().active_sequence, event) {
+                        Some(command) => d.apply(command),
+                        None => Ok(()),
+                    }
                 });
                 if let Err(err) = result {
                     self.errors.push(&err);
@@ -1466,6 +1521,8 @@ impl Editor {
         let p = document.project();
         let Some(seq) = p.active() else { return };
         let rate = seq.settings.frame_rate;
+        // A removed track's height is forgotten.
+        self.timeline.heights.keep_only(&timeline_panel::track_ids(seq));
         if seq.length() == project::Time::ZERO {
             ui.add_space(40.0);
             ui.vertical_centered(|ui| {

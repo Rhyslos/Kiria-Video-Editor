@@ -78,6 +78,16 @@ impl TrackHeights {
         self.factors.contains_key(&track)
     }
 
+    /// Forgets the heights of tracks that are not among `tracks` any more
+    /// (they were removed), so what is saved does not grow for ever.
+    pub fn keep_only(&mut self, tracks: &[u64]) {
+        let before = self.factors.len();
+        self.factors.retain(|track, _| tracks.contains(track));
+        if self.factors.len() != before {
+            self.revision += 1;
+        }
+    }
+
     /// Makes each of `tracks` `factor` times as tall as it is, within the limits.
     pub fn scale(&mut self, tracks: impl IntoIterator<Item = u64>, usual: f32, factor: f32) {
         for track in tracks {
@@ -126,6 +136,16 @@ impl Rows {
     /// The index of the track whose row holds screen position `y`.
     pub fn at(&self, y: f32) -> Option<usize> {
         self.rects.iter().position(|r| r.top() <= y && y < r.bottom())
+    }
+
+    /// The index of the track whose row is at `y` or, past the first or
+    /// the last row, the one nearest to it: where something dragged there lands.
+    pub fn nearest(&self, y: f32) -> Option<usize> {
+        let distance = |r: &Rect| (r.top() - y).max(y - r.bottom()).max(0.0);
+        self.at(y).or_else(|| {
+            (0..self.rects.len())
+                .min_by(|a, b| distance(&self.rects[*a]).total_cmp(&distance(&self.rects[*b])))
+        })
     }
 
     /// How far an area `visible` tall can scroll before its last row is fully shown.
@@ -180,6 +200,33 @@ mod tests {
         assert_eq!(v.rects()[0].bottom(), 320.0);
         assert_eq!(v.at(135.0), Some(2));
         assert_eq!(v.at(131.0), None, "the top row begins at 132 now");
+    }
+
+    #[test]
+    fn past_the_first_or_last_row_the_nearest_one_counts() {
+        // Video rows 40, 120 and 28 tall: from 260, 140 and 112.
+        let v = Rows::new(area(), [40.0, 120.0, 28.0], 0.0, true);
+        assert_eq!(v.nearest(270.0), Some(0), "in a row: that row");
+        assert_eq!(v.nearest(200.0), Some(1));
+        assert_eq!(v.nearest(105.0), Some(2), "above the top row");
+        assert_eq!(v.nearest(20.0), Some(2));
+        assert_eq!(v.nearest(900.0), Some(0), "below the bottom row");
+        assert_eq!(Rows::new(area(), [], 0.0, true).nearest(200.0), None, "no rows");
+    }
+
+    #[test]
+    fn heights_of_tracks_that_are_gone_are_forgotten() {
+        let mut h = TrackHeights::default();
+        h.set(1, 50.0, 100.0);
+        h.set(2, 50.0, 80.0);
+        let before = h.revision();
+        h.keep_only(&[1, 2, 3]);
+        assert_eq!(h.revision(), before, "nothing was forgotten: nothing to save");
+        h.keep_only(&[2, 3]);
+        assert_ne!(h.revision(), before);
+        assert!(!h.is_changed(1));
+        assert_eq!(h.height(2, 50.0), 80.0, "the others keep theirs");
+        assert_eq!(h.to_save().len(), 1);
     }
 
     #[test]

@@ -1,7 +1,10 @@
 //! A scripted pointer for automated runs (`--pointer`, `--drag-to`): it
 //! puts the pointer somewhere, or drags from there to somewhere else and
 //! keeps holding, so a screenshot can show what pointing at or dragging
-//! something looks like on a machine with no mouse to move.
+//! something looks like on a machine with no mouse to move. `--release`
+//! lets go at the end of the drag, so what the drag did can be seen;
+//! `--right-click` clicks the right button where the pointer was put, for
+//! screenshots of menus, and `--double-click` the left button twice.
 
 use egui::{Event, PointerButton, Pos2};
 
@@ -16,6 +19,12 @@ const DRAG_FRAMES: u64 = 6;
 pub struct FakePointer {
     pub at: Pos2,
     pub drag_to: Option<Pos2>,
+    /// Let go of the button once the drag has arrived.
+    pub release: bool,
+    /// Click the right button at `at` (when nothing is dragged).
+    pub right_click: bool,
+    /// Click the left button twice at `at` (when nothing is dragged).
+    pub double_click: bool,
 }
 
 impl FakePointer {
@@ -25,21 +34,48 @@ impl FakePointer {
         Some(Pos2::new(x.trim().parse().ok()?, y.trim().parse().ok()?))
     }
 
+    /// A pointer that is put at `at` and does nothing else.
+    pub fn resting(at: Pos2) -> FakePointer {
+        FakePointer {
+            at,
+            drag_to: None,
+            release: false,
+            right_click: false,
+            double_click: false,
+        }
+    }
+
     /// The events to add to frame number `frame` (counted from 0).
     pub fn events(&self, frame: u64) -> Vec<Event> {
+        let button = |pos, button, pressed| Event::PointerButton {
+            pos,
+            button,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
         // Each place is told once: a pointer told where it is again and
         // again never counts as resting, and tooltips wait for that.
         match (frame, self.drag_to) {
             (APPEARS, _) => vec![Event::PointerMoved(self.at)],
-            (PRESSES, Some(_)) => vec![Event::PointerButton {
-                pos: self.at,
-                button: PointerButton::Primary,
-                pressed: true,
-                modifiers: egui::Modifiers::NONE,
-            }],
+            (PRESSES, Some(_)) => vec![button(self.at, PointerButton::Primary, true)],
             (f, Some(to)) if f > PRESSES && f <= PRESSES + DRAG_FRAMES => {
                 let done = (f - PRESSES) as f32 / DRAG_FRAMES as f32;
                 vec![Event::PointerMoved(self.at + (to - self.at) * done)]
+            }
+            (f, Some(to)) if self.release && f == PRESSES + DRAG_FRAMES + 2 => {
+                vec![button(to, PointerButton::Primary, false)]
+            }
+            (PRESSES, None) if self.right_click => vec![button(self.at, PointerButton::Secondary, true)],
+            (f, None) if self.right_click && f == PRESSES + 1 => {
+                vec![button(self.at, PointerButton::Secondary, false)]
+            }
+            // Down, up, down, up, a frame each.
+            (f, None) if self.double_click && (PRESSES..PRESSES + 4).contains(&f) => {
+                vec![button(
+                    self.at,
+                    PointerButton::Primary,
+                    (f - PRESSES).is_multiple_of(2),
+                )]
             }
             _ => Vec::new(),
         }
@@ -61,7 +97,10 @@ impl FakePointer {
     /// The first frame on which everything the script does has happened.
     pub fn settled_at(&self) -> u64 {
         match self.drag_to {
+            Some(_) if self.release => PRESSES + DRAG_FRAMES + 4,
             Some(_) => PRESSES + DRAG_FRAMES + 2,
+            None if self.right_click => PRESSES + 3,
+            None if self.double_click => PRESSES + 5,
             None => APPEARS + 2,
         }
     }
@@ -82,10 +121,7 @@ mod tests {
 
     #[test]
     fn a_pointer_without_a_drag_rests_where_it_was_put() {
-        let pointer = FakePointer {
-            at: pos2(10.0, 20.0),
-            drag_to: None,
-        };
+        let pointer = FakePointer::resting(pos2(10.0, 20.0));
         assert!(pointer.events(0).is_empty());
         assert_eq!(pointer.events(APPEARS), [Event::PointerMoved(pos2(10.0, 20.0))]);
         assert!(
@@ -96,10 +132,7 @@ mod tests {
 
     #[test]
     fn the_real_pointer_is_left_out_while_the_script_runs() {
-        let pointer = FakePointer {
-            at: pos2(10.0, 20.0),
-            drag_to: None,
-        };
+        let pointer = FakePointer::resting(pos2(10.0, 20.0));
         let key = Event::Copy;
         let mut events = vec![
             Event::PointerGone,
@@ -113,8 +146,8 @@ mod tests {
     #[test]
     fn a_drag_presses_moves_and_keeps_holding() {
         let pointer = FakePointer {
-            at: pos2(100.0, 100.0),
             drag_to: Some(pos2(100.0, 160.0)),
+            ..FakePointer::resting(pos2(100.0, 100.0))
         };
         assert_eq!(pointer.events(APPEARS), [Event::PointerMoved(pos2(100.0, 100.0))]);
         assert!(matches!(
@@ -135,5 +168,78 @@ mod tests {
             (pointer.settled_at()..500).all(|frame| pointer.events(frame).is_empty()),
             "and it never lets go"
         );
+    }
+
+    #[test]
+    fn a_drag_that_is_released_lets_go_where_it_arrived() {
+        let pointer = FakePointer {
+            drag_to: Some(pos2(100.0, 160.0)),
+            release: true,
+            ..FakePointer::resting(pos2(100.0, 100.0))
+        };
+        let released: Vec<(u64, Event)> = (0..pointer.settled_at())
+            .flat_map(|frame| pointer.events(frame).into_iter().map(move |e| (frame, e)))
+            .filter(|(_, e)| matches!(e, Event::PointerButton { pressed: false, .. }))
+            .collect();
+        assert!(
+            matches!(
+                released[..],
+                [(frame, Event::PointerButton { pos, button: PointerButton::Primary, .. })]
+                    if pos == pos2(100.0, 160.0) && frame > PRESSES + DRAG_FRAMES
+            ),
+            "once, at the end, after it has arrived: {released:?}"
+        );
+        assert!((pointer.settled_at()..500).all(|frame| pointer.events(frame).is_empty()));
+    }
+
+    #[test]
+    fn a_right_click_presses_and_lets_go_where_the_pointer_was_put() {
+        let pointer = FakePointer {
+            right_click: true,
+            ..FakePointer::resting(pos2(40.0, 300.0))
+        };
+        let buttons: Vec<(PointerButton, bool)> = (0..pointer.settled_at())
+            .flat_map(|frame| pointer.events(frame))
+            .filter_map(|e| match e {
+                Event::PointerButton {
+                    pos, button, pressed, ..
+                } if pos == pos2(40.0, 300.0) => Some((button, pressed)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            buttons,
+            [
+                (PointerButton::Secondary, true),
+                (PointerButton::Secondary, false)
+            ]
+        );
+        assert!((pointer.settled_at()..500).all(|frame| pointer.events(frame).is_empty()));
+    }
+
+    #[test]
+    fn a_double_click_is_two_clicks_of_the_left_button() {
+        let pointer = FakePointer {
+            double_click: true,
+            ..FakePointer::resting(pos2(40.0, 300.0))
+        };
+        let buttons: Vec<(PointerButton, bool)> = (0..pointer.settled_at())
+            .flat_map(|frame| pointer.events(frame))
+            .filter_map(|e| match e {
+                Event::PointerButton { button, pressed, .. } => Some((button, pressed)),
+                _ => None,
+            })
+            .collect();
+        let primary = PointerButton::Primary;
+        assert_eq!(
+            buttons,
+            [
+                (primary, true),
+                (primary, false),
+                (primary, true),
+                (primary, false)
+            ]
+        );
+        assert!((pointer.settled_at()..500).all(|frame| pointer.events(frame).is_empty()));
     }
 }

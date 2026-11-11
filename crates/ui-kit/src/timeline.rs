@@ -20,6 +20,13 @@
 //! Alt+wheel makes every track of the area under the pointer taller or
 //! shorter. Heights are view state the page keeps; they are never edits.
 //!
+//! There can be any number of tracks of each kind. A clip dragged up or down
+//! lands on the track of its kind under the pointer, and a file dragged in
+//! from a list on the video track under the pointer. The column of track
+//! names has a right-click menu to add, rename, hide and remove tracks; a
+//! video track's name has an eye that hides the track ([`headers`]), and a
+//! double-click on a name changes it in place.
+//!
 //! The top edge of the labels row is the cache bar ([`cache_bar`]): a thin
 //! strip that shows which stretches are prepared ahead of time, being
 //! prepared or waiting, from ranges the page passes in.
@@ -32,6 +39,7 @@
 //! (seconds as `f64`, for drawing only) and gets back [`TimelineEvent`]s.
 
 pub mod cache_bar;
+mod headers;
 mod loading;
 mod rows;
 
@@ -99,6 +107,8 @@ pub struct TimelineTrack {
     pub clips: Vec<TimelineClip>,
     pub muted: bool,
     pub solo: bool,
+    /// A video track that is not seen in the picture: its clips are drawn dimmed.
+    pub hidden: bool,
     /// Volume in decibels.
     pub gain_db: f32,
     /// Background reading still going on for clips of this track: shown
@@ -140,7 +150,7 @@ pub struct TimelineData<'a> {
 }
 
 /// Something the person did on the timeline.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum TimelineEvent {
     /// Click or drag in the ruler: move the playhead there.
     Seek(f64),
@@ -150,8 +160,10 @@ pub enum TimelineEvent {
     Select { clip: u64, add: bool },
     /// Empty space was clicked.
     ClearSelection,
-    /// A clip (with its linked clips) was dragged by `by` seconds.
-    Move { clip: u64, by: f64 },
+    /// A clip (with its linked clips) was dragged by `by` seconds and, when
+    /// `track` is given, onto that track of its kind (its linked clips stay
+    /// on their own tracks).
+    Move { clip: u64, by: f64, track: Option<u64> },
     /// A clip's edge was dragged to `to` (seconds on the timeline).
     Trim { clip: u64, edge: ClipEdge, to: f64 },
     /// The blade tool cut a clip at `at`.
@@ -174,8 +186,22 @@ pub enum TimelineEvent {
     /// The region was drawn or adjusted (`None`: cleared).
     SetRegion(Option<(f64, f64)>),
     /// A dragged file was dropped at `at`: over what is there, or (Ctrl
-    /// held) inserted, pushing the rest later.
-    DropMedia { media: u64, at: f64, insert: bool },
+    /// held) inserted, pushing the rest later. `track` is the video track
+    /// under the pointer (none over the audio area).
+    DropMedia {
+        media: u64,
+        at: f64,
+        insert: bool,
+        track: Option<u64>,
+    },
+    /// "Add a video track" or "Add an audio track" from the menu of the track names.
+    AddTrack { audio: bool },
+    /// "Remove" from that menu, for a track without clips.
+    RemoveTrack { track: u64 },
+    /// A track's name was typed.
+    RenameTrack { track: u64, name: String },
+    /// A video track's eye was clicked: hide it, or show it again.
+    HideTrack { track: u64, hidden: bool },
     /// "Speed" from a clip's right-click menu: play it `num / den` times as fast.
     SetSpeed { clip: u64, num: u32, den: u32 },
     /// A timeline label was double-clicked (or "Edit" chosen on it).
@@ -245,6 +271,11 @@ enum DragKind {
 struct ClipDrag {
     clip: u64,
     link: Option<u64>,
+    /// The track the clip is on.
+    track: u64,
+    /// The track it would land on if let go now: another one of its kind
+    /// once a move has gone up or down far enough.
+    over: u64,
     kind: DragKind,
     /// Pointer time when the drag began.
     grabbed_at: f64,
@@ -257,6 +288,12 @@ struct ClipDrag {
 impl ClipDrag {
     fn moves(&self, c: &TimelineClip) -> bool {
         c.id == self.clip || (self.link.is_some() && c.link == self.link)
+    }
+
+    /// The track the dragged clip is drawn on instead of its own, when the
+    /// drag has taken it to another one.
+    fn lands_elsewhere(&self) -> Option<u64> {
+        (self.kind == DragKind::Move && self.over != self.track).then_some(self.over)
     }
 
     /// Where `c` is drawn while the drag lasts.
@@ -309,6 +346,13 @@ pub struct TimelineView {
     region_drag: Option<(RegionDrag, (f64, f64))>,
     /// Where the right-click menu was opened: time, and the clip under it.
     menu_at: Option<MenuSpot>,
+    /// Where the menu of the track names was opened.
+    names_menu: Option<headers::MenuSpot>,
+    /// A track's name being typed in its header.
+    rename: Option<headers::Rename>,
+    /// A file dragged in from a list is over the timeline: the time under
+    /// the pointer and the video row it would land on (none over the audio area).
+    file_over: Option<(f64, Option<usize>)>,
     /// A drag with the middle button that pans the view: the area it began
     /// over (`None`: the ruler or the scroll bar, which only pan time).
     pan_drag: Option<Option<Half>>,
@@ -340,6 +384,9 @@ impl Default for TimelineView {
             fader_drag: None,
             region_drag: None,
             menu_at: None,
+            names_menu: None,
+            rename: None,
+            file_over: None,
             pan_drag: None,
             steps: Vec::new(),
             max_zoom: MAX_ZOOM,
@@ -370,6 +417,9 @@ const ZOOM_STEP: f32 = 1.5;
 const HEIGHT_STEP: f32 = 1.25;
 /// Clips shorter than this draw their waveform behind the name instead of under it.
 const SHORT_CLIP: f32 = 40.0;
+/// A dragged clip stays on its own track until the pointer is this far
+/// past the row's edge, so a sideways drag never changes track by accident.
+const STAYS_ON_ITS_TRACK: f32 = 6.0;
 
 /// The closest zoom for a timeline at `fps`: single frames stay easy to click.
 pub fn max_zoom(fps: f64) -> f32 {
@@ -377,7 +427,7 @@ pub fn max_zoom(fps: f64) -> f32 {
 }
 
 /// One of the timeline's two areas.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum Half {
     Video,
     Audio,
@@ -705,6 +755,7 @@ impl TimelineView {
         // Body: video tracks bottom-up above the divider, audio top-down below it.
         let video_rows = self.rows(Half::Video, &layout, data);
         let audio_rows = self.rows(Half::Audio, &layout, data);
+        self.file_over = None;
         // While the middle button pans, nothing else reacts to the pointer.
         if !panning {
             self.input(ui, &layout, data, [&video_rows, &audio_rows], &mut events);
@@ -713,6 +764,7 @@ impl TimelineView {
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 0.0, theme.panel);
 
+        let mut renaming_shown = false;
         for (area, tracks, rows, half) in [
             (layout.video, data.video, &video_rows, Half::Video),
             (layout.audio, data.audio, &audio_rows, Half::Audio),
@@ -720,6 +772,10 @@ impl TimelineView {
             let audio = half == Half::Audio;
             let clip_painter = ui.painter_at(Rect::from_min_max(pos2(left, area.top()), area.max));
             let header_painter = ui.painter_at(Rect::from_min_max(area.min, pos2(left, area.bottom())));
+            // A clip being dragged to another track is drawn there.
+            let elsewhere = self
+                .clip_drag
+                .and_then(|d| d.lands_elsewhere().map(|over| (d, over)));
             for (i, (track, row)) in tracks.iter().zip(rows.rects()).enumerate() {
                 // The edge that resizes the track is reachable even when the
                 // row itself has just left the area.
@@ -729,15 +785,32 @@ impl TimelineView {
                 }
                 let band = Rect::from_min_max(pos2(left, row.top()), pos2(area.right(), row.bottom()));
                 clip_painter.rect_filled(band.shrink2(vec2(0.0, 1.0)), 0.0, theme.bg);
-                header_painter.text(
-                    pos2(layout.header_x + 12.0, row.center().y),
-                    Align2::LEFT_CENTER,
-                    &track.name,
-                    FontId::proportional(12.5),
-                    if track.muted { theme.faint } else { theme.text },
-                );
                 let header = Rect::from_min_max(pos2(layout.header_x, row.top()), pos2(left, row.bottom()))
                     .intersect(area);
+                match self.rename.as_mut().filter(|r| r.track == track.id) {
+                    Some(rename) => {
+                        renaming_shown = true;
+                        match headers::name_field(ui, rename, header, row.center().y) {
+                            headers::Typed::Going => {}
+                            headers::Typed::Dropped => self.rename = None,
+                            headers::Typed::Done(name) => {
+                                self.rename = None;
+                                if name != track.name {
+                                    events.push(TimelineEvent::RenameTrack {
+                                        track: track.id,
+                                        name,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    None => headers::draw_name(
+                        &header_painter,
+                        theme,
+                        track,
+                        pos2(layout.header_x + 12.0, row.center().y),
+                    ),
+                }
                 if let Some(loading) = &track.loading
                     && let Some(line) = loading::draw_in_header(&header_painter, theme, header, loading)
                 {
@@ -750,6 +823,8 @@ impl TimelineView {
                 }
                 if audio {
                     self.track_controls(ui, theme, track, header, &mut events);
+                } else {
+                    headers::eye(ui, theme, track, header, &mut events);
                 }
                 let colour = if audio {
                     AUDIO_COLOURS[i % AUDIO_COLOURS.len()]
@@ -759,7 +834,14 @@ impl TimelineView {
                 // Clips a few pixels wide can't be told apart: neighbours
                 // merge into one shape, so zooming far out stays cheap.
                 let mut merged: Option<Rect> = None;
-                for clip in &track.clips {
+                let leaving = elsewhere
+                    .filter(|(d, _)| d.track == track.id)
+                    .map(|(d, _)| d.clip);
+                let arriving = elsewhere
+                    .filter(|(_, over)| *over == track.id)
+                    .and_then(|(d, _)| tracks.iter().flat_map(|t| &t.clips).find(|c| c.id == d.clip));
+                let shown = track.clips.iter().filter(|c| Some(c.id) != leaving);
+                for clip in shown.chain(arriving) {
                     let (start, duration) = match &self.clip_drag {
                         Some(d) if d.moves(clip) => d.shown(clip),
                         _ => (clip.start, clip.duration),
@@ -812,7 +894,30 @@ impl TimelineView {
                 if let Some(m) = merged {
                     clip_painter.rect_filled(m, 1.0, tiny_fill(theme, colour, audio));
                 }
+                if track.hidden {
+                    // Not in the picture: its clips are dimmed.
+                    clip_painter.rect_filled(band.shrink2(vec2(0.0, 1.0)), 0.0, theme.bg.gamma_multiply(0.6));
+                }
             }
+        }
+        if !renaming_shown {
+            // The track whose name was being typed has left the view, or is gone.
+            self.rename = None;
+        }
+        // A file dragged over the timeline: where it would land.
+        if let Some((at, row)) = self.file_over {
+            let tracks = Rect::from_min_max(pos2(left, layout.video.top()), layout.audio.max);
+            let mark = ui.visuals().selection.stroke.color;
+            let x = self.x_of(left, at);
+            let p = ui.painter_at(tracks);
+            if let Some(row) = row.and_then(|row| video_rows.rects().get(row)) {
+                let band = Rect::from_min_max(pos2(left, row.top()), row.max).intersect(layout.video);
+                p.rect_filled(band, 0.0, mark.gamma_multiply(0.15));
+            }
+            p.line_segment(
+                [pos2(x, tracks.top()), pos2(x, tracks.bottom())],
+                Stroke::new(2.0, mark),
+            );
         }
         // Track header column and its edge.
         painter.line_segment(
@@ -959,12 +1064,7 @@ impl TimelineView {
             return;
         }
         let id = ui.scope_id().with(("track", track.id));
-        let button = |i: f32| {
-            Rect::from_min_size(
-                pos2(header.right() - 50.0 + i * 24.0, header.top() + 6.0),
-                vec2(20.0, 16.0),
-            )
-        };
+        let button = |i: f32| headers::button_rect(header, i);
         for (i, (label, on, tip)) in [
             ("M", track.muted, "Mute"),
             ("S", track.solo, "Solo: hear only soloed tracks"),
@@ -1494,6 +1594,35 @@ impl TimelineView {
             self.scrollbar_drag = None;
         }
 
+        // Track names: right-click for the menu of tracks, double-click a name to change it.
+        for (half, area, rows) in [
+            (Half::Video, layout.video, rows[0]),
+            (Half::Audio, layout.audio, rows[1]),
+        ] {
+            let names = Rect::from_min_max(area.min, pos2(left, area.bottom()));
+            let r = ui.interact(names, id.with(("names", half)), Sense::click());
+            let under = r
+                .interact_pointer_pos()
+                .or(r.hover_pos())
+                .and_then(|p| rows.at(p.y))
+                .and_then(|row| tracks_of(half, data).get(row));
+            if r.secondary_clicked() {
+                self.names_menu = Some((half, under.map(|t| t.id)));
+            }
+            if r.double_clicked()
+                && let Some(track) = under
+            {
+                self.rename = Some(headers::Rename::of(track));
+            }
+            headers::menu(
+                &r,
+                self.names_menu.filter(|(h, _)| *h == half),
+                data,
+                &mut self.rename,
+                events,
+            );
+        }
+
         // Clips: click selects (or cuts, with the blade); drag moves or trims.
         for (area, tracks, rows, from_bottom) in [
             (layout.video, data.video, rows[0], true),
@@ -1501,7 +1630,11 @@ impl TimelineView {
         ] {
             let time_area = Rect::from_min_max(pos2(left, area.top()), area.max);
             let r = ui.interact(time_area, id.with(("area", from_bottom)), Sense::click_and_drag());
-            let Some(p) = r.interact_pointer_pos().or(r.hover_pos()) else {
+            // While a file is dragged here from a list, the list has the
+            // pointer: the area is not pointed at, but the file is over it.
+            let file_over = r.dnd_hover_payload::<DraggedMedia>().is_some();
+            let file_at = ui.input(|i| i.pointer.interact_pos()).filter(|_| file_over);
+            let Some(p) = r.interact_pointer_pos().or(r.hover_pos()).or(file_at) else {
                 // The pointer is elsewhere, perhaps on the menu itself: an
                 // open menu is still shown, or it would close under it.
                 clip_menu(&r, self.menu_at, data.region.is_some(), events);
@@ -1516,13 +1649,12 @@ impl TimelineView {
             };
             let row_rects = rows.rects();
             let t = self.time_at(left, p.x);
+            // The video track a file dropped here lands on: the one under
+            // the pointer, or the nearest above or below the rows.
+            let drop_row = rows.nearest(p.y).filter(|_| from_bottom);
             // A file dragged over the timeline: show where it would land.
-            if r.dnd_hover_payload::<DraggedMedia>().is_some() {
-                let x = self.x_of(left, t.max(0.0));
-                ui.painter().line_segment(
-                    [pos2(x, layout.video.top()), pos2(x, layout.audio.bottom())],
-                    Stroke::new(2.0, ui.visuals().selection.stroke.color),
-                );
+            if file_over {
+                self.file_over = Some((t.max(0.0), drop_row));
             }
             if let Some(dragged) = r.dnd_release_payload::<DraggedMedia>() {
                 let insert = ui.input(|i| i.modifiers.command);
@@ -1530,10 +1662,12 @@ impl TimelineView {
                     media: dragged.0,
                     at: t.max(0.0),
                     insert,
+                    track: drop_row.and_then(|row| tracks.get(row)).map(|t| t.id),
                 });
                 continue;
             }
-            let hit = rows.at(p.y).and_then(|row| tracks.get(row)).and_then(|track| {
+            let hit_track = rows.at(p.y).and_then(|row| tracks.get(row));
+            let hit = hit_track.and_then(|track| {
                 track
                     .clips
                     .iter()
@@ -1569,12 +1703,14 @@ impl TimelineView {
             }
 
             if r.drag_started_by(egui::PointerButton::Primary)
-                && let (Some(c), Some(zone)) = (hit, zone)
+                && let (Some(c), Some(zone), Some(track)) = (hit, zone, hit_track)
                 && let Some((c, kind)) = drag_for(self.tool, zone, c, tracks, row_rects, p.y)
             {
                 self.clip_drag = Some(ClipDrag {
                     clip: c.id,
                     link: c.link,
+                    track: track.id,
+                    over: track.id,
                     kind,
                     grabbed_at: t,
                     start: c.start,
@@ -1603,7 +1739,15 @@ impl TimelineView {
                     }
                     _ => delta,
                 };
-                self.clip_drag = Some(ClipDrag { delta, ..drag });
+                // A move also follows the pointer to another track of this area.
+                let over = match drag.kind {
+                    DragKind::Move => {
+                        let y = p.y.clamp(time_area.top(), time_area.bottom() - 1.0);
+                        landing_track(tracks, rows, y, drag.track).unwrap_or(drag.over)
+                    }
+                    _ => drag.track,
+                };
+                self.clip_drag = Some(ClipDrag { delta, over, ..drag });
                 ui.ctx().set_cursor_icon(match drag.kind {
                     DragKind::Move => CursorIcon::Grabbing,
                     DragKind::Slip | DragKind::Slide => CursorIcon::ResizeColumn,
@@ -1612,12 +1756,13 @@ impl TimelineView {
             }
             if r.drag_stopped()
                 && let Some(drag) = self.clip_drag.take()
-                && drag.delta.abs() > 1e-9
+                && (drag.delta.abs() > 1e-9 || drag.lands_elsewhere().is_some())
             {
                 events.push(match drag.kind {
                     DragKind::Move => TimelineEvent::Move {
                         clip: drag.clip,
                         by: drag.delta,
+                        track: drag.lands_elsewhere(),
                     },
                     DragKind::Trim(ClipEdge::Start) => TimelineEvent::Trim {
                         clip: drag.clip,
@@ -1923,6 +2068,20 @@ fn drag_for<'a>(
     }
 }
 
+/// The track a clip dragged to screen position `y` lands on: the one whose
+/// row is there (the nearest past the first or the last), but its own
+/// track, `own`, until the pointer is clearly past that row's edge.
+fn landing_track(tracks: &[TimelineTrack], rows: &Rows, y: f32, own: u64) -> Option<u64> {
+    let own_row = tracks
+        .iter()
+        .position(|t| t.id == own)
+        .and_then(|i| rows.rects().get(i));
+    if own_row.is_some_and(|r| r.top() - STAYS_ON_ITS_TRACK <= y && y < r.bottom() + STAYS_ON_ITS_TRACK) {
+        return Some(own);
+    }
+    rows.nearest(y).and_then(|row| tracks.get(row)).map(|t| t.id)
+}
+
 /// The tracks of one area.
 fn tracks_of<'a>(half: Half, data: &TimelineData<'a>) -> &'a [TimelineTrack] {
     match half {
@@ -2121,6 +2280,7 @@ mod tests {
             clips,
             muted: false,
             solo: false,
+            hidden: false,
             gain_db: 0.0,
             loading: None,
         }
@@ -2335,9 +2495,9 @@ mod tests {
         rig.move_to(grab + vec2(60.0, 0.0));
         let events = rig.button(grab + vec2(60.0, 0.0), primary, false);
         assert!(
-            events
-                .iter()
-                .any(|e| matches!(e, TimelineEvent::Move { clip: 0, by } if (by - 1.0).abs() < 1e-6)),
+            events.iter().any(
+                |e| matches!(e, TimelineEvent::Move { clip: 0, by, track: None } if (by - 1.0).abs() < 1e-6)
+            ),
             "{events:?}"
         );
         rig.move_to(OVER_RULER);
@@ -2452,6 +2612,7 @@ mod tests {
             clips: vec![clip(1, 0.0, 5.0), clip(2, 5.0, 5.0)],
             muted: false,
             solo: false,
+            hidden: false,
             gain_db: 0.0,
             loading: None,
         };
@@ -2546,7 +2707,11 @@ mod tests {
         rig.button(to, primary, false)
             .into_iter()
             .map(|event| match event {
-                TimelineEvent::Move { clip, by } => TimelineEvent::Move { clip, by: round(by) },
+                TimelineEvent::Move { clip, by, track } => TimelineEvent::Move {
+                    clip,
+                    by: round(by),
+                    track,
+                },
                 TimelineEvent::Trim { clip, edge, to } => TimelineEvent::Trim {
                     clip,
                     edge,
@@ -2602,7 +2767,14 @@ mod tests {
         rig.view.tool = Tool::Select;
         rig.view.snapping = false;
         let events = drag(&mut rig, pos2(300.0, 330.0), pos2(330.0, 330.0));
-        assert_eq!(events, [TimelineEvent::Move { clip: 100, by: 0.5 }]);
+        assert_eq!(
+            events,
+            [TimelineEvent::Move {
+                clip: 100,
+                by: 0.5,
+                track: None
+            }]
+        );
         let events = drag(&mut rig, pos2(202.0, 330.0), pos2(262.0, 330.0));
         assert_eq!(
             events,
@@ -2768,5 +2940,423 @@ mod tests {
         rig.view.video_scroll = 10_000.0;
         rig.frame(Vec::new());
         assert_eq!(rig.view.video_scroll, 2.0 * ROUGH_CUT_TRACK - 168.0);
+    }
+
+    fn moved(clip: u64, by: f64, track: Option<u64>) -> Vec<TimelineEvent> {
+        vec![TimelineEvent::Move { clip, by, track }]
+    }
+
+    #[test]
+    fn a_clip_dragged_up_or_down_lands_on_the_track_under_the_pointer() {
+        // Two video tracks: track 0 from y = 158 to 212, track 1 on it from
+        // 104 to 158. Two audio tracks: 100 from 218 to 276, 101 to 334.
+        // Every clip runs from x = 200 to 440.
+        let mut rig = Rig::new(2, 2);
+        rig.view.snapping = false;
+        let on_v1 = pos2(300.0, 190.0);
+        assert_eq!(
+            drag(&mut rig, on_v1, pos2(330.0, 130.0)),
+            moved(0, 0.5, Some(1)),
+            "up a track and half a second later"
+        );
+        assert_eq!(
+            drag(&mut rig, on_v1, pos2(300.0, 130.0)),
+            moved(0, 0.0, Some(1)),
+            "straight up is a move too"
+        );
+        assert_eq!(
+            drag(&mut rig, pos2(300.0, 130.0), pos2(270.0, 190.0)),
+            moved(1, -0.5, Some(0)),
+            "and down"
+        );
+        assert_eq!(
+            drag(&mut rig, on_v1, pos2(330.0, 154.0)),
+            moved(0, 0.5, None),
+            "a few points past its row's edge it stays on its track"
+        );
+        assert_eq!(
+            drag(&mut rig, on_v1, pos2(330.0, 60.0)),
+            moved(0, 0.5, Some(1)),
+            "above the top track: the top track"
+        );
+        assert_eq!(
+            drag(&mut rig, on_v1, pos2(330.0, 10.0)),
+            moved(0, 0.5, Some(1)),
+            "also from over the ruler"
+        );
+        assert_eq!(
+            drag(&mut rig, on_v1, pos2(330.0, 300.0)),
+            moved(0, 0.5, None),
+            "a video clip never lands on an audio track"
+        );
+        assert!(
+            drag(&mut rig, on_v1, pos2(300.0, 300.0)).is_empty(),
+            "and dragged nowhere, nothing happens"
+        );
+        // Sound clips move between audio tracks the same way.
+        assert_eq!(
+            drag(&mut rig, pos2(300.0, 240.0), pos2(360.0, 300.0)),
+            moved(100, 1.0, Some(101))
+        );
+        assert_eq!(
+            drag(&mut rig, pos2(300.0, 300.0), pos2(300.0, 100.0)),
+            moved(101, 0.0, Some(100)),
+            "past the divider: the first audio track"
+        );
+    }
+
+    #[test]
+    fn a_dragged_clip_follows_the_pointer_to_the_track_under_it_and_back() {
+        let mut rig = Rig::new(2, 1);
+        rig.view.snapping = false;
+        let primary = egui::PointerButton::Primary;
+        let grab = pos2(300.0, 190.0);
+        rig.move_to(grab);
+        rig.button(grab, primary, true);
+        rig.move_to(pos2(310.0, 185.0));
+        let over = |rig: &Rig| rig.view.clip_drag.map(|d| (d.track, d.over, d.lands_elsewhere()));
+        assert_eq!(over(&rig), Some((0, 0, None)));
+        rig.move_to(pos2(330.0, 130.0));
+        assert_eq!(over(&rig), Some((0, 1, Some(1))), "shown on the track above");
+        let drag = rig.view.clip_drag.unwrap();
+        assert!((drag.delta - 0.5).abs() < 1e-6, "and still moved sideways");
+        rig.move_to(pos2(330.0, 180.0));
+        assert_eq!(over(&rig), Some((0, 0, None)), "back on its own");
+        let events = rig.button(pos2(330.0, 180.0), primary, false);
+        assert!(
+            matches!(
+                events[..],
+                [TimelineEvent::Move {
+                    clip: 0,
+                    track: None,
+                    ..
+                }]
+            ),
+            "{events:?}"
+        );
+        assert_eq!(rig.view.clip_drag, None);
+    }
+
+    #[test]
+    fn only_a_move_changes_track() {
+        let mut rig = Rig::new(2, 1);
+        rig.view.snapping = false;
+        // An edge dragged up and inward still trims on its own track.
+        assert_eq!(
+            drag(&mut rig, pos2(438.0, 190.0), pos2(378.0, 130.0)),
+            [TimelineEvent::Trim {
+                clip: 0,
+                edge: ClipEdge::End,
+                to: 4.0
+            }]
+        );
+        rig.view.tool = Tool::Slide;
+        assert_eq!(
+            drag(&mut rig, pos2(300.0, 190.0), pos2(330.0, 130.0)),
+            [TimelineEvent::Slide { clip: 0, by: 0.5 }]
+        );
+        rig.view.tool = Tool::Slip;
+        assert_eq!(
+            drag(&mut rig, pos2(300.0, 190.0), pos2(330.0, 130.0)),
+            [TimelineEvent::Slip { clip: 0, by: -0.5 }]
+        );
+        // The ripple tool moves a clip by its body, as the select tool does.
+        rig.view.tool = Tool::Ripple;
+        assert_eq!(
+            drag(&mut rig, pos2(300.0, 190.0), pos2(330.0, 130.0)),
+            moved(0, 0.5, Some(1))
+        );
+    }
+
+    /// Lets go of a file dragged from a list with the pointer at `at`.
+    fn drop_file(rig: &mut Rig, at: Pos2) -> Vec<TimelineEvent> {
+        let primary = egui::PointerButton::Primary;
+        // The drag began elsewhere, on the list.
+        let list = pos2(60.0, 395.0);
+        rig.move_to(list);
+        rig.button(list, primary, true);
+        egui::DragAndDrop::set_payload(&rig.ctx, DraggedMedia(7));
+        rig.move_to(at);
+        rig.move_to(at);
+        rig.button(at, primary, false)
+    }
+
+    #[test]
+    fn a_dropped_file_lands_on_the_video_track_under_the_pointer() {
+        let mut rig = Rig::new(2, 2);
+        let dropped = |at: f64, insert, track| {
+            vec![TimelineEvent::DropMedia {
+                media: 7,
+                at,
+                insert,
+                track,
+            }]
+        };
+        // x = 500 is 6 s in.
+        assert_eq!(
+            drop_file(&mut rig, pos2(500.0, 130.0)),
+            dropped(6.0, false, Some(1))
+        );
+        assert_eq!(
+            drop_file(&mut rig, pos2(500.0, 190.0)),
+            dropped(6.0, false, Some(0))
+        );
+        assert_eq!(
+            drop_file(&mut rig, pos2(500.0, 60.0)),
+            dropped(6.0, false, Some(1)),
+            "above the top track: on the top track"
+        );
+        assert_eq!(
+            drop_file(&mut rig, pos2(500.0, 300.0)),
+            dropped(6.0, false, None),
+            "over the audio area: no video track is chosen"
+        );
+        rig.modifiers = egui::Modifiers::COMMAND;
+        assert_eq!(
+            drop_file(&mut rig, pos2(500.0, 130.0)),
+            dropped(6.0, true, Some(1)),
+            "Ctrl still inserts"
+        );
+        // While the file is dragged, the place it would land is marked.
+        rig.modifiers = egui::Modifiers::NONE;
+        let primary = egui::PointerButton::Primary;
+        rig.move_to(pos2(60.0, 395.0));
+        rig.button(pos2(60.0, 395.0), primary, true);
+        egui::DragAndDrop::set_payload(&rig.ctx, DraggedMedia(7));
+        let marked = |rig: &Rig| {
+            rig.view
+                .file_over
+                .map(|(at, row)| ((at * 1e6).round() / 1e6, row))
+        };
+        assert_eq!(marked(&rig), None);
+        rig.move_to(pos2(500.0, 130.0));
+        assert_eq!(
+            marked(&rig),
+            Some((6.0, Some(1))),
+            "the time, and the upper video row"
+        );
+        rig.move_to(pos2(560.0, 300.0));
+        assert_eq!(
+            marked(&rig),
+            Some((7.0, None)),
+            "over the audio area: the time only"
+        );
+        rig.move_to(pos2(560.0, 10.0));
+        assert_eq!(marked(&rig), None, "over the ruler it would not land");
+        rig.button(pos2(560.0, 10.0), primary, false);
+    }
+
+    #[test]
+    fn the_eye_hides_and_shows_a_video_track() {
+        let mut rig = Rig::new(2, 1);
+        let primary = egui::PointerButton::Primary;
+        // The eye of track 1 (y 104 to 158): x 114 to 134, y 110 to 126.
+        let eye = pos2(124.0, 118.0);
+        assert_eq!(
+            click(&mut rig, eye, primary),
+            [TimelineEvent::HideTrack {
+                track: 1,
+                hidden: true
+            }]
+        );
+        rig.video[1].hidden = true;
+        // Hidden tracks are drawn (dimmed) and their clips still answer.
+        assert_eq!(
+            click(&mut rig, pos2(300.0, 130.0), primary),
+            [TimelineEvent::Select { clip: 1, add: false }]
+        );
+        assert_eq!(
+            click(&mut rig, eye, primary),
+            [TimelineEvent::HideTrack {
+                track: 1,
+                hidden: false
+            }]
+        );
+        // Audio tracks have mute and solo there instead.
+        let events = click(&mut rig, pos2(124.0, 232.0), primary);
+        assert!(
+            matches!(
+                events[..],
+                [TimelineEvent::TrackMix {
+                    track: 100,
+                    solo: true,
+                    ..
+                }]
+            ),
+            "{events:?}"
+        );
+    }
+
+    /// Opens the menu of the track names at `at` and clicks in it `down`
+    /// points under the place that was clicked. Returns what that asked for, and
+    /// whether it began typing a track's name.
+    fn pick_from_names_menu(rig: &mut Rig, at: Pos2, down: f32) -> (Vec<TimelineEvent>, bool) {
+        // Starting without a menu, whatever was open.
+        rig.frame(vec![key(egui::Key::Escape)]);
+        rig.frame(vec![]);
+        assert!(!egui::Popup::is_any_open(&rig.ctx), "Escape closes the menu");
+        click(rig, at, egui::PointerButton::Secondary);
+        rig.frame(vec![]);
+        assert!(egui::Popup::is_any_open(&rig.ctx), "the menu opened");
+        let events = click(rig, at + vec2(30.0, down), egui::PointerButton::Primary);
+        let renames = rig.view.rename.take().is_some();
+        (events, renames)
+    }
+
+    /// Everything the menu of the track names can ask for when opened at
+    /// `at`, top to bottom, and whether one of its lines began a rename.
+    fn names_menu(rig: &mut Rig, at: Pos2) -> (Vec<TimelineEvent>, bool) {
+        let (mut all, mut renames) = (Vec::new(), false);
+        // Near the window's bottom edge the menu opens upward to fit, so
+        // the tries begin above the place that was clicked.
+        for step in -30..40 {
+            let (events, renamed) = pick_from_names_menu(rig, at, 4.0 + step as f32 * 5.0);
+            for event in events {
+                if !all.contains(&event) {
+                    all.push(event);
+                }
+            }
+            renames |= renamed;
+        }
+        (all, renames)
+    }
+
+    #[test]
+    fn the_menu_of_the_track_names_adds_hides_renames_and_removes() {
+        let mut rig = Rig::new(2, 2);
+        // The upper video track has no clips: it can go.
+        rig.video[1].clips.clear();
+        click(&mut rig, pos2(40.0, 130.0), egui::PointerButton::Secondary);
+        assert_eq!(rig.view.names_menu, Some((Half::Video, Some(1))));
+        let (events, renames) = names_menu(&mut rig, pos2(40.0, 130.0));
+        assert!(renames, "Rename… starts typing the name");
+        assert_eq!(
+            events,
+            [
+                TimelineEvent::HideTrack {
+                    track: 1,
+                    hidden: true
+                },
+                TimelineEvent::RemoveTrack { track: 1 },
+                TimelineEvent::AddTrack { audio: false },
+                TimelineEvent::AddTrack { audio: true },
+            ]
+        );
+        // A track with clips stays: the line is there but does nothing.
+        let (events, _) = names_menu(&mut rig, pos2(40.0, 190.0));
+        assert_eq!(
+            events,
+            [
+                TimelineEvent::HideTrack {
+                    track: 0,
+                    hidden: true
+                },
+                TimelineEvent::AddTrack { audio: false },
+                TimelineEvent::AddTrack { audio: true },
+            ]
+        );
+        // An audio track: nothing to hide, and its own kind is offered first.
+        rig.audio[1].clips.clear();
+        let (events, renames) = names_menu(&mut rig, pos2(40.0, 300.0));
+        assert!(renames);
+        assert_eq!(
+            events,
+            [
+                TimelineEvent::RemoveTrack { track: 101 },
+                TimelineEvent::AddTrack { audio: true },
+                TimelineEvent::AddTrack { audio: false },
+            ]
+        );
+        // On the empty part of the column: only adding.
+        click(&mut rig, pos2(40.0, 60.0), egui::PointerButton::Secondary);
+        assert_eq!(rig.view.names_menu, Some((Half::Video, None)));
+        let (events, renames) = names_menu(&mut rig, pos2(40.0, 60.0));
+        assert!(!renames);
+        assert_eq!(
+            events,
+            [
+                TimelineEvent::AddTrack { audio: false },
+                TimelineEvent::AddTrack { audio: true },
+            ]
+        );
+    }
+
+    #[test]
+    fn the_last_track_of_a_kind_and_a_track_with_clips_stay() {
+        let empty = track(1, Vec::new());
+        let used = track(2, vec![clip(1, 0.0, 1.0)]);
+        assert_eq!(headers::why_it_stays(&empty, 2), None);
+        assert!(
+            headers::why_it_stays(&empty, 1)
+                .unwrap()
+                .contains("at least one track")
+        );
+        assert!(
+            headers::why_it_stays(&used, 2)
+                .unwrap()
+                .contains("still has clips")
+        );
+    }
+
+    fn key(key: egui::Key) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    fn double_click(rig: &mut Rig, at: Pos2) -> Vec<TimelineEvent> {
+        let primary = egui::PointerButton::Primary;
+        let mut events = click(rig, at, primary);
+        events.extend(rig.button(at, primary, true));
+        events.extend(rig.button(at, primary, false));
+        events
+    }
+
+    #[test]
+    fn a_double_click_on_a_tracks_name_renames_it() {
+        let mut rig = Rig::new(2, 1);
+        assert!(double_click(&mut rig, pos2(40.0, 130.0)).is_empty());
+        assert_eq!(rig.view.rename.as_ref().map(|r| r.track), Some(1));
+        // The field takes the keyboard with the old name selected: typing replaces it.
+        rig.frame(vec![]);
+        rig.frame(vec![]);
+        assert!(rig.ctx.egui_wants_keyboard_input(), "typing goes to the name");
+        assert!(rig.frame(vec![egui::Event::Text("Face cam ".into())]).is_empty());
+        let events = rig.frame(vec![key(egui::Key::Enter)]);
+        assert_eq!(
+            events,
+            [TimelineEvent::RenameTrack {
+                track: 1,
+                name: "Face cam".into()
+            }],
+            "without the space at its end"
+        );
+        assert_eq!(rig.view.rename, None);
+
+        // Escape leaves the name as it was.
+        double_click(&mut rig, pos2(40.0, 190.0));
+        rig.frame(vec![]);
+        rig.frame(vec![]);
+        rig.frame(vec![egui::Event::Text("Oops".into())]);
+        assert!(rig.frame(vec![key(egui::Key::Escape)]).is_empty());
+        assert_eq!(rig.view.rename, None);
+
+        // The same name again is no change, and a click elsewhere ends the typing.
+        double_click(&mut rig, pos2(40.0, 190.0));
+        rig.frame(vec![]);
+        rig.frame(vec![]);
+        let events = click(&mut rig, OVER_RULER, egui::PointerButton::Primary);
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, TimelineEvent::RenameTrack { .. })),
+            "{events:?}"
+        );
+        rig.frame(vec![]);
+        assert_eq!(rig.view.rename, None);
     }
 }

@@ -121,6 +121,8 @@ actions! {
     ShorterTracks, Timeline, "Shorter tracks (the area under the pointer, or all)";
     UsualTrackHeights, Timeline, "Tracks back to their usual height";
     RoughCut, Timeline, "Timeline view: rough cut or full";
+    AddVideoTrack, Timeline, "Add a video track (on top)";
+    AddAudioTrack, Timeline, "Add an audio track (at the bottom)";
 }
 
 impl Action {
