@@ -5,6 +5,7 @@
 //! written to the autosave journal and replayed after a crash.
 
 use crate::ids::{ClipId, LabelId, LinkId, MediaId, SequenceId, TrackId};
+use crate::look::Look;
 use crate::model::{
     Clip, LabelColor, MediaKind, MediaRef, Project, Region, Sequence, SequenceSettings, TimelineLabel, Track,
     TrackKind,
@@ -50,6 +51,14 @@ pub enum Command {
         sequence: SequenceId,
         clip: ClipId,
         speed: Speed,
+    },
+    /// Sets where `clip`'s picture sits in the frame, which part of it
+    /// shows, how strong it is and its quick colour. Only that clip: its
+    /// linked sound has no picture.
+    SetLook {
+        sequence: SequenceId,
+        clip: ClipId,
+        look: Look,
     },
     /// Puts back a whole earlier state of the project (a saved version).
     /// Undo returns to how it was just before.
@@ -218,6 +227,28 @@ impl Command {
                 speed,
             } => {
                 crate::edits::set_speed(&mut p, *sequence, *clip, *speed)?;
+            }
+            Command::SetLook { sequence, clip, look } => {
+                look.check()?;
+                let seq = sequence_mut(&mut p, *sequence)?;
+                let found = seq
+                    .video_tracks
+                    .iter_mut()
+                    .flat_map(|track| track.clips.iter_mut())
+                    .find(|c| c.id == *clip);
+                match found {
+                    Some(c) => c.look = *look,
+                    None if seq
+                        .audio_tracks
+                        .iter()
+                        .any(|t| t.clips.iter().any(|c| c.id == *clip)) =>
+                    {
+                        return Err(AppError::new("Sound has no picture to place")
+                            .why("Transform, Crop and Quick color belong to clips on video tracks.")
+                            .fix("Select the clip's picture on a video track."));
+                    }
+                    None => return Err(missing("clip")),
+                }
             }
             Command::Restore { project } => {
                 if project.active().is_none() {
@@ -586,6 +617,7 @@ fn place_media(p: &mut Project, sequence: SequenceId, id: MediaId, at: Option<Ti
         duration: length,
         link,
         speed: Speed::NORMAL,
+        look: Look::PLAIN,
     };
 
     if let Some(v) = video {
@@ -812,6 +844,7 @@ mod tests {
             duration: Time::seconds(len),
             link,
             speed: Default::default(),
+            look: Default::default(),
         }
     }
 
@@ -1653,6 +1686,73 @@ mod tests {
             .apply(&p)
             .is_err()
         );
+    }
+
+    #[test]
+    fn a_look_is_set_on_the_picture_alone_and_survives_a_split() {
+        let (p, seq) = imported(); // 0-30 s and 30-40 s
+        let first = first_video(&p, 0).id;
+        let look = Look {
+            x: 320_000,
+            y: -280_000,
+            scale: 300_000,
+            crop_left: 100_000,
+            opacity: 900_000,
+            temperature: 150_000,
+            ..Look::PLAIN
+        };
+        let set = Command::SetLook {
+            sequence: seq,
+            clip: first,
+            look,
+        }
+        .apply(&p)
+        .unwrap();
+        let s = set.active().unwrap();
+        assert_eq!(s.video_tracks[0].clips[0].look, look);
+        assert_eq!(s.video_tracks[0].clips[1].look, Look::PLAIN, "only that clip");
+        assert!(
+            s.audio_tracks
+                .iter()
+                .flat_map(|t| t.clips.iter())
+                .all(|c| c.look == Look::PLAIN),
+            "its sound has no look"
+        );
+        // Both halves of a split keep it.
+        let cut = Command::Split {
+            sequence: seq,
+            at: Time::seconds(10),
+            clip: Some(first),
+        }
+        .apply(&set)
+        .unwrap();
+        let clips = &cut.active().unwrap().video_tracks[0].clips;
+        assert_eq!((clips[0].look, clips[1].look), (look, look));
+
+        // Values out of range, sound and unknown clips are refused, explained.
+        let refused = |clip, look| {
+            Command::SetLook {
+                sequence: seq,
+                clip,
+                look,
+            }
+            .apply(&p)
+            .unwrap_err()
+            .to_string()
+        };
+        let sound = p.active().unwrap().audio_tracks[0].clips[0].id;
+        assert!(
+            refused(
+                first,
+                Look {
+                    scale: 0,
+                    ..Look::PLAIN
+                }
+            )
+            .contains("can't be used")
+        );
+        assert!(refused(sound, look).contains("no picture"));
+        assert!(refused(ClipId(9999), look).contains("clip"));
     }
 
     #[test]

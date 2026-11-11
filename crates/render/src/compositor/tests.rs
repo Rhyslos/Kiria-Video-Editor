@@ -122,6 +122,7 @@ fn whole(pixels: Pixels<'_>, frame: (u32, u32)) -> Drawn<'_> {
         area: Area::fitted(frame, frame),
         part: Part::WHOLE,
         opacity: 1.0,
+        colour: Colour::NEUTRAL,
     }
 }
 
@@ -415,6 +416,52 @@ fn a_smaller_turned_layer_sits_where_its_area_says() {
         "but not where a square's corner would be"
     );
     assert!(near(shown.at(4, 4), [128; 3], 1));
+}
+
+#[test]
+fn quick_colour_works_on_light_the_same_in_both_kinds_of_frame() {
+    let Some(gpu) = gpu() else { return };
+    let size = (16, 16);
+    let grey = Planes::flat(&gpu, size, GREY);
+    let with = |colour: Colour, working| {
+        let layer = Drawn {
+            colour,
+            ..whole(grey.two(), size)
+        };
+        compose(&gpu, working, EIGHT, size, &[layer]).at(8, 8)
+    };
+    for working in BOTH {
+        // A stop brighter is twice the light: (2 x 0.502^2.4)^(1/2.4) = 0.67.
+        let brighter = with(Colour::from_sliders(1.0, 0.0, 0.0, 0.0, 0.0), working);
+        assert!(near(brighter, [171; 3], 2), "{working:?}: {brighter:?}");
+        // Warmer: more red, less blue, about as bright.
+        let warm = with(Colour::from_sliders(0.0, 0.0, 0.0, 0.5, 0.0), working);
+        assert!(
+            warm[0] > 135 && warm[2] < 120 && warm[1].abs_diff(128) < 12,
+            "{working:?}: {warm:?}"
+        );
+        // More magenta: less green.
+        let magenta = with(Colour::from_sliders(0.0, 0.0, 0.0, 0.0, 0.5), working);
+        assert!(
+            magenta[1] < magenta[0] && magenta[1] < magenta[2],
+            "{working:?}: {magenta:?}"
+        );
+        // Harder contrast pushes a value above middle grey up; no colour
+        // at all leaves a grey as it is.
+        let harder = with(Colour::from_sliders(0.0, 0.5, 0.0, 0.0, 0.0), working);
+        assert!(harder[0] > 128 && harder[0] < 140, "{working:?}: {harder:?}");
+        let no_colour = with(Colour::from_sliders(0.0, 0.0, -1.0, 0.0, 0.0), working);
+        assert!(near(no_colour, [128; 3], 1), "{working:?}: {no_colour:?}");
+    }
+    // Without colour, red becomes the grey that is as bright: 0.2126 of the
+    // light, 0.2126^(1/2.4) = 0.52 on screen.
+    let red = texture(&gpu, size, EIGHT, &[255, 0, 0, 255].repeat(16 * 16));
+    let layer = Drawn {
+        colour: Colour::from_sliders(0.0, 0.0, -1.0, 0.0, 0.0),
+        ..whole(Pixels::Rgba(&red), size)
+    };
+    let shown = compose(&gpu, Working::Linear, EIGHT, size, &[layer]).at(8, 8);
+    assert!(near(shown, [134; 3], 2), "{shown:?}");
 }
 
 #[test]

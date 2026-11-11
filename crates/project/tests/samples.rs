@@ -81,8 +81,25 @@ fn rich_project() -> Project {
         duration: Time::seconds(20),
         link,
         speed: Default::default(),
+        look: Default::default(),
     };
-    seq.video_tracks[0].clips.push_back(clip(v_clip, 0));
+    // The picture in a corner, cut a little, slightly see-through and warmer.
+    let look = project::Look {
+        x: 320_000,
+        y: 280_000,
+        scale: 300_000,
+        turn: -2_500_000,
+        crop_left: 120_000,
+        crop_bottom: 50_000,
+        opacity: 900_000,
+        exposure: 250_000,
+        temperature: 150_000,
+        ..project::Look::PLAIN
+    };
+    seq.video_tracks[0].clips.push_back(Clip {
+        look,
+        ..clip(v_clip, 0)
+    });
     seq.audio_tracks[0].clips.push_back(clip(a_clip, 1));
     seq.audio_tracks.push_back(extra_audio);
     seq.audio_tracks[1].gain_db = -3.5;

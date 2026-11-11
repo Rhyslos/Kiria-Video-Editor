@@ -5,6 +5,7 @@
 //! rendering can each hold their own snapshot.
 
 use crate::ids::{ClipId, LabelId, LinkId, MediaId, SequenceId, TrackId};
+use crate::look::Look;
 use crate::time::{Rate, Speed, Time};
 use diag::AppError;
 use imbl::{OrdMap, Vector};
@@ -245,6 +246,11 @@ pub struct Clip {
     /// How fast it plays its file (format 7); normal speed when missing.
     #[serde(default)]
     pub speed: Speed,
+    /// Where its picture sits in the frame, which part shows, how strong and
+    /// its quick colour (format 8); the picture as it is when missing.
+    /// Means nothing for sound.
+    #[serde(default)]
+    pub look: Look,
 }
 
 impl Clip {
@@ -503,6 +509,7 @@ mod tests {
             duration: Time::seconds(10),
             link,
             speed: Default::default(),
+            look: Default::default(),
         });
         p
     }

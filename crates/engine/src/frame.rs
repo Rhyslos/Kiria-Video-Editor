@@ -3,8 +3,8 @@
 //! card, so it can be tested anywhere and read by the viewer, by export and
 //! by anything else that needs the picture.
 
-use project::{Clip, ClipId, MediaId, MediaRef, Project, Sequence, Time};
-use render::{Area, Part};
+use project::{Clip, ClipId, Look, MediaId, MediaRef, Project, Sequence, Time};
+use render::{Area, Colour, Part, Placement};
 
 /// What to draw for one moment of a timeline.
 #[derive(Debug, Clone, PartialEq)]
@@ -44,6 +44,8 @@ pub struct Layer {
     pub part: Part,
     /// 1 hides what is below it, 0 is not seen at all.
     pub opacity: f32,
+    /// Its quick colour.
+    pub colour: Colour,
 }
 
 impl Layer {
@@ -92,15 +94,62 @@ pub fn describe(project: &Project, sequence: &Sequence, at: Time) -> FrameDescri
 /// `clip`'s picture at `at`, or nothing when its file has no picture.
 fn layer(clip: &Clip, media: &MediaRef, frame: (u32, u32), at: Time) -> Option<Layer> {
     let video = media.info.video.as_ref()?;
+    let look = clip.look;
+    let part = shown_part(&look);
     Some(Layer {
         clip: clip.id,
         media: clip.media,
         stream: clip.stream,
         source_time: clip.source_at(at),
-        area: Area::fitted(video.display_size(), frame),
-        part: Part::WHOLE,
-        opacity: 1.0,
+        area: Area::of_part(placement(&look, video.display_size(), frame), part),
+        part,
+        opacity: fraction(look.opacity),
+        colour: colour(&look),
     })
+}
+
+/// One of a look's whole numbers (millionths) as a fraction.
+fn fraction(value: i32) -> f32 {
+    (f64::from(value) / f64::from(project::look::ONE)) as f32
+}
+
+/// Where a clip's whole picture sits in a frame of `frame` pixels: fitted,
+/// then sized, moved and turned as its look says.
+pub fn placement(look: &Look, picture: (u32, u32), frame: (u32, u32)) -> Placement {
+    let fitted = Area::fitted(picture, frame);
+    let (w, h) = fitted.size();
+    let scale = fraction(look.scale);
+    let (fw, fh) = (frame.0 as f32, frame.1 as f32);
+    Placement {
+        centre: (fw * (0.5 + fraction(look.x)), fh * (0.5 + fraction(look.y))),
+        size: (w * scale, h * scale),
+        degrees: fraction(look.turn),
+    }
+}
+
+/// The part of the picture left after what its look cuts off each side.
+pub fn shown_part(look: &Look) -> Part {
+    let (left, top) = (fraction(look.crop_left), fraction(look.crop_top));
+    Part {
+        left,
+        top,
+        width: (1.0 - left - fraction(look.crop_right)).max(0.01),
+        height: (1.0 - top - fraction(look.crop_bottom)).max(0.01),
+    }
+}
+
+/// A look's quick colour as the compositor takes it.
+pub fn colour(look: &Look) -> Colour {
+    if !look.is_coloured() {
+        return Colour::NEUTRAL;
+    }
+    Colour::from_sliders(
+        fraction(look.exposure),
+        fraction(look.contrast),
+        fraction(look.saturation),
+        fraction(look.temperature),
+        fraction(look.tint),
+    )
 }
 
 #[cfg(test)]
@@ -256,6 +305,105 @@ mod tests {
         let area = frame.layers[0].area;
         assert_eq!(area.across, (960.0, 0.0));
         assert!((area.down.1 - 960.0 * 1440.0 / 3440.0).abs() < 0.01);
+    }
+
+    /// The first clip on V1 given `look`.
+    fn with_look(project: &Project, look: Look) -> Project {
+        let clip = project.active().unwrap().video_tracks[0].clips[0].id;
+        Command::SetLook {
+            sequence: project.active_sequence,
+            clip,
+            look,
+        }
+        .apply(project)
+        .unwrap()
+    }
+
+    fn near(a: (f32, f32), b: (f32, f32)) -> bool {
+        (a.0 - b.0).abs() < 0.01 && (a.1 - b.1).abs() < 0.01
+    }
+
+    #[test]
+    fn a_look_sizes_moves_and_cuts_the_picture() {
+        let project = import(
+            &Project::new("T", SequenceSettings::GAME_CLIP),
+            media("cam.mkv", (1920, 1080), 0),
+        );
+        // A third of the size, towards the bottom right corner.
+        let small = Look {
+            scale: 300_000,
+            x: 320_000,
+            y: 280_000,
+            ..Look::PLAIN
+        };
+        let frame_of = |p: &Project| describe(p, p.active().unwrap(), Time::seconds(1));
+        let layer = &frame_of(&with_look(&project, small)).layers[0];
+        assert!(near(layer.area.across, (576.0, 0.0)) && near(layer.area.down, (0.0, 324.0)));
+        // Centre at (0.82 x 1920, 0.78 x 1080).
+        assert!(
+            near(layer.area.origin, (1574.4 - 288.0, 842.4 - 162.0)),
+            "{:?}",
+            layer.area
+        );
+        assert!(!layer.hides_what_is_below((1920, 1080)));
+
+        // A fifth cut off the left: the rest stays where it was.
+        let cut = Look {
+            crop_left: 200_000,
+            ..Look::PLAIN
+        };
+        let layer = &frame_of(&with_look(&project, cut)).layers[0];
+        assert_eq!(layer.part.left, 0.2);
+        assert!((layer.part.width - 0.8).abs() < 1e-6);
+        assert!(near(layer.area.origin, (384.0, 0.0)) && near(layer.area.across, (1536.0, 0.0)));
+        assert!(
+            !layer.hides_what_is_below((1920, 1080)),
+            "the cut side shows what is below"
+        );
+
+        // Larger than the frame still hides what is below; see-through doesn't.
+        let large = Look {
+            scale: 1_500_000,
+            ..Look::PLAIN
+        };
+        assert!(frame_of(&with_look(&project, large)).layers[0].hides_what_is_below((1920, 1080)));
+        let faint = Look {
+            opacity: 500_000,
+            ..Look::PLAIN
+        };
+        let layer = &frame_of(&with_look(&project, faint)).layers[0];
+        assert_eq!(layer.opacity, 0.5);
+        assert!(!layer.hides_what_is_below((1920, 1080)));
+        // Nothing to see at all is no layer.
+        let gone = Look {
+            opacity: 0,
+            ..Look::PLAIN
+        };
+        assert!(frame_of(&with_look(&project, gone)).layers.is_empty());
+    }
+
+    #[test]
+    fn a_look_turns_the_picture_and_carries_its_quick_colour() {
+        let project = import(
+            &Project::new("T", SequenceSettings::GAME_CLIP),
+            media("cam.mkv", (1920, 1080), 0),
+        );
+        let turned = Look {
+            turn: 90_000_000,
+            temperature: 400_000,
+            ..Look::PLAIN
+        };
+        let changed = with_look(&project, turned);
+        let layer = &describe(&changed, changed.active().unwrap(), Time::seconds(1)).layers[0];
+        // A quarter turn clockwise: the top edge runs down.
+        assert!(near(layer.area.across, (0.0, 1920.0)), "{:?}", layer.area);
+        assert!(
+            !layer.hides_what_is_below((1920, 1080)),
+            "a turned picture is taken not to cover"
+        );
+        assert!(layer.colour.gains[0] > layer.colour.gains[2], "warmer");
+        let plain = describe(&project, project.active().unwrap(), Time::seconds(1));
+        assert!(plain.layers[0].colour.is_neutral());
     }
 
     #[test]

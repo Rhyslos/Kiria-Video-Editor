@@ -144,6 +144,7 @@ impl Composer {
                 area: layer.area,
                 part: layer.part,
                 opacity: layer.opacity,
+                colour: layer.colour,
             })
             .collect();
 
