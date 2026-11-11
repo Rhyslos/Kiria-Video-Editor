@@ -1449,6 +1449,10 @@ impl Editor {
                 markers: &drawn.markers,
                 highlights: &self.silence.found,
                 follow: self.playback.is_some(),
+                cache: ui_kit::timeline::CacheBar {
+                    ranges: &drawn.cache,
+                    about: timeline_panel::CACHE_BAR_ABOUT,
+                },
             };
             let status_height = if self.status.is_empty() { 0.0 } else { 24.0 };
             let height = (ui.available_height() - status_height).max(160.0);

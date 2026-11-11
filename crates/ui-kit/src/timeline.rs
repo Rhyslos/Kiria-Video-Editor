@@ -20,6 +20,10 @@
 //! Alt+wheel makes every track of the area under the pointer taller or
 //! shorter. Heights are view state the page keeps; they are never edits.
 //!
+//! The top edge of the labels row is the cache bar ([`cache_bar`]): a thin
+//! strip that shows which stretches are prepared ahead of time, being
+//! prepared or waiting, from ranges the page passes in.
+//!
 //! Clips whose waveform or pictures are still being read in the background
 //! say so ([`Loading`]): a slim bar with a percentage on the clip, and a
 //! short line by the track's name while any of its clips is being read.
@@ -27,9 +31,11 @@
 //! The widget knows nothing about projects: the page hands it plain data
 //! (seconds as `f64`, for drawing only) and gets back [`TimelineEvent`]s.
 
+pub mod cache_bar;
 mod loading;
 mod rows;
 
+pub use cache_bar::{CacheBar, CacheRange, CacheState};
 pub use loading::{LoadKind, LoadState, Loading};
 pub use rows::{MAX_TRACK, MIN_TRACK, TrackHeights};
 
@@ -129,6 +135,8 @@ pub struct TimelineData<'a> {
     pub highlights: &'a [(f64, f64)],
     /// Keep the playhead in view (while playing).
     pub follow: bool,
+    /// What is prepared ahead of time along the timeline, for the strip under the ruler.
+    pub cache: CacheBar<'a>,
 }
 
 /// Something the person did on the timeline.
@@ -455,6 +463,14 @@ impl Layout {
 
     fn width(&self) -> f32 {
         self.ruler.width()
+    }
+
+    /// The cache bar: the top edge of the labels row.
+    fn cache_strip(&self) -> Rect {
+        Rect::from_min_max(
+            self.labels.min,
+            pos2(self.labels.right(), self.labels.top() + cache_bar::HEIGHT),
+        )
     }
 
     /// Everything the timeline covers.
@@ -808,12 +824,20 @@ impl TimelineView {
             }
         }
         let label_painter = ui.painter_at(layout.labels);
+        cache_bar::draw(
+            &label_painter,
+            theme,
+            layout.cache_strip(),
+            &data.cache,
+            visible,
+            |t| self.x_of(left, t),
+        );
         for marker in data.markers {
             let x = self.x_of(left, marker.at);
             label_painter.add(Shape::convex_polygon(
                 vec![
-                    pos2(x - 5.0, layout.labels.top() + 3.0),
-                    pos2(x + 5.0, layout.labels.top() + 3.0),
+                    pos2(x - 5.0, layout.labels.top() + cache_bar::HEIGHT + 1.0),
+                    pos2(x + 5.0, layout.labels.top() + cache_bar::HEIGHT + 1.0),
                     pos2(x, layout.labels.bottom() - 3.0),
                 ],
                 marker.colour,
@@ -1347,6 +1371,15 @@ impl TimelineView {
             id.with("ruler"),
             Sense::click_and_drag(),
         );
+        // The cache bar explains its colours when pointed at.
+        if let Some(p) = ruler.hover_pos()
+            && layout.cache_strip().expand2(vec2(0.0, 2.0)).contains(p)
+            && !ruler.dragged()
+        {
+            ruler
+                .clone()
+                .on_hover_text_at_pointer(cache_bar::legend(data.cache.about));
+        }
         let shift = ui.input(|i| i.modifiers.shift);
         if ruler.drag_started_by(egui::PointerButton::Primary)
             && shift
@@ -2089,6 +2122,7 @@ mod tests {
         view: TimelineView,
         video: Vec<TimelineTrack>,
         audio: Vec<TimelineTrack>,
+        cache: Vec<CacheRange>,
         fps: f64,
         modifiers: egui::Modifiers,
     }
@@ -2108,6 +2142,7 @@ mod tests {
                 audio: (0..audio)
                     .map(|i| track(100 + i, vec![clip(100 + i, 1.0, 4.0)]))
                     .collect(),
+                cache: Vec::new(),
                 fps: 60.0,
                 modifiers: egui::Modifiers::NONE,
             }
@@ -2140,6 +2175,10 @@ mod tests {
                             markers: &[],
                             highlights: &[],
                             follow: false,
+                            cache: CacheBar {
+                                ranges: &self.cache,
+                                about: "",
+                            },
                         };
                         out = self.view.show(ui, &Theme::ASH, &data, size);
                     });
@@ -2299,6 +2338,39 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, TimelineEvent::Seek(t) if (t - 500.0 / 60.0).abs() < 1e-6)),
             "{events:?}"
+        );
+    }
+
+    #[test]
+    fn the_cache_bar_takes_no_room_and_leaves_the_ruler_working() {
+        let mut rig = Rig::new(1, 1);
+        rig.cache = vec![
+            CacheRange {
+                start: 0.0,
+                end: 4.0,
+                state: CacheState::Ready,
+            },
+            CacheRange {
+                start: 4.0,
+                end: 9.0,
+                state: CacheState::Preparing,
+            },
+        ];
+        // The strip is the top of the labels row (y 26 to 30): a click on
+        // it still moves the playhead, as anywhere in the ruler.
+        let primary = egui::PointerButton::Primary;
+        let on_strip = pos2(640.0, 28.0);
+        let events: Vec<_> = click(&mut rig, on_strip, primary);
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, TimelineEvent::Seek(t) if (t - 500.0 / 60.0).abs() < 1e-6)),
+            "{events:?}"
+        );
+        // And the tracks sit where they sat without it.
+        assert_eq!(
+            click(&mut rig, pos2(300.0, 190.0), primary),
+            [TimelineEvent::Select { clip: 0, add: false }]
         );
     }
 

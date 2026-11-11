@@ -7,7 +7,7 @@ use crate::waveforms::Look;
 use project::{ClipId, LabelColor, Project, Sequence};
 use std::collections::HashMap;
 use std::time::Instant;
-use ui_kit::timeline::{LoadKind, LoadState, Loading};
+use ui_kit::timeline::{CacheRange, CacheState, LoadKind, LoadState, Loading, cache_bar};
 use ui_kit::{TimelineClip, TimelineMarker, TimelineTrack};
 
 /// What the widget needs for one frame.
@@ -15,6 +15,32 @@ pub struct Drawn {
     pub video: Vec<TimelineTrack>,
     pub audio: Vec<TimelineTrack>,
     pub markers: Vec<TimelineMarker>,
+    /// For the cache bar: the stretches where something is still being
+    /// prepared or waiting for it. See [`CACHE_BAR_ABOUT`].
+    pub cache: Vec<CacheRange>,
+}
+
+/// What the cache bar stands for on the Edit page today, for its tooltip.
+/// Nothing is marked as prepared: pictures for playback are decoded as they
+/// are needed, so saying "ready" anywhere would promise smooth playback
+/// that nothing guarantees yet. Frames kept in memory, proxies and
+/// pre-rendered stretches will be marked here when they are built.
+pub const CACHE_BAR_ABOUT: &str = "Right now this follows the reading of waveforms and clip pictures: marked stretches are still being read. Pictures for playback are decoded as they are needed, so nothing is marked as prepared yet.";
+
+/// The stretch of a clip (on the timeline from `start`, `length` seconds
+/// long) that is not ready to draw yet, when the share `ready` of it is and
+/// its reading is in `state`. Nothing for clips that are done or failed.
+fn unready(start: f64, length: f64, ready: f64, state: Option<LoadState>) -> Option<CacheRange> {
+    let state = match state? {
+        LoadState::Reading { .. } => CacheState::Preparing,
+        LoadState::Waiting => CacheState::Waiting,
+        LoadState::Failed => return None,
+    };
+    (ready < 1.0).then_some(CacheRange {
+        start: start + length * ready,
+        end: start + length,
+        state,
+    })
 }
 
 /// Adds up how much of a track's clips is ready to draw, by clip length,
@@ -117,6 +143,7 @@ pub fn drawn(
         .filter(|c| selected.contains(&c.id))
         .filter_map(|c| c.link)
         .collect();
+    let mut cache = Vec::new();
     let mut track = |t: &project::Track| {
         let what = match t.kind {
             project::TrackKind::Audio => LoadKind::Sound,
@@ -157,6 +184,12 @@ pub fn drawn(
                 // A missing file's clip already says so.
                 let state = state.filter(|s| !(is_missing && *s == LoadState::Failed));
                 progress.add(length, ready, state);
+                // A waveform shows as far as it is read; pictures only once all are.
+                let shown = match t.kind {
+                    project::TrackKind::Audio => ready,
+                    project::TrackKind::Video => 0.0,
+                };
+                cache.extend(unready(c.start.as_secs_f64(), length, shown, state));
                 let name = media
                     .and_then(|m| m.path.file_name())
                     .map_or_else(|| "missing".into(), |n| n.to_string_lossy().into_owned());
@@ -199,9 +232,14 @@ pub fn drawn(
             loading: progress.loading(what),
         }
     };
+    let (video, audio) = (
+        seq.video_tracks.iter().map(&mut track).collect(),
+        seq.audio_tracks.iter().map(&mut track).collect(),
+    );
     Drawn {
-        video: seq.video_tracks.iter().map(&mut track).collect(),
-        audio: seq.audio_tracks.iter().map(&mut track).collect(),
+        video,
+        audio,
+        cache: cache_bar::flatten(&cache),
         markers: seq
             .labels
             .iter()
@@ -342,6 +380,29 @@ mod tests {
     }
 
     #[test]
+    fn the_cache_bar_marks_what_is_not_ready_yet() {
+        // A clip from 10 s to 30 s whose first quarter is read.
+        assert_eq!(
+            unready(10.0, 20.0, 0.25, Some(READING)),
+            Some(CacheRange {
+                start: 15.0,
+                end: 30.0,
+                state: CacheState::Preparing
+            })
+        );
+        assert_eq!(
+            unready(10.0, 20.0, 0.0, Some(LoadState::Waiting)).map(|r| (r.start, r.state)),
+            Some((10.0, CacheState::Waiting))
+        );
+        assert_eq!(unready(10.0, 20.0, 1.0, None), None, "ready: nothing to mark");
+        assert_eq!(
+            unready(10.0, 20.0, 0.0, Some(LoadState::Failed)),
+            None,
+            "a failed reading is not on its way"
+        );
+    }
+
+    #[test]
     fn a_track_tells_how_much_of_its_clips_is_ready() {
         let mut p = TrackProgress::default();
         assert_eq!(
@@ -426,6 +487,7 @@ mod tests {
                 track(3, vec![clip(30, Some(1), Some(0.9)), clip(31, None, Some(0.2))]),
             ],
             markers: Vec::new(),
+            cache: Vec::new(),
         };
         fold_sound(&mut d);
         let w = d.video[0].clips[0].waveform.as_ref().unwrap();

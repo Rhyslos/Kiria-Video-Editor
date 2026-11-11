@@ -4,7 +4,7 @@ Every cache, each with a budget: RAM frame cache, GPU texture cache, disk render
 
 ## Status
 
-Phase 4 in progress: waveforms and clip thumbnails are done. Frame caches and proxies come next.
+Phase 4 in progress: waveforms and clip thumbnails are done. Frame caches and proxies come next; the timeline's cache bar (`ui_kit::timeline::cache_bar`) is where they will show what is ready.
 
 ## Files
 
