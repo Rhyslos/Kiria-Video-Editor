@@ -27,6 +27,19 @@ pub fn duration(secs: u64) -> String {
     }
 }
 
+/// Roughly how long background work still takes, in steps coarse enough
+/// that the wording doesn't flicker: "a few seconds left", "about 20 s
+/// left", "about 3 min left".
+pub fn time_left(seconds: f32) -> String {
+    if !seconds.is_finite() || seconds < 8.0 {
+        "a few seconds left".to_owned()
+    } else if seconds < 55.0 {
+        format!("about {} s left", ((seconds / 10.0).round() as u32).max(1) * 10)
+    } else {
+        format!("about {} min left", ((seconds / 60.0).round() as u32).max(1))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -41,6 +54,22 @@ mod tests {
         assert_eq!(ago(5 * 86_400), "5 days ago");
         assert_eq!(ago(90 * 86_400), "3 months ago");
         assert_eq!(ago(800 * 86_400), "2 years ago");
+    }
+
+    #[test]
+    fn time_left_is_told_in_coarse_steps() {
+        assert_eq!(time_left(3.0), "a few seconds left");
+        assert_eq!(time_left(8.0), "about 10 s left");
+        assert_eq!(time_left(21.0), "about 20 s left");
+        assert_eq!(
+            time_left(24.0),
+            "about 20 s left",
+            "a few seconds more or less read the same"
+        );
+        assert_eq!(time_left(54.0), "about 50 s left");
+        assert_eq!(time_left(70.0), "about 1 min left");
+        assert_eq!(time_left(200.0), "about 3 min left");
+        assert_eq!(time_left(f32::NAN), "a few seconds left");
     }
 
     #[test]

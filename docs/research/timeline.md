@@ -42,6 +42,19 @@ Before tiny clips were merged, 10,000 clips on screen cost 2.05 ms median (4.37 
 
 B was not built: A stays far inside the budget in every case measured, so the extra code isn't justified yet.
 
+Measured again after tracks got heights of their own, clips their reading progress and the ruler its cache bar. The test now also passes a cache range under every clip of one track, in three states taking turns, which is the cache bar's worst case when everything is on screen: a different state on almost every pixel. Same machine, median milliseconds per frame: one run before the work, three after (the machine was shared, so single runs move by a few hundredths and the worst frames by more):
+
+| Clips in the project | View | Before | After |
+| ---: | --- | ---: | ---: |
+| 100 | default zoom, following the playhead | 0.06 | 0.06 |
+| 1,000 | default zoom | 0.06 | 0.06 |
+| 10,000 | default zoom | 0.07 | 0.07 to 0.12 |
+| 100 | zoomed out, all on screen | 0.11 | 0.12 |
+| 1,000 | zoomed out, all on screen | 0.53 | 0.54 |
+| 10,000 | zoomed out, all on screen | 0.10 | 0.15 |
+
+Rows of mixed heights cost nothing that can be measured: they are laid out once a frame, per track, not per clip. The cache bar finds the ranges in view by bisection, gives ranges too thin to tell apart one shared span and draws all spans as one mesh, not a shape each.
+
 ## 4. Result
 
 **A: egui's painter with culling and merging of tiny clips.** If waveforms and thumbnails later push the cost up, they will be drawn from cached textures (one image per visible stretch, not per clip). B remains the fallback if a future measurement shows A can't keep up.

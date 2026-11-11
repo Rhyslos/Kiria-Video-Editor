@@ -8,11 +8,40 @@
 //! along the bottom. Track names sit in a column on the left. Video and audio
 //! scroll up and down separately.
 //!
+//! Moving around, the same over the ruler and both areas: Ctrl+wheel (or a
+//! pinch) zooms time at the pointer, Shift+wheel or a sideways wheel pans
+//! time, the plain wheel scrolls the area under the pointer (and pans time
+//! over the ruler and the scroll bar), and dragging with the middle button
+//! pans both ways at once.
+//!
+//! Every track has its own height ([`TrackHeights`]): drag the edge of its
+//! name (the bottom edge of an audio track, the top edge of a video track,
+//! which is where each area grows) or double-click it for the usual height;
+//! Alt+wheel makes every track of the area under the pointer taller or
+//! shorter. Heights are view state the page keeps; they are never edits.
+//!
+//! The top edge of the labels row is the cache bar ([`cache_bar`]): a thin
+//! strip that shows which stretches are prepared ahead of time, being
+//! prepared or waiting, from ranges the page passes in.
+//!
+//! Clips whose waveform or pictures are still being read in the background
+//! say so ([`Loading`]): a slim bar with a percentage on the clip, and a
+//! short line by the track's name while any of its clips is being read.
+//!
 //! The widget knows nothing about projects: the page hands it plain data
 //! (seconds as `f64`, for drawing only) and gets back [`TimelineEvent`]s.
 
+pub mod cache_bar;
+mod loading;
+mod rows;
+
+pub use cache_bar::{CacheBar, CacheRange, CacheState};
+pub use loading::{LoadKind, LoadState, Loading};
+pub use rows::{MAX_TRACK, MIN_TRACK, TrackHeights};
+
 use crate::Theme;
 use egui::{Align2, Color32, CursorIcon, FontId, Pos2, Rect, Sense, Shape, Stroke, Ui, Vec2, pos2, vec2};
+use rows::Rows;
 
 /// One clip as the timeline shows it.
 #[derive(Debug, Clone, PartialEq)]
@@ -32,6 +61,9 @@ pub struct TimelineClip {
     pub waveform: Option<ClipWaveform>,
     /// Pictures to draw inside the clip (video clips), once they have been read.
     pub pictures: Option<ClipPictures>,
+    /// Background reading the clip's waveform or pictures still wait for
+    /// (or that failed): shown as a slim bar with a percentage on the clip.
+    pub loading: Option<Loading>,
 }
 
 /// Small pictures along a clip's file: one every `every` seconds from the
@@ -69,6 +101,9 @@ pub struct TimelineTrack {
     pub solo: bool,
     /// Volume in decibels.
     pub gain_db: f32,
+    /// Background reading still going on for clips of this track: shown
+    /// as a short line by the track's name, gone when it is done.
+    pub loading: Option<Loading>,
 }
 
 /// A timeline label (a named, coloured marker).
@@ -100,6 +135,8 @@ pub struct TimelineData<'a> {
     pub highlights: &'a [(f64, f64)],
     /// Keep the playhead in view (while playing).
     pub follow: bool,
+    /// What is prepared ahead of time along the timeline, for the strip under the ruler.
+    pub cache: CacheBar<'a>,
 }
 
 /// Something the person did on the timeline.
@@ -237,6 +274,15 @@ impl ClipDrag {
     }
 }
 
+/// A track's height being changed by dragging the edge of its name.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct HeightDrag {
+    track: u64,
+    /// The height and the pointer's y when the drag began.
+    from_height: f32,
+    from_y: f32,
+}
+
 /// Where the timeline is looking. Kept by the page between frames.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TimelineView {
@@ -248,6 +294,12 @@ pub struct TimelineView {
     pub audio_scroll: f32,
     /// Share of the body given to video (the divider's place).
     pub split: f32,
+    /// Each track's height. View state: the page keeps and saves it.
+    pub heights: TrackHeights,
+    /// A track's edge being dragged to change its height.
+    height_drag: Option<HeightDrag>,
+    /// The area the pointer is over, for commands that act on one area.
+    hover_half: Option<Half>,
     /// The edit needle while it is being dragged.
     needle_drag: Option<f64>,
     scrollbar_drag: Option<(f32, f64)>,
@@ -257,6 +309,13 @@ pub struct TimelineView {
     region_drag: Option<(RegionDrag, (f64, f64))>,
     /// Where the right-click menu was opened: time, and the clip under it.
     menu_at: Option<MenuSpot>,
+    /// A drag with the middle button that pans the view: the area it began
+    /// over (`None`: the ruler or the scroll bar, which only pan time).
+    pan_drag: Option<Option<Half>>,
+    /// Steps commands asked for, taken when the timeline is next drawn.
+    steps: Vec<ViewStep>,
+    /// The closest zoom allowed: there a frame is wide enough to click.
+    max_zoom: f32,
     pub tool: Tool,
     /// Moved and trimmed edges snap to clip edges, the playhead, the needle and labels.
     pub snapping: bool,
@@ -272,12 +331,18 @@ impl Default for TimelineView {
             video_scroll: 0.0,
             audio_scroll: 0.0,
             split: 0.5,
+            heights: TrackHeights::default(),
+            height_drag: None,
+            hover_half: None,
             needle_drag: None,
             scrollbar_drag: None,
             clip_drag: None,
             fader_drag: None,
             region_drag: None,
             menu_at: None,
+            pan_drag: None,
+            steps: Vec::new(),
+            max_zoom: MAX_ZOOM,
             tool: Tool::Select,
             snapping: true,
             rough_cut: false,
@@ -295,7 +360,44 @@ pub const AUDIO_TRACK: f32 = 58.0;
 /// Height of a video row in the rough cut view, with its sound folded in.
 pub const ROUGH_CUT_TRACK: f32 = 96.0;
 const MIN_ZOOM: f32 = 0.02;
+/// The closest zoom (pixels per second) at 60 frames a second and below.
 const MAX_ZOOM: f32 = 2400.0;
+/// At the closest zoom a frame is at least this wide, whatever the frame rate.
+const FRAME_WIDTH_ZOOMED_IN: f32 = 40.0;
+/// How much one Zoom in or Zoom out command changes the zoom.
+const ZOOM_STEP: f32 = 1.5;
+/// How much one Taller tracks or Shorter tracks command changes heights.
+const HEIGHT_STEP: f32 = 1.25;
+/// Clips shorter than this draw their waveform behind the name instead of under it.
+const SHORT_CLIP: f32 = 40.0;
+
+/// The closest zoom for a timeline at `fps`: single frames stay easy to click.
+pub fn max_zoom(fps: f64) -> f32 {
+    (fps as f32 * FRAME_WIDTH_ZOOMED_IN).max(MAX_ZOOM)
+}
+
+/// One of the timeline's two areas.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Half {
+    Video,
+    Audio,
+}
+
+/// A change to the view that a command asks for (a key or the search
+/// palette); the timeline takes it the next time it is drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewStep {
+    /// Closer in time, around the playhead when it is in view.
+    ZoomIn,
+    /// Further out in time.
+    ZoomOut,
+    /// Every track of the area under the pointer taller (both areas when
+    /// the pointer is elsewhere).
+    TallerTracks,
+    ShorterTracks,
+    /// Those tracks back to their usual height.
+    UsualTrackHeights,
+}
 
 /// Colours of audio tracks, one per track in turn.
 const AUDIO_COLOURS: [Color32; 6] = [
@@ -362,6 +464,30 @@ impl Layout {
     fn width(&self) -> f32 {
         self.ruler.width()
     }
+
+    /// The cache bar: the top edge of the labels row.
+    fn cache_strip(&self) -> Rect {
+        Rect::from_min_max(
+            self.labels.min,
+            pos2(self.labels.right(), self.labels.top() + cache_bar::HEIGHT),
+        )
+    }
+
+    /// Everything the timeline covers.
+    fn whole(&self) -> Rect {
+        Rect::from_min_max(pos2(self.header_x, self.ruler.top()), self.scrollbar.max)
+    }
+
+    /// The area (with its track names) that `pos` is in.
+    fn half_at(&self, pos: Pos2) -> Option<Half> {
+        if self.video.contains(pos) {
+            Some(Half::Video)
+        } else if self.audio.contains(pos) {
+            Some(Half::Audio)
+        } else {
+            None
+        }
+    }
 }
 
 impl TimelineView {
@@ -378,14 +504,119 @@ impl TimelineView {
     /// Zooms by `factor`, keeping the time under screen x `anchor` in place.
     pub fn zoom_around(&mut self, left: f32, anchor: f32, factor: f32) {
         let t = self.time_at(left, anchor);
-        self.zoom = (self.zoom * factor).clamp(MIN_ZOOM, MAX_ZOOM);
+        self.zoom = (self.zoom * factor).clamp(MIN_ZOOM, self.max_zoom);
         self.scroll = (t - f64::from(anchor - left) / f64::from(self.zoom)).max(0.0);
+    }
+
+    /// Asks for a step (from a command); it happens when the timeline is next drawn.
+    pub fn step(&mut self, step: ViewStep) {
+        self.steps.push(step);
+    }
+
+    /// Takes the steps commands asked for.
+    fn take_steps(&mut self, layout: &Layout, data: &TimelineData) {
+        let left = layout.time_left();
+        for step in std::mem::take(&mut self.steps) {
+            // Around the playhead when it is in view, else the middle.
+            let playhead = self.x_of(left, data.playhead);
+            let anchor = if (left..=layout.ruler.right()).contains(&playhead) {
+                playhead
+            } else {
+                layout.ruler.center().x
+            };
+            let halves = match self.hover_half {
+                Some(half) => vec![half],
+                None => vec![Half::Video, Half::Audio],
+            };
+            match step {
+                ViewStep::ZoomIn => self.zoom_around(left, anchor, ZOOM_STEP),
+                ViewStep::ZoomOut => self.zoom_around(left, anchor, 1.0 / ZOOM_STEP),
+                ViewStep::TallerTracks => {
+                    for half in halves {
+                        self.scale_tracks(half, HEIGHT_STEP, None, layout, data);
+                    }
+                }
+                ViewStep::ShorterTracks => {
+                    for half in halves {
+                        self.scale_tracks(half, 1.0 / HEIGHT_STEP, None, layout, data);
+                    }
+                }
+                ViewStep::UsualTrackHeights => {
+                    for half in halves {
+                        for track in tracks_of(half, data) {
+                            self.heights.reset(track.id);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The usual height of a track in `half` in the current view.
+    fn usual_height(&self, half: Half) -> f32 {
+        match half {
+            Half::Video if self.rough_cut => ROUGH_CUT_TRACK,
+            Half::Video => VIDEO_TRACK,
+            Half::Audio => AUDIO_TRACK,
+        }
+    }
+
+    /// The rows of `half`, each track with its own height.
+    fn rows(&self, half: Half, layout: &Layout, data: &TimelineData) -> Rows {
+        let usual = self.usual_height(half);
+        let heights = tracks_of(half, data)
+            .iter()
+            .map(|t| self.heights.height(t.id, usual));
+        match half {
+            Half::Video => Rows::new(layout.video, heights, self.video_scroll, true),
+            Half::Audio => Rows::new(layout.audio, heights, self.audio_scroll, false),
+        }
+    }
+
+    /// Makes every track of `half` `factor` times as tall, within the
+    /// limits. With `keep` (a screen y: the pointer), the spot of the track
+    /// under it stays under it.
+    fn scale_tracks(
+        &mut self,
+        half: Half,
+        factor: f32,
+        keep: Option<f32>,
+        layout: &Layout,
+        data: &TimelineData,
+    ) {
+        let before = self.rows(half, layout, data);
+        let usual = self.usual_height(half);
+        self.heights
+            .scale(tracks_of(half, data).iter().map(|t| t.id), usual, factor);
+        let Some(y) = keep else { return };
+        let Some(i) = before.at(y) else { return };
+        let was = before.rects()[i];
+        let share = (y - was.top()) / was.height().max(1.0);
+        let now = self.rows(half, layout, data).rects()[i];
+        // How far down the spot went; scroll it back.
+        let moved = now.top() + share * now.height() - y;
+        match half {
+            Half::Video => self.video_scroll -= moved,
+            Half::Audio => self.audio_scroll += moved,
+        }
+    }
+
+    /// Never scrolled past the first track or further than the last one needs.
+    fn keep_scrolls_in_range(&mut self, layout: &Layout, data: &TimelineData) {
+        let most = self
+            .rows(Half::Video, layout, data)
+            .max_scroll(layout.video.height());
+        self.video_scroll = self.video_scroll.clamp(0.0, most);
+        let most = self
+            .rows(Half::Audio, layout, data)
+            .max_scroll(layout.audio.height());
+        self.audio_scroll = self.audio_scroll.clamp(0.0, most);
     }
 
     /// Fits `length` seconds in `width` pixels.
     pub fn fit(&mut self, length: f64, width: f32) {
         if length > 0.0 && width > 0.0 {
-            self.zoom = ((width * 0.95) / length as f32).clamp(MIN_ZOOM, MAX_ZOOM);
+            self.zoom = ((width * 0.95) / length as f32).clamp(MIN_ZOOM, self.max_zoom);
             self.scroll = 0.0;
         }
     }
@@ -411,33 +642,38 @@ impl TimelineView {
             }
         }
 
-        self.input(ui, &layout, data, &mut events);
+        self.max_zoom = max_zoom(data.fps);
+        self.zoom = self.zoom.clamp(MIN_ZOOM, self.max_zoom);
+        self.hover_half = ui
+            .input(|i| i.pointer.hover_pos())
+            .filter(|_| ui.rect_contains_pointer(layout.whole()))
+            .and_then(|pos| layout.half_at(pos));
+        self.take_steps(&layout, data);
+        self.wheel(ui, &layout, data);
+        let panning = self.middle_pan(ui, &layout);
+        self.keep_scrolls_in_range(&layout, data);
+        // Body: video tracks bottom-up above the divider, audio top-down below it.
+        let video_rows = self.rows(Half::Video, &layout, data);
+        let audio_rows = self.rows(Half::Audio, &layout, data);
+        // While the middle button pans, nothing else reacts to the pointer.
+        if !panning {
+            self.input(ui, &layout, data, [&video_rows, &audio_rows], &mut events);
+        }
         let visible = (self.time_at(left, left), self.time_at(left, rect.right()));
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 0.0, theme.panel);
 
-        // Body: video tracks bottom-up above the divider, audio top-down below it.
-        let video_rows = rows(
-            &layout.video,
-            data.video.len(),
-            self.video_row(),
-            self.video_scroll,
-            true,
-        );
-        let audio_rows = rows(
-            &layout.audio,
-            data.audio.len(),
-            AUDIO_TRACK,
-            self.audio_scroll,
-            false,
-        );
-        for (area, tracks, rows, audio) in [
-            (layout.video, data.video, &video_rows, false),
-            (layout.audio, data.audio, &audio_rows, true),
+        for (area, tracks, rows, half) in [
+            (layout.video, data.video, &video_rows, Half::Video),
+            (layout.audio, data.audio, &audio_rows, Half::Audio),
         ] {
+            let audio = half == Half::Audio;
             let clip_painter = ui.painter_at(Rect::from_min_max(pos2(left, area.top()), area.max));
             let header_painter = ui.painter_at(Rect::from_min_max(area.min, pos2(left, area.bottom())));
-            for (i, (track, row)) in tracks.iter().zip(rows).enumerate() {
+            for (i, (track, row)) in tracks.iter().zip(rows.rects()).enumerate() {
+                // The edge that resizes the track is reachable even when the
+                // row itself has just left the area.
+                self.track_edge(ui, theme, half, track, *row, area);
                 if !row.intersects(area) {
                     continue;
                 }
@@ -450,15 +686,20 @@ impl TimelineView {
                     FontId::proportional(12.5),
                     if track.muted { theme.faint } else { theme.text },
                 );
+                let header = Rect::from_min_max(pos2(layout.header_x, row.top()), pos2(left, row.bottom()))
+                    .intersect(area);
+                if let Some(loading) = &track.loading
+                    && let Some(line) = loading::draw_in_header(&header_painter, theme, header, loading)
+                {
+                    ui.interact(
+                        line.expand(3.0).intersect(header),
+                        ui.scope_id().with(("track loading", track.id)),
+                        Sense::hover(),
+                    )
+                    .on_hover_text(loading.explanation());
+                }
                 if audio {
-                    self.track_controls(
-                        ui,
-                        theme,
-                        track,
-                        Rect::from_min_max(pos2(layout.header_x, row.top()), pos2(left, row.bottom()))
-                            .intersect(area),
-                        &mut events,
-                    );
+                    self.track_controls(ui, theme, track, header, &mut events);
                 }
                 let colour = if audio {
                     AUDIO_COLOURS[i % AUDIO_COLOURS.len()]
@@ -514,6 +755,9 @@ impl TimelineView {
                         self.draw_waveform(&clip_painter, wave_r, clip, start, w, wave_colour, track.muted);
                     }
                     draw_clip_marks(&clip_painter, theme, r, clip);
+                    if let Some(loading) = &clip.loading {
+                        loading::draw_on_clip(&clip_painter, theme, r, loading);
+                    }
                 }
                 if let Some(m) = merged {
                     clip_painter.rect_filled(m, 1.0, tiny_fill(theme, colour, audio));
@@ -580,12 +824,20 @@ impl TimelineView {
             }
         }
         let label_painter = ui.painter_at(layout.labels);
+        cache_bar::draw(
+            &label_painter,
+            theme,
+            layout.cache_strip(),
+            &data.cache,
+            visible,
+            |t| self.x_of(left, t),
+        );
         for marker in data.markers {
             let x = self.x_of(left, marker.at);
             label_painter.add(Shape::convex_polygon(
                 vec![
-                    pos2(x - 5.0, layout.labels.top() + 3.0),
-                    pos2(x + 5.0, layout.labels.top() + 3.0),
+                    pos2(x - 5.0, layout.labels.top() + cache_bar::HEIGHT + 1.0),
+                    pos2(x + 5.0, layout.labels.top() + cache_bar::HEIGHT + 1.0),
                     pos2(x, layout.labels.bottom() - 3.0),
                 ],
                 marker.colour,
@@ -814,9 +1066,11 @@ impl TimelineView {
         colour: Color32,
         muted: bool,
     ) {
-        // Below the clip's name, down to its bottom edge.
+        // Below the clip's name, down to its bottom edge; in a short clip
+        // there is no room under the name, so the whole clip is used.
+        let top = if r.height() < SHORT_CLIP { 3.0 } else { 19.0 };
         let below_name = Rect::from_min_max(
-            pos2(r.left() + 1.0, r.top() + 19.0),
+            pos2(r.left() + 1.0, r.top() + top),
             pos2(r.right() - 1.0, r.bottom() - 3.0),
         );
         let clip_area = p.clip_rect().intersect(below_name);
@@ -853,33 +1107,181 @@ impl TimelineView {
         p.add(Shape::mesh(mesh));
     }
 
-    fn input(&mut self, ui: &mut Ui, layout: &Layout, data: &TimelineData, events: &mut Vec<TimelineEvent>) {
+    /// The wheel, wherever the pointer is on the timeline: Ctrl (or a pinch)
+    /// zooms time at the pointer, sideways movement (Shift, a tilting wheel,
+    /// two fingers on a touchpad) pans time, and up and down scrolls the area
+    /// under the pointer, or pans time over the ruler and the scroll bar. With
+    /// Alt it makes the tracks of the area under the pointer taller or shorter.
+    fn wheel(&mut self, ui: &Ui, layout: &Layout, data: &TimelineData) {
+        let Some(pos) = ui.input(|i| i.pointer.hover_pos()) else {
+            return;
+        };
+        // Not when a window or a menu lies over the timeline there.
+        if !layout.whole().contains(pos) || !ui.rect_contains_pointer(layout.whole()) {
+            return;
+        }
+        // egui has already sorted the wheel by modifier: with Ctrl it arrives
+        // as a zoom factor, with Shift as sideways scrolling.
+        let (zoom, scroll, alt) = ui.input(|i| (i.zoom_delta(), i.smooth_scroll_delta(), i.modifiers.alt));
         let left = layout.time_left();
-        let id = ui.scope_id().with("timeline");
-
-        // Wheel: Ctrl zooms at the pointer, Shift scrolls sideways, plain scrolls the area under the pointer.
-        let hover = ui.input(|i| i.pointer.hover_pos());
-        let (wheel, mods) = ui.input(|i| (i.smooth_scroll_delta, i.modifiers));
-        if let Some(pos) = hover
-            && Rect::from_min_max(pos2(layout.header_x, layout.ruler.top()), layout.scrollbar.max)
-                .contains(pos)
-            && wheel != Vec2::ZERO
-        {
-            if mods.command {
-                self.zoom_around(left, pos.x.max(left), (wheel.y / 200.0).exp());
-            } else if mods.shift || wheel.x != 0.0 {
-                let dx = if mods.shift { wheel.y } else { wheel.x };
-                self.scroll = (self.scroll - f64::from(dx) / f64::from(self.zoom)).max(0.0);
-            } else if layout.video.contains(pos) {
-                let content = data.video.len() as f32 * self.video_row();
-                self.video_scroll =
-                    (self.video_scroll + wheel.y).clamp(0.0, (content - layout.video.height()).max(0.0));
-            } else if layout.audio.contains(pos) {
-                let content = data.audio.len() as f32 * AUDIO_TRACK;
-                self.audio_scroll =
-                    (self.audio_scroll - wheel.y).clamp(0.0, (content - layout.audio.height()).max(0.0));
+        if zoom != 1.0 {
+            self.zoom_around(left, pos.x.max(left), zoom);
+        }
+        if scroll.x != 0.0 {
+            self.pan_time(scroll.x);
+        }
+        if scroll.y != 0.0 {
+            match layout.half_at(pos) {
+                // Alt: every track of this area taller or shorter.
+                Some(half) if alt => {
+                    self.scale_tracks(half, (scroll.y / 200.0).exp(), Some(pos.y), layout, data);
+                }
+                Some(half) => self.scroll_half(half, scroll.y),
+                None if !alt && !layout.divider.contains(pos) => self.pan_time(scroll.y),
+                None => {}
             }
         }
+    }
+
+    /// Moves the view sideways so what is shown shifts right by `pixels`.
+    fn pan_time(&mut self, pixels: f32) {
+        self.scroll = (self.scroll - f64::from(pixels) / f64::from(self.zoom)).max(0.0);
+    }
+
+    /// Scrolls one area so its tracks shift down by `pixels`
+    /// ([`Self::keep_scrolls_in_range`] stops it at the ends).
+    fn scroll_half(&mut self, half: Half, pixels: f32) {
+        match half {
+            // Video tracks stack upward: shifting them down shows higher ones.
+            Half::Video => self.video_scroll += pixels,
+            Half::Audio => self.audio_scroll -= pixels,
+        }
+    }
+
+    /// The edge of a track's name that resizes the track: the bottom edge of
+    /// an audio track, the top edge of a video track (the side each area
+    /// grows towards). Drag it, or double-click for the usual height.
+    fn track_edge(
+        &mut self,
+        ui: &mut Ui,
+        theme: &Theme,
+        half: Half,
+        track: &TimelineTrack,
+        row: Rect,
+        area: Rect,
+    ) {
+        let edge = match half {
+            Half::Video => row.top(),
+            Half::Audio => row.bottom(),
+        };
+        let handle = Rect::from_min_max(
+            pos2(area.left(), edge - 3.0),
+            pos2(area.left() + HEADER_WIDTH, edge + 3.0),
+        )
+        .intersect(area);
+        // A drag goes on while the button is held, also when the edge has
+        // been dragged out of the area and can't be pointed at any more.
+        if !ui.input(|i| i.pointer.primary_down()) {
+            self.height_drag = None;
+        }
+        let r = handle.is_positive().then(|| {
+            ui.interact(
+                handle,
+                ui.scope_id().with(("track height", track.id)),
+                Sense::click_and_drag(),
+            )
+            .on_hover_cursor(CursorIcon::ResizeVertical)
+        });
+        if r.as_ref()
+            .is_some_and(|r| r.drag_started_by(egui::PointerButton::Primary))
+        {
+            let from_y = ui.input(|i| i.pointer.press_origin()).map_or(edge, |p| p.y);
+            self.height_drag = Some(HeightDrag {
+                track: track.id,
+                from_height: row.height(),
+                from_y,
+            });
+        }
+        let dragging = self.height_drag.filter(|d| d.track == track.id);
+        if let Some(drag) = dragging
+            && let Some(p) = ui.input(|i| i.pointer.interact_pos())
+        {
+            // Down makes an audio track taller; up makes a video track taller.
+            let by = match half {
+                Half::Video => drag.from_y - p.y,
+                Half::Audio => p.y - drag.from_y,
+            };
+            let usual = self.usual_height(half);
+            self.heights.set(track.id, usual, drag.from_height + by);
+            ui.ctx().set_cursor_icon(CursorIcon::ResizeVertical);
+        }
+        if r.as_ref().is_some_and(|r| r.double_clicked()) {
+            self.heights.reset(track.id);
+        }
+        // The edge lights up when pointed at; while dragged, across the whole timeline.
+        let pointed_at = r.as_ref().is_some_and(|r| r.hovered());
+        if dragging.is_some() || pointed_at {
+            let (right, colour) = match dragging {
+                Some(_) => (area.right(), theme.text_secondary),
+                None => (handle.right(), theme.muted),
+            };
+            ui.painter_at(area).line_segment(
+                [pos2(area.left(), edge), pos2(right, edge)],
+                Stroke::new(2.0, colour),
+            );
+        }
+        if dragging.is_none()
+            && let Some(r) = r
+        {
+            r.on_hover_text(
+                "Drag to make this track taller or shorter. Double-click: its usual height. Alt+wheel: every track here.",
+            );
+        }
+    }
+
+    /// Dragging with the middle button pans: time sideways, and the area the
+    /// drag began over up and down. True while such a drag lasts.
+    fn middle_pan(&mut self, ui: &Ui, layout: &Layout) -> bool {
+        let middle = egui::PointerButton::Middle;
+        let (pressed, down, delta, pos) = ui.input(|i| {
+            (
+                i.pointer.button_pressed(middle),
+                i.pointer.button_down(middle),
+                i.pointer.delta(),
+                i.pointer.interact_pos(),
+            )
+        });
+        if pressed
+            && let Some(pos) = pos
+            && layout.whole().contains(pos)
+            && ui.rect_contains_pointer(layout.whole())
+        {
+            self.pan_drag = Some(layout.half_at(pos));
+        }
+        if !down {
+            self.pan_drag = None;
+        }
+        let Some(half) = self.pan_drag else {
+            return false;
+        };
+        self.pan_time(delta.x);
+        if let Some(half) = half {
+            self.scroll_half(half, delta.y);
+        }
+        ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
+        true
+    }
+
+    fn input(
+        &mut self,
+        ui: &mut Ui,
+        layout: &Layout,
+        data: &TimelineData,
+        rows: [&Rows; 2],
+        events: &mut Vec<TimelineEvent>,
+    ) {
+        let left = layout.time_left();
+        let id = ui.scope_id().with("timeline");
 
         // The edit needle's handle, dragged along the ruler.
         if let Some(needle) = data.needle {
@@ -969,8 +1371,17 @@ impl TimelineView {
             id.with("ruler"),
             Sense::click_and_drag(),
         );
+        // The cache bar explains its colours when pointed at.
+        if let Some(p) = ruler.hover_pos()
+            && layout.cache_strip().expand2(vec2(0.0, 2.0)).contains(p)
+            && !ruler.dragged()
+        {
+            ruler
+                .clone()
+                .on_hover_text_at_pointer(cache_bar::legend(data.cache.about));
+        }
         let shift = ui.input(|i| i.modifiers.shift);
-        if ruler.drag_started()
+        if ruler.drag_started_by(egui::PointerButton::Primary)
             && shift
             && let Some(p) = ruler.interact_pointer_pos()
         {
@@ -990,7 +1401,7 @@ impl TimelineView {
             {
                 events.push(TimelineEvent::SetRegion(Some((a, b))));
             }
-        } else if (ruler.clicked() || ruler.dragged())
+        } else if (ruler.clicked() || ruler.dragged_by(egui::PointerButton::Primary))
             && let Some(p) = ruler.interact_pointer_pos()
         {
             events.push(TimelineEvent::Seek(
@@ -1034,22 +1445,23 @@ impl TimelineView {
         }
 
         // Clips: click selects (or cuts, with the blade); drag moves or trims.
-        for (area, tracks, height, from_bottom, scroll) in [
-            (
-                layout.video,
-                data.video,
-                self.video_row(),
-                true,
-                self.video_scroll,
-            ),
-            (layout.audio, data.audio, AUDIO_TRACK, false, self.audio_scroll),
+        for (area, tracks, rows, from_bottom) in [
+            (layout.video, data.video, rows[0], true),
+            (layout.audio, data.audio, rows[1], false),
         ] {
             let time_area = Rect::from_min_max(pos2(left, area.top()), area.max);
             let r = ui.interact(time_area, id.with(("area", from_bottom)), Sense::click_and_drag());
             let Some(p) = r.interact_pointer_pos().or(r.hover_pos()) else {
                 continue;
             };
-            let row_rects = rows(&area, tracks.len(), height, scroll, from_bottom);
+            // A drag is only noticed a few pixels after the press: what is
+            // dragged, and from where, is what was pressed.
+            let p = if r.drag_started() {
+                ui.input(|i| i.pointer.press_origin()).unwrap_or(p)
+            } else {
+                p
+            };
+            let row_rects = rows.rects();
             let t = self.time_at(left, p.x);
             // A file dragged over the timeline: show where it would land.
             if r.dnd_hover_payload::<DraggedMedia>().is_some() {
@@ -1068,12 +1480,12 @@ impl TimelineView {
                 });
                 continue;
             }
-            let hit = tracks
-                .iter()
-                .zip(&row_rects)
-                .filter(|(_, row)| row.y_range().contains(p.y))
-                .flat_map(|(track, _)| track.clips.iter())
-                .find(|c| c.start <= t && t < c.start + c.duration);
+            let hit = rows.at(p.y).and_then(|row| tracks.get(row)).and_then(|track| {
+                track
+                    .clips
+                    .iter()
+                    .find(|c| c.start <= t && t < c.start + c.duration)
+            });
             let edge_px = 6.0;
             let zone = hit.map(|c| {
                 let (x0, x1) = (self.x_of(left, c.start), self.x_of(left, c.start + c.duration));
@@ -1103,9 +1515,9 @@ impl TimelineView {
                 }
             }
 
-            if r.drag_started()
+            if r.drag_started_by(egui::PointerButton::Primary)
                 && let (Some(c), Some(zone)) = (hit, zone)
-                && let Some((c, kind)) = drag_for(self.tool, zone, c, tracks, &row_rects, p.y)
+                && let Some((c, kind)) = drag_for(self.tool, zone, c, tracks, row_rects, p.y)
             {
                 self.clip_drag = Some(ClipDrag {
                     clip: c.id,
@@ -1239,15 +1651,6 @@ impl TimelineView {
                     (_, None) => TimelineEvent::ClearSelection,
                 });
             }
-        }
-    }
-
-    /// Height of a video row in the current view.
-    fn video_row(&self) -> f32 {
-        if self.rough_cut {
-            ROUGH_CUT_TRACK
-        } else {
-            VIDEO_TRACK
         }
     }
 
@@ -1507,21 +1910,12 @@ fn drag_for<'a>(
     }
 }
 
-/// Track rows inside `area`. Video rows grow upward from the area's bottom
-/// (V1 lowest); audio rows grow downward from its top.
-fn rows(area: &Rect, count: usize, height: f32, scroll: f32, from_bottom: bool) -> Vec<Rect> {
-    (0..count)
-        .map(|i| {
-            let i = i as f32;
-            if from_bottom {
-                let bottom = area.bottom() - i * height + scroll;
-                Rect::from_min_max(pos2(area.left(), bottom - height), pos2(area.right(), bottom))
-            } else {
-                let top = area.top() + i * height - scroll;
-                Rect::from_min_max(pos2(area.left(), top), pos2(area.right(), top + height))
-            }
-        })
-        .collect()
+/// The tracks of one area.
+fn tracks_of<'a>(half: Half, data: &TimelineData<'a>) -> &'a [TimelineTrack] {
+    match half {
+        Half::Video => data.video,
+        Half::Audio => data.audio,
+    }
 }
 
 fn tiny_fill(theme: &Theme, colour: Color32, audio: bool) -> Color32 {
@@ -1636,6 +2030,13 @@ pub fn ruler_step(zoom: f32, fps: f64, min_px: f32) -> f64 {
         .unwrap_or(3600.0)
 }
 
+/// The step between the small ruler marks under a label step of `step`
+/// seconds: a fifth of it, but never finer than a frame, so zoomed all the
+/// way in there is one mark per frame.
+pub fn minor_step(step: f64, fps: f64) -> f64 {
+    (step / 5.0).max(1.0 / fps.max(1.0))
+}
+
 /// `HH:MM:SS:FF` for `seconds` at `fps` (whole frames per second for the frame part).
 pub fn timecode(seconds: f64, fps: f64) -> String {
     let nominal = fps.round().max(1.0) as i64;
@@ -1653,7 +2054,7 @@ pub fn timecode(seconds: f64, fps: f64) -> String {
 fn draw_ruler(p: &egui::Painter, theme: &Theme, view: &TimelineView, layout: &Layout, fps: f64) {
     let left = layout.time_left();
     let step = ruler_step(view.zoom, fps, 90.0);
-    let minor = step / 5.0;
+    let minor = minor_step(step, fps);
     let start = (view.scroll / minor).floor() * minor;
     let end = view.time_at(left, layout.ruler.right());
     let mut t = start;
@@ -1696,7 +2097,318 @@ mod tests {
             link: None,
             waveform: None,
             pictures: None,
+            loading: None,
         }
+    }
+
+    fn track(id: u64, clips: Vec<TimelineClip>) -> TimelineTrack {
+        TimelineTrack {
+            id,
+            name: format!("T{id}"),
+            clips,
+            muted: false,
+            solo: false,
+            gain_db: 0.0,
+            loading: None,
+        }
+    }
+
+    /// A 1000×400 timeline in the corner of a window, for sending it input.
+    /// The names take x 0 to 140; the ruler y 0 to 26, the labels to 44, the
+    /// video area to 212, the divider to 218, the audio area to 386 and the
+    /// scroll bar the rest.
+    struct Rig {
+        ctx: egui::Context,
+        view: TimelineView,
+        video: Vec<TimelineTrack>,
+        audio: Vec<TimelineTrack>,
+        cache: Vec<CacheRange>,
+        fps: f64,
+        modifiers: egui::Modifiers,
+    }
+
+    const OVER_RULER: Pos2 = pos2(640.0, 10.0);
+    const OVER_VIDEO: Pos2 = pos2(640.0, 150.0);
+    const OVER_AUDIO: Pos2 = pos2(640.0, 300.0);
+    const OVER_SCROLLBAR: Pos2 = pos2(640.0, 393.0);
+
+    impl Rig {
+        /// `video` and `audio` tracks, each with one clip from 1 s to 5 s.
+        fn new(video: u64, audio: u64) -> Rig {
+            Rig {
+                ctx: egui::Context::default(),
+                view: TimelineView::default(),
+                video: (0..video).map(|i| track(i, vec![clip(i, 1.0, 4.0)])).collect(),
+                audio: (0..audio)
+                    .map(|i| track(100 + i, vec![clip(100 + i, 1.0, 4.0)]))
+                    .collect(),
+                cache: Vec::new(),
+                fps: 60.0,
+                modifiers: egui::Modifiers::NONE,
+            }
+        }
+
+        fn frame(&mut self, events: Vec<egui::Event>) -> Vec<TimelineEvent> {
+            let size = vec2(1000.0, 400.0);
+            // The keys held come as an event of their own, before the rest.
+            let events = std::iter::once(egui::Event::ModifiersChanged(self.modifiers))
+                .chain(events)
+                .collect();
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
+                events,
+                ..Default::default()
+            };
+            let mut out = Vec::new();
+            let output = self.ctx.run_ui(input, |ui| {
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::new())
+                    .show(ui, |ui| {
+                        let data = TimelineData {
+                            video: &self.video,
+                            audio: &self.audio,
+                            length: 60.0,
+                            fps: self.fps,
+                            playhead: 2.0,
+                            needle: None,
+                            region: None,
+                            markers: &[],
+                            highlights: &[],
+                            follow: false,
+                            cache: CacheBar {
+                                ranges: &self.cache,
+                                about: "",
+                            },
+                        };
+                        out = self.view.show(ui, &Theme::ASH, &data, size);
+                    });
+            });
+            // Nothing draws these frames.
+            output.drop_without_applying_deltas();
+            out
+        }
+
+        /// Turns the wheel by `delta` points with the pointer at `at`.
+        fn wheel(&mut self, at: Pos2, delta: Vec2, modifiers: egui::Modifiers) {
+            self.modifiers = modifiers;
+            self.frame(vec![egui::Event::PointerMoved(at)]);
+            self.frame(vec![egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta,
+                phase: egui::TouchPhase::Move,
+                source: egui::MouseWheelSource::Unknown,
+                modifiers,
+            }]);
+            self.modifiers = egui::Modifiers::NONE;
+            self.frame(Vec::new());
+        }
+
+        fn button(&mut self, at: Pos2, button: egui::PointerButton, pressed: bool) -> Vec<TimelineEvent> {
+            self.frame(vec![egui::Event::PointerButton {
+                pos: at,
+                button,
+                pressed,
+                modifiers: self.modifiers,
+            }])
+        }
+
+        fn move_to(&mut self, at: Pos2) -> Vec<TimelineEvent> {
+            self.frame(vec![egui::Event::PointerMoved(at)])
+        }
+    }
+
+    #[test]
+    fn ctrl_and_the_wheel_zoom_at_the_pointer_over_the_ruler_and_both_areas() {
+        for at in [OVER_RULER, OVER_VIDEO, OVER_AUDIO] {
+            let mut rig = Rig::new(2, 2);
+            rig.view.scroll = 3.0;
+            let under_pointer = rig.view.time_at(HEADER_WIDTH, at.x);
+            rig.wheel(at, vec2(0.0, 6.0), egui::Modifiers::COMMAND);
+            assert!(rig.view.zoom > 60.5, "zoomed in at {at:?}: {}", rig.view.zoom);
+            assert!(
+                (rig.view.time_at(HEADER_WIDTH, at.x) - under_pointer).abs() < 1e-4,
+                "the time under the pointer stays put at {at:?}"
+            );
+            let zoomed = rig.view.zoom;
+            rig.wheel(at, vec2(0.0, -6.0), egui::Modifiers::COMMAND);
+            assert!(rig.view.zoom < zoomed, "and back out");
+            assert!((rig.view.time_at(HEADER_WIDTH, at.x) - under_pointer).abs() < 1e-4);
+        }
+    }
+
+    #[test]
+    fn shift_and_the_wheel_or_a_sideways_wheel_pan_time_everywhere() {
+        for at in [OVER_RULER, OVER_VIDEO, OVER_AUDIO, OVER_SCROLLBAR] {
+            let mut rig = Rig::new(2, 2);
+            rig.view.scroll = 3.0;
+            // Wheel down with Shift: later times come into view.
+            rig.wheel(at, vec2(0.0, -6.0), egui::Modifiers::SHIFT);
+            assert!(
+                (rig.view.scroll - 3.1).abs() < 1e-6,
+                "{at:?}: {}",
+                rig.view.scroll
+            );
+            // A sideways wheel, or two fingers on a touchpad.
+            rig.wheel(at, vec2(6.0, 0.0), egui::Modifiers::NONE);
+            assert!(
+                (rig.view.scroll - 3.0).abs() < 1e-6,
+                "{at:?}: {}",
+                rig.view.scroll
+            );
+            assert_eq!(rig.view.zoom, 60.0, "panning never zooms");
+        }
+    }
+
+    #[test]
+    fn the_plain_wheel_scrolls_the_area_under_it_and_pans_over_the_ruler() {
+        // Eight tracks of each kind: more than either area shows.
+        let mut rig = Rig::new(8, 8);
+        rig.wheel(OVER_AUDIO, vec2(0.0, -6.0), egui::Modifiers::NONE);
+        assert_eq!((rig.view.video_scroll, rig.view.audio_scroll), (0.0, 6.0));
+        rig.wheel(OVER_VIDEO, vec2(0.0, 6.0), egui::Modifiers::NONE);
+        assert_eq!(
+            (rig.view.video_scroll, rig.view.audio_scroll),
+            (6.0, 6.0),
+            "each area on its own; video tracks stack upward, so wheel up shows higher ones"
+        );
+        assert_eq!(rig.view.scroll, 0.0);
+        rig.wheel(OVER_RULER, vec2(0.0, -6.0), egui::Modifiers::NONE);
+        assert!(
+            (rig.view.scroll - 0.1).abs() < 1e-6,
+            "over the ruler the wheel pans"
+        );
+        rig.wheel(OVER_SCROLLBAR, vec2(0.0, -6.0), egui::Modifiers::NONE);
+        assert!((rig.view.scroll - 0.2).abs() < 1e-6, "and over the scroll bar");
+        // With everything in view there is nothing to scroll.
+        let mut rig = Rig::new(1, 1);
+        rig.wheel(OVER_AUDIO, vec2(0.0, -6.0), egui::Modifiers::NONE);
+        assert_eq!(rig.view.audio_scroll, 0.0);
+    }
+
+    #[test]
+    fn the_middle_button_drags_the_view_both_ways() {
+        let mut rig = Rig::new(8, 8);
+        rig.view.scroll = 3.0;
+        let middle = egui::PointerButton::Middle;
+        rig.move_to(OVER_AUDIO);
+        rig.button(OVER_AUDIO, middle, true);
+        // Left by 60 points (one second) and up by 20.
+        let events = rig.move_to(OVER_AUDIO + vec2(-60.0, -20.0));
+        assert!(events.is_empty(), "panning selects and moves nothing");
+        assert!((rig.view.scroll - 4.0).abs() < 1e-6, "{}", rig.view.scroll);
+        assert_eq!(rig.view.audio_scroll, 20.0);
+        assert_eq!(rig.view.video_scroll, 0.0, "only the area the drag began over");
+        let events = rig.button(OVER_AUDIO + vec2(-60.0, -20.0), middle, false);
+        assert!(events.is_empty());
+        // Begun over the ruler: time only.
+        rig.move_to(OVER_RULER);
+        rig.button(OVER_RULER, middle, true);
+        let events = rig.move_to(OVER_RULER + vec2(60.0, 30.0));
+        rig.button(OVER_RULER + vec2(60.0, 30.0), middle, false);
+        assert!(events.is_empty(), "the playhead stays where it was");
+        assert!((rig.view.scroll - 3.0).abs() < 1e-6);
+        assert_eq!(rig.view.audio_scroll, 20.0);
+    }
+
+    #[test]
+    fn the_left_button_still_moves_clips_and_the_playhead() {
+        let mut rig = Rig::new(1, 1);
+        let primary = egui::PointerButton::Primary;
+        // The clip runs from x = 200 to 440; grab its middle and drag right by a second.
+        let grab = pos2(300.0, 190.0);
+        rig.move_to(grab);
+        rig.button(grab, primary, true);
+        rig.move_to(grab + vec2(30.0, 0.0));
+        rig.move_to(grab + vec2(60.0, 0.0));
+        let events = rig.button(grab + vec2(60.0, 0.0), primary, false);
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, TimelineEvent::Move { clip: 0, by } if (by - 1.0).abs() < 1e-6)),
+            "{events:?}"
+        );
+        rig.move_to(OVER_RULER);
+        let events = rig.button(OVER_RULER, primary, true);
+        let events: Vec<_> = events
+            .into_iter()
+            .chain(rig.button(OVER_RULER, primary, false))
+            .collect();
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, TimelineEvent::Seek(t) if (t - 500.0 / 60.0).abs() < 1e-6)),
+            "{events:?}"
+        );
+    }
+
+    #[test]
+    fn the_cache_bar_takes_no_room_and_leaves_the_ruler_working() {
+        let mut rig = Rig::new(1, 1);
+        rig.cache = vec![
+            CacheRange {
+                start: 0.0,
+                end: 4.0,
+                state: CacheState::Ready,
+            },
+            CacheRange {
+                start: 4.0,
+                end: 9.0,
+                state: CacheState::Preparing,
+            },
+        ];
+        // The strip is the top of the labels row (y 26 to 30): a click on
+        // it still moves the playhead, as anywhere in the ruler.
+        let primary = egui::PointerButton::Primary;
+        let on_strip = pos2(640.0, 28.0);
+        let events: Vec<_> = click(&mut rig, on_strip, primary);
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, TimelineEvent::Seek(t) if (t - 500.0 / 60.0).abs() < 1e-6)),
+            "{events:?}"
+        );
+        // And the tracks sit where they sat without it.
+        assert_eq!(
+            click(&mut rig, pos2(300.0, 190.0), primary),
+            [TimelineEvent::Select { clip: 0, add: false }]
+        );
+    }
+
+    #[test]
+    fn zoom_commands_step_around_the_playhead_and_stop_at_single_frames() {
+        let mut rig = Rig::new(1, 1);
+        // The playhead (2 s) is in view at x = 260.
+        rig.view.step(ViewStep::ZoomIn);
+        rig.frame(Vec::new());
+        assert_eq!(rig.view.zoom, 90.0);
+        assert!(
+            (rig.view.x_of(HEADER_WIDTH, 2.0) - 260.0).abs() < 1e-3,
+            "the playhead stays put"
+        );
+        rig.view.step(ViewStep::ZoomOut);
+        rig.view.step(ViewStep::ZoomOut);
+        rig.frame(Vec::new());
+        assert!((rig.view.zoom - 40.0).abs() < 1e-3);
+        // Out of view: around the middle of what is shown.
+        rig.view.scroll = 30.0;
+        let middle = rig.view.time_at(HEADER_WIDTH, 570.0);
+        rig.view.step(ViewStep::ZoomIn);
+        rig.frame(Vec::new());
+        assert!((rig.view.time_at(HEADER_WIDTH, 570.0) - middle).abs() < 1e-4);
+        // All the way in, a frame is 40 points wide, also at high frame rates.
+        for _ in 0..40 {
+            rig.view.step(ViewStep::ZoomIn);
+        }
+        rig.frame(Vec::new());
+        assert_eq!(rig.view.zoom, 2400.0);
+        rig.fps = 240.0;
+        for _ in 0..40 {
+            rig.view.step(ViewStep::ZoomIn);
+        }
+        rig.frame(Vec::new());
+        rig.frame(Vec::new());
+        assert_eq!(rig.view.zoom, 9600.0);
+        assert_eq!(max_zoom(24.0), 2400.0);
     }
 
     #[test]
@@ -1728,6 +2440,7 @@ mod tests {
             muted: false,
             solo: false,
             gain_db: 0.0,
+            loading: None,
         };
         let tracks = [track];
         let rows = [Rect::from_min_max(pos2(0.0, 0.0), pos2(500.0, 50.0))];
@@ -1781,6 +2494,18 @@ mod tests {
             (ruler_step(6000.0, 60.0, 90.0) - 1.0 / 60.0).abs() < 1e-9,
             "frames when zoomed in"
         );
+        // Zoomed all the way in at 60 frames a second: a label every five
+        // frames and a small mark on every frame, never between frames.
+        let step = ruler_step(2400.0, 60.0, 90.0);
+        assert!((step - 5.0 / 60.0).abs() < 1e-9);
+        assert!((minor_step(step, 60.0) - 1.0 / 60.0).abs() < 1e-9);
+        let step = ruler_step(2400.0, 30.0, 90.0);
+        assert!((step - 2.0 / 30.0).abs() < 1e-9, "two frames at 30 a second");
+        assert!(
+            (minor_step(step, 30.0) - 1.0 / 30.0).abs() < 1e-9,
+            "not 0.4 frames"
+        );
+        assert_eq!(minor_step(10.0, 60.0), 2.0);
         assert_eq!(timecode(0.0, 60.0), "00:00:00:00");
         assert_eq!(timecode(3661.5, 60.0), "01:01:01:30");
         assert_eq!(
@@ -1790,13 +2515,221 @@ mod tests {
         );
     }
 
+    fn click(rig: &mut Rig, at: Pos2, button: egui::PointerButton) -> Vec<TimelineEvent> {
+        rig.move_to(at);
+        rig.button(at, button, true);
+        rig.button(at, button, false)
+    }
+
+    /// Presses at `from`, moves to `to` in two steps and lets go there.
+    /// Returns what letting go did, with times rounded to a millionth.
+    fn drag(rig: &mut Rig, from: Pos2, to: Pos2) -> Vec<TimelineEvent> {
+        let primary = egui::PointerButton::Primary;
+        rig.move_to(from);
+        rig.button(from, primary, true);
+        rig.move_to(from + (to - from) / 2.0);
+        rig.move_to(to);
+        let round = |t: f64| (t * 1e6).round() / 1e6;
+        rig.button(to, primary, false)
+            .into_iter()
+            .map(|event| match event {
+                TimelineEvent::Move { clip, by } => TimelineEvent::Move { clip, by: round(by) },
+                TimelineEvent::Trim { clip, edge, to } => TimelineEvent::Trim {
+                    clip,
+                    edge,
+                    to: round(to),
+                },
+                TimelineEvent::RippleTrim { clip, edge, to } => TimelineEvent::RippleTrim {
+                    clip,
+                    edge,
+                    to: round(to),
+                },
+                TimelineEvent::Roll { clip, to } => TimelineEvent::Roll { clip, to: round(to) },
+                TimelineEvent::Slip { clip, by } => TimelineEvent::Slip { clip, by: round(by) },
+                TimelineEvent::Slide { clip, by } => TimelineEvent::Slide { clip, by: round(by) },
+                other => other,
+            })
+            .collect()
+    }
+
+    fn near(a: f32, b: f32) -> bool {
+        (a - b).abs() < 1e-3
+    }
+
     #[test]
-    fn video_rows_grow_up_and_audio_rows_down() {
-        let area = Rect::from_min_max(pos2(0.0, 0.0), pos2(100.0, 200.0));
-        let v = rows(&area, 2, 50.0, 0.0, true);
-        assert_eq!((v[0].top(), v[0].bottom()), (150.0, 200.0), "V1 at the bottom");
-        assert_eq!(v[1].bottom(), 150.0);
-        let a = rows(&area, 2, 40.0, 10.0, false);
-        assert_eq!((a[0].top(), a[1].top()), (-10.0, 30.0));
+    fn every_tool_hits_the_right_clip_in_rows_of_mixed_heights() {
+        let primary = egui::PointerButton::Primary;
+        // Two audio tracks: the first made 120 tall (y 218 to 338), the
+        // second left at 58 (from 338). Each has a clip from x = 200 to 440.
+        let mut rig = Rig::new(2, 2);
+        rig.view.heights.set(100, AUDIO_TRACK, 120.0);
+        let select = |clip| vec![TimelineEvent::Select { clip, add: false }];
+        assert_eq!(
+            click(&mut rig, pos2(300.0, 320.0), primary),
+            select(100),
+            "still the first track: it is tall"
+        );
+        assert_eq!(click(&mut rig, pos2(300.0, 350.0), primary), select(101));
+        // The first video track made 100 tall (y 112 to 212); the second sits on it.
+        rig.view.heights.set(0, VIDEO_TRACK, 100.0);
+        assert_eq!(click(&mut rig, pos2(300.0, 120.0), primary), select(0));
+        assert_eq!(click(&mut rig, pos2(300.0, 100.0), primary), select(1));
+        assert_eq!(
+            click(&mut rig, pos2(300.0, 50.0), primary),
+            [TimelineEvent::ClearSelection],
+            "above the top track"
+        );
+
+        rig.view.tool = Tool::Blade;
+        assert_eq!(
+            click(&mut rig, pos2(320.0, 330.0), primary),
+            [TimelineEvent::Blade { clip: 100, at: 3.0 }]
+        );
+        // Select: the body moves the clip, an edge trims it.
+        rig.view.tool = Tool::Select;
+        rig.view.snapping = false;
+        let events = drag(&mut rig, pos2(300.0, 330.0), pos2(330.0, 330.0));
+        assert_eq!(events, [TimelineEvent::Move { clip: 100, by: 0.5 }]);
+        let events = drag(&mut rig, pos2(202.0, 330.0), pos2(262.0, 330.0));
+        assert_eq!(
+            events,
+            [TimelineEvent::Trim {
+                clip: 100,
+                edge: ClipEdge::Start,
+                to: 2.0
+            }],
+            "an edge pressed and dragged inward is still a trim"
+        );
+        rig.view.tool = Tool::Ripple;
+        let events = drag(&mut rig, pos2(438.0, 330.0), pos2(378.0, 330.0));
+        assert_eq!(
+            events,
+            [TimelineEvent::RippleTrim {
+                clip: 100,
+                edge: ClipEdge::End,
+                to: 4.0
+            }]
+        );
+        rig.view.tool = Tool::Roll;
+        let events = drag(&mut rig, pos2(438.0, 330.0), pos2(468.0, 330.0));
+        assert_eq!(events, [TimelineEvent::Roll { clip: 100, to: 5.5 }]);
+        rig.view.tool = Tool::Slip;
+        let events = drag(&mut rig, pos2(300.0, 350.0), pos2(330.0, 350.0));
+        assert_eq!(events, [TimelineEvent::Slip { clip: 101, by: -0.5 }]);
+        rig.view.tool = Tool::Slide;
+        let events = drag(&mut rig, pos2(300.0, 120.0), pos2(270.0, 120.0));
+        assert_eq!(events, [TimelineEvent::Slide { clip: 0, by: -0.5 }]);
+
+        // The right-click menu opens for the clip under the pointer.
+        click(&mut rig, pos2(320.0, 330.0), egui::PointerButton::Secondary);
+        assert_eq!(rig.view.menu_at, Some((3.0, Some((100, 1.0, 5.0)))));
+    }
+
+    #[test]
+    fn alt_and_the_wheel_resize_every_track_of_the_area_under_the_pointer() {
+        let mut rig = Rig::new(2, 8);
+        let alt = egui::Modifiers::ALT;
+        rig.wheel(OVER_AUDIO, vec2(0.0, 6.0), alt);
+        let factor = (6.0f32 / 200.0).exp();
+        for id in 100..108 {
+            let height = rig.view.heights.height(id, AUDIO_TRACK);
+            assert!((height - AUDIO_TRACK * factor).abs() < 1e-3, "{id}: {height}");
+        }
+        for id in [0, 1] {
+            assert_eq!(
+                rig.view.heights.height(id, VIDEO_TRACK),
+                VIDEO_TRACK,
+                "video untouched"
+            );
+        }
+        assert_eq!((rig.view.zoom, rig.view.scroll), (60.0, 0.0), "time untouched");
+        // The pointer (y = 300) was 24 points into the second track (from
+        // 276): the same spot of that track is still under it.
+        let into = 58.0 * factor + 24.0 * factor;
+        assert!(
+            (rig.view.audio_scroll - (218.0 + into - 300.0)).abs() < 1e-2,
+            "{}",
+            rig.view.audio_scroll
+        );
+        rig.wheel(OVER_VIDEO, vec2(0.0, -6.0), alt);
+        let height = rig.view.heights.height(0, VIDEO_TRACK);
+        assert!(
+            (height - VIDEO_TRACK / factor).abs() < 1e-3,
+            "wheel down: shorter"
+        );
+        // Heights stop at the limits.
+        for _ in 0..120 {
+            rig.wheel(OVER_AUDIO, vec2(0.0, 7.5), alt);
+            rig.wheel(OVER_VIDEO, vec2(0.0, -7.5), alt);
+        }
+        assert!(near(rig.view.heights.height(100, AUDIO_TRACK), MAX_TRACK));
+        assert!(near(rig.view.heights.height(0, VIDEO_TRACK), MIN_TRACK));
+    }
+
+    #[test]
+    fn dragging_the_edge_of_a_tracks_name_resizes_that_track_only() {
+        let mut rig = Rig::new(2, 2);
+        // The first audio track's name ends at y = 276: down makes it taller.
+        let events = drag(&mut rig, pos2(70.0, 276.0), pos2(70.0, 316.0));
+        assert!(events.is_empty(), "a height is not an edit: {events:?}");
+        assert!(near(rig.view.heights.height(100, AUDIO_TRACK), 98.0));
+        assert_eq!(rig.view.heights.height(101, AUDIO_TRACK), AUDIO_TRACK);
+        // The first video track's name begins at y = 158: up makes it taller.
+        drag(&mut rig, pos2(70.0, 158.0), pos2(70.0, 128.0));
+        assert!(near(rig.view.heights.height(0, VIDEO_TRACK), 84.0));
+        assert_eq!(rig.view.heights.height(1, VIDEO_TRACK), VIDEO_TRACK);
+        // Far past the limit, and off the timeline: it stops at the shortest.
+        drag(&mut rig, pos2(70.0, 316.0), pos2(70.0, -500.0));
+        assert!(near(rig.view.heights.height(100, AUDIO_TRACK), MIN_TRACK));
+        // Double-click the edge (now at y = 246): the usual height again.
+        let primary = egui::PointerButton::Primary;
+        click(&mut rig, pos2(70.0, 246.0), primary);
+        click(&mut rig, pos2(70.0, 246.0), primary);
+        assert!(!rig.view.heights.is_changed(100));
+        assert!(rig.view.heights.is_changed(0), "the other track keeps its height");
+    }
+
+    #[test]
+    fn commands_resize_the_area_under_the_pointer_or_both() {
+        let mut rig = Rig::new(2, 2);
+        rig.view.step(ViewStep::TallerTracks);
+        rig.frame(Vec::new());
+        assert_eq!(rig.view.heights.height(0, VIDEO_TRACK), VIDEO_TRACK * 1.25);
+        assert_eq!(rig.view.heights.height(101, AUDIO_TRACK), AUDIO_TRACK * 1.25);
+        rig.move_to(OVER_AUDIO);
+        rig.view.step(ViewStep::ShorterTracks);
+        rig.view.step(ViewStep::ShorterTracks);
+        rig.frame(Vec::new());
+        let audio = rig.view.heights.height(101, AUDIO_TRACK);
+        assert!((audio - AUDIO_TRACK / 1.25).abs() < 1e-3, "{audio}");
+        assert_eq!(
+            rig.view.heights.height(0, VIDEO_TRACK),
+            VIDEO_TRACK * 1.25,
+            "the pointer is over the audio area"
+        );
+        rig.view.step(ViewStep::UsualTrackHeights);
+        rig.frame(Vec::new());
+        assert!(!rig.view.heights.is_changed(101));
+        assert!(rig.view.heights.is_changed(0));
+    }
+
+    #[test]
+    fn scrolling_reaches_the_last_track_whatever_the_heights() {
+        // Eight audio tracks, the first 300 tall, in an area 168 tall.
+        let mut rig = Rig::new(1, 8);
+        rig.view.heights.set(100, AUDIO_TRACK, 300.0);
+        rig.view.audio_scroll = 10_000.0;
+        rig.frame(Vec::new());
+        assert!(near(rig.view.audio_scroll, 300.0 + 7.0 * 58.0 - 168.0));
+        // Shorter tracks leave less to scroll: the view follows.
+        rig.view.heights.reset(100);
+        rig.frame(Vec::new());
+        assert_eq!(rig.view.audio_scroll, 8.0 * 58.0 - 168.0);
+        // The rough cut view has its own usual height for video rows.
+        rig.view.rough_cut = true;
+        rig.view.heights.set(0, ROUGH_CUT_TRACK, 2.0 * ROUGH_CUT_TRACK);
+        rig.view.video_scroll = 10_000.0;
+        rig.frame(Vec::new());
+        assert_eq!(rig.view.video_scroll, 2.0 * ROUGH_CUT_TRACK - 168.0);
     }
 }

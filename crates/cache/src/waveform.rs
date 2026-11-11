@@ -24,6 +24,15 @@ pub struct Peaks {
 
 /// Reads stream `stream` of the file and returns its peaks.
 pub fn peaks(path: &Path, stream: u32) -> diag::Result<Peaks> {
+    peaks_as_read(path, stream, |_| true)
+}
+
+/// Like [`peaks`], handing `more` every new run of peaks as soon as it is
+/// read, in order from the start of the stream (a few seconds of sound at a
+/// time), so a waveform can be drawn and progress told while the rest is
+/// still being read. `more` returns whether to go on: `false` stops the
+/// reading, which then returns an error.
+pub fn peaks_as_read(path: &Path, stream: u32, mut more: impl FnMut(&[f32]) -> bool) -> diag::Result<Peaks> {
     let mut decoder = AudioDecoder::open(path, stream, READ_RATE)?;
     decoder.seek(0.0);
     let per_bucket = (READ_RATE / PER_SECOND) as usize;
@@ -31,6 +40,7 @@ pub fn peaks(path: &Path, stream: u32) -> diag::Result<Peaks> {
     let mut values = Vec::new();
     let mut current = 0f32;
     let mut filled = 0usize;
+    let mut told = 0usize;
     loop {
         let frames = decoder.read(&mut buf);
         if frames == 0 {
@@ -45,14 +55,29 @@ pub fn peaks(path: &Path, stream: u32) -> diag::Result<Peaks> {
                 filled = 0;
             }
         }
+        if values.len() > told {
+            if !more(&values[told..]) {
+                return Err(stopped());
+            }
+            told = values.len();
+        }
     }
     if filled > 0 {
         values.push(current.min(1.0));
+        if !more(&values[told..]) {
+            return Err(stopped());
+        }
     }
     Ok(Peaks {
         per_second: PER_SECOND,
         values: values.into(),
     })
+}
+
+fn stopped() -> diag::AppError {
+    diag::AppError::new("Reading the sound was stopped")
+        .why("The waveform was no longer needed, or the app is closing.")
+        .fix("Nothing to do: it is read again when it is needed.")
 }
 
 #[cfg(test)]
@@ -78,5 +103,27 @@ mod tests {
             lo > 0.05 && hi - lo < 0.05,
             "a tone is equally loud throughout: {lo}..{hi}"
         );
+    }
+
+    #[test]
+    fn peaks_are_handed_over_as_they_are_read() {
+        let mut so_far = Vec::new();
+        let mut runs = 0;
+        let p = peaks_as_read(&fixture("voice.mp3"), 0, |more| {
+            assert!(!more.is_empty());
+            so_far.extend_from_slice(more);
+            runs += 1;
+            true
+        })
+        .unwrap();
+        assert!(runs >= 1);
+        assert_eq!(so_far, &p.values[..], "every peak exactly once, in order");
+        assert_eq!(p, peaks(&fixture("voice.mp3"), 0).unwrap());
+    }
+
+    #[test]
+    fn reading_stops_when_asked() {
+        let err = peaks_as_read(&fixture("voice.mp3"), 0, |_| false).unwrap_err();
+        assert!(err.what().contains("stopped"), "{}", err.what());
     }
 }

@@ -19,7 +19,7 @@ pub mod time;
 pub mod versions;
 
 pub use command::{Command, Edge};
-pub use document::{Document, OpenCheck, Recovery, thumbnail_path};
+pub use document::{Document, OpenCheck, Recovery, thumbnail_path, view_path};
 pub use history::History;
 pub use ids::{ClipId, LabelId, LinkId, MediaId, SequenceId, TrackId};
 pub use model::{

@@ -13,6 +13,7 @@ pub mod keyboard;
 pub mod layout;
 pub mod master;
 pub mod shortcuts;
+pub mod splitter;
 pub mod theme;
 pub mod time_text;
 pub mod timeline;
@@ -29,7 +30,7 @@ pub use shortcuts::{Action, Shortcut, ShortcutTable};
 pub use theme::{Theme, ThemeName, status};
 pub use timeline::{
     ClipEdge, ClipPictures, ClipWaveform, DraggedMedia, TimelineClip, TimelineData, TimelineEvent,
-    TimelineMarker, TimelineTrack, TimelineView, Tool,
+    TimelineMarker, TimelineTrack, TimelineView, Tool, ViewStep,
 };
 pub use top_bar::{TitleBar, TopBar, TopBarClicks, logo_mark};
 pub use transport::TransportClick;

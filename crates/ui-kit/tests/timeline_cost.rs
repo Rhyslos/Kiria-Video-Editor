@@ -5,6 +5,7 @@
 #![allow(clippy::unwrap_used)]
 
 use std::time::Instant;
+use ui_kit::timeline::{CacheBar, CacheRange, CacheState};
 use ui_kit::{Theme, TimelineClip, TimelineData, TimelineTrack, TimelineView};
 
 fn tracks(count: usize, clips_each: usize, clip_len: f64) -> Vec<TimelineTrack> {
@@ -24,11 +25,13 @@ fn tracks(count: usize, clips_each: usize, clip_len: f64) -> Vec<TimelineTrack> 
                     link: None,
                     waveform: None,
                     pictures: None,
+                    loading: None,
                 })
                 .collect(),
             muted: false,
             solo: false,
             gain_db: 0.0,
+            loading: None,
         })
         .collect()
 }
@@ -48,6 +51,14 @@ fn timeline_frame_cost() {
         let video = tracks(2, clips_each, 4.0);
         let audio = tracks(2, clips_each, 4.0);
         let length = clips_each as f64 * 4.0;
+        // A cache range under every clip of a track, in three states.
+        let cache: Vec<CacheRange> = (0..clips_each)
+            .map(|c| CacheRange {
+                start: c as f64 * 4.0,
+                end: c as f64 * 4.0 + 3.6,
+                state: [CacheState::Ready, CacheState::Preparing, CacheState::Waiting][c % 3],
+            })
+            .collect();
         let ctx = egui::Context::default();
         let mut view = TimelineView::default();
         if zoomed_out {
@@ -75,6 +86,10 @@ fn timeline_frame_cost() {
                     highlights: &[],
                     markers: &[],
                     follow: !zoomed_out,
+                    cache: CacheBar {
+                        ranges: &cache,
+                        about: "",
+                    },
                 };
                 view.show(ui, &theme, &data, egui::vec2(1920.0, 400.0));
             });

@@ -17,6 +17,9 @@ pub struct Settings {
     pub preview_quality: ui_kit::PreviewQuality,
     /// The timeline in the rough cut view (sound folded into the pictures).
     pub rough_cut: bool,
+    /// How the height is shared between the viewer and the timeline (the
+    /// handle between them), on every page that has both.
+    pub viewer_split: ui_kit::splitter::Split,
 }
 
 impl Settings {
@@ -88,6 +91,22 @@ mod tests {
         let (loaded, problem) = Settings::load(tmp.path());
         assert!(problem.is_none());
         assert!(loaded.edit_at_playhead);
+        assert_eq!(
+            loaded.viewer_split,
+            ui_kit::splitter::Split::default(),
+            "settings from before the handle between viewer and timeline"
+        );
+    }
+
+    #[test]
+    fn the_viewer_and_timeline_split_is_remembered() {
+        let tmp = tempfile::tempdir().unwrap();
+        let settings = Settings {
+            viewer_split: ui_kit::splitter::Split(0.7),
+            ..Settings::default()
+        };
+        settings.save(tmp.path()).unwrap();
+        assert_eq!(Settings::load(tmp.path()).0.viewer_split.0, 0.7);
     }
 
     #[test]

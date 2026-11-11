@@ -8,11 +8,13 @@
 
 mod clip_pictures;
 mod editor;
+mod fake_pointer;
 mod frame_grab;
 mod import;
 mod label_editor;
 mod looping;
 mod media_drawer;
+mod reading;
 mod relink;
 mod run_mode;
 mod search;
@@ -21,6 +23,7 @@ mod silence_panel;
 mod timeline_panel;
 mod versions_window;
 mod video_picture;
+mod view_state;
 mod viewer;
 mod waveforms;
 
@@ -94,7 +97,9 @@ fn main() -> ExitCode {
         full_screen: options.full_screen,
         actions: options.actions.clone(),
         cpu_colour: options.cpu_colour,
+        hold_reading: options.hold_reading,
     });
+    let pointer = options.pointer;
     // If this run crashes, the launcher offers to recover this project.
     if let (Some(diagnostics), Some(project)) = (&diagnostics, &project)
         && let Err(err) = diagnostics.note_open_project(&project.path)
@@ -110,6 +115,7 @@ fn main() -> ExitCode {
         mode: options.mode,
         report: Arc::clone(&report),
         problems,
+        pointer,
     };
 
     let mut code = ExitCode::SUCCESS;

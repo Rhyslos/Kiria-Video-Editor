@@ -34,6 +34,8 @@ pub struct Start {
     pub report: Arc<Mutex<RunReport>>,
     /// Problems found before the window opened, shown once it has.
     pub problems: Vec<AppError>,
+    /// A scripted pointer, for screenshots of pointing and dragging.
+    pub pointer: Option<crate::fake_pointer::FakePointer>,
 }
 
 pub struct Editor {
@@ -59,12 +61,17 @@ pub struct Editor {
     viewer: Viewer,
     playback: Option<engine::Playback>,
     timeline: ui_kit::TimelineView,
+    /// Keeps the timeline's layout (track heights, the divider between
+    /// video and audio) in a small file beside the project.
+    view_keeper: Option<crate::view_state::ViewKeeper>,
     /// Clips picked on the timeline (their linked clips go with them).
     selected: Vec<project::ClipId>,
     /// The timeline was fitted to the project once already.
     fitted: bool,
     waveforms: crate::waveforms::Waveforms,
     pictures: crate::clip_pictures::ClipPictures,
+    /// How fast each track's waveforms or pictures are being read, for the time left.
+    track_paces: timeline_panel::TrackPaces,
     relink: crate::relink::Relinker,
     drawer: crate::media_drawer::MediaDrawer,
     frame_grab: crate::frame_grab::FrameGrab,
@@ -94,6 +101,8 @@ pub struct Editor {
     looping: bool,
     last_input: Instant,
     mode: RunMode,
+    /// `--pointer`: a scripted pointer for screenshots.
+    pointer: Option<crate::fake_pointer::FakePointer>,
     frames: u64,
     probe: Probe,
     report: Arc<Mutex<RunReport>>,
@@ -101,6 +110,8 @@ pub struct Editor {
 
 /// The longest a screenshot waits for imports and the viewer's picture.
 const SCREENSHOT_WAIT: Duration = Duration::from_secs(20);
+/// How long a scripted pointer rests before the screenshot, so tooltips are up.
+const POINTER_REST: Duration = Duration::from_millis(1500);
 
 /// Measurements for the automated runs.
 #[derive(Default)]
@@ -126,6 +137,7 @@ impl Editor {
             mode,
             report,
             problems,
+            pointer,
         } = start;
         ui_kit::setup(&cc.egui_ctx, settings.theme);
         let jobs = JobSystem::new(settings.resources.resolve(&jobs::Machine::detect()));
@@ -139,6 +151,7 @@ impl Editor {
         let play_when_ready = project.as_ref().is_some_and(|p| p.play);
         let drawer_open = project.as_ref().is_some_and(|p| p.media_drawer);
         let full_screen = project.as_ref().is_some_and(|p| p.full_screen);
+        let hold_reading = project.as_ref().and_then(|p| p.hold_reading);
         let convert = crate::video_picture::conversion(
             cc.wgpu_render_state.as_ref(),
             project.as_ref().is_some_and(|p| p.cpu_colour),
@@ -178,6 +191,14 @@ impl Editor {
                 None
             }
         });
+        let mut timeline = ui_kit::TimelineView::default();
+        let view_keeper = document.as_ref().map(|d| {
+            crate::view_state::ViewKeeper::open(
+                project::view_path(d.path()),
+                !d.is_read_only(),
+                &mut timeline,
+            )
+        });
         let mut importer = Importer::default();
         if !imports.is_empty() {
             importer.read(&jobs, &cc.egui_ctx, imports);
@@ -200,11 +221,13 @@ impl Editor {
             import_requested: false,
             viewer: Viewer::new(&cc.egui_ctx, start_at, convert),
             playback: None,
-            timeline: ui_kit::TimelineView::default(),
+            timeline,
+            view_keeper,
             selected: Vec::new(),
             fitted: false,
-            waveforms: crate::waveforms::Waveforms::default(),
-            pictures: crate::clip_pictures::ClipPictures::default(),
+            waveforms: crate::waveforms::Waveforms::holding_at(hold_reading),
+            pictures: crate::clip_pictures::ClipPictures::holding_at(hold_reading),
+            track_paces: timeline_panel::TrackPaces::default(),
             relink: crate::relink::Relinker::default(),
             frame_grab: crate::frame_grab::FrameGrab::default(),
             silence: crate::silence_panel::SilencePanel::default(),
@@ -231,6 +254,7 @@ impl Editor {
             looping: false,
             last_input: Instant::now(),
             mode,
+            pointer,
             frames: 0,
             probe: Probe::default(),
             report,
@@ -332,6 +356,20 @@ impl Editor {
             }
             Action::ZoomToFit => {
                 self.fitted = false;
+                Ok(())
+            }
+            Action::ZoomIn
+            | Action::ZoomOut
+            | Action::TallerTracks
+            | Action::ShorterTracks
+            | Action::UsualTrackHeights => {
+                self.timeline.step(match action {
+                    Action::ZoomIn => ui_kit::ViewStep::ZoomIn,
+                    Action::ZoomOut => ui_kit::ViewStep::ZoomOut,
+                    Action::TallerTracks => ui_kit::ViewStep::TallerTracks,
+                    Action::ShorterTracks => ui_kit::ViewStep::ShorterTracks,
+                    _ => ui_kit::ViewStep::UsualTrackHeights,
+                });
                 Ok(())
             }
             Action::SelectTool => {
@@ -1031,7 +1069,7 @@ impl Editor {
         };
         let (jobs, waveforms) = (&self.jobs, &mut self.waveforms);
         let ready = self.silence.refresh(document.project(), |m, stream| {
-            waveforms.get(jobs, ctx, m, stream).cloned()
+            waveforms.whole(jobs, ctx, m, stream)
         });
         let asked = self.silence.ui(ctx, &self.theme, document.project(), ready);
         if let crate::silence_panel::Asked::Remove(ranges) = asked {
@@ -1318,7 +1356,15 @@ impl Editor {
         } else {
             let quality_before = self.settings.preview_quality;
             let needle = (!self.settings.edit_at_playhead).then_some(seq.edit_needle);
-            let viewer_height = (ui.available_height() * 0.55).max(220.0);
+            // The viewer and everything under it share this height; the
+            // handle between them moves the boundary.
+            let shared_height = ui.available_height();
+            let (least_viewer, least_timeline) =
+                (ui_kit::splitter::MIN_VIEWER, ui_kit::splitter::MIN_TIMELINE);
+            let viewer_height =
+                self.settings
+                    .viewer_split
+                    .top_height(shared_height, least_viewer, least_timeline);
             transport_click = self.viewer.ui(
                 ui,
                 &self.theme,
@@ -1332,7 +1378,19 @@ impl Editor {
             {
                 self.errors.push(&err);
             }
-            ui.add_space(4.0);
+            let handle = ui_kit::splitter::splitter(
+                ui,
+                &self.theme,
+                &mut self.settings.viewer_split,
+                shared_height,
+                least_viewer,
+                least_timeline,
+            );
+            if handle.settled
+                && let Err(err) = self.settings.save(&self.data_dir)
+            {
+                self.errors.push(&err);
+            }
             let tip = |a: Action| {
                 let key = self
                     .shortcuts
@@ -1372,13 +1430,16 @@ impl Editor {
                 seq,
                 &self.selected,
                 missing,
-                |m, stream| waveforms.get(jobs, &ctx, m, stream).cloned(),
+                |m, stream| waveforms.get(jobs, &ctx, m, stream),
                 |m, stream| pictures.get(jobs, &ctx, m, stream),
             );
             self.timeline.rough_cut = self.settings.rough_cut;
             if self.settings.rough_cut {
                 timeline_panel::fold_sound(&mut drawn);
             }
+            let now = Instant::now();
+            self.track_paces.time(&mut drawn.video, now);
+            self.track_paces.time(&mut drawn.audio, now);
             let length = seq.length().as_secs_f64();
             let width = ui.available_width();
             if !self.fitted {
@@ -1396,6 +1457,10 @@ impl Editor {
                 markers: &drawn.markers,
                 highlights: &self.silence.found,
                 follow: self.playback.is_some(),
+                cache: ui_kit::timeline::CacheBar {
+                    ranges: &drawn.cache,
+                    about: timeline_panel::CACHE_BAR_ABOUT,
+                },
             };
             let status_height = if self.status.is_empty() { 0.0 } else { 24.0 };
             let height = (ui.available_height() - status_height).max(160.0);
@@ -1699,7 +1764,12 @@ impl Editor {
                 let since = *self.probe.started.get_or_insert(now);
                 let ready = (self.importer.busy() == 0 && self.viewer.settled())
                     || now.duration_since(since) > SCREENSHOT_WAIT;
-                if self.frames >= 10 && ready && !self.probe.screenshot_requested {
+                // A scripted pointer has done its part, and rested long
+                // enough for a tooltip to come up.
+                let pointed = self.pointer.is_none_or(|p| {
+                    self.frames >= p.settled_at() && now.duration_since(since) > POINTER_REST
+                });
+                if self.frames >= 10 && ready && pointed && !self.probe.screenshot_requested {
                     self.probe.screenshot_requested = true;
                     let (path, saved, report) = (
                         path.clone(),
@@ -1784,6 +1854,12 @@ impl Editor {
 }
 
 impl eframe::App for Editor {
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        if let Some(pointer) = &self.pointer {
+            pointer.apply(self.frames, &mut raw_input.events);
+        }
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let started = Instant::now();
         let ctx = ui.ctx().clone();
@@ -1808,8 +1884,8 @@ impl eframe::App for Editor {
             self.run_action(Action::PlayPause);
         }
         self.follow_playback(&ctx);
-        self.waveforms.poll();
-        self.pictures.poll(&ctx);
+        self.waveforms.poll(&ctx, now);
+        self.pictures.poll(&ctx, now);
         self.relinking(&ctx);
         self.frame_grabs(&ctx);
         if let Some(err) = self.viewer.poll(&ctx, self.settings.preview_quality)
@@ -1818,6 +1894,9 @@ impl eframe::App for Editor {
             self.errors.push(&err);
         }
         self.autosave(now, idle);
+        if let Some(keeper) = &mut self.view_keeper {
+            keeper.tick(now, &self.timeline, &self.jobs);
+        }
         self.thumbnails();
 
         if std::mem::take(&mut self.full_screen_changed) {
@@ -1869,6 +1948,13 @@ impl eframe::App for Editor {
     }
 
     fn on_exit(&mut self) {
+        // Background reading nobody will look at any more stops here, so
+        // closing never waits for a long file.
+        self.waveforms.stop();
+        self.pictures.stop();
+        if let Some(keeper) = &mut self.view_keeper {
+            keeper.close(&self.timeline);
+        }
         if let Some((seq, handle)) = self.pending_save.take()
             && let Some(document) = self.document.as_mut()
         {
@@ -1946,6 +2032,8 @@ pub struct ProjectToOpen {
     pub actions: Vec<String>,
     /// Convert the viewer's colour on the CPU even when the GPU could.
     pub cpu_colour: bool,
+    /// Stop background reading at this share, for screenshots of it in progress.
+    pub hold_reading: Option<f32>,
 }
 
 /// Opens a project, or creates it if it doesn't exist.
