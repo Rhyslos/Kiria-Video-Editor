@@ -12,6 +12,7 @@ Phase 0.6 done: themes, fonts, shared sizes, the top bar, the shortcut table and
 |---|---|
 | `src/theme.rs` | `ThemeName` (Ash, Carbon) and `Theme`: every interface colour as a named token, plus fixed `status` colours (good, warning, error, edit needle). `Theme::apply` styles egui |
 | `src/fonts.rs` | Installs the bundled sans-serif (interface) and monospace (timecodes, numbers) fonts; `semibold()` and `mono(size)` helpers |
+| `src/master.rs` | `MasterColumn`: the column beside the timeline whose meter is also the mix's fader (-60 to +12 dB, double-click for 0), with the volume and the loudness under it |
 | `src/layout.rs` | Shared sizes (top bar 48, left panel 240, right panel 292, drawer 264 with its 22 edge tab, master 80), `viewport_centre_x` for the tabs, and `Page` |
 | `src/top_bar.rs` | `TopBar`: project name, page tabs centred over the viewport, search, resource readout, settings. `TitleBar`: the same bar for windows without pages (logo and name centred, settings right). `logo_mark` |
 | `src/time_text.rs` | Times written one way everywhere: `ago` ("2 min ago", "yesterday") and `duration` ("4:05", "1:02:09") |

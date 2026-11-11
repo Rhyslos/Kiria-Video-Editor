@@ -55,6 +55,7 @@ pub struct Editor {
     frame_grab: crate::frame_grab::FrameGrab,
     silence: crate::silence_panel::SilencePanel,
     label_editor: Option<crate::label_editor::LabelEditor>,
+    master: ui_kit::master::MasterColumn,
     /// The viewer fills the screen (F; Escape returns).
     full_screen: bool,
     /// Tell the window about a full-screen change on the next frame.
@@ -161,6 +162,7 @@ impl Editor {
             frame_grab: crate::frame_grab::FrameGrab::default(),
             silence: crate::silence_panel::SilencePanel::default(),
             label_editor: None,
+            master: ui_kit::master::MasterColumn::default(),
             full_screen,
             full_screen_changed: full_screen,
             save_frame_requested: false,
@@ -503,13 +505,7 @@ impl Editor {
                 if let Err(err) = result {
                     self.errors.push(&err);
                 }
-                // Playing on with the new mix.
-                if let Some(playback) = self.playback.take() {
-                    let at = playback.position();
-                    drop(playback);
-                    self.viewer.playhead = at;
-                    self.start_playback();
-                }
+                self.play_on_with_new_mix();
             }
             E::RippleTrim { clip, edge, to } => {
                 let result = self.with_document(|d| {
@@ -642,6 +638,17 @@ impl Editor {
                     self.errors.push(&err);
                 }
             }
+        }
+    }
+
+    /// While playing, carries on from here with the project as it is now
+    /// (after a change to the mix).
+    fn play_on_with_new_mix(&mut self) {
+        if let Some(playback) = self.playback.take() {
+            let at = playback.position();
+            drop(playback);
+            self.viewer.playhead = at;
+            self.start_playback();
         }
     }
 
@@ -1108,6 +1115,7 @@ impl Editor {
     fn edit_page(&mut self, ui: &mut egui::Ui) {
         self.drawer_panels(ui);
         let mut transport_click = None;
+        let mut master_gain = None;
         let mut timeline_events = Vec::new();
         let mut toolbar_click = None;
         let shortcut = self
@@ -1254,8 +1262,40 @@ impl Editor {
                 follow: self.playback.is_some(),
             };
             let status_height = if self.status.is_empty() { 0.0 } else { 24.0 };
-            let size = egui::vec2(width, (ui.available_height() - status_height).max(160.0));
-            timeline_events = self.timeline.show(ui, &self.theme, &data, size);
+            let height = (ui.available_height() - status_height).max(160.0);
+            let size = egui::vec2(width - layout::MASTER_WIDTH - 8.0, height);
+            let levels = self.playback.as_ref().map(|p| {
+                let l = p.levels();
+                ui_kit::master::MeterLevels {
+                    peak_db: l.peak_db,
+                    momentary: l.momentary,
+                    short_term: l.short_term,
+                }
+            });
+            let gain = seq.master_gain_db;
+            ui.horizontal_top(|ui| {
+                timeline_events = self.timeline.show(ui, &self.theme, &data, size);
+                ui.add_space(8.0);
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(layout::MASTER_WIDTH, height), egui::Sense::hover());
+                master_gain = self.master.show(
+                    ui,
+                    &self.theme,
+                    rect,
+                    levels,
+                    gain,
+                    "The whole mix: drag to change its volume, double-click for 0 dB. M and S are its loudness over 0.4 s and 3 s (LUFS).",
+                );
+            });
+        }
+        if let Some(gain_db) = master_gain {
+            let result = self.with_document(|d| {
+                let sequence = d.project().active_sequence;
+                d.apply(Command::SetMasterGain { sequence, gain_db })
+            });
+            if let Err(err) = result {
+                self.errors.push(&err);
+            }
+            self.play_on_with_new_mix();
         }
         for event in timeline_events {
             self.timeline_event(event);

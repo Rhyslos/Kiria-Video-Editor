@@ -10,6 +10,7 @@ pub mod errors;
 pub mod fonts;
 pub mod icon;
 pub mod layout;
+pub mod master;
 pub mod shortcuts;
 pub mod theme;
 pub mod time_text;

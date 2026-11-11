@@ -164,6 +164,11 @@ pub enum Command {
         sequence: SequenceId,
         at: Time,
     },
+    /// The volume of the whole mix (decibels, -60 to +12).
+    SetMasterGain {
+        sequence: SequenceId,
+        gain_db: f32,
+    },
     /// A track's mute, solo and volume (decibels; 0 leaves the sound as it is).
     SetTrackMix {
         sequence: SequenceId,
@@ -345,6 +350,13 @@ impl Command {
                         .why("A region must start at or after zero and end after it starts."));
                 }
                 sequence_mut(&mut p, *sequence)?.region = *region;
+            }
+            Command::SetMasterGain { sequence, gain_db } => {
+                if !(-60.0..=12.0).contains(gain_db) {
+                    return Err(AppError::new("That volume is out of range")
+                        .why("The mix's volume goes from -60 dB to +12 dB."));
+                }
+                sequence_mut(&mut p, *sequence)?.master_gain_db = *gain_db;
             }
             Command::SetTrackMix {
                 sequence,

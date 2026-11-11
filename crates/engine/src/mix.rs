@@ -93,6 +93,12 @@ impl Mixer {
                 self.scratch = scratch;
             }
         }
+        if sequence.master_gain_db != 0.0 {
+            let master = 10f32.powf(sequence.master_gain_db / 20.0);
+            for s in out.iter_mut() {
+                *s *= master;
+            }
+        }
     }
 
     fn decoder(&mut self, key: (MediaId, u32), path: &std::path::Path) -> Option<&mut AudioDecoder> {
@@ -180,6 +186,15 @@ mod tests {
         quiet.sequences[0].audio_tracks[1].gain_db = -20.0;
         let q = level(&quiet, &mut mixer, &mut buf);
         assert!((q / one - 0.1).abs() < 0.01, "-20 dB is a tenth: {}", q / one);
+
+        let mut master = solo.clone();
+        master.sequences[0].master_gain_db = -6.0;
+        let m = level(&master, &mut mixer, &mut buf);
+        assert!(
+            (m / one - 0.501).abs() < 0.01,
+            "-6 dB on the whole mix: {}",
+            m / one
+        );
         let _ = Time::ZERO;
     }
 }
