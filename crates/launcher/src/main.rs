@@ -156,6 +156,12 @@ fn install_waiting_update(data_dir: &Path) -> diag::Result<Installed> {
     })
 }
 
+/// The version in use, which updates are compared against: the installed
+/// one, even while this launcher program is still the older one.
+pub(crate) fn version_in_use() -> String {
+    updater::apply::InstallKind::detect(&install_root()).version_in_use(VERSION)
+}
+
 /// The folder the launcher is installed in.
 fn install_root() -> std::path::PathBuf {
     std::env::current_exe()
@@ -311,7 +317,7 @@ fn watch_editor(data_dir: &Path, mut child: std::process::Child) {
 /// Checks for a newer version and, with automatic updates on, downloads and verifies it.
 fn update_in_background(data_dir: &Path) {
     let prefs = UpdatePrefs::load(data_dir);
-    match updater::release::check(VERSION, &prefs) {
+    match updater::release::check(&version_in_use(), &prefs) {
         Ok(CheckResult::Available(release)) if prefs.automatic => {
             tracing::info!(version = %release.version, "downloading an update");
             match updater::fetch(&release, &data_dir.join("downloads")) {

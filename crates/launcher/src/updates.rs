@@ -37,7 +37,8 @@ enum Message {
 
 /// The version panel's state.
 pub struct Updates {
-    version: &'static str,
+    /// The version in use (see `updater::apply::InstallKind::version_in_use`).
+    version: String,
     data_dir: PathBuf,
     prefs: UpdatePrefs,
     state: UpdateState,
@@ -59,7 +60,7 @@ impl std::fmt::Debug for Updates {
 
 impl Updates {
     /// Starts checking in the background if `check` is set.
-    pub fn start(ctx: &egui::Context, version: &'static str, data_dir: PathBuf, check: bool) -> Updates {
+    pub fn start(ctx: &egui::Context, version: String, data_dir: PathBuf, check: bool) -> Updates {
         let prefs = UpdatePrefs::load(&data_dir);
         let mut updates = Updates {
             version,
@@ -87,10 +88,10 @@ impl Updates {
     }
 
     fn check(&mut self, ctx: &egui::Context) {
-        let (version, prefs) = (self.version, self.prefs.clone());
+        let (version, prefs) = (self.version.clone(), self.prefs.clone());
         self.state = UpdateState::Checking;
         self.task = Some(Task::spawn(ctx, move || {
-            Message::Checked(updater::release::check(version, &prefs))
+            Message::Checked(updater::release::check(&version, &prefs))
         }));
     }
 
