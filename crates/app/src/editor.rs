@@ -1,6 +1,5 @@
 //! The editor window.
 
-use crate::graphics::{self, GraphicsChoice};
 use crate::import::{self, Importer, Read};
 use crate::run_mode::RunMode;
 use crate::settings::Settings;
@@ -40,10 +39,9 @@ pub struct Start {
 pub struct Editor {
     settings: Settings,
     data_dir: PathBuf,
-    /// The graphics system and card drawing the window, as Diagnostics shows it.
-    graphics_in_use: String,
-    /// A start with Vulkan that has not drawn its first frames yet.
-    vulkan_check: Option<graphics::StartMarker>,
+    /// What draws the window: the first-frames check, the question after a
+    /// failed start with Vulkan, and the Graphics row in Settings.
+    graphics: graphics::WindowGraphics,
     theme: Theme,
     page: Page,
     shortcuts: ShortcutTable,
@@ -135,7 +133,7 @@ impl Editor {
         for problem in &problems {
             errors.push(problem);
         }
-        let graphics_in_use = note_graphics(cc, &opened, settings.graphics, &mut errors);
+        let graphics = graphics::WindowGraphics::new(cc, opened, &mut errors);
         let imports = project.as_ref().map(|p| p.import.clone()).unwrap_or_default();
         let start_at = project.as_ref().and_then(|p| p.playhead);
         let play_when_ready = project.as_ref().is_some_and(|p| p.play);
@@ -188,8 +186,7 @@ impl Editor {
             theme: settings.theme.theme(),
             settings,
             data_dir,
-            graphics_in_use,
-            vulkan_check: opened.marker,
+            graphics,
             page: Page::default(),
             shortcuts: ShortcutTable::default(),
             errors,
@@ -1591,7 +1588,9 @@ impl Editor {
                 );
                 ui.add_space(8.0);
                 ui.heading("Graphics");
-                self.graphics_setting(ui);
+                if let Some(err) = self.graphics.settings_row(ui, &self.theme) {
+                    self.errors.push(&err);
+                }
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     if ui.button("Keyboard shortcuts…").clicked() {
@@ -1615,49 +1614,6 @@ impl Editor {
                 self.errors.push(&err);
             }
         }
-    }
-
-    /// The Graphics row in Settings. Only Windows has a choice to make.
-    fn graphics_setting(&mut self, ui: &mut egui::Ui) {
-        let has_choice = graphics::Platform::current() == graphics::Platform::Windows;
-        let shown = if has_choice {
-            self.settings.graphics
-        } else {
-            GraphicsChoice::Automatic
-        };
-        ui.add_enabled_ui(has_choice, |ui| {
-            egui::ComboBox::from_label("Draw the window with")
-                .selected_text(shown.label())
-                .show_ui(ui, |ui| {
-                    for choice in GraphicsChoice::ALL {
-                        ui.selectable_value(&mut self.settings.graphics, choice, choice.label());
-                    }
-                });
-        });
-        let hint = if has_choice {
-            "Automatic uses Vulkan, and Direct3D 12 if Vulkan doesn't start. A change applies the next time the editor starts."
-        } else {
-            "The choice between Vulkan and Direct3D 12 is for Windows only."
-        };
-        ui.label(egui::RichText::new(hint).color(self.theme.muted));
-        ui.label(
-            egui::RichText::new(format!("In use now: {}", self.graphics_in_use)).color(self.theme.muted),
-        );
-    }
-
-    /// A start with Vulkan counts as working once its first frames are drawn.
-    fn confirm_graphics(&mut self, ctx: &egui::Context) {
-        let Some(marker) = &self.vulkan_check else {
-            return;
-        };
-        if self.frames < graphics::FRAMES_BEFORE_TRUSTED {
-            ctx.request_repaint(); // get there without waiting for input
-            return;
-        }
-        if let Err(err) = marker.clear() {
-            tracing::warn!("{}", err.report());
-        }
-        self.vulkan_check = None;
     }
 
     fn search_window(&mut self, ctx: &egui::Context) {
@@ -1837,7 +1793,7 @@ impl eframe::App for Editor {
         }
         let idle = now.duration_since(self.last_input) > IDLE_AFTER;
         self.jobs.set_idle(idle);
-        self.confirm_graphics(&ctx);
+        self.graphics.frame(&ctx, self.frames);
         if self.frames == 2 {
             for action in std::mem::take(&mut self.startup_actions) {
                 self.run_action(action);
@@ -1892,6 +1848,9 @@ impl eframe::App for Editor {
         self.label_window(&ctx);
         self.versions_window(&ctx);
         self.shortcuts_window(&ctx);
+        if let Some(err) = self.graphics.show_warning(&ctx, &self.theme) {
+            self.errors.push(&err);
+        }
         let mut diagnostics = self.show_diagnostics;
         self.errors
             .diagnostics_window(&ctx, &mut diagnostics, &self.theme);
@@ -1935,30 +1894,6 @@ impl eframe::App for Editor {
             }
         }
     }
-}
-
-/// Finds out which graphics system and card draw the window, and records it
-/// where it will be looked for: the log, crash reports and Diagnostics.
-fn note_graphics(
-    cc: &eframe::CreationContext<'_>,
-    opened: &graphics::Opened,
-    choice: GraphicsChoice,
-    errors: &mut ErrorCenter,
-) -> String {
-    let in_use = cc.wgpu_render_state.as_ref().map_or_else(
-        || "not known".to_owned(),
-        |state| graphics::in_use(&state.adapter.get_info()),
-    );
-    tracing::info!(graphics = %in_use, "the window is open");
-    diag::crash::set_gpu_info(in_use.clone());
-    errors.set_fact("Graphics", in_use.clone());
-    if let Some(failed) = opened.failed_text() {
-        errors.set_fact("Tried first", failed);
-    }
-    if let Some(notice) = opened.notice(choice) {
-        errors.push(&notice);
-    }
-    in_use
 }
 
 /// Whether the launcher's picture of the project needs writing.

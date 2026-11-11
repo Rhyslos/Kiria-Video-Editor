@@ -7,7 +7,7 @@
 //! newer version in the background and, with automatic updates on, downloads
 //! and verifies it; installing it arrives in Phase 3.
 //!
-//! Usage: `launcher --self-test` (answers and stops), or `launcher [project file] [--no-update-check] [--smoke-test | --screenshot <file.png>] [--demo <count>] [--update-window <available | downloading | ready>] [--demo-crash]`.
+//! Usage: `launcher --self-test` (answers and stops), or `launcher [project file] [--no-update-check] [--smoke-test | --screenshot <file.png>] [--demo <count>] [--update-window <available | downloading | ready>] [--demo-crash] [--graphics-warning]`.
 
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
@@ -85,6 +85,9 @@ fn main() -> ExitCode {
         );
     }
 
+    // The Graphics setting and the start marker live in the real data folder,
+    // also for a demo, which only reads them.
+    let graphics_dir = dirs.as_ref().map_or_else(std::env::temp_dir, |d| d.data.clone());
     let data_dir = match options.demo {
         Some(count) => match demo::prepare(count, options.demo_crash) {
             Ok(dir) => dir,
@@ -93,9 +96,9 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
         },
-        None => dirs.as_ref().map_or_else(std::env::temp_dir, |d| d.data.clone()),
+        None => graphics_dir.clone(),
     };
-    browse(data_dir, options, start_notes)
+    browse(data_dir, &graphics_dir, options, start_notes)
 }
 
 /// What happened to a waiting update on start.
@@ -193,12 +196,29 @@ fn restart_launcher(same_args: bool) -> ExitCode {
 }
 
 /// Shows the project browser until a project is opened or the window is closed.
-fn browse(data_dir: std::path::PathBuf, options: Options, notes: Vec<Note>) -> ExitCode {
+fn browse(
+    data_dir: std::path::PathBuf,
+    graphics_dir: &Path,
+    options: Options,
+    mut notes: Vec<Note>,
+) -> ExitCode {
     let report = Arc::new(Mutex::new(RunReport::default()));
     let handoff = Arc::new(Mutex::new(None));
     let restart = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let editor = Arc::new(Mutex::new(None));
     let automated = options.mode != RunMode::Normal;
+    // Which graphics system to try, and whether the last start with Vulkan failed.
+    // Test runs and demos only read: no marker is written and no setting changes.
+    let run = if automated || options.demo.is_some() {
+        graphics::RunKind::Automated
+    } else {
+        graphics::RunKind::Normal
+    };
+    let (mut graphics_start, problems) = graphics::prepare(graphics::Program::Launcher, graphics_dir, run);
+    notes.extend(problems.into_iter().map(Note::Problem));
+    if options.graphics_warning {
+        graphics_start = graphics_start.with_warning_preview();
+    }
     let start = Start {
         theme: saved_theme(&data_dir),
         data_dir: data_dir.clone(),
@@ -212,25 +232,23 @@ fn browse(data_dir: std::path::PathBuf, options: Options, notes: Vec<Note>) -> E
         update_preview: options.update_window,
         editor: Arc::clone(&editor),
     };
-    let window_options = eframe::NativeOptions {
+    let window = || eframe::NativeOptions {
         viewport: ui_kit::icon::with_window_icon(egui::ViewportBuilder::default())
             .with_title(brand::APP_NAME)
             .with_inner_size([1180.0, 760.0])
             .with_min_inner_size([900.0, 560.0]),
-        renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };
-    let result = eframe::run_native(
+    let result = graphics::open_window(
+        &graphics_start,
         brand::APP_NAME,
-        window_options,
-        Box::new(move |cc| Ok(Box::new(Browser::new(cc, start)))),
+        window,
+        start,
+        |cc, start, opened| Box::new(Browser::new(cc, start, opened)),
     );
 
     let mut code = ExitCode::SUCCESS;
     if let Err(err) = result {
-        let err = diag::AppError::new("The launcher window could not open")
-            .why(format!("The graphics system reported: {err}"))
-            .fix("Update your graphics driver. If that doesn't help, report it with the launcher log.");
         tracing::error!("{}", err.report());
         eprintln!("{}", err.report());
         code = ExitCode::FAILURE;
@@ -345,4 +363,54 @@ fn saved_theme(data_dir: &Path) -> ui_kit::ThemeName {
         .and_then(|text| ron::from_str::<EditorSettings>(&text).ok())
         .unwrap_or_default()
         .theme
+}
+
+#[cfg(test)]
+mod tests {
+    use graphics::{Backend, GraphicsSettings, Platform, Program, RunKind, StartMarker};
+    use updater::health::{self, StartOutcome};
+
+    /// The two safety nets in the order they act: a crash in the Vulkan driver
+    /// costs the editor one failed start, the next start avoids Vulkan and
+    /// reports that it started, and that resets the count long before the
+    /// version would be rolled back.
+    #[test]
+    fn a_vulkan_crash_in_the_editor_changes_the_graphics_not_the_version() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (data, root) = (tmp.path().join("data"), tmp.path().join("app"));
+        std::fs::create_dir_all(&data).unwrap();
+        let layout = updater::Layout::at(&root);
+        for version in ["0.1.0", "0.2.0"] {
+            let dir = layout.version_dir(version);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(updater::install::editor_file_name()), "").unwrap();
+        }
+        updater::apply::set_current(&layout, "0.2.0").unwrap();
+        let after_start = |outcome| health::after_start(&data, &layout, "0.2.0", outcome).unwrap();
+        let editor_plan = || {
+            let marker = StartMarker::in_dir(Program::Editor, &data);
+            let choice = GraphicsSettings::load(&data).choice;
+            graphics::plan(Platform::Windows, choice, marker.state(), RunKind::Normal)
+        };
+
+        // Start 1: the editor notes that it starts with Vulkan, then the driver crashes.
+        assert_eq!(editor_plan().order[0], Backend::Vulkan);
+        StartMarker::in_dir(Program::Editor, &data).write().unwrap();
+        assert_eq!(
+            after_start(StartOutcome::Failed),
+            None,
+            "one failure rolls nothing back"
+        );
+
+        // Start 2: the marker keeps the editor off Vulkan, and it asks what to keep.
+        let plan = editor_plan();
+        assert_eq!(plan.order[0], Backend::Direct3D12);
+        assert!(plan.ask);
+        assert_eq!(after_start(StartOutcome::Started), None);
+
+        // "Try Vulkan again" and another crash is one failure in a row again, never two.
+        assert_eq!(after_start(StartOutcome::Failed), None);
+        assert_eq!(layout.current_version().as_deref(), Some("0.2.0"));
+        assert!(updater::UpdatePrefs::load(&data).bad_versions.is_empty());
+    }
 }

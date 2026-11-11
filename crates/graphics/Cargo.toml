@@ -1,0 +1,24 @@
+[package]
+name = "graphics"
+description = "Which graphics system draws the windows: the shared setting, the start plan and the safety net around Vulkan."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+diag = { path = "../diag" }
+eframe = "0.37"
+egui = "0.37"
+ron = "0.12"
+serde = { version = "1", features = ["derive"] }
+sysinfo = { version = "0.40", default-features = false, features = ["system"] }
+tracing = "0.1"
+ui-kit = { path = "../ui-kit" }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

@@ -54,4 +54,4 @@ std::fs::read(&path).or_explain(|| {
 ## Known limits
 
 - Two editor windows at once would each think the other crashed (one shared marker file). Only one editor runs at a time until the launcher (Phase 2) handles it.
-- The graphics line in crash reports says "not detected yet" until the window is open: the editor then calls `crash::set_gpu_info` with the graphics system and card in use. The launcher doesn't set it.
+- The graphics line in crash reports says "not detected yet" until the window is open: the `graphics` crate then calls `crash::set_gpu_info` with the graphics system and card in use.

@@ -14,6 +14,8 @@ pub struct Options {
     pub demo_crash: bool,
     /// Open the update window at this step with a sample version (screenshots).
     pub update_window: Option<UpdatePreview>,
+    /// Show the question about a failed start with Vulkan (screenshots).
+    pub graphics_warning: bool,
 }
 
 /// A step of the update window to show with sample numbers.
@@ -58,6 +60,7 @@ impl Options {
                     options.check_updates = false;
                 }
                 "--demo-crash" => options.demo_crash = true,
+                "--graphics-warning" => options.graphics_warning = true,
                 "--update-window" => {
                     let step = args
                         .next()

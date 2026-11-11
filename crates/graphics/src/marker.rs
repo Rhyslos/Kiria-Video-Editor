@@ -1,0 +1,187 @@
+//! The start marker: a note in the data folder that a start with Vulkan is
+//! under way. Each program has its own, so the launcher and the editor can
+//! start at the same time without reading each other's.
+
+use diag::{AppError, Explain};
+use std::path::{Path, PathBuf};
+
+/// The programs that open a window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Program {
+    Launcher,
+    Editor,
+}
+
+impl Program {
+    fn marker_file(self) -> &'static str {
+        match self {
+            Program::Launcher => "launcher-vulkan.starting",
+            Program::Editor => "vulkan.starting",
+        }
+    }
+
+    /// What the program's file name starts with, on every system.
+    fn process_name(self) -> &'static str {
+        match self {
+            Program::Launcher => "launcher",
+            Program::Editor => "editor",
+        }
+    }
+
+    /// The program's window in a sentence: "The editor window could not open".
+    pub fn window_name(self) -> &'static str {
+        match self {
+            Program::Launcher => "launcher window",
+            Program::Editor => "editor window",
+        }
+    }
+}
+
+/// What a start finds where the marker would be.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarkerState {
+    Absent,
+    /// A start with Vulkan never drew a frame, and that process is gone.
+    LeftBehind,
+    /// Another copy of the program is starting with Vulkan right now, or is
+    /// stuck doing so: too early to say that Vulkan failed.
+    StartUnderWay,
+}
+
+/// One program's marker file.
+#[derive(Debug, Clone)]
+pub struct StartMarker {
+    program: Program,
+    path: PathBuf,
+}
+
+impl StartMarker {
+    pub fn in_dir(program: Program, data_dir: &Path) -> StartMarker {
+        StartMarker {
+            program,
+            path: data_dir.join(program.marker_file()),
+        }
+    }
+
+    pub fn is_present(&self) -> bool {
+        self.path.exists()
+    }
+
+    /// Reads the marker and checks whether the process that wrote it is still there.
+    pub fn state(&self) -> MarkerState {
+        let program = self.program;
+        self.state_with(|pid| is_running(program, pid))
+    }
+
+    /// [`StartMarker::state`] with the process check passed in.
+    pub fn state_with(&self, is_running: impl Fn(u32) -> bool) -> MarkerState {
+        let text = match std::fs::read_to_string(&self.path) {
+            Ok(text) => text,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return MarkerState::Absent,
+            // There, but unreadable: count it as a failed start, the safe side.
+            Err(_) => return MarkerState::LeftBehind,
+        };
+        let writer = text
+            .strip_prefix("pid ")
+            .and_then(|pid| pid.trim().parse::<u32>().ok());
+        match writer {
+            // Our own number can only be a finished process whose number was given out again.
+            Some(pid) if pid != std::process::id() && is_running(pid) => MarkerState::StartUnderWay,
+            _ => MarkerState::LeftBehind,
+        }
+    }
+
+    /// Call before opening a window with Vulkan.
+    pub fn write(&self) -> diag::Result<()> {
+        std::fs::write(&self.path, format!("pid {}\n", std::process::id())).or_explain(|| {
+            AppError::new("The app can't note that it is starting with Vulkan")
+                .why(format!("Writing {} failed.", self.path.display()))
+                .fix("Check that the disk is not full. Direct3D 12 is used meanwhile.")
+        })
+    }
+
+    /// Call once Vulkan has drawn its first frames, or has reported an error.
+    pub fn clear(&self) -> diag::Result<()> {
+        match std::fs::remove_file(&self.path) {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(err) => Err(AppError::new("The app can't note that Vulkan started")
+                .why(format!("Removing {} failed.", self.path.display()))
+                .fix("Nothing is lost; the next start may use Direct3D 12 without need.")
+                .source(err)),
+        }
+    }
+}
+
+/// Whether a process with this id is running and is this program.
+fn is_running(program: Program, pid: u32) -> bool {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+    let Ok(mut system) = System::new() else {
+        // Can't tell: count the marker as a failed start, the safe side.
+        return false;
+    };
+    let pid = Pid::from_u32(pid);
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[pid]),
+        true,
+        ProcessRefreshKind::nothing(),
+    );
+    system.process(pid).is_some_and(|p| {
+        p.name()
+            .to_string_lossy()
+            .to_lowercase()
+            .starts_with(program.process_name())
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_marker_is_written_found_and_cleared() {
+        let tmp = tempfile::tempdir().unwrap();
+        let marker = StartMarker::in_dir(Program::Editor, tmp.path());
+        assert!(!marker.is_present());
+        assert_eq!(marker.state(), MarkerState::Absent);
+        marker.clear().unwrap(); // nothing to clear is fine
+        marker.write().unwrap();
+        assert!(StartMarker::in_dir(Program::Editor, tmp.path()).is_present());
+        marker.clear().unwrap();
+        assert!(!marker.is_present());
+    }
+
+    #[test]
+    fn the_launcher_and_the_editor_never_read_each_others_marker() {
+        let tmp = tempfile::tempdir().unwrap();
+        let launcher = StartMarker::in_dir(Program::Launcher, tmp.path());
+        let editor = StartMarker::in_dir(Program::Editor, tmp.path());
+        launcher.write().unwrap();
+        assert_eq!(editor.state_with(|_| false), MarkerState::Absent);
+        assert_eq!(launcher.state_with(|_| false), MarkerState::LeftBehind);
+        editor.write().unwrap();
+        launcher.clear().unwrap();
+        assert!(editor.is_present() && !launcher.is_present());
+    }
+
+    #[test]
+    fn a_marker_whose_program_is_still_running_is_not_a_failed_start_yet() {
+        let tmp = tempfile::tempdir().unwrap();
+        let marker = StartMarker::in_dir(Program::Launcher, tmp.path());
+        std::fs::write(tmp.path().join("launcher-vulkan.starting"), "pid 4000000000\n").unwrap();
+        assert_eq!(marker.state_with(|_| true), MarkerState::StartUnderWay);
+        assert_eq!(marker.state_with(|_| false), MarkerState::LeftBehind);
+        // No such process, and the test program is not the launcher either.
+        assert_eq!(marker.state(), MarkerState::LeftBehind);
+    }
+
+    #[test]
+    fn a_marker_with_our_own_number_or_no_number_is_a_failed_start() {
+        let tmp = tempfile::tempdir().unwrap();
+        let marker = StartMarker::in_dir(Program::Editor, tmp.path());
+        marker.write().unwrap(); // as a finished process with our number left it
+        assert_eq!(marker.state_with(|_| true), MarkerState::LeftBehind);
+        std::fs::write(tmp.path().join("vulkan.starting"), "").unwrap();
+        assert_eq!(marker.state_with(|_| true), MarkerState::LeftBehind);
+    }
+}

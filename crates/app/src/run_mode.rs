@@ -23,6 +23,8 @@ pub struct Options {
     pub actions: Vec<String>,
     /// Convert the viewer's colour on the CPU instead of the GPU (`--cpu-colour`, for comparing the two).
     pub cpu_colour: bool,
+    /// Show the question about a failed start with Vulkan (`--graphics-warning`, for screenshots).
+    pub graphics_warning: bool,
     pub mode: RunMode,
 }
 
@@ -56,6 +58,7 @@ impl Options {
                 "--media-drawer" => options.media_drawer = true,
                 "--full-screen" => options.full_screen = true,
                 "--cpu-colour" => options.cpu_colour = true,
+                "--graphics-warning" => options.graphics_warning = true,
                 "--action" => {
                     let name = args.next().ok_or("--action needs a command name")?;
                     options.actions.push(name);
