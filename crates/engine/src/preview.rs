@@ -111,8 +111,11 @@ struct Request {
 }
 
 pub struct Preview {
-    requests: Sender<Request>,
+    /// `None` once closed: nothing more is asked for.
+    requests: Option<Sender<Request>>,
     pictures: Receiver<Picture>,
+    /// Disconnects when the worker thread has ended.
+    ended: Receiver<()>,
 }
 
 impl std::fmt::Debug for Preview {
@@ -139,20 +142,47 @@ impl Preview {
             decoders: VecDeque::new(),
             off_device: HashSet::new(),
         };
-        let spawned = std::thread::Builder::new()
-            .name("preview".into())
-            .spawn(move || run(&inbox, &outbox, worker, &notify));
+        let (running, ended) = channel::<()>();
+        let spawned = std::thread::Builder::new().name("preview".into()).spawn(move || {
+            run(&inbox, &outbox, worker, &notify);
+            // The worker and its decoders are gone by now.
+            drop(running);
+        });
         if let Err(err) = spawned {
             tracing::error!("the preview worker could not start: {err}");
         }
-        Preview { requests, pictures }
+        Preview {
+            requests: Some(requests),
+            pictures,
+            ended,
+        }
+    }
+
+    /// Stops the worker and waits until it has ended, at most `timeout`:
+    /// a decode under way finishes (one not started yet is dropped), the
+    /// files are closed, and everything it held on the window's graphics
+    /// device is given back. Returns whether it ended in time.
+    ///
+    /// For closing the app, before the window's graphics go away: a worker
+    /// still decoding on the graphics device when the program ends can take
+    /// the program down with it. Dropping a `Preview` stops the worker too,
+    /// without waiting.
+    pub fn close(&mut self, timeout: Duration) -> bool {
+        self.requests = None;
+        matches!(
+            self.ended.recv_timeout(timeout),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected)
+        )
     }
 
     /// Asks for the picture at `at` on `sequence`, fitted in `max_width × max_height`
     /// (planes come at the nearest halving that still fills it).
     /// Replaces any request not started yet.
     pub fn show(&self, project: &Project, sequence: SequenceId, at: Time, max_width: u32, max_height: u32) {
-        let _ = self.requests.send(Request {
+        let Some(requests) = &self.requests else {
+            return;
+        };
+        let _ = requests.send(Request {
             project: project.clone(),
             sequence,
             at,
@@ -544,6 +574,25 @@ mod tests {
         // Also after its decoder was closed to make room for other files.
         assert_eq!(worker.ladder_for(failed), [Hardware, Software]);
         assert_eq!(worker.ladder_for(other), [Device, Hardware, Software]);
+    }
+
+    #[test]
+    fn closing_waits_for_the_worker_and_asks_for_nothing_more() {
+        let p = Project::new_automatic("T");
+        let seq = p.active_sequence;
+        let media = media::describe(&fixture("game-3-audio.mkv")).unwrap();
+        let p = Command::Import { sequence: seq, media }.apply(&p).unwrap();
+        let mut preview = Preview::start(Decoding::Software, Convert::OnCpu, None, || {});
+        preview.show(&p, seq, Time::seconds(1), 640, 360);
+        assert!(wait(&preview).frame.is_some());
+        // One more is asked for and may be under way when it closes.
+        preview.show(&p, seq, Time::from_ratio(3, 2).unwrap(), 640, 360);
+        assert!(preview.close(Duration::from_secs(20)), "the worker ended");
+        let _ = preview.latest();
+        preview.show(&p, seq, Time::seconds(2), 640, 360);
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(preview.latest().is_none(), "nothing is decoded after closing");
+        assert!(preview.close(Duration::from_millis(10)), "closing twice is fine");
     }
 
     #[test]

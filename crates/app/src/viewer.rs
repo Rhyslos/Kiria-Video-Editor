@@ -204,6 +204,16 @@ impl Viewer {
         problem
     }
 
+    /// The window is closing: the worker finishes the picture it is on and
+    /// ends, so nothing is still decoding (on the window's graphics device
+    /// or anywhere else) when the graphics go away. Waits a few seconds at most.
+    pub fn close(&mut self) {
+        self.frame_interval = None;
+        if !self.preview.close(CLOSES_WITHIN) {
+            tracing::warn!("the picture being decoded did not finish before the window closed");
+        }
+    }
+
     /// The renderer could not take a picture decoded on the window's device:
     /// from here on every file is decoded the way it was before, by a new
     /// worker without the device. The picture at the playhead is asked for again.
@@ -329,6 +339,9 @@ impl Viewer {
         click
     }
 }
+
+/// How long closing the app waits for the picture being decoded to finish.
+const CLOSES_WITHIN: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// Starts the preview worker, on the window's graphics device when there is one.
 fn start_preview(ctx: &egui::Context, convert: Convert, decoding: Option<&WindowDecoding>) -> Preview {

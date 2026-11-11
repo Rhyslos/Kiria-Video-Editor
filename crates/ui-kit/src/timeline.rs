@@ -490,6 +490,56 @@ impl Layout {
     }
 }
 
+/// The right-click menu of a timeline area, for the time and clip that were
+/// clicked (`menu_at`). Call it every frame for the area's response, wherever
+/// the pointer is: a menu that is not shown for a frame closes.
+fn clip_menu(
+    r: &egui::Response,
+    menu_at: Option<MenuSpot>,
+    has_region: bool,
+    events: &mut Vec<TimelineEvent>,
+) {
+    r.context_menu(|ui| {
+        let Some((at, clip)) = menu_at else { return };
+        if ui.button("Add a label here").clicked() {
+            events.push(TimelineEvent::AddLabel(at));
+            ui.close();
+        }
+        if let Some((id, start, end)) = clip {
+            if ui.button("Split this clip here").clicked() {
+                events.push(TimelineEvent::SplitAt { at, clip: Some(id) });
+                ui.close();
+            }
+            ui.menu_button("Speed", |ui| {
+                for (text, num, den) in [
+                    ("25% (slow motion)", 1, 4),
+                    ("50% (slow motion)", 1, 2),
+                    ("100% (normal)", 1, 1),
+                    ("200%", 2, 1),
+                    ("400%", 4, 1),
+                ] {
+                    if ui.button(text).clicked() {
+                        events.push(TimelineEvent::SetSpeed { clip: id, num, den });
+                        ui.close();
+                    }
+                }
+            });
+            if ui.button("Set the region to this clip").clicked() {
+                events.push(TimelineEvent::SetRegion(Some((start, end))));
+                ui.close();
+            }
+        }
+        if ui.button("Split every track here").clicked() {
+            events.push(TimelineEvent::SplitAt { at, clip: None });
+            ui.close();
+        }
+        if has_region && ui.button("Clear the region").clicked() {
+            events.push(TimelineEvent::SetRegion(None));
+            ui.close();
+        }
+    });
+}
+
 impl TimelineView {
     /// Screen x of time `t`.
     pub fn x_of(&self, left: f32, t: f64) -> f32 {
@@ -1452,6 +1502,9 @@ impl TimelineView {
             let time_area = Rect::from_min_max(pos2(left, area.top()), area.max);
             let r = ui.interact(time_area, id.with(("area", from_bottom)), Sense::click_and_drag());
             let Some(p) = r.interact_pointer_pos().or(r.hover_pos()) else {
+                // The pointer is elsewhere, perhaps on the menu itself: an
+                // open menu is still shown, or it would close under it.
+                clip_menu(&r, self.menu_at, data.region.is_some(), events);
                 continue;
             };
             // A drag is only noticed a few pixels after the press: what is
@@ -1602,47 +1655,7 @@ impl TimelineView {
             if r.secondary_clicked() {
                 self.menu_at = Some((t, hit.map(|c| (c.id, c.start, c.start + c.duration))));
             }
-            let menu_at = self.menu_at;
-            let has_region = data.region.is_some();
-            r.context_menu(|ui| {
-                let Some((at, clip)) = menu_at else { return };
-                if ui.button("Add a label here").clicked() {
-                    events.push(TimelineEvent::AddLabel(at));
-                    ui.close();
-                }
-                if let Some((id, start, end)) = clip {
-                    if ui.button("Split this clip here").clicked() {
-                        events.push(TimelineEvent::SplitAt { at, clip: Some(id) });
-                        ui.close();
-                    }
-                    ui.menu_button("Speed", |ui| {
-                        for (text, num, den) in [
-                            ("25% (slow motion)", 1, 4),
-                            ("50% (slow motion)", 1, 2),
-                            ("100% (normal)", 1, 1),
-                            ("200%", 2, 1),
-                            ("400%", 4, 1),
-                        ] {
-                            if ui.button(text).clicked() {
-                                events.push(TimelineEvent::SetSpeed { clip: id, num, den });
-                                ui.close();
-                            }
-                        }
-                    });
-                    if ui.button("Set the region to this clip").clicked() {
-                        events.push(TimelineEvent::SetRegion(Some((start, end))));
-                        ui.close();
-                    }
-                }
-                if ui.button("Split every track here").clicked() {
-                    events.push(TimelineEvent::SplitAt { at, clip: None });
-                    ui.close();
-                }
-                if has_region && ui.button("Clear the region").clicked() {
-                    events.push(TimelineEvent::SetRegion(None));
-                    ui.close();
-                }
-            });
+            clip_menu(&r, self.menu_at, data.region.is_some(), events);
             if r.clicked() {
                 let add = ui.input(|i| i.modifiers.shift || i.modifiers.command);
                 events.push(match (self.tool, hit) {
@@ -2623,6 +2636,30 @@ mod tests {
         // The right-click menu opens for the clip under the pointer.
         click(&mut rig, pos2(320.0, 330.0), egui::PointerButton::Secondary);
         assert_eq!(rig.view.menu_at, Some((3.0, Some((100, 1.0, 5.0)))));
+    }
+
+    #[test]
+    fn the_right_click_menu_stays_open_while_the_pointer_moves_to_it() {
+        let mut rig = Rig::new(1, 2);
+        click(&mut rig, pos2(320.0, 330.0), egui::PointerButton::Secondary);
+        rig.frame(vec![]);
+        assert!(egui::Popup::is_any_open(&rig.ctx), "open after the click");
+        // Onto the menu, which covers the timeline there, and on down it.
+        for y in [340.0, 348.0, 356.0] {
+            rig.frame(vec![egui::Event::PointerMoved(pos2(336.0, y))]);
+            rig.frame(vec![]);
+            assert!(
+                egui::Popup::is_any_open(&rig.ctx),
+                "still open with the pointer at y = {y}"
+            );
+        }
+        // And with the pointer outside the window altogether.
+        rig.frame(vec![egui::Event::PointerGone]);
+        rig.frame(vec![]);
+        assert!(
+            egui::Popup::is_any_open(&rig.ctx),
+            "still open with the pointer gone"
+        );
     }
 
     #[test]

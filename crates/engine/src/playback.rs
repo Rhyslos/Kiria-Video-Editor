@@ -24,13 +24,51 @@ use cpal::{FromSample, SizedSample};
 use media::audio::CHANNELS;
 use project::{Project, SequenceId, Time};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 /// Samples per mixing block.
 const BLOCK: usize = 1024;
 /// Ring buffer length in seconds.
 const BUFFERED: f64 = 0.25;
+
+/// Audio threads that have not ended yet, across every playback of this
+/// run. Stopping never waits for them; closing the app does, briefly
+/// ([`wait_until_quiet`]).
+static AUDIO_THREADS: AtomicUsize = AtomicUsize::new(0);
+
+/// Counts an audio thread for as long as it lives, also if it panics.
+struct Running;
+
+impl Running {
+    fn new() -> Running {
+        AUDIO_THREADS.fetch_add(1, Ordering::AcqRel);
+        Running
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        AUDIO_THREADS.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// Waits until every audio thread of stopped playbacks has ended, at most
+/// `timeout`. Returns whether they all have.
+///
+/// For closing the app: a thread still inside the sound card's or a
+/// decoder's code when the program ends can take the program down with it.
+/// Stop playback first; a playback still running keeps its thread.
+pub fn wait_until_quiet(timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while AUDIO_THREADS.load(Ordering::Acquire) > 0 {
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    true
+}
 
 /// What the clock goes by.
 const STARTING: u8 = 0;
@@ -123,10 +161,12 @@ impl Playback {
     ) -> Playback {
         let clock = Arc::new(Clock::new());
         let c = Arc::clone(&clock);
-        // The thread is not kept: nothing ever waits for it (see `Drop`).
-        let started = std::thread::Builder::new()
-            .name("audio".into())
-            .spawn(move || audio(&c));
+        let running = Running::new();
+        // The thread is not kept: stopping never waits for it (see `Drop`).
+        let started = std::thread::Builder::new().name("audio".into()).spawn(move || {
+            let _running = running;
+            audio(&c);
+        });
         if let Err(e) = started {
             tracing::error!("the audio thread could not start: {e}");
             clock.follow_time();
@@ -335,6 +375,26 @@ mod tests {
             playback.position(),
             Time::seconds(2) + Time::from_ratio(1, 2).unwrap()
         );
+    }
+
+    #[test]
+    fn closing_waits_for_stopped_audio_threads_to_end() {
+        let playback = Playback::with_audio(Time::ZERO, Reading::new(), |clock| {
+            while !clock.stopped() {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            // Letting go of the sound card and the files takes a moment.
+            std::thread::sleep(Duration::from_millis(300));
+        });
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(!wait_until_quiet(Duration::from_millis(50)), "still playing");
+        drop(playback);
+        assert!(
+            !wait_until_quiet(Duration::from_millis(50)),
+            "stopped, not ended yet"
+        );
+        // Other tests' audio threads count too; all of them end within seconds.
+        assert!(wait_until_quiet(Duration::from_secs(10)));
     }
 
     #[test]
