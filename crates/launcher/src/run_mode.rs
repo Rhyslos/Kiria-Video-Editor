@@ -16,6 +16,9 @@ pub struct Options {
     pub update_window: Option<UpdatePreview>,
     /// Show the question about a failed start with Vulkan (screenshots).
     pub graphics_warning: bool,
+    /// Do one start's worth of updating without a window and write what
+    /// happened to this file (`--update-step`, the release workflow's update drill).
+    pub update_step: Option<PathBuf>,
 }
 
 /// A step of the update window to show with sample numbers.
@@ -60,6 +63,12 @@ impl Options {
                     options.check_updates = false;
                 }
                 "--demo-crash" => options.demo_crash = true,
+                "--update-step" => {
+                    let report = args
+                        .next()
+                        .ok_or("--update-step needs a file to write its report to")?;
+                    options.update_step = Some(report.into());
+                }
                 "--graphics-warning" => options.graphics_warning = true,
                 "--update-window" => {
                     let step = args
@@ -100,6 +109,9 @@ mod tests {
         assert_eq!(o.demo, Some(200));
         assert_eq!(o.mode, RunMode::Screenshot("s.png".into()));
         assert!(parse(&["--demo", "many"]).is_err());
+        let o = parse(&["--update-step", "report.txt"]).unwrap();
+        assert_eq!(o.update_step, Some("report.txt".into()));
+        assert!(parse(&["--update-step"]).is_err());
         let o = parse(&["--update-window", "downloading"]).unwrap();
         assert_eq!(o.update_window, Some(UpdatePreview::Downloading));
         assert!(!o.check_updates);

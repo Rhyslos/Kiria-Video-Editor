@@ -6,6 +6,18 @@ Every release is built, tested, signed and published by GitHub Actions. Starting
 
 Every pull request runs the same Release workflow without publishing anything. Its run page has a `windows` artifact (the installer and update package) for trying the change before it is merged.
 
+A test build has the version an automatic beta of it would have (`<next patch>-beta.<run number>`), so its installer goes over the newest beta, and it follows later betas by itself.
+
+## The update drill
+
+Twice now a release went out that installed copies could not update to, so the workflow proves it every time (`packaging/windows/update-drill.ps1`), on pull requests too:
+
+- **Before publishing** it installs the previous release on a clean Windows machine and lets it update to the new build by itself: find it, download it, check the signature, install it, start the editor, replace the launcher, and then say "up to date" instead of offering the update again. The previous release reads the list of releases from the runner (the files about to be published) through the `<NAME>_UPDATE_FEED` variable. If any step fails, nothing is published.
+- **After publishing** it does the same once more with the previous release asking GitHub itself, as everybody's copy does. A release that installed copies can't find or fetch turns the run red within minutes.
+- It also installs the new build on its own and runs one step, so every release can be the starting point of the next drill.
+
+Each step is the launcher's own `--update-step <report file>`: what a normal start does about updates, without a window. The deliberately broken rollback-test build skips the drill.
+
 The Linux AppImage is paused for now: releases and betas are Windows only. The workflow keeps the Linux job, switched off, with a comment saying how to turn it back on; the Linux lines below apply again then.
 
 ## Automatic betas
@@ -43,7 +55,9 @@ To check that installed copies recover from a broken update: **Actions → Relea
    - installs the Windows build silently, starts it, and uninstalls it again,
    - starts the Linux build on a virtual screen,
    - writes `manifest.json` (every file's size and checksum), signs it, and checks the signature,
-   - publishes the GitHub release with all files, but only if every step above passed.
+   - runs the update drill from the previous release (above),
+   - publishes the GitHub release with all files, but only if every step above passed,
+   - removes old automatic betas, and runs the drill once more against GitHub itself.
 6. Installed copies find it the next time they open.
 
 ## The signing key

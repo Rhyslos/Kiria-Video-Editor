@@ -7,13 +7,14 @@
 //! newer version in the background and, with automatic updates on, downloads
 //! and verifies it; installing it arrives in Phase 3.
 //!
-//! Usage: `launcher --self-test` (answers and stops), or `launcher [project file] [--no-update-check] [--smoke-test | --screenshot <file.png>] [--demo <count>] [--update-window <available | downloading | ready>] [--demo-crash] [--graphics-warning]`.
+//! Usage: `launcher --self-test` (answers and stops), `launcher --update-step <report file>` (one start's worth of updating without a window, see `drill.rs`), or `launcher [project file] [--no-update-check] [--smoke-test | --screenshot <file.png>] [--demo <count>] [--update-window <available | downloading | ready>] [--demo-crash] [--graphics-warning]`.
 
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod browser;
 mod cards;
 mod demo;
+mod drill;
 mod editor_start;
 mod files;
 mod new_project;
@@ -54,6 +55,10 @@ fn main() -> ExitCode {
         }
     };
     tracing::info!(version = VERSION, "launcher started");
+
+    if let Some(report) = &options.update_step {
+        return drill::step(report, dirs.as_ref().map(|d| d.data.as_path()));
+    }
 
     // A verified update downloaded last time is installed before anything opens.
     let mut start_notes = Vec::new();
@@ -102,7 +107,7 @@ fn main() -> ExitCode {
 }
 
 /// What happened to a waiting update on start.
-enum Installed {
+pub(crate) enum Installed {
     Nothing,
     /// Installed; the editor that opens next is the new version.
     Version(String),
@@ -119,7 +124,7 @@ pub(crate) enum Note {
     Problem(diag::AppError),
 }
 
-fn install_waiting_update(data_dir: &Path) -> diag::Result<Installed> {
+pub(crate) fn install_waiting_update(data_dir: &Path) -> diag::Result<Installed> {
     use updater::apply::{self, InstallKind};
     let root = install_root();
     let kind = InstallKind::detect(&root);
@@ -177,7 +182,7 @@ fn install_root() -> std::path::PathBuf {
 }
 
 /// Starts the (new) launcher, with this run's arguments if `same_args`, and ends this one.
-fn restart_launcher(same_args: bool) -> ExitCode {
+pub(crate) fn restart_launcher(same_args: bool) -> ExitCode {
     let program = std::env::var_os("APPIMAGE")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| install_root().join(updater::apply::launcher_file_name()));
@@ -260,8 +265,10 @@ fn browse(
     }
     // The editor was started: make sure this version actually opens.
     let child = editor.lock().unwrap_or_else(|p| p.into_inner()).take();
-    if let Some(child) = child {
-        watch_editor(&data_dir, child);
+    if let Some(mut child) = child
+        && watch_editor(&data_dir, &mut child).rolled_back
+    {
+        restart_launcher(false);
     }
     if restart.load(std::sync::atomic::Ordering::Relaxed) {
         return restart_launcher(false);
@@ -282,7 +289,7 @@ fn open_directly(project: &Path, data_dir: Option<&Path>, check_updates: bool) -
     let Some(data_dir) = data_dir else {
         return ExitCode::FAILURE;
     };
-    let child = match editor_start::start_editor(data_dir, &[project.as_os_str()]) {
+    let mut child = match editor_start::start_editor(data_dir, &[project.as_os_str()]) {
         Ok(child) => child,
         Err(err) => {
             tracing::error!("{}", err.report());
@@ -299,23 +306,38 @@ fn open_directly(project: &Path, data_dir: Option<&Path>, check_updates: bool) -
     if check_updates {
         update_in_background(data_dir);
     }
-    watch_editor(data_dir, child);
+    if watch_editor(data_dir, &mut child).rolled_back {
+        restart_launcher(false);
+    }
     ExitCode::SUCCESS
 }
 
+/// How watching the editor start went.
+pub(crate) struct Watched {
+    /// `None` when this copy is not an installed one: nothing was watched.
+    pub outcome: Option<updater::health::StartOutcome>,
+    /// Repeated failures switched back to the previous version. The caller
+    /// opens the launcher again to explain.
+    pub rolled_back: bool,
+}
+
 /// Waits (up to 20 seconds, no window) for the editor to report that it
-/// started. Repeated failures switch back to the previous version; the
-/// launcher then opens again to explain.
-fn watch_editor(data_dir: &Path, mut child: std::process::Child) {
+/// started. A version that works lets its launcher replace this one;
+/// repeated failures switch back to the previous version.
+pub(crate) fn watch_editor(data_dir: &Path, child: &mut std::process::Child) -> Watched {
     use updater::apply::InstallKind;
     use updater::health;
+    let nothing = Watched {
+        outcome: None,
+        rolled_back: false,
+    };
     let InstallKind::Folders(layout) = InstallKind::detect(&install_root()) else {
-        return;
+        return nothing;
     };
     let Some(version) = layout.current_version() else {
-        return;
+        return nothing;
     };
-    let outcome = health::watch_start(data_dir, &mut child, health::START_TIMEOUT);
+    let outcome = health::watch_start(data_dir, child, health::START_TIMEOUT);
     tracing::info!(?outcome, %version, "editor start");
     if outcome == health::StartOutcome::Started {
         // The version works: now its launcher may replace this one (used from the next start).
@@ -325,13 +347,20 @@ fn watch_editor(data_dir: &Path, mut child: std::process::Child) {
             Err(err) => tracing::warn!("{}", err.report()),
         }
     }
-    match health::after_start(data_dir, &layout, &version, outcome) {
+    let rolled_back = match health::after_start(data_dir, &layout, &version, outcome) {
         Ok(Some(notice)) => {
             tracing::warn!(failed = %notice.failed, restored = %notice.restored, "rolled back");
-            restart_launcher(false);
+            true
         }
-        Ok(None) => {}
-        Err(err) => tracing::warn!("{}", err.report()),
+        Ok(None) => false,
+        Err(err) => {
+            tracing::warn!("{}", err.report());
+            false
+        }
+    };
+    Watched {
+        outcome: Some(outcome),
+        rolled_back,
     }
 }
 

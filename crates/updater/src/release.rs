@@ -69,9 +69,39 @@ struct GithubAsset {
 const PAGE: usize = 100;
 const PAGES: usize = 5;
 
+/// The name of the environment variable that gives another address to read
+/// the list of releases from, in place of GitHub's.
+///
+/// It exists for the release workflow's update drill: before a release is
+/// published, the previous one is installed on a clean machine and pointed
+/// at the files about to be published, to prove it can find, download,
+/// check and install them. Whatever a list offers, only a package whose
+/// manifest is signed with the release key is ever installed, and only a
+/// version newer than the one in use is offered.
+pub fn feed_variable() -> String {
+    format!("{}_UPDATE_FEED", brand::APP_NAME.to_uppercase())
+}
+
+/// The name of the environment variable holding a GitHub token to ask with.
+/// The drill sets it after publishing, because the machines it runs on share
+/// their addresses with many others and GitHub limits unnamed callers by
+/// address. Installed copies never have one.
+pub fn token_variable() -> String {
+    format!("{}_UPDATE_TOKEN", brand::APP_NAME.to_uppercase())
+}
+
+fn variable(name: &str) -> Option<String> {
+    std::env::var(name).ok().filter(|value| !value.trim().is_empty())
+}
+
 /// Asks GitHub for the newest release for this channel.
 pub fn check(current: &str, prefs: &UpdatePrefs) -> diag::Result<CheckResult> {
     let agent = crate::agent(CHECK_TIMEOUT);
+    if let Some(feed) = variable(&feed_variable()) {
+        tracing::warn!(%feed, "releases are read from here instead of GitHub");
+        return newest(current, prefs, parse(&get(&agent, &feed, None)?)?);
+    }
+    let token = variable(&token_variable());
     let mut releases = Vec::new();
     for page in 1..=PAGES {
         let url = format!(
@@ -79,15 +109,7 @@ pub fn check(current: &str, prefs: &UpdatePrefs) -> diag::Result<CheckResult> {
             brand::RELEASE_REPO_OWNER,
             brand::RELEASE_REPO_NAME
         );
-        let body = agent
-            .get(&url)
-            .header("Accept", "application/vnd.github+json")
-            .call()
-            .map_err(|err| explain_http(&err))?
-            .body_mut()
-            .read_to_string()
-            .or_explain(|| unreachable_server("The answer from GitHub was cut off."))?;
-        let listed = parse(&body)?;
+        let listed = parse(&get(&agent, &url, token.as_deref())?)?;
         let last = listed.len() < PAGE;
         releases.extend(listed);
         if last {
@@ -95,6 +117,19 @@ pub fn check(current: &str, prefs: &UpdatePrefs) -> diag::Result<CheckResult> {
         }
     }
     newest(current, prefs, releases)
+}
+
+fn get(agent: &ureq::Agent, url: &str, token: Option<&str>) -> diag::Result<String> {
+    let mut request = agent.get(url).header("Accept", "application/vnd.github+json");
+    if let Some(token) = token {
+        request = request.header("Authorization", format!("Bearer {token}"));
+    }
+    request
+        .call()
+        .map_err(|err| explain_http(&err))?
+        .body_mut()
+        .read_to_string()
+        .or_explain(|| unreachable_server("The answer from GitHub was cut off."))
 }
 
 fn parse(github_json: &str) -> diag::Result<Vec<GithubRelease>> {
@@ -220,6 +255,13 @@ mod tests {
             panic!("{r:?}")
         };
         assert_eq!(release.version.to_string(), "0.1.1-beta.101");
+    }
+
+    #[test]
+    fn the_drill_variables_are_named_after_the_app() {
+        let name = brand::APP_NAME.to_uppercase();
+        assert_eq!(feed_variable(), format!("{name}_UPDATE_FEED"));
+        assert_eq!(token_variable(), format!("{name}_UPDATE_TOKEN"));
     }
 
     #[test]
