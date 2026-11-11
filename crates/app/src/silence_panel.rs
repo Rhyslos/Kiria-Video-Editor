@@ -64,7 +64,14 @@ impl SilencePanel {
     }
 
     /// The window. `ready` is false while waveforms are still being read.
-    pub fn ui(&mut self, ctx: &egui::Context, theme: &Theme, project: &Project, ready: bool) -> Asked {
+    pub fn ui(
+        &mut self,
+        ctx: &egui::Context,
+        theme: &Theme,
+        project: &Project,
+        ready: bool,
+        undo: &str,
+    ) -> Asked {
         let Some(seq) = project.active() else {
             return Asked::Nothing;
         };
@@ -126,9 +133,9 @@ impl SilencePanel {
                 };
                 ui.label(egui::RichText::new(text).color(theme.text_secondary));
                 ui.label(
-                    egui::RichText::new(
-                        "Removing cuts them out of every track and closes the gaps. Ctrl+Z undoes it.",
-                    )
+                    egui::RichText::new(format!(
+                        "Removing cuts them out of every track and closes the gaps. {undo} undoes it."
+                    ))
                     .size(11.5)
                     .color(theme.muted),
                 );

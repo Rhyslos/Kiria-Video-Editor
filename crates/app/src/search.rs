@@ -19,7 +19,7 @@ impl Hit {
     /// The line shown for it.
     pub fn text(&self, fps: f64) -> String {
         match self {
-            Hit::Command { action, keys } => format!("{}    {keys}", action.label()),
+            Hit::Command { action, keys } => format!("{}    {keys}", action.label()).trim_end().to_owned(),
             Hit::Label { name, at } => {
                 format!("Go to label: {name}    {}", ui_kit::timeline::timecode(*at, fps))
             }
@@ -28,7 +28,7 @@ impl Hit {
             }
             Hit::Settings => "Settings: theme, editing, resources".into(),
             Hit::TimelineSettings => "Timeline settings: picture size, frame rate, sound rate".into(),
-            Hit::Shortcuts => "Keyboard shortcuts: every key, drawn".into(),
+            Hit::Shortcuts => "Keyboard shortcuts: every key, drawn; change them here".into(),
         }
     }
 }
@@ -47,13 +47,11 @@ pub fn results(
     let q = query.trim().to_lowercase();
     let matches = |text: &str| text.to_lowercase().contains(&q);
     let mut hits = Vec::new();
-    let mut seen = Vec::new();
-    for (action, shortcut) in shortcuts.bindings() {
-        if !seen.contains(action) && matches(action.label()) {
-            seen.push(*action);
+    for action in Action::ALL {
+        if matches(action.label()) {
             hits.push(Hit::Command {
                 action: *action,
-                keys: shortcut.label(),
+                keys: shortcuts.keys_for(*action),
             });
         }
     }
@@ -133,9 +131,37 @@ mod tests {
             find("label").iter().any(|h| matches!(h, Hit::Label { .. })),
             "\"label\" lists them all"
         );
+        assert!(
+            find("stop playing").contains(&Hit::Command {
+                action: Action::Stop,
+                keys: String::new()
+            }),
+            "a command without a shortcut is found too"
+        );
         assert!(find("theme").contains(&Hit::Settings));
         assert!(find("frame rate").contains(&Hit::TimelineSettings));
         assert!(find("hotkeys").contains(&Hit::Shortcuts));
         assert!(find("zzzz").is_empty());
+    }
+
+    #[test]
+    fn commands_show_the_keys_they_have_now() {
+        let mut table = ShortcutTable::default();
+        let keys_of = |table: &ShortcutTable, query: &str| {
+            results(query, table, None, |_| String::new())
+                .into_iter()
+                .find_map(|hit| match hit {
+                    Hit::Command { keys, .. } => Some(keys),
+                    _ => None,
+                })
+        };
+        assert_eq!(keys_of(&table, "split at"), Some("S".into()));
+        let split = table
+            .lines()
+            .iter()
+            .position(|b| b.action == Action::Split)
+            .unwrap();
+        table.swap(split, ui_kit::Shortcut::ctrl(egui::Key::B));
+        assert_eq!(keys_of(&table, "split at"), Some("Ctrl+B".into()));
     }
 }

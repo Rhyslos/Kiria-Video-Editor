@@ -33,7 +33,7 @@ impl VersionsWindow {
     }
 
     /// The window. `project` is the project as it is now (saved as a
-    /// version on a worker when asked).
+    /// version on a worker when asked); `undo` is Undo's shortcut, for a hint.
     pub fn ui(
         &mut self,
         ctx: &egui::Context,
@@ -41,6 +41,7 @@ impl VersionsWindow {
         jobs: &JobSystem,
         project: &Project,
         project_file: &Path,
+        undo: &str,
     ) -> Asked {
         let mut asked = Asked::Nothing;
         if let Some(handle) = &self.saving
@@ -111,7 +112,7 @@ impl VersionsWindow {
                             if self.reading.is_none()
                                 && ui
                                     .button("Restore")
-                                    .on_hover_text("Go back to this version. Ctrl+Z returns to now.")
+                                    .on_hover_text(format!("Go back to this version. {undo} returns to now."))
                                     .clicked()
                             {
                                 restore = Some(v.clone());

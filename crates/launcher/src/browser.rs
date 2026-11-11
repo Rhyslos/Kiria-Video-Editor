@@ -74,6 +74,9 @@ struct RenameDialog {
 pub struct Start {
     pub data_dir: PathBuf,
     pub theme: ui_kit::ThemeName,
+    /// The shortcuts changed in the editor, so Search and Settings are on
+    /// the same keys here.
+    pub shortcuts: ui_kit::shortcuts::SavedBindings,
     pub check_updates: bool,
     /// Start the editor when a project is opened (off in test runs).
     pub launch_editor: bool,
@@ -181,7 +184,7 @@ impl Browser {
             index_file,
             index,
             errors,
-            shortcuts: ShortcutTable::default(),
+            shortcuts: ShortcutTable::restored(&start.shortcuts),
             show_diagnostics: false,
             show_settings: false,
             graphics,
@@ -803,7 +806,10 @@ impl Browser {
                 }
                 let search = ui.add(
                     egui::TextEdit::singleline(&mut self.search)
-                        .hint_text("Search projects   Ctrl K")
+                        .hint_text(ui_kit::with_keys(
+                            "Search projects",
+                            &self.shortcuts.keys_for(Action::Search),
+                        ))
                         .desired_width(220.0),
                 );
                 if std::mem::take(&mut self.focus_search) {
@@ -1225,6 +1231,7 @@ impl eframe::App for Browser {
             .show(ui, |ui| {
                 settings = TitleBar {
                     title: brand::APP_NAME,
+                    settings_keys: &self.shortcuts.keys_for(Action::OpenSettings),
                 }
                 .show(ui, &self.theme);
             });

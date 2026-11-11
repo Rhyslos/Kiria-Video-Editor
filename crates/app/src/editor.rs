@@ -36,6 +36,8 @@ pub struct Start {
     pub problems: Vec<AppError>,
     /// A scripted pointer, for screenshots of pointing and dragging.
     pub pointer: Option<crate::fake_pointer::FakePointer>,
+    /// Open the keyboard shortcuts page in this state, for screenshots.
+    pub shortcuts_page: Option<ui_kit::keyboard::Preview>,
 }
 
 pub struct Editor {
@@ -80,6 +82,7 @@ pub struct Editor {
     master: ui_kit::master::MasterColumn,
     versions: crate::versions_window::VersionsWindow,
     shortcuts_page: Option<ui_kit::keyboard::ShortcutsPage>,
+    cheat_sheet: crate::cheat_sheet::CheatSheet,
     /// Commands asked for on the command line, run on the first frames.
     startup_actions: Vec<Action>,
     /// The viewer fills the screen (F; Escape returns).
@@ -138,6 +141,7 @@ impl Editor {
             report,
             problems,
             pointer,
+            shortcuts_page,
         } = start;
         ui_kit::setup(&cc.egui_ctx, settings.theme);
         let jobs = JobSystem::new(settings.resources.resolve(&jobs::Machine::detect()));
@@ -158,21 +162,21 @@ impl Editor {
         );
         let decoding =
             crate::device_decoding::WindowDecoding::new(&graphics, cc.wgpu_render_state.as_ref(), convert);
-        let shortcuts = ShortcutTable::default();
+        // The usual shortcuts, with the ones changed on the shortcuts page.
+        let shortcuts = ShortcutTable::restored(&settings.shortcuts);
+        let shortcuts_page =
+            shortcuts_page.map(|state| ui_kit::keyboard::ShortcutsPage::preview(state, &shortcuts));
         let startup_actions: Vec<Action> = project
             .as_ref()
             .map(|p| {
                 p.actions
                     .iter()
                     .filter_map(|name| {
-                        let found = shortcuts
-                            .bindings()
-                            .iter()
-                            .find(|(a, _)| format!("{a:?}") == *name);
+                        let found = Action::from_name(name);
                         if found.is_none() {
                             tracing::warn!("--action {name}: no such command");
                         }
-                        found.map(|(a, _)| *a)
+                        found
                     })
                     .collect()
             })
@@ -211,7 +215,7 @@ impl Editor {
             data_dir,
             graphics,
             page: Page::default(),
-            shortcuts: ShortcutTable::default(),
+            shortcuts,
             errors,
             jobs,
             usage: UsageMonitor::start(Duration::from_secs(1)),
@@ -244,7 +248,8 @@ impl Editor {
             label_editor: None,
             master: ui_kit::master::MasterColumn::default(),
             versions: crate::versions_window::VersionsWindow::default(),
-            shortcuts_page: None,
+            shortcuts_page,
+            cheat_sheet: crate::cheat_sheet::CheatSheet::default(),
             startup_actions,
             full_screen,
             full_screen_changed: full_screen,
@@ -452,6 +457,30 @@ impl Editor {
         };
         if let Err(err) = result {
             self.errors.push(&err);
+        }
+    }
+
+    /// The few shortcuts worth knowing first, as they are now: "M adds a
+    /// label, Ctrl+Z undoes, …". Commands without a shortcut are left out.
+    fn key_hints(&self) -> String {
+        let hints: Vec<String> = [
+            (Action::AddLabel, "adds a label"),
+            (Action::Undo, "undoes"),
+            (Action::Redo, "redoes"),
+            (Action::Save, "saves"),
+        ]
+        .iter()
+        .filter_map(|(action, does)| {
+            Some(format!(
+                "{} {does}",
+                self.shortcuts.shortcut_for(*action)?.label()
+            ))
+        })
+        .collect();
+        if hints.is_empty() {
+            String::new()
+        } else {
+            format!("{}.", hints.join(", "))
         }
     }
 
@@ -1021,19 +1050,48 @@ impl Editor {
         }
     }
 
-    /// The keyboard shortcuts page, in its own window.
+    /// The keyboard shortcuts page, in its own window. Shortcuts changed
+    /// there are in use at once and kept in settings.
     fn shortcuts_window(&mut self, ctx: &egui::Context) {
-        let Some(page) = self.shortcuts_page.as_mut() else {
-            return;
-        };
-        let mut open = true;
-        egui::Window::new("Keyboard shortcuts")
-            .open(&mut open)
-            .collapsible(false)
-            .default_size([820.0, 640.0])
-            .show(ctx, |ui| page.show(ui, &self.theme, &self.shortcuts));
-        if !open {
-            self.shortcuts_page = None;
+        if let Some(page) = self.shortcuts_page.as_mut() {
+            let mut open = true;
+            let mut asked = ui_kit::keyboard::PageResponse::default();
+            egui::Window::new("Keyboard shortcuts")
+                .open(&mut open)
+                .collapsible(false)
+                .default_pos([48.0, 64.0])
+                .default_size([1040.0, 800.0])
+                .show(ctx, |ui| {
+                    asked = page.show(
+                        ui,
+                        &self.theme,
+                        &mut self.shortcuts,
+                        &mut self.settings.keyboard_layout,
+                    );
+                });
+            if !open {
+                self.shortcuts_page = None;
+            }
+            if asked.changed {
+                self.settings.shortcuts = self.shortcuts.saved();
+                if let Err(err) = self.settings.save(&self.data_dir) {
+                    self.errors.push(&err);
+                }
+            }
+            if asked.cheat_sheet {
+                self.cheat_sheet
+                    .start(ctx, &self.shortcuts, self.settings.keyboard_layout);
+            }
+        }
+        match self.cheat_sheet.poll(&self.jobs, ctx) {
+            Some(crate::cheat_sheet::Saved::Done(path)) => {
+                self.status = format!(
+                    "Saved the cheat sheet as {}. Open it to print it.",
+                    path.display()
+                );
+            }
+            Some(crate::cheat_sheet::Saved::Failed(err)) => self.errors.push(&err),
+            None => {}
         }
     }
 
@@ -1048,9 +1106,10 @@ impl Editor {
             return;
         };
         let file = document.path().to_path_buf();
+        let undo = self.shortcuts.keys_or_name(Action::Undo);
         match self
             .versions
-            .ui(ctx, &self.theme, &self.jobs, document.project(), &file)
+            .ui(ctx, &self.theme, &self.jobs, document.project(), &file, &undo)
         {
             Asked::Nothing => {}
             Asked::Saved(name) => self.status = format!("Saved the version \"{name}\"."),
@@ -1059,7 +1118,10 @@ impl Editor {
                     Ok(()) => {
                         self.selected.clear();
                         self.fitted = false;
-                        self.status = format!("Restored \"{name}\". Ctrl+Z returns to before.");
+                        self.status = format!(
+                            "Restored \"{name}\". {} returns to before.",
+                            self.shortcuts.keys_or_name(Action::Undo)
+                        );
                     }
                     Err(err) => self.errors.push(&err),
                 }
@@ -1081,7 +1143,10 @@ impl Editor {
         let ready = self.silence.refresh(document.project(), |m, stream| {
             waveforms.whole(jobs, ctx, m, stream)
         });
-        let asked = self.silence.ui(ctx, &self.theme, document.project(), ready);
+        let undo = self.shortcuts.keys_or_name(Action::Undo);
+        let asked = self
+            .silence
+            .ui(ctx, &self.theme, document.project(), ready, &undo);
         if let crate::silence_panel::Asked::Remove(ranges) = asked {
             let count = ranges.len();
             let result = self.with_document(|d| {
@@ -1114,7 +1179,9 @@ impl Editor {
         let p = document.project();
         let mut quality = self.settings.preview_quality;
         let height = ui.available_height() - 28.0;
-        let click = self.viewer.ui(ui, &self.theme, p, &mut quality, None, height);
+        let click = self
+            .viewer
+            .ui(ui, &self.theme, p, &mut quality, None, height, &self.shortcuts);
         if let Some(click) = click {
             self.run_action(match click {
                 ui_kit::TransportClick::FrameBack => Action::PreviousFrame,
@@ -1231,6 +1298,8 @@ impl Editor {
             subtitle: &subtitle,
             page: self.page,
             usage: &usage,
+            search_keys: &self.shortcuts.keys_for(Action::Search),
+            settings_keys: &self.shortcuts.keys_for(Action::OpenSettings),
         }
         .show(ui, &self.theme);
         if let Some(page) = clicks.page {
@@ -1278,10 +1347,7 @@ impl Editor {
                     seq.edit_needle.timecode(seq.settings.frame_rate)
                 ));
             }
-            ui.label(
-                egui::RichText::new("M adds a label, Ctrl+Z undoes, Ctrl+Shift+Z redoes, Ctrl+S saves.")
-                    .color(self.theme.muted),
-            );
+            ui.label(egui::RichText::new(self.key_hints()).color(self.theme.muted));
         }
         if !self.status.is_empty() {
             ui.add_space(8.0);
@@ -1297,10 +1363,7 @@ impl Editor {
         let mut master_gain = None;
         let mut timeline_events = Vec::new();
         let mut toolbar_click = None;
-        let shortcut = self
-            .shortcuts
-            .shortcut_for(Action::Import)
-            .map_or_else(String::new, |s| s.label());
+        let shortcut = self.shortcuts.keys_for(Action::Import);
         ui.horizontal(|ui| {
             let button = ui_kit::accent_button(ui, &self.theme, "Import media…").on_hover_text(&shortcut);
             if button.clicked() {
@@ -1358,7 +1421,12 @@ impl Editor {
                 ui.label(egui::RichText::new("Nothing here yet").family(ui_kit::fonts::semibold()).size(18.0));
                 ui.label(
                     egui::RichText::new(format!(
-                        "Drop recordings on the window, or press {shortcut} to import them. Each file goes at the end of the timeline, with every sound stream on its own track."
+                        "Drop recordings on the window, or {} to import them. Each file goes at the end of the timeline, with every sound stream on its own track.",
+                        if shortcut.is_empty() {
+                            "click Import media".to_owned()
+                        } else {
+                            format!("press {shortcut}")
+                        }
                     ))
                     .color(self.theme.muted),
                 );
@@ -1382,6 +1450,7 @@ impl Editor {
                 &mut self.settings.preview_quality,
                 needle,
                 viewer_height,
+                &self.shortcuts,
             );
             if self.settings.preview_quality != quality_before
                 && let Err(err) = self.settings.save(&self.data_dir)
@@ -1401,13 +1470,7 @@ impl Editor {
             {
                 self.errors.push(&err);
             }
-            let tip = |a: Action| {
-                let key = self
-                    .shortcuts
-                    .shortcut_for(a)
-                    .map_or_else(String::new, |s| format!(" ({})", s.label()));
-                format!("{}{key}", a.label())
-            };
+            let tip = |a: Action| self.shortcuts.tip(a);
             let tips = [
                 tip(Action::SelectTool),
                 tip(Action::BladeTool),
@@ -1885,8 +1948,13 @@ impl eframe::App for Editor {
                 self.run_action(action);
             }
         }
-        for action in self.shortcuts.pressed(&ctx) {
-            self.run_action(action);
+        // While the shortcuts page waits for new keys, what is pressed is
+        // its answer, not a command.
+        let listening = self.shortcuts_page.as_ref().is_some_and(|p| p.listening());
+        if !listening {
+            for action in self.shortcuts.pressed(&ctx) {
+                self.run_action(action);
+            }
         }
         self.imports(&ctx);
         if self.play_when_ready && self.importer.busy() == 0 && self.document.is_some() {
