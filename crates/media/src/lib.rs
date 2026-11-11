@@ -33,7 +33,7 @@ pub mod vulkan;
 pub mod yuv;
 
 pub use audio::AudioDecoder;
-pub use decode::{Decoded, Decoding, Frame, Level, Newer, Reached, VideoDecoder};
+pub use decode::{Decoded, Decoding, Frame, Level, Newer, Reached, VideoDecoder, Work};
 pub use fingerprint::fingerprint;
 pub use probe::{Probe, probe};
 pub use vulkan::{GpuFrame, WindowDevice};

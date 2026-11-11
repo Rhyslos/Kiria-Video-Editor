@@ -35,6 +35,7 @@ use ffmpeg_sys_next as ff;
 use std::path::Path;
 use std::ptr;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use video_device::Copier;
 
 /// A decoded picture, upright, RGBA, `width × height`.
@@ -112,9 +113,33 @@ pub enum Newer {
     /// Nothing: carry on.
     Nothing,
     /// Another moment of the same file (seconds from its start).
-    At(f64),
+    /// `give_up` says whether the decode under way may be given up for it
+    /// when it can't serve it. When not, it is finished first: whoever
+    /// asks decides how often decodes may be thrown away, so that a
+    /// steady stream of requests still gets pictures.
+    At { moment: f64, give_up: bool },
     /// Something this decoder can't give: another file, nothing at all.
+    /// The decode is given up.
     Elsewhere,
+}
+
+/// The most a frame's stored time is taken to be off by (seconds), however
+/// coarse the stream's clock: well under a frame at any usual frame rate.
+const LARGEST_TICK: f64 = 0.002;
+
+/// Where the time of the last picture went: for finding out why one was slow.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Work {
+    /// The decoder jumped in the file first (otherwise it decoded on).
+    pub jumped: bool,
+    /// The jump itself: finding the place and emptying the decoder.
+    pub jump: Duration,
+    /// From the start until the first frame came out of the decoder.
+    pub first_frame: Option<Duration>,
+    /// Frames decoded.
+    pub frames: u32,
+    /// All of it, up to the frame being held.
+    pub decoding: Duration,
 }
 
 /// How a decode that may be overtaken by a newer request ended.
@@ -145,6 +170,13 @@ pub struct VideoDecoder {
     ahead_time: Option<f64>,
     /// Where the container says the key frames are.
     keys: KeyFrames,
+    /// How far a frame's stored time may be from its true time (seconds):
+    /// half a step of the stream's clock. A recording that counts in
+    /// milliseconds stores a frame due at 16.667 ms as 17; it is still the
+    /// frame on screen at 16.667.
+    tick: f64,
+    /// Where the time of the last picture went.
+    work: Work,
     scratch: *mut ff::AVFrame,
     copy: *mut ff::AVFrame,
     packet: *mut ff::AVPacket,
@@ -427,6 +459,8 @@ impl VideoDecoder {
                 ahead: ff::av_frame_alloc(),
                 ahead_time: None,
                 keys: KeyFrames::default(),
+                tick: 1e-6,
+                work: Work::default(),
                 scratch: ff::av_frame_alloc(),
                 copy: ff::av_frame_alloc(),
                 packet: ff::av_packet_alloc(),
@@ -439,6 +473,7 @@ impl VideoDecoder {
             if (*st).start_time != ff::AV_NOPTS_VALUE {
                 this.start = (*st).start_time as f64 * this.time_base;
             }
+            this.tick = (this.time_base / 2.0).clamp(1e-6, LARGEST_TICK);
             let r = ff::avcodec_parameters_to_context(codec, par);
             if r < 0 {
                 return Err(explain(path, "Reading the video settings", r));
@@ -505,6 +540,11 @@ impl VideoDecoder {
     /// list none, or not all).
     pub fn key_frames(&self) -> &KeyFrames {
         &self.keys
+    }
+
+    /// Where the time of the last picture went.
+    pub fn last_work(&self) -> Work {
+        self.work
     }
 
     /// Sets the codec up to decode on the window's device, into `format`
@@ -654,8 +694,9 @@ impl VideoDecoder {
     /// Whether getting to `target` from where the decoder is now is quicker
     /// by jumping than by decoding on.
     fn jumps_to(&self, target: f64) -> bool {
+        // A frame stored a tick late is still the frame at `target`: not behind it.
         self.keys
-            .jump(self.held_time, self.ahead_time, target, self.ended)
+            .jump(self.held_time, self.ahead_time, target + self.tick, self.ended)
     }
 
     /// Decodes (jumping first when that is quicker) until `held` is the
@@ -663,13 +704,19 @@ impl VideoDecoder {
     /// wanted by now (see [`VideoDecoder::picture_at_while`]). Returns the
     /// moment `held` is the frame for, or `None` when the decode was given up.
     fn hold(&mut self, seconds: f64, newer: &mut dyn FnMut() -> Newer) -> diag::Result<Option<f64>> {
+        let started = Instant::now();
         let mut target = seconds.max(0.0);
+        self.work = Work::default();
         if self.jumps_to(target) {
             self.seek(target)?;
+            self.work.jumped = true;
+            self.work.jump = started.elapsed();
         }
-        loop {
+        let reached = loop {
             if let Some(t) = self.ahead_time {
-                if t <= target + 1e-6 || self.held_time.is_none() {
+                // The frame on screen at `target` is the last one due by
+                // then, give or take what its stored time may be off by.
+                if t <= target + self.tick || self.held_time.is_none() {
                     // SAFETY: both frames are owned by self; `held` is cleared first.
                     unsafe {
                         ff::av_frame_unref(self.held);
@@ -678,33 +725,39 @@ impl VideoDecoder {
                     self.held_time = self.ahead_time.take();
                     continue;
                 }
-                break;
+                break Some(target);
             }
             // Another frame has to be decoded: is this still what is wanted?
             match newer() {
                 Newer::Nothing => {}
-                Newer::Elsewhere => return Ok(None),
-                Newer::At(wanted) => {
-                    let wanted = wanted.max(0.0);
-                    if self.jumps_to(wanted) {
-                        return Ok(None);
+                Newer::Elsewhere => break None,
+                Newer::At { moment, give_up } => {
+                    let moment = moment.max(0.0);
+                    if !self.jumps_to(moment) {
+                        // Reachable by decoding on. Earlier than the target:
+                        // stop there. Later: the target is on the way.
+                        target = target.min(moment);
+                    } else if give_up {
+                        break None;
                     }
-                    // Reachable by decoding on. Earlier than the target: stop
-                    // there. Later: the target is on the way, finish it first.
-                    target = target.min(wanted);
                 }
             }
             match self.decode_next()? {
-                Some(t) => self.ahead_time = Some(t),
-                None => break,
+                Some(t) => {
+                    self.ahead_time = Some(t);
+                    self.work.frames += 1;
+                    self.work.first_frame.get_or_insert_with(|| started.elapsed());
+                }
+                None => break Some(target),
             }
-        }
-        if self.held_time.is_none() {
+        };
+        self.work.decoding = started.elapsed();
+        if reached.is_some() && self.held_time.is_none() {
             return Err(AppError::new("The video can't be shown")
                 .why("No picture could be decoded at this point of the file.")
                 .fix("The file may be damaged. Check that it plays in a media player."));
         }
-        Ok(Some(target))
+        Ok(reached)
     }
 
     fn seek(&mut self, target: f64) -> diag::Result<()> {

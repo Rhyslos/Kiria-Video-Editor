@@ -16,6 +16,13 @@ const DECODE_ON_LIMIT: f64 = 3.0;
 /// (seconds) after it, whatever the stream says ([`KeyFrames::new`]).
 const LEAST_MARGIN: f64 = 0.05;
 
+/// A jump to a key frame ahead has to save at least this much decoding
+/// (seconds of video). Jumping is not free: the decoder is emptied and the
+/// file read from another place, which on some decoders costs as much as
+/// decoding dozens of frames. A key frame only a little way ahead is
+/// decoded up to and through instead, as smoothly as playing.
+const WORTH_JUMPING: f64 = 1.0;
+
 /// The key frames a container lists for one stream.
 #[derive(Debug, Clone, PartialEq)]
 pub struct KeyFrames {
@@ -66,12 +73,14 @@ impl KeyFrames {
         self.times.is_empty()
     }
 
-    /// Whether a key frame is listed after `position` that `target` has reached.
+    /// Whether jumping to the last key frame `target` has reached saves
+    /// enough decoding from `position` to be worth it.
     fn between(&self, position: f64, target: f64) -> bool {
-        let first_after = self.times.partition_point(|t| *t <= position + 1e-6);
-        self.times
-            .get(first_after)
-            .is_some_and(|key| key + self.margin <= target)
+        let reached = self.times.partition_point(|key| key + self.margin <= target);
+        reached
+            .checked_sub(1)
+            .and_then(|last| self.times.get(last))
+            .is_some_and(|key| key - position >= WORTH_JUMPING)
     }
 
     /// Whether getting to `target` is quicker by jumping than by decoding on.
@@ -109,20 +118,32 @@ mod tests {
     }
 
     #[test]
-    fn a_key_frame_on_the_way_is_jumped_to() {
+    fn a_key_frame_far_enough_ahead_is_jumped_to() {
         let keys = every_two_seconds();
         // Showing 10.5 s, decoded up to 10.52: 11.9 is ahead in the same group.
         assert!(!keys.jump(Some(10.5), Some(10.52), 11.9, false));
-        // 12.5 has passed the key frame at 12: jump there, don't decode 90 frames on.
+        // 12.5 has passed the key frame at 12, a second and a half ahead:
+        // jump there, don't decode 90 frames on.
         assert!(keys.jump(Some(10.5), Some(10.52), 12.5, false));
+        // Two groups on: the last key frame reached is the one to jump to.
+        assert!(keys.jump(Some(11.9), Some(11.92), 14.3, false));
         // Just after a key frame the list's time may be a few frames early: decode on.
         assert!(!keys.jump(Some(11.9), Some(11.92), 12.02, false));
-        assert!(keys.jump(Some(11.0), Some(11.02), 12.06, false));
         // Anything behind what is shown needs a jump, however near.
         assert!(keys.jump(Some(10.5), Some(10.52), 10.4, false));
         // The frame shown again, or the one decoded ahead of it: no jump.
         assert!(!keys.jump(Some(10.5), Some(10.52), 10.5, false));
         assert!(!keys.jump(Some(10.5), Some(10.52), 10.52, false));
+    }
+
+    #[test]
+    fn a_key_frame_close_ahead_is_decoded_through() {
+        let keys = every_two_seconds();
+        // Dragging forwards from 11.7 to 12.4: the key frame at 12 is 18
+        // frames away. Jumping would save those and cost a jump.
+        assert!(!keys.jump(Some(11.7), Some(11.72), 12.4, false));
+        // From 10.9 it is more than a second away: worth it.
+        assert!(keys.jump(Some(10.9), Some(10.92), 12.4, false));
     }
 
     #[test]
@@ -133,8 +154,8 @@ mod tests {
         let keys = KeyFrames::new((0..30).map(|i| f64::from(i) * 2.0).collect(), 5.0 / 24.0);
         // The last frames of the group before it: decode on to them.
         assert!(!keys.jump(Some(11.0), Some(11.04), 12.125, false));
-        // Well into the next group: jump.
-        assert!(keys.jump(Some(11.0), Some(11.04), 12.5, false));
+        // Well into the next group, from far enough back: jump.
+        assert!(keys.jump(Some(10.5), Some(10.54), 12.5, false));
     }
 
     #[test]
