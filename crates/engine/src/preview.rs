@@ -19,6 +19,13 @@
 //! passed on the way to it. Going back over them (a step back, a drag,
 //! playing a stretch again) shows them at once, without the decoder.
 //!
+//! When nothing has been asked for a moment, the worker fills in behind the
+//! playhead ([`Worker::fill`]): it decodes the stretch before the frames
+//! that are kept, from the key frame before them, so that going back
+//! across a key frame finds its frames there too. It does so on a decoder
+//! of its own (the one at the playhead keeps its place) and stops between
+//! frames as soon as anything is asked for.
+//!
 //! Decoders are kept open for the files used most recently, so moving around
 //! one recording only seeks.
 //!
@@ -40,11 +47,21 @@ use project::{MediaId, Project, SequenceId, Time};
 use std::collections::{HashSet, VecDeque};
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError, channel};
 use std::time::{Duration, Instant};
 
 /// How many files keep an open decoder.
 const OPEN_DECODERS: usize = 4;
+
+/// How long nothing must have been asked for before the worker fills in
+/// behind the playhead: longer than the gap between two requests while
+/// playing or dragging, so filling never competes with either.
+const IDLE_AFTER: Duration = Duration::from_millis(80);
+
+/// How much is kept behind the playhead (seconds of video), when the frames
+/// are there to be kept: less than this behind it, and the stretch before
+/// is filled in.
+const KEPT_BEHIND: f64 = 2.0;
 
 /// Where a picture's colour is converted for the screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -163,6 +180,10 @@ impl Preview {
             decoders: VecDeque::new(),
             off_device: HashSet::new(),
             gave_up_last: false,
+            playhead: None,
+            filler: None,
+            unfillable: HashSet::new(),
+            stuck: None,
         };
         let (running, ended) = channel::<()>();
         let spawned = std::thread::Builder::new().name("preview".into()).spawn(move || {
@@ -225,7 +246,19 @@ impl Preview {
 
 fn run(inbox: &Receiver<Request>, outbox: &Sender<Picture>, mut worker: Worker, notify: &dyn Fn()) {
     let mut waiting = Waiting::new(inbox);
-    while let Some(request) = waiting.next() {
+    loop {
+        let request = match waiting.next_within(IDLE_AFTER) {
+            Next::Request(request) => request,
+            Next::Closed => return,
+            // Nothing asked for a moment: fill in behind the playhead, a
+            // stretch at a time, until there is nothing to fill or
+            // something is asked for.
+            Next::Idle if worker.fill(&mut waiting) => continue,
+            Next::Idle => match waiting.next() {
+                Some(request) => request,
+                None => return,
+            },
+        };
         // A decode the next request can't use is given up: nothing to send.
         let Some(picture) = worker.picture(&request, &mut waiting) else {
             continue;
@@ -235,6 +268,15 @@ fn run(inbox: &Receiver<Request>, outbox: &Sender<Picture>, mut worker: Worker, 
         }
         notify();
     }
+}
+
+/// What came of waiting for a request for a while.
+enum Next {
+    Request(Request),
+    /// Nothing was asked for in that time.
+    Idle,
+    /// Nobody asks any more.
+    Closed,
 }
 
 /// The requests that have arrived and not been worked on: only the newest
@@ -271,6 +313,23 @@ impl<'a> Waiting<'a> {
                     return newer;
                 }
             }
+        }
+    }
+
+    /// The request to work on next, waiting at most `patience` for one to arrive.
+    fn next_within(&mut self, patience: Duration) -> Next {
+        self.take_in();
+        if self.newest.is_none() && !self.closed {
+            match self.inbox.recv_timeout(patience) {
+                Ok(request) => self.newest = Some(request),
+                Err(RecvTimeoutError::Timeout) => return Next::Idle,
+                Err(RecvTimeoutError::Disconnected) => self.closed = true,
+            }
+            self.take_in();
+        }
+        match self.newest.take() {
+            Some(request) if !self.closed => Next::Request(request),
+            _ => Next::Closed,
         }
     }
 
@@ -311,6 +370,38 @@ struct Worker {
     gave_up_last: bool,
     /// Frames decoded on the window's device, kept there.
     frames: FrameCache<(MediaId, u32), GpuFrame>,
+    /// Where the playhead last was in a file whose frames are kept: what
+    /// to fill in behind.
+    playhead: Option<Playhead>,
+    /// The decoder that fills in, and the file it has open.
+    filler: Option<((MediaId, u32), VideoDecoder)>,
+    /// Files that could not be filled in: not tried again.
+    unfillable: HashSet<(MediaId, u32)>,
+    /// A stretch (file, and where its kept frames begin) that a finished
+    /// fill did not make any longer: left alone until that changes.
+    stuck: Option<((MediaId, u32), f64)>,
+}
+
+/// A file the viewer is showing, and where in it.
+#[derive(Debug, Clone)]
+struct Playhead {
+    key: (MediaId, u32),
+    path: std::path::PathBuf,
+    rotation: u16,
+    /// Seconds from the start of the file.
+    moment: f64,
+    /// The size pictures are asked for at.
+    size: (u32, u32),
+}
+
+/// The moment to decode up to so that the stretch before the frames kept
+/// around `moment` is kept too, when it should be: `kept_from` is where the
+/// kept frames begin. `None` when enough is kept behind `moment`, or the
+/// kept frames begin at the start of the file.
+fn fill_up_to(moment: f64, kept_from: f64, tick: f64) -> Option<f64> {
+    // Just before the first kept frame: the frame on screen then is the last one missing.
+    let last_missing = kept_from - tick - 0.0002;
+    (moment - kept_from < KEPT_BEHIND && last_missing > 0.0).then_some(last_missing)
 }
 
 /// What the viewer's corner says for a picture that was kept.
@@ -332,6 +423,7 @@ impl Worker {
         };
         // Whatever is answered without decoding counts as a finished answer.
         let gave_up_last = std::mem::take(&mut self.gave_up_last);
+        self.playhead = None;
         let Some(sequence) = r.project.sequences.iter().find(|s| s.id == r.sequence) else {
             return Some(out);
         };
@@ -345,6 +437,16 @@ impl Worker {
             rotation: showing.media.info.video.as_ref().map_or(0, |v| v.rotation),
         };
         let at = showing.source_time.as_secs_f64();
+        // The frames around the playhead are the last to make room, and
+        // what is filled in behind when nothing else is going on.
+        self.frames.look_at(key, at);
+        self.playhead = Some(Playhead {
+            key,
+            path: file.path.to_path_buf(),
+            rotation: file.rotation,
+            moment: at,
+            size: (r.max_width, r.max_height),
+        });
         // Decoded before and still kept: nothing to decode.
         if let Some(frame) = self.frames.get(key, at) {
             out.frame = Some(Decoded::Gpu(frame));
@@ -472,6 +574,103 @@ impl Worker {
         }
         out.took = started.elapsed();
         Some(out)
+    }
+
+    /// Fills in behind the playhead: decodes the stretch before the frames
+    /// kept around it, from the key frame before them, keeping every frame.
+    /// Stops between frames as soon as a request arrives. Returns whether
+    /// anything was done (there may be more to do).
+    fn fill(&mut self, waiting: &mut Waiting<'_>) -> bool {
+        let Some(playhead) = self.playhead.clone() else {
+            return false;
+        };
+        let key = playhead.key;
+        if self.unfillable.contains(&key) || self.off_device.contains(&key) {
+            return false;
+        }
+        let Some(kept_from) = self.frames.stretch_start(key, playhead.moment) else {
+            return false; // the frame at the playhead isn't kept: nothing to add to
+        };
+        if self.stuck == Some((key, kept_from)) {
+            return false;
+        }
+        // The filler is a decoder of its own: the one at the playhead keeps its place.
+        // A second decoder on the device failing says nothing about the
+        // first: the file is just not filled in.
+        let Some(on_device) = &self.on_device else {
+            return false;
+        };
+        let opened = match self.filler.take() {
+            Some((open, decoder)) if open == key => Ok(decoder),
+            _ => {
+                on_device.watch.about_to_decode();
+                let opened =
+                    VideoDecoder::open_on_device(&playhead.path, key.1, playhead.rotation, &on_device.device);
+                match &opened {
+                    Ok(_) => on_device.watch.answered(),
+                    Err(_) => on_device.watch.reported_an_error(),
+                }
+                opened
+            }
+        };
+        let mut decoder = match opened {
+            Ok(decoder) => decoder,
+            Err(err) => {
+                tracing::info!(file = %playhead.path.display(), "not filling in behind the playhead: {}", err.report());
+                self.unfillable.insert(key);
+                return false;
+            }
+        };
+        let tick = decoder.tick();
+        // Enough is kept behind the playhead already, or what would be
+        // added is further from it than everything there is room for.
+        let up_to =
+            fill_up_to(playhead.moment, kept_from, tick).filter(|up_to| self.frames.would_keep(key, *up_to));
+        let Some(up_to) = up_to else {
+            self.filler = Some((key, decoder));
+            return false;
+        };
+        let frames = &mut self.frames;
+        let mut keep = |picture: Decoded, until: f64| {
+            if let Decoded::Gpu(frame) = picture {
+                let (w, h) = frame.planes.size();
+                let bytes = u64::from(w) * u64::from(h) * 3 / 2;
+                frames.put(key, frame.time, until, tick, bytes, frame);
+            }
+        };
+        // Anything asked for comes first.
+        let mut newer = || {
+            waiting.take_in();
+            if waiting.newest.is_some() || waiting.closed {
+                Newer::Elsewhere
+            } else {
+                Newer::Nothing
+            }
+        };
+        on_device.watch.about_to_decode();
+        let (w, h) = playhead.size;
+        let reached = decoder.picture_at_while(up_to, w, h, &mut newer, Some(&mut keep));
+        match reached {
+            Ok(reached) => {
+                on_device.watch.answered();
+                self.filler = Some((key, decoder));
+                // Finished, and the kept stretch begins where it did: the
+                // frames didn't join up (times that don't follow on). Not again.
+                if matches!(reached, Reached::Shown { .. })
+                    && self.frames.stretch_start(key, playhead.moment) == Some(kept_from)
+                {
+                    self.stuck = Some((key, kept_from));
+                }
+                // Given up for a request: more to do later. Finished: look again.
+                true
+            }
+            Err(err) => {
+                on_device.watch.reported_an_error();
+                tracing::warn!(file = %playhead.path.display(), "filling in behind the playhead failed: {}", err.report());
+                self.unfillable.insert(key);
+                false
+            }
+        }
     }
 
     /// The ways to try for a file: all of them, or those below the window's
@@ -763,6 +962,10 @@ mod tests {
             off_device: HashSet::new(),
             gave_up_last: false,
             frames: FrameCache::new(0),
+            playhead: None,
+            filler: None,
+            unfillable: HashSet::new(),
+            stuck: None,
         };
         assert_eq!(worker.ladder_for(failed), [Device, Hardware, Software]);
         worker.off_device.insert(failed);
@@ -805,6 +1008,10 @@ mod tests {
             off_device: HashSet::new(),
             gave_up_last: false,
             frames: FrameCache::new(0),
+            playhead: None,
+            filler: None,
+            unfillable: HashSet::new(),
+            stuck: None,
         };
         (worker, p, seq)
     }
@@ -817,6 +1024,52 @@ mod tests {
             max_width: 160,
             max_height: 160,
         }
+    }
+
+    #[test]
+    fn waiting_for_a_request_ends_when_nothing_comes() {
+        let (_, p, seq) = worker_and_project();
+        let (requests, inbox) = channel::<Request>();
+        let mut waiting = Waiting::new(&inbox);
+        let patience = Duration::from_millis(20);
+        assert!(matches!(waiting.next_within(patience), Next::Idle));
+        requests.send(request(&p, seq, 100)).unwrap();
+        requests.send(request(&p, seq, 200)).unwrap();
+        let Next::Request(newest) = waiting.next_within(patience) else {
+            panic!("a request was waiting");
+        };
+        assert_eq!(Some(newest.at), Time::from_ratio(200, 1000));
+        assert!(matches!(waiting.next_within(patience), Next::Idle));
+        drop(requests);
+        assert!(matches!(waiting.next_within(patience), Next::Closed));
+    }
+
+    #[test]
+    fn the_stretch_behind_the_playhead_is_filled_in_when_little_is_kept() {
+        let tick = 0.0005;
+        // The playhead is 0.3 s into the frames kept, which begin at 12 s:
+        // decode up to the frame just before them.
+        let up_to = fill_up_to(12.3, 12.0, tick).unwrap();
+        assert!(up_to < 12.0 - tick && up_to > 12.0 - 0.004, "{up_to}");
+        // Two seconds or more are kept behind it: enough.
+        assert_eq!(fill_up_to(14.0, 12.0, tick), None);
+        // The frames kept begin at the start of the file: nothing before them.
+        assert_eq!(fill_up_to(0.5, 0.0, tick), None);
+    }
+
+    #[test]
+    fn with_nothing_kept_there_is_nothing_to_fill_in() {
+        let (mut worker, p, seq) = worker_and_project();
+        let (_requests, inbox) = channel::<Request>();
+        let mut waiting = Waiting::new(&inbox);
+        assert!(!worker.fill(&mut waiting), "no playhead yet");
+        // A picture decoded on the CPU is not kept, so nothing is filled in behind it.
+        worker.picture(&request(&p, seq, 1000), &mut waiting).unwrap();
+        assert!(worker.playhead.is_some());
+        assert!(!worker.fill(&mut waiting));
+        // In a gap there is no file to fill in.
+        worker.picture(&request(&p, seq, 30_000), &mut waiting).unwrap();
+        assert!(worker.playhead.is_none());
     }
 
     #[test]

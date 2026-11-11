@@ -333,7 +333,11 @@ It makes stepping, short scrubs, going back and forth, replaying and playing bac
 - `engine::frames::FrameCache` keeps them by file and time, within a budget in bytes: a quarter of the card's own memory, between 256 MB and 2 GB (two seconds of 1440p at 60 frames a second is about 1 GB). The frame used longest ago goes first.
 - The preview worker looks there before it touches a decoder. A kept frame is shown in well under a millisecond; the viewer's corner says "kept on the graphics card".
 
-Not built yet: the idle fill (the group of pictures behind the playhead, so stepping back across a key frame doesn't decode that group at that moment), the same for the two ways of decoding that end in memory (planes at the viewer's size, shared between the cache and the viewer), and marking kept stretches in the timeline's cache bar.
+*Confirmed on the test machine:* stepping and dragging back over a kept stretch is instant, and keeping every frame did not slow decoding (still about 3 ms a frame).
+
+*The fill behind the playhead (built).* When nothing has been asked for 80 ms (longer than the gap between requests while playing or dragging), the worker decodes the stretch before the kept frames, from the key frame before them, on a decoder of its own so that the one at the playhead keeps its place. It keeps at least two seconds behind the playhead, stops between frames the moment anything is asked for, and carries on from there the next time it is idle. So stepping back across a key frame finds that stretch kept too. Room is made by distance now, not age: other files' frames go first, then the frames of the file being looked at that are furthest from the playhead; and nothing is decoded that would be further from the playhead than everything there is room for.
+
+Not built yet: the same for the two ways of decoding that end in memory (planes at the viewer's size, shared between the cache and the viewer), a fill ahead of the playhead, and marking kept stretches in the timeline's cache bar.
 
 **3. C: proxies**, the build plan's Off / On / Auto. The only way to the right frame within 50 ms anywhere in a file.
 
