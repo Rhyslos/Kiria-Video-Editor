@@ -12,6 +12,7 @@ mod run_mode;
 mod settings;
 mod timeline_panel;
 mod viewer;
+mod waveforms;
 
 use editor::{Editor, ProjectToOpen, RunReport};
 use run_mode::{Options, RunMode};

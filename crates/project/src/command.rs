@@ -93,6 +93,14 @@ pub enum Command {
         sequence: SequenceId,
         at: Time,
     },
+    /// A track's mute, solo and volume (decibels; 0 leaves the sound as it is).
+    SetTrackMix {
+        sequence: SequenceId,
+        track: TrackId,
+        muted: bool,
+        solo: bool,
+        gain_db: f32,
+    },
     /// Fixes a timeline's picture size, frame rate and sound rate (it stops being automatic).
     SetSettings {
         sequence: SequenceId,
@@ -222,6 +230,22 @@ impl Command {
                         .why("A region must start at or after zero and end after it starts."));
                 }
                 sequence_mut(&mut p, *sequence)?.region = *region;
+            }
+            Command::SetTrackMix {
+                sequence,
+                track,
+                muted,
+                solo,
+                gain_db,
+            } => {
+                if !gain_db.is_finite() || !(-60.0..=12.0).contains(gain_db) {
+                    return Err(AppError::new("That volume can't be set")
+                        .why("Track volume goes from -60 dB (nearly silent) to +12 dB."));
+                }
+                let t = track_mut(sequence_mut(&mut p, *sequence)?, *track)?;
+                t.muted = *muted;
+                t.solo = *solo;
+                t.gain_db = *gain_db;
             }
             Command::SetSettings { sequence, settings } => {
                 if settings.width == 0 || settings.height == 0 || settings.sample_rate == 0 {
@@ -1096,5 +1120,30 @@ mod tests {
         }
         .apply(&p);
         assert!(gone.is_err());
+    }
+
+    #[test]
+    fn track_mix_is_set_and_limited() {
+        let f = fixture();
+        let p = Command::SetTrackMix {
+            sequence: f.seq,
+            track: f.a1,
+            muted: true,
+            solo: false,
+            gain_db: -6.0,
+        }
+        .apply(&f.p)
+        .unwrap();
+        let t = &p.active().unwrap().audio_tracks[0];
+        assert!(t.muted && !t.solo);
+        assert_eq!(t.gain_db, -6.0);
+        let loud = Command::SetTrackMix {
+            sequence: f.seq,
+            track: f.a1,
+            muted: false,
+            solo: false,
+            gain_db: 40.0,
+        };
+        assert!(loud.apply(&f.p).is_err());
     }
 }
