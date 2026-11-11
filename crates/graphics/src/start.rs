@@ -3,7 +3,7 @@
 
 use crate::{
     Backend, GraphicsChoice, GraphicsSettings, MarkerState, Plan, Platform, Program, RunKind, StartMarker,
-    plan,
+    VideoDecoding, plan, vulkan_device,
 };
 use diag::AppError;
 use eframe::{egui_wgpu, wgpu};
@@ -11,6 +11,7 @@ use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
+use video_device::VideoDevice;
 
 /// What a program decided about graphics before its window opens.
 #[derive(Debug, Clone)]
@@ -44,6 +45,7 @@ impl Startup {
             failed,
             marker: (self.plan.guard && backend == Backend::Vulkan).then(|| self.marker.clone()),
             ask: self.plan.ask || self.warning_preview,
+            video: VideoDecoding::without_own_device(self.program, backend, self.platform),
             platform: self.platform,
             settings: self.settings,
             data_dir: self.data_dir.clone(),
@@ -144,6 +146,8 @@ pub struct Opened {
     pub(crate) marker: Option<StartMarker>,
     /// Ask whether to keep Direct3D 12 or to try Vulkan again.
     pub(crate) ask: bool,
+    /// Whether the window's device was opened for video decoding too.
+    pub(crate) video: VideoDecoding,
     pub(crate) platform: Platform,
     pub(crate) settings: GraphicsSettings,
     pub(crate) data_dir: PathBuf,
@@ -180,44 +184,85 @@ pub fn open_window<S>(
             failed.push(FailedTry { backend, reason });
             continue;
         }
-        let options = eframe::NativeOptions {
-            renderer: eframe::Renderer::Wgpu,
-            wgpu_options: toolkit_options(backend),
-            ..window()
-        };
-        let opened = startup.opened(backend, failed.clone());
-        let (for_window, create) = (Rc::clone(&start), &create);
-        let result = eframe::run_native(
-            app_name,
-            options,
-            Box::new(move |cc| match for_window.borrow_mut().take() {
-                Some(start) => Ok(create(cc, start, opened)),
-                None => Err(AppError::new(format!("The {window_name} was opened twice")).into()),
-            }),
-        );
-        let window_existed = start.borrow().is_none();
-        match result {
-            Ok(()) => {
-                if guarded && let Err(err) = startup.marker.clear() {
-                    tracing::warn!("{}", err.report());
+        // With Vulkan, the device is first opened here with video decoding
+        // (inside the marker's guard, like everything Vulkan). If that
+        // can't be done, or the window doesn't open on it, the toolkit
+        // opens its own device as it always did.
+        let mut tries: Vec<(egui_wgpu::WgpuConfiguration, Option<Arc<VideoDevice>>)> = Vec::new();
+        let mut why_not = None;
+        if backend == Backend::Vulkan && startup.program.plays_video() {
+            match own_vulkan_device() {
+                Ok((options, device)) => tries.push((options, Some(device))),
+                Err(reason) => {
+                    tracing::info!("the window's device is not opened for video decoding: {reason}");
+                    why_not = Some(reason);
                 }
-                return Ok(());
             }
-            // The window was open (or opening) when it failed: nothing to fall
-            // back to in this start. A marker still there makes the next one
-            // use Direct3D 12.
-            Err(err) if window_existed => {
-                return Err(AppError::new(format!("The {window_name} stopped working"))
-                    .why(format!("The graphics system reported: {err}"))
-                    .fix("Start the app again. If it keeps happening, update your graphics driver and report it with the log file."));
-            }
-            Err(err) => {
-                if guarded && let Err(err) = startup.marker.clear() {
-                    tracing::warn!("{}", err.report());
+        }
+        tries.push((toolkit_options(backend), None));
+        let last = tries.len() - 1;
+        for (index, (wgpu_options, device)) in tries.into_iter().enumerate() {
+            let own_device = device.is_some();
+            let mut opened = startup.opened(backend, failed.clone());
+            opened.video = match (device, &why_not) {
+                (Some(device), _) => VideoDecoding::OnDevice(device),
+                (None, Some(reason)) => VideoDecoding::NotAvailable(reason.clone()),
+                (None, None) => opened.video,
+            };
+            let options = eframe::NativeOptions {
+                renderer: eframe::Renderer::Wgpu,
+                wgpu_options,
+                ..window()
+            };
+            let (for_window, create) = (Rc::clone(&start), &create);
+            let result = eframe::run_native(
+                app_name,
+                options,
+                Box::new(move |cc| match for_window.borrow_mut().take() {
+                    Some(start) => Ok(create(cc, start, opened)),
+                    None => Err(AppError::new(format!("The {window_name} was opened twice")).into()),
+                }),
+            );
+            let window_existed = start.borrow().is_none();
+            match result {
+                Ok(()) => {
+                    if guarded && let Err(err) = startup.marker.clear() {
+                        tracing::warn!("{}", err.report());
+                    }
+                    return Ok(());
                 }
-                let failure = FailedTry::new(backend, &err);
-                tracing::warn!("{} did not start: {}", backend.label(), failure.reason);
-                failed.push(failure);
+                // The window was open (or opening) when it failed: nothing to fall
+                // back to in this start. A marker still there makes the next one
+                // use Direct3D 12.
+                Err(err) if window_existed => {
+                    return Err(AppError::new(format!("The {window_name} stopped working"))
+                        .why(format!("The graphics system reported: {err}"))
+                        .fix("Start the app again. If it keeps happening, update your graphics driver and report it with the log file."));
+                }
+                // The device opened for video decoding didn't open the
+                // window: the toolkit's own device is tried next.
+                Err(err) if own_device && index < last => {
+                    let failure = FailedTry::new(backend, &err);
+                    tracing::warn!(
+                        "{} did not start on the device opened for video decoding: {}",
+                        backend.label(),
+                        failure.reason
+                    );
+                    why_not = Some(format!(
+                        "the window didn't open on the device opened for it ({})",
+                        failure.reason
+                    ));
+                    let reason = format!("with video decoding: {}", failure.reason);
+                    failed.push(FailedTry { backend, reason });
+                }
+                Err(err) => {
+                    if guarded && let Err(err) = startup.marker.clear() {
+                        tracing::warn!("{}", err.report());
+                    }
+                    let failure = FailedTry::new(backend, &err);
+                    tracing::warn!("{} did not start: {}", backend.label(), failure.reason);
+                    failed.push(failure);
+                }
             }
         }
     }
@@ -255,9 +300,25 @@ fn toolkit_options(backend: Backend) -> egui_wgpu::WgpuConfiguration {
     options
 }
 
+/// Opens the window's Vulkan device here, with video decoding, the way the
+/// toolkit would open it otherwise: the same instance settings, the same
+/// choice of card, the same limits. Returns the toolkit's set-up around that
+/// device and the handle for the decoder, or the reason it can't be done.
+fn own_vulkan_device() -> Result<(egui_wgpu::WgpuConfiguration, Arc<VideoDevice>), String> {
+    let mut options = toolkit_options(Backend::Vulkan);
+    let egui_wgpu::WgpuSetup::CreateNew(setup) = options.wgpu_setup else {
+        return Err("the window toolkit was given a device already".into());
+    };
+    let prefer_integrated = setup.power_preference == wgpu::PowerPreference::LowPower;
+    let device = Arc::clone(&setup.device_descriptor);
+    let own = vulkan_device::open(setup.instance_descriptor, prefer_integrated, &*device)?;
+    options.wgpu_setup = egui_wgpu::WgpuSetup::Existing(own.setup);
+    Ok((options, own.video))
+}
+
 /// The best real graphics card that can draw to the window. Software drawing
 /// through Vulkan is refused: Direct3D 12 on a real card beats it.
-fn pick_card(
+pub(crate) fn pick_card(
     adapters: &[wgpu::Adapter],
     surface: Option<&wgpu::Surface<'_>>,
     prefer_integrated: bool,
@@ -451,6 +512,21 @@ mod tests {
             assert!(card_rank(Other, prefer_integrated) < card_rank(VirtualGpu, prefer_integrated));
             assert_eq!(card_rank(Cpu, prefer_integrated), None);
         }
+    }
+
+    #[test]
+    fn opening_the_device_here_gives_the_toolkit_a_device_or_a_reason() {
+        // Without a real card with video decoding (none on the machines that
+        // run the tests) this is a reason in words, never a failed start.
+        match own_vulkan_device() {
+            Ok((options, device)) => {
+                assert!(matches!(options.wgpu_setup, egui_wgpu::WgpuSetup::Existing(_)));
+                assert!(!device.codecs().is_empty());
+            }
+            Err(reason) => assert!(!reason.is_empty()),
+        }
+        // The launcher never gets there: it plays no video.
+        assert!(Program::Editor.plays_video() && !Program::Launcher.plays_video());
     }
 
     #[test]

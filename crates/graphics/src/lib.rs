@@ -8,6 +8,10 @@
 //!    looks for the program's start marker and decides what to try ([`plan`]).
 //! 2. [`open_window`] tries each graphics system on its own, in that order.
 //!    One that reports an error is followed by the next in the same start.
+//!    With Vulkan, the device is first opened here instead of by the window
+//!    toolkit, with its video decode queues switched on (`vulkan_device`), so
+//!    that video can be decoded on it; when that can't be done, the toolkit
+//!    opens its own device as before and [`VideoDecoding`] says why.
 //! 3. A driver can also fail without reporting anything: a crash or a freeze
 //!    while the window opens. [`StartMarker`] catches that. It is written
 //!    before a start with Vulkan and removed once frames have been drawn, so a
@@ -16,18 +20,22 @@
 //! 4. [`WindowGraphics`] is the window's side: it removes the marker after the
 //!    first frames, asks whether to keep Direct3D 12 or try Vulkan again
 //!    after a failed start, draws the Graphics row in Settings, and tells
-//!    Diagnostics, the log and crash reports what is in use.
+//!    Diagnostics, the log and crash reports what is in use and which kinds
+//!    of video the window's device decodes.
 
 mod marker;
 mod plan;
 mod settings;
 mod start;
+mod video;
+mod vulkan_device;
 mod window;
 
 pub use marker::{MarkerState, Program, StartMarker};
 pub use plan::{Backend, Plan, Platform, RunKind, plan};
 pub use settings::{GraphicsChoice, GraphicsSettings};
 pub use start::{FailedTry, Opened, Startup, open_window, prepare};
+pub use video::VideoDecoding;
 pub use window::{WarningAnswer, WindowGraphics};
 
 /// Frames drawn with Vulkan before the start counts as working.
