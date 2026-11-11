@@ -71,6 +71,7 @@ pub fn drawn(
             .labels
             .iter()
             .map(|l| TimelineMarker {
+                id: l.id.0,
                 at: l.at.as_secs_f64(),
                 name: l.name.clone(),
                 colour: label_colour(l.color),

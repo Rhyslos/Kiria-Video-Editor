@@ -37,6 +37,7 @@ The last three are for CI and for checking the look without a screen (`xvfb-run`
 | `src/search.rs` | The search palette (Ctrl+K): commands with their shortcuts, both settings windows, timeline labels and clips; Enter picks the first |
 | `src/silence_panel.rs` | The Remove silence window (Ctrl+Shift+R): track, threshold, minimum length and edge to keep; marks what it found on the timeline and cuts it all out as one step |
 | `src/relink.rs` | Missing media: checked on a worker whenever the project's media changes; the banner on the Edit page and "Find them…", which searches a picked folder and relinks what it finds |
+| `src/label_editor.rs` | The window for one timeline label (double-click it): name, colour, or remove |
 | `src/looping.rs` | Looping playback inside the region (L): where it starts and when it jumps back |
 | `src/waveforms.rs` | Waveforms for the timeline: each file's sound stream read once on a worker, kept for the session |
 | `src/viewer.rs` | The Edit page's viewer: asks the engine for the picture at the playhead (only when something changed) and shows the newest; the scrub bar and preview quality under it |

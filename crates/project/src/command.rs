@@ -6,7 +6,8 @@
 
 use crate::ids::{ClipId, LabelId, LinkId, MediaId, SequenceId, TrackId};
 use crate::model::{
-    Clip, MediaKind, MediaRef, Project, Region, Sequence, SequenceSettings, TimelineLabel, Track, TrackKind,
+    Clip, LabelColor, MediaKind, MediaRef, Project, Region, Sequence, SequenceSettings, TimelineLabel, Track,
+    TrackKind,
 };
 use crate::time::Time;
 use diag::AppError;
@@ -133,6 +134,13 @@ pub enum Command {
     RemoveLabel {
         sequence: SequenceId,
         label: LabelId,
+    },
+    /// Renames a timeline label and sets its colour.
+    EditLabel {
+        sequence: SequenceId,
+        label: LabelId,
+        name: String,
+        color: LabelColor,
     },
     SetRegion {
         sequence: SequenceId,
@@ -280,6 +288,24 @@ impl Command {
                     .position(|l| l.at > label.at)
                     .unwrap_or(seq.labels.len());
                 seq.labels.insert(index, TimelineLabel { id, ..label.clone() });
+            }
+            Command::EditLabel {
+                sequence,
+                label,
+                name,
+                color,
+            } => {
+                if name.trim().is_empty() {
+                    return Err(AppError::new("A label needs a name").fix("Type at least one letter."));
+                }
+                let seq = sequence_mut(&mut p, *sequence)?;
+                let l = seq
+                    .labels
+                    .iter_mut()
+                    .find(|l| l.id == *label)
+                    .ok_or_else(|| missing("label"))?;
+                l.name = name.trim().to_owned();
+                l.color = *color;
             }
             Command::RemoveLabel { sequence, label } => {
                 let seq = sequence_mut(&mut p, *sequence)?;
@@ -1444,5 +1470,32 @@ mod tests {
             .apply(&p)
             .is_err()
         );
+    }
+
+    #[test]
+    fn labels_are_renamed_and_recoloured() {
+        let (p, seq) = imported();
+        let p = Command::AddLabel {
+            sequence: seq,
+            label: TimelineLabel {
+                id: LabelId(0),
+                name: "Label 1".into(),
+                at: Time::seconds(3),
+                color: LabelColor::Blue,
+            },
+        }
+        .apply(&p)
+        .unwrap();
+        let id = p.active().unwrap().labels[0].id;
+        let edit = |name: &str| Command::EditLabel {
+            sequence: seq,
+            label: id,
+            name: name.into(),
+            color: LabelColor::Red,
+        };
+        let q = edit("  Clutch  ").apply(&p).unwrap();
+        let l = &q.active().unwrap().labels[0];
+        assert_eq!((l.name.as_str(), l.color), ("Clutch", LabelColor::Red));
+        assert!(edit("   ").apply(&p).is_err());
     }
 }
