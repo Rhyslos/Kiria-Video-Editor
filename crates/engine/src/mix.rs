@@ -15,10 +15,12 @@ const OPEN_DECODERS: usize = 16;
 
 pub struct Mixer {
     rate: u32,
-    decoders: Vec<((MediaId, u32), AudioDecoder)>,
+    /// Open decoders by file, stream and the rate they read at (a clip at
+    /// another speed reads its file at another rate).
+    decoders: Vec<((MediaId, u32, u32), AudioDecoder)>,
     scratch: Vec<f32>,
     /// Files that failed to open, so the log isn't flooded.
-    failed: Vec<(MediaId, u32)>,
+    failed: Vec<(MediaId, u32, u32)>,
 }
 
 impl std::fmt::Debug for Mixer {
@@ -71,8 +73,13 @@ impl Mixer {
                 if count == 0 {
                     continue;
                 }
-                let source = clip.source_in.as_secs_f64() + (a - cs);
-                let key = (media.id, clip.stream);
+                // At half speed the file is read at twice the rate, so each
+                // second of the timeline plays half a second of it (lower,
+                // like tape).
+                let speed = clip.speed.as_f64();
+                let source = clip.source_in.as_secs_f64() + (a - cs) * speed;
+                let read_rate = ((rate / speed).round() as u32).max(1);
+                let key = (media.id, clip.stream, read_rate);
                 let mut scratch = std::mem::take(&mut self.scratch);
                 scratch.resize(count * CHANNELS, 0.0);
                 let got = match self.decoder(key, &media.path) {
@@ -101,7 +108,7 @@ impl Mixer {
         }
     }
 
-    fn decoder(&mut self, key: (MediaId, u32), path: &std::path::Path) -> Option<&mut AudioDecoder> {
+    fn decoder(&mut self, key: (MediaId, u32, u32), path: &std::path::Path) -> Option<&mut AudioDecoder> {
         if let Some(i) = self.decoders.iter().position(|(k, _)| *k == key) {
             let entry = self.decoders.remove(i);
             self.decoders.insert(0, entry);
@@ -109,7 +116,7 @@ impl Mixer {
             if self.failed.contains(&key) {
                 return None;
             }
-            match AudioDecoder::open(path, key.1, self.rate) {
+            match AudioDecoder::open(path, key.1, key.2) {
                 Ok(d) => {
                     self.decoders.insert(0, (key, d));
                     self.decoders.truncate(OPEN_DECODERS);
@@ -196,5 +203,25 @@ mod tests {
             m / one
         );
         let _ = Time::ZERO;
+    }
+
+    #[test]
+    fn a_slowed_clip_sounds_for_longer() {
+        let p = project();
+        let seq = p.active_sequence;
+        let clip = p.active().unwrap().video_tracks[0].clips[0].id;
+        let mut mixer = Mixer::new(48_000);
+        let mut buf = vec![0f32; 4_800 * CHANNELS];
+        mixer.mix(&p, p.active().unwrap(), 3.0, &mut buf);
+        assert_eq!(loudness(&buf), 0.0, "past the clip at normal speed");
+        let slow = Command::SetSpeed {
+            sequence: seq,
+            clip,
+            speed: project::Speed::new(1, 2).unwrap(),
+        }
+        .apply(&p)
+        .unwrap();
+        mixer.mix(&slow, slow.active().unwrap(), 3.0, &mut buf);
+        assert!(loudness(&buf) > 0.01, "half speed: still sounding");
     }
 }

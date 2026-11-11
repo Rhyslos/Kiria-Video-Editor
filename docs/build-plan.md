@@ -327,7 +327,7 @@ Phase 4 is the heart of the app and the longest phase, so it runs as three parts
 - [ ] **Split view:** Source (raw clip) beside Program (final), off by default, from the Display menu.
 - [x] **Media pool drawer:** left edge tab sliding out a compact media list (full library comes in phase 5) with the Media / Effects switch in place. (Done: the Media tab on the left edge; files by name with a filter, missing ones marked; double-click or + places one at the end of the timeline. Dragging onto the timeline comes with insert and overwrite.)
 - [ ] **Search palette** (Ctrl K): clips, labels, timeline labels, commands, settings; shows each command's shortcut. (Done: commands with shortcuts, Settings and Timeline settings, timeline labels and clips (jump there; a clip is also selected). Library clips and labels join with the Library page.)
-- [ ] **Slow motion and speed ramps:** speed per clip, ramp keyframes, frame blending; high-frame-rate sources slow down cleanly.
+- [ ] **Slow motion and speed ramps:** speed per clip, ramp keyframes, frame blending; high-frame-rate sources slow down cleanly. (Done so far: a speed per clip from its right-click menu, 25% to 400%, exact fractions; picture and sound follow it, the sound tape-style. Still to do: ramps, frame blending, keeping the pitch.)
 - [ ] **Nested timelines and several timelines per project;** adjustment layers.
 - [ ] **Facecam layouts:** picture-in-picture and vertical game-plus-facecam presets with on-picture handles.
 - [x] **Remove silence:** detect silence on a chosen track, preview the cuts, apply as one undoable command. (Done: Ctrl+Shift+R; threshold, minimum length and edge to keep; found stretches marked red on the timeline; one undoable cut across every track.)

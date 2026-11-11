@@ -34,6 +34,8 @@ pub struct ClipSound<'a> {
     pub source_in: f64,
     pub peaks: &'a [f32],
     pub per_second: u32,
+    /// How fast the clip plays its file.
+    pub speed: f64,
 }
 
 /// Steps per second of the track's loudness line.
@@ -50,7 +52,7 @@ pub fn find(clips: &[ClipSound], settings: Settings) -> Vec<(f64, f64)> {
         let first = (c.start * STEPS).floor() as usize;
         let last = (((c.start + c.duration) * STEPS).ceil() as usize).min(steps);
         for (i, slot) in level.iter_mut().enumerate().take(last).skip(first) {
-            let t = i as f64 / STEPS - c.start + c.source_in;
+            let t = (i as f64 / STEPS - c.start) * c.speed + c.source_in;
             let at = (t * f64::from(c.per_second)).floor();
             if at >= 0.0 {
                 let peak = c.peaks.get(at as usize).copied().unwrap_or(0.0);
@@ -104,6 +106,7 @@ mod tests {
             source_in: 0.0,
             peaks: &peaks,
             per_second: 100,
+            speed: 1.0,
         };
         let settings = Settings {
             threshold_db: -40.0,

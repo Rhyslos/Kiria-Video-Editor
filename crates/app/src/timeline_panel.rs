@@ -43,6 +43,11 @@ pub fn drawn(
                 let name = media
                     .and_then(|m| m.path.file_name())
                     .map_or_else(|| "missing".into(), |n| n.to_string_lossy().into_owned());
+                let name = if c.speed == project::Speed::NORMAL {
+                    name
+                } else {
+                    format!("{name} · {}", c.speed.percent())
+                };
                 TimelineClip {
                     id: c.id.0,
                     start: c.start.as_secs_f64(),
@@ -58,6 +63,7 @@ pub fn drawn(
                                 peaks: p.values,
                                 per_second: p.per_second as f32,
                                 source_in: c.source_in.as_secs_f64(),
+                                speed: c.speed.as_f64(),
                             })
                         }
                         _ => None,
@@ -66,6 +72,7 @@ pub fn drawn(
                         (project::TrackKind::Video, Some(m)) if !missing.contains(&m.id) => {
                             pictures(m, c.stream).map(|p| ui_kit::ClipPictures {
                                 source_in: c.source_in.as_secs_f64(),
+                                speed: c.speed.as_f64(),
                                 ..p
                             })
                         }
@@ -180,6 +187,7 @@ mod tests {
                 peaks: vec![p].into(),
                 per_second: 1.0,
                 source_in: 0.0,
+                speed: 1.0,
             }),
             pictures: None,
         }

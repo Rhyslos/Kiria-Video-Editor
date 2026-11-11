@@ -5,7 +5,7 @@
 //! rendering can each hold their own snapshot.
 
 use crate::ids::{ClipId, LabelId, LinkId, MediaId, SequenceId, TrackId};
-use crate::time::{Rate, Time};
+use crate::time::{Rate, Speed, Time};
 use diag::AppError;
 use imbl::{OrdMap, Vector};
 use serde::{Deserialize, Serialize};
@@ -242,11 +242,24 @@ pub struct Clip {
     pub duration: Time,
     /// Clips with the same link move and split together.
     pub link: Option<LinkId>,
+    /// How fast it plays its file (format 7); normal speed when missing.
+    #[serde(default)]
+    pub speed: Speed,
 }
 
 impl Clip {
     pub fn end(&self) -> Time {
         self.start + self.duration
+    }
+
+    /// How much of its file the clip plays.
+    pub fn source_len(&self) -> Time {
+        self.speed.scale(self.duration)
+    }
+
+    /// Where in its file the clip is at timeline time `t`.
+    pub fn source_at(&self, t: Time) -> Time {
+        self.source_in + self.speed.scale(t - self.start)
     }
 }
 
@@ -489,6 +502,7 @@ mod tests {
             source_in: Time::seconds(5),
             duration: Time::seconds(10),
             link,
+            speed: Default::default(),
         });
         p
     }

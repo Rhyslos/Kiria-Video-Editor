@@ -636,6 +636,21 @@ impl Editor {
                     self.errors.push(&err);
                 }
             }
+            E::SetSpeed { clip, num, den } => {
+                let result = project::Speed::new(num, den).and_then(|speed| {
+                    self.with_document(|d| {
+                        let sequence = d.project().active_sequence;
+                        d.apply(Command::SetSpeed {
+                            sequence,
+                            clip: project::ClipId(clip),
+                            speed,
+                        })
+                    })
+                });
+                if let Err(err) = result {
+                    self.errors.push(&err);
+                }
+            }
             E::EditLabel(id) => {
                 self.label_editor = self
                     .document

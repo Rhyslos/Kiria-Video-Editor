@@ -80,6 +80,7 @@ fn rich_project() -> Project {
         source_in: Rate::NTSC_60.frame_start(90),
         duration: Time::seconds(20),
         link,
+        speed: Default::default(),
     };
     seq.video_tracks[0].clips.push_back(clip(v_clip, 0));
     seq.audio_tracks[0].clips.push_back(clip(a_clip, 1));

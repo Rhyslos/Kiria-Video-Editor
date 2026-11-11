@@ -10,7 +10,7 @@ use crate::command::{
 };
 use crate::ids::{ClipId, SequenceId, TrackId};
 use crate::model::{Clip, MediaKind, Project, Region, Sequence};
-use crate::time::Time;
+use crate::time::{Speed, Time};
 use diag::AppError;
 
 pub(crate) fn ripple_trim(
@@ -39,7 +39,7 @@ pub(crate) fn ripple_trim(
         if group.contains(&c.id) {
             match edge {
                 Edge::Start => {
-                    t.source_in = c.source_in + delta;
+                    t.source_in = c.source_in + c.speed.scale(delta);
                     t.duration = c.duration - delta;
                 }
                 Edge::End => t.duration = c.duration + delta,
@@ -50,6 +50,36 @@ pub(crate) fn ripple_trim(
             continue;
         }
         changed.push(t);
+    }
+    put_back(p, sequence, changed)
+}
+
+pub(crate) fn set_speed(
+    p: &mut Project,
+    sequence: SequenceId,
+    clip: ClipId,
+    speed: Speed,
+) -> diag::Result<()> {
+    let seq = sequence_mut(p, sequence)?;
+    let reference = find(seq, clip)?;
+    let group = with_linked(seq, clip)?;
+    let new_end = reference.start + speed.unscale(reference.source_len());
+    let shift = new_end - reference.end();
+    let after = reference.end();
+    let mut changed = Vec::new();
+    for c in seq.tracks().flat_map(|t| t.clips.iter()) {
+        if group.contains(&c.id) {
+            changed.push(Clip {
+                duration: speed.unscale(c.source_len()),
+                speed,
+                ..c.clone()
+            });
+        } else if c.start >= after {
+            changed.push(Clip {
+                start: c.start + shift,
+                ..c.clone()
+            });
+        }
     }
     put_back(p, sequence, changed)
 }
@@ -69,7 +99,7 @@ pub(crate) fn roll(p: &mut Project, sequence: SequenceId, clip: ClipId, to: Time
         if let Some(next) = next_to(seq, &c) {
             changed.push(Clip {
                 start: next.start + delta,
-                source_in: next.source_in + delta,
+                source_in: next.source_in + next.speed.scale(delta),
                 duration: next.duration - delta,
                 ..next
             });
@@ -88,7 +118,7 @@ pub(crate) fn slip(p: &mut Project, sequence: SequenceId, clip: ClipId, by: Time
     for id in with_linked(seq, clip)? {
         let c = find(seq, id)?;
         changed.push(Clip {
-            source_in: c.source_in + by,
+            source_in: c.source_in + c.speed.scale(by),
             ..c
         });
     }
@@ -109,7 +139,7 @@ pub(crate) fn slide(p: &mut Project, sequence: SequenceId, clip: ClipId, by: Tim
         if let Some(next) = next_to(seq, &c) {
             changed.push(Clip {
                 start: next.start + by,
-                source_in: next.source_in + by,
+                source_in: next.source_in + next.speed.scale(by),
                 duration: next.duration - by,
                 ..next
             });
@@ -277,7 +307,7 @@ fn fits(p: &Project, c: &Clip) -> diag::Result<()> {
     if let Some(media) = p.media.get(&c.media)
         && media.kind != MediaKind::Image
         && media.duration > Time::ZERO
-        && c.source_in + c.duration > media.duration
+        && c.source_in + c.source_len() > media.duration
     {
         return refuse("A clip's file ends before that.");
     }
