@@ -5,7 +5,10 @@
 //! The conversion is drawn on the card (two small passes), so only the
 //! twelve bits a pixel the encoder needs cross over to memory.
 
-use crate::compositor::{Working, pipeline, sampler_entry, smooth_sampler, texture_binding, texture_entry, uniform_buffer, uniform_entry};
+use crate::compositor::{
+    Working, pipeline, sampler_entry, smooth_sampler, texture_binding, texture_entry, uniform_buffer,
+    uniform_entry,
+};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant};
@@ -61,39 +64,47 @@ impl Reader {
             label: Some("planes"),
             entries: &[uniform_entry(16), sampler_entry(), texture_entry(2)],
         });
-        let plane = |label, fragment, format: wgpu::TextureFormat, (width, height): (u32, u32), samples: u32| {
-            let texture = device.create_texture(&wgpu::TextureDescriptor {
-                label: Some(label),
-                size: wgpu::Extent3d {
-                    width,
-                    height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-                view_formats: &[],
-            });
-            let row = width * samples;
-            let stride = row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-            Plane {
-                pipeline: pipeline(device, label, &layout, &module, ("whole", fragment), format, None),
-                view: texture.create_view(&wgpu::TextureViewDescriptor::default()),
-                texture,
-                buffer: device.create_buffer(&wgpu::BufferDescriptor {
+        let plane =
+            |label, fragment, format: wgpu::TextureFormat, (width, height): (u32, u32), samples: u32| {
+                let texture = device.create_texture(&wgpu::TextureDescriptor {
                     label: Some(label),
-                    size: u64::from(stride) * u64::from(height),
-                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-                    mapped_at_creation: false,
-                }),
-                stride,
-                row,
-            }
-        };
+                    size: wgpu::Extent3d {
+                        width,
+                        height,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                    view_formats: &[],
+                });
+                let row = width * samples;
+                let stride =
+                    row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+                Plane {
+                    pipeline: pipeline(device, label, &layout, &module, ("whole", fragment), format, None),
+                    view: texture.create_view(&wgpu::TextureViewDescriptor::default()),
+                    texture,
+                    buffer: device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some(label),
+                        size: u64::from(stride) * u64::from(height),
+                        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                        mapped_at_creation: false,
+                    }),
+                    stride,
+                    row,
+                }
+            };
         let luma = plane("brightness", "luma", wgpu::TextureFormat::R8Unorm, size, 1);
-        let chroma = plane("colour", "chroma", wgpu::TextureFormat::Rg8Unorm, (size.0 / 2, size.1 / 2), 2);
+        let chroma = plane(
+            "colour",
+            "chroma",
+            wgpu::TextureFormat::Rg8Unorm,
+            (size.0 / 2, size.1 / 2),
+            2,
+        );
         Reader {
             size,
             sampler: smooth_sampler(device),
@@ -126,7 +137,10 @@ impl Reader {
         out: &mut Vec<u8>,
     ) -> Result<(), ReadError> {
         let linear = if working == Working::Linear { 1.0f32 } else { 0.0 };
-        let flags: Vec<u8> = [linear, 0.0, 0.0, 0.0].iter().flat_map(|n| n.to_ne_bytes()).collect();
+        let flags: Vec<u8> = [linear, 0.0, 0.0, 0.0]
+            .iter()
+            .flat_map(|n| n.to_ne_bytes())
+            .collect();
         queue.write_buffer(&self.uniforms, 0, &flags);
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("planes"),
@@ -143,7 +157,9 @@ impl Reader {
                 texture_binding(2, frame),
             ],
         });
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("planes") });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("planes"),
+        });
         for plane in [&self.luma, &self.chroma] {
             {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

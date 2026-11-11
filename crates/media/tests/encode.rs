@@ -63,7 +63,10 @@ fn a_written_file_has_its_pictures_and_sound_where_they_belong() {
     assert_eq!(video.codec, "h264");
     assert_eq!(video.frame_rate.nominal_fps(), 30);
     assert_eq!(media.info.audio.len(), 1);
-    assert_eq!((media.info.audio[0].sample_rate, media.info.audio[0].channels), (48_000, 2));
+    assert_eq!(
+        (media.info.audio[0].sample_rate, media.info.audio[0].channels),
+        (48_000, 2)
+    );
     let seconds = media.duration.as_secs_f64();
     assert!((seconds - 1.0).abs() < 0.08, "{seconds} s");
 

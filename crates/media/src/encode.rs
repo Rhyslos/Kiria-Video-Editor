@@ -81,7 +81,11 @@ unsafe impl Send for Writer {}
 
 impl std::fmt::Debug for Writer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Writer({}×{} with {})", self.size.0, self.size.1, self.video_encoder)
+        write!(
+            f,
+            "Writer({}×{} with {})",
+            self.size.0, self.size.1, self.video_encoder
+        )
     }
 }
 
@@ -106,7 +110,9 @@ impl Writer {
         // SAFETY: `format` starts null so FFmpeg allocates it; the path is a
         // valid C string during the call; the container is taken from the
         // file's ending.
-        let r = unsafe { ff::avformat_alloc_output_context2(&mut format, ptr::null(), ptr::null(), c_path.as_ptr()) };
+        let r = unsafe {
+            ff::avformat_alloc_output_context2(&mut format, ptr::null(), ptr::null(), c_path.as_ptr())
+        };
         if r < 0 || format.is_null() {
             return Err(failed("Starting the file", r));
         }

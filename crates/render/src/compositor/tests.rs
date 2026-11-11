@@ -474,7 +474,9 @@ fn read_back(gpu: &Gpu, working: Working, size: (u32, u32), layers: &[Drawn<'_>]
     queue.submit([encoder.finish()]);
     let mut reader = crate::Reader::new(device, size);
     let mut out = Vec::new();
-    reader.read(device, queue, frame.view(), working, &mut out).unwrap();
+    reader
+        .read(device, queue, frame.view(), working, &mut out)
+        .unwrap();
     assert_eq!(out.len(), reader.bytes());
     out
 }
@@ -489,9 +491,15 @@ fn a_frame_read_back_for_an_encoder_has_the_planes_it_was_made_from() {
         for working in BOTH {
             let nv12 = read_back(&gpu, working, size, &[whole(picture.two(), size)]);
             let (luma, chroma) = nv12.split_at(64 * 36);
-            assert!(luma.iter().all(|&y| y.abs_diff(yuv[0]) <= 1), "{working:?} {yuv:?}: {}", luma[0]);
             assert!(
-                chroma.chunks(2).all(|uv| uv[0].abs_diff(yuv[1]) <= 1 && uv[1].abs_diff(yuv[2]) <= 1),
+                luma.iter().all(|&y| y.abs_diff(yuv[0]) <= 1),
+                "{working:?} {yuv:?}: {}",
+                luma[0]
+            );
+            assert!(
+                chroma
+                    .chunks(2)
+                    .all(|uv| uv[0].abs_diff(yuv[1]) <= 1 && uv[1].abs_diff(yuv[2]) <= 1),
                 "{working:?} {yuv:?}: {:?}",
                 &chroma[..2]
             );
@@ -506,9 +514,17 @@ fn a_frame_read_back_for_an_encoder_has_the_planes_it_was_made_from() {
     let mut out = Vec::new();
     for _ in 0..3 {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-        compositor.draw(device, queue, &mut encoder, &mut frame, &[whole(grey.two(), size)]);
+        compositor.draw(
+            device,
+            queue,
+            &mut encoder,
+            &mut frame,
+            &[whole(grey.two(), size)],
+        );
         queue.submit([encoder.finish()]);
-        reader.read(device, queue, frame.view(), Working::Linear, &mut out).unwrap();
+        reader
+            .read(device, queue, frame.view(), Working::Linear, &mut out)
+            .unwrap();
         assert_eq!(out[100], 126);
     }
 }
@@ -524,8 +540,15 @@ fn rows_come_back_without_the_padding_the_card_adds() {
     for row in nv12[..700].chunks(70) {
         assert!(row[2] <= 17 && row[67] >= 234, "{} {}", row[2], row[67]);
     }
-    assert_eq!(crate::reader::black((4, 2)), [16, 16, 16, 16, 16, 16, 16, 16, 128, 128, 128, 128]);
-    assert_eq!(crate::Reader::new(&gpu.0, (71, 11)).size(), (70, 10), "odd sides lose a pixel");
+    assert_eq!(
+        crate::reader::black((4, 2)),
+        [16, 16, 16, 16, 16, 16, 16, 16, 128, 128, 128, 128]
+    );
+    assert_eq!(
+        crate::Reader::new(&gpu.0, (71, 11)).size(),
+        (70, 10),
+        "odd sides lose a pixel"
+    );
 }
 
 #[test]
