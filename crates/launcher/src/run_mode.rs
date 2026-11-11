@@ -16,6 +16,8 @@ pub struct Options {
     pub update_window: Option<UpdatePreview>,
     /// Show the question about a failed start with Vulkan (screenshots).
     pub graphics_warning: bool,
+    /// With `--demo`: open the Delete project question for a sample project (screenshots).
+    pub delete_dialog: bool,
     /// Do one start's worth of updating without a window and write what
     /// happened to this file (`--update-step`, the release workflow's update drill).
     pub update_step: Option<PathBuf>,
@@ -70,6 +72,7 @@ impl Options {
                     options.update_step = Some(report.into());
                 }
                 "--graphics-warning" => options.graphics_warning = true,
+                "--delete-dialog" => options.delete_dialog = true,
                 "--update-window" => {
                     let step = args
                         .next()
@@ -116,6 +119,8 @@ mod tests {
         assert_eq!(o.update_window, Some(UpdatePreview::Downloading));
         assert!(!o.check_updates);
         assert!(parse(&["--update-window", "later"]).is_err());
+        assert!(parse(&["--demo", "3", "--delete-dialog"]).unwrap().delete_dialog);
+        assert!(!plain.delete_dialog);
         assert!(parse(&["--nope"]).is_err());
     }
 }

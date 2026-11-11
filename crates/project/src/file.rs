@@ -372,7 +372,7 @@ fn damaged() -> AppError {
 }
 
 /// `name.ext` → `.name.ext.saving` in the same folder, so the rename stays on one disk.
-fn temp_path(path: &Path) -> PathBuf {
+pub(crate) fn temp_path(path: &Path) -> PathBuf {
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())

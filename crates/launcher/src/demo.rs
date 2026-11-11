@@ -2,12 +2,14 @@
 //!
 //! Everything goes into a fresh temporary folder, never the person's own
 //! data: a project folder full of sample projects, a media folder, one
-//! project whose file has gone missing and one damaged file.
+//! project whose file has gone missing and one damaged file. The first
+//! sample has every kind of file a project keeps beside it. Deleting a
+//! sample moves it to a folder there ([`bin`]), not to the recycle bin.
 
 use diag::{AppError, Explain};
 use project::SequenceSettings;
 use project_index::{FolderKind, Index};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const NAMES: [&str; 12] = [
     "Lofoten trip",
@@ -29,6 +31,12 @@ const PRESETS: [SequenceSettings; 3] = [
     SequenceSettings::HIGH_FRAME_RATE,
     SequenceSettings::VERTICAL_SHORT,
 ];
+
+/// Where deleted sample projects go, for the data folder [`prepare`] returned.
+pub fn bin(data_dir: &Path) -> crate::delete::Bin {
+    let root = data_dir.parent().unwrap_or(data_dir);
+    crate::delete::Bin::Folder(root.join("Deleted samples"))
+}
 
 /// Makes the sample folder and returns the data folder to use.
 /// With `crash`, the editor is made to look as if it crashed with unsaved
@@ -80,6 +88,9 @@ pub fn prepare(count: usize, crash: bool) -> diag::Result<PathBuf> {
         if i % 3 != 2 {
             sample_picture(&project::thumbnail_path(&path), i)?;
         }
+        if i == 0 {
+            sample_side_files(&path)?;
+        }
     }
     if count > 2 {
         let gone =
@@ -114,6 +125,25 @@ pub fn prepare(count: usize, crash: bool) -> diag::Result<PathBuf> {
         }
     }
     Ok(data)
+}
+
+/// Gives a sample what a project gathers beside it over time: a backup from
+/// before an upgrade, a timeline layout, two saved versions and the
+/// autosave file.
+fn sample_side_files(path: &Path) -> diag::Result<()> {
+    let older = project::file::FORMAT_VERSION.saturating_sub(1);
+    project::file::back_up_before_upgrade(path, older)?;
+    std::fs::write(project::view_path(path), "(video_share: Some(0.5))").or_explain(|| {
+        AppError::new("The sample projects can't be made")
+            .why(format!("Writing beside {} failed.", path.display()))
+            .fix("Check that the temporary folder has space.")
+    })?;
+    let project = project::file::load(path)?;
+    for name in ["First cut", "Before the colour pass"] {
+        project::versions::save(&project, path, name)?;
+    }
+    drop(project::Document::open(path, project::Recovery::Recover)?);
+    Ok(())
 }
 
 /// A soft two-colour gradient standing in for a frame of the timeline.

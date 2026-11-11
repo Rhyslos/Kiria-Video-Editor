@@ -28,9 +28,14 @@ pub enum CardAction {
     Select(PathBuf),
     Open(PathBuf),
     Rename(PathBuf),
-    MoveTo { project: PathBuf, folder: PathBuf },
+    MoveTo {
+        project: PathBuf,
+        folder: PathBuf,
+    },
     ShowInFileManager(PathBuf),
     Forget(PathBuf),
+    /// Asks first, then moves the project's files to the recycle bin.
+    Delete(PathBuf),
 }
 
 /// The line under a card's details: unsaved work first, then missing media.
@@ -272,6 +277,16 @@ fn card(
             .clicked()
         {
             actions.push(CardAction::Forget(entry.path.clone()));
+        }
+        if ui
+            .button("Delete project…")
+            .on_hover_text(format!(
+                "Moves the project's files to the {}, after showing which. Recordings stay where they are.",
+                crate::delete::Bin::NAME
+            ))
+            .clicked()
+        {
+            actions.push(CardAction::Delete(entry.path.clone()));
         }
     });
     response.on_hover_text_at_pointer(entry.path.display().to_string());

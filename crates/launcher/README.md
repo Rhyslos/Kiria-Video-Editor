@@ -4,7 +4,7 @@ The small program the Start menu and desktop shortcuts open: the project browser
 
 ## Status
 
-Phase 2 in progress. Done: the project browser (folder tree, project grid, search, Open…, New project with presets, rename, move, remove from list) and the version panel (check, Update, Skip this version, Automatic updates). Updates install themselves: a verified download is installed the next time the launcher starts, or at once with "Restart to update". Still to come: missing-media checks with relinking, the crash-recovery prompt, real thumbnails, and rolling back a version that fails to start (Phase 3).
+Phase 2 in progress. Done: the project browser (folder tree, project grid, search, Open…, New project with presets, rename, move, remove from list, delete to the recycle bin) and the version panel (check, Update, Skip this version, Automatic updates). Updates install themselves: a verified download is installed the next time the launcher starts, or at once with "Restart to update". Still to come: missing-media checks with relinking, the crash-recovery prompt, real thumbnails, and rolling back a version that fails to start (Phase 3).
 
 ## Behaviour
 
@@ -16,10 +16,23 @@ Phase 2 in progress. Done: the project browser (folder tree, project grid, searc
    - **Top bar** from `ui-kit` (`TitleBar`): logo and name centred, settings on the right.
    - **Left**: All projects, then the three folder groups and "+ Add folder". On the first run a `<name> projects` folder is made in Documents. Right-click a folder to show it or remove it from the list.
    - **Bottom left**: the version panel (`updates.rs`).
-   - **Main**: the 3-wide grid of project cards, most recently used first, with search, Open… and New project. Click selects, double-click or Enter opens, right-click offers Open, Rename…, Move to, Show in file manager and Remove from list.
+   - **Main**: the 3-wide grid of project cards, most recently used first, with search, Open… and New project. Click selects, double-click or Enter opens, right-click offers Open, Rename…, Move to, Show in file manager, Remove from list and Delete project….
 4. Opening a project starts the editor with its path, notes the time in the index and closes the window. A download still running finishes before the process exits.
 5. In an installed copy the launcher then waits, without a window, up to 20 seconds for the editor to report that its first window is on screen (`updater::health`). Two failed starts in a row switch back to the previous version, mark the failed one so it is never offered again, and open the launcher to explain (with Report the problem and Show crash reports).
-5. Finding projects on disk, renames, moves, file dialogs and update checks all run on worker threads (`work.rs`); the interface thread only reads the index.
+5. Finding projects on disk, renames, moves, deletes, file dialogs and update checks all run on worker threads (`work.rs`); the interface thread only reads the index.
+
+## Renaming, moving and deleting a project
+
+A project is its file plus the files kept beside it: the autosave file, backups from before upgrades, its picture, the timeline layout and the folder of saved versions. The list is in one place, `project::side_files`, and all three actions go by it.
+
+- **Rename…** and **Move to** take every one of those files along, renamed to match. A file that can't follow (something is in the way, or it is in use) is reported in the error strip; the others still move and the project itself is complete. Nothing is ever overwritten: a name counts as taken while files that would belong to it are there.
+- **Delete project…** first shows what would go: the project file and each file that belongs to it, with the folder they are in. **Move to recycle bin** then moves them there (the `trash` crate: the recycle bin on Windows, the trash on Linux), so a mistake can be undone by restoring them. The project leaves the list. If nothing of the project is left on disk, it is only taken off the list.
+- **Recordings are never touched**: they are not on the list, and a file the project uses as media is left alone even if it is named like one of the project's own files. A card that stands for a file without the project extension can't be deleted, only removed from the list.
+- A file that is already gone is fine. If the recycle bin refuses a file, deleting stops there and the error says which file, how many are already in the bin, and what to do; the project file goes last, so the project is still listed and deleting can be tried again.
+- A project that is open in the editor right now is refused (rename, move and delete alike), going by the editor's session marker and whether that editor is still running.
+- With `--demo`, deleted samples go to a `Deleted samples` folder in the temporary folder, never to the recycle bin.
+
+`--demo 14 --delete-dialog` opens the question for a sample project, for screenshots.
 
 ## Crash recovery
 
@@ -67,12 +80,14 @@ Preferences are read from `<data folder>/updates.ron` (defaults: automatic, Stab
 | `src/cards.rs` | The project grid and its cards; search filtering |
 | `src/new_project.rs` | The New project dialog: Automatic settings by default (the first video imported decides), or one of the templates |
 | `src/updates.rs` | The version panel, the update window (Update available → download bar → Update ready), and the background check and download |
-| `src/files.rs` | Creating, renaming and moving project files (the autosave journal moves along) |
+| `src/files.rs` | Creating, renaming and moving project files; the files that belong to a project move along |
+| `src/delete.rs` | Deleting a project: `plan` lists what would go, `run` moves it to the `Bin` (the system's recycle bin, or a folder for sample projects and tests) |
+| `src/delete_dialog.rs` | The Delete project question and its steps: look for the files, ask with the list, move them |
 | `src/editor_start.rs` | Starting the editor; showing a folder in the file manager |
 | `src/thumbnails.rs` | The pictures on the cards: read on a worker (four at a time) when a card first shows, and again when its project changes |
 | `src/work.rs` | `Task`: run work on a thread, pick the result up on a later frame |
-| `src/demo.rs` | Sample projects in a temporary folder for screenshots and tests |
-| `src/recovery.rs` | Unsaved work left by a crash: reads the editor's session marker and project journals |
+| `src/demo.rs` | Sample projects in a temporary folder for screenshots and tests; the first has every kind of file a project keeps beside it |
+| `src/recovery.rs` | Unsaved work left by a crash: reads the editor's session marker and project journals. Also whether a project is open in a running editor |
 | `src/prefs.rs` | `LauncherPrefs` in `launcher.ron`: the folder new projects are saved in |
 | `src/run_mode.rs` | Command-line options |
 | `src/drill.rs` | `--update-step <report file>`: one start's worth of updating without a window (install what is waiting, look for a newer version and download it, start the editor and wait for it to work), then a `key=value` report. The release workflow's update drill is made of these |
@@ -85,4 +100,4 @@ cargo run -p launcher -- --demo 200 --smoke-test
 xvfb-run -a -s "-screen 0 1600x1000x24" target/debug/launcher --demo 14 --screenshot launcher.png
 ```
 
-With `--demo`, opening a project only reports what would happen; the editor is not started and nothing outside the temporary folder is touched.
+With `--demo`, opening a project only reports what would happen; the editor is not started and nothing outside the temporary folder is touched (a deleted sample goes to a folder there, not to the recycle bin).

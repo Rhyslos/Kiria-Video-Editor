@@ -1,6 +1,8 @@
 //! The launcher window: folder tree, project grid and version panel.
 
 use crate::cards::{self, CardAction};
+use crate::delete::Bin;
+use crate::delete_dialog::{self, DeleteDialog};
 use crate::editor_start::{show_in_file_manager, start_editor};
 use crate::files;
 use crate::new_project::{Choice, NewProjectDialog};
@@ -47,8 +49,8 @@ enum Picked {
     DefaultFolder(Option<PathBuf>),
 }
 
-/// A finished rename or move: (old path, new path).
-type FileJob = Task<diag::Result<(PathBuf, PathBuf)>>;
+/// A finished rename or move: the old path and where the project went.
+type FileJob = Task<diag::Result<(PathBuf, files::Moved)>>;
 
 /// "Recover the unsaved work?" for one project.
 #[derive(Debug, Clone)]
@@ -88,6 +90,10 @@ pub struct Start {
     /// Receives the editor process once a project is opened, so `main` can
     /// check that it starts after the window has closed.
     pub editor: Arc<Mutex<Option<std::process::Child>>>,
+    /// Where deleted projects go: the recycle bin, or a stand-in folder for sample projects.
+    pub bin: Bin,
+    /// Opens the Delete project question for a sample project (screenshots).
+    pub delete_preview: bool,
 }
 
 pub struct Browser {
@@ -122,6 +128,8 @@ pub struct Browser {
     file_job: Option<FileJob>,
     new_project: Option<NewProjectDialog>,
     rename: Option<RenameDialog>,
+    delete: DeleteDialog,
+    bin: Bin,
     updates: Option<Updates>,
     launch_editor: bool,
     mode: RunMode,
@@ -193,6 +201,8 @@ impl Browser {
             file_job: None,
             new_project: None,
             rename: None,
+            delete: DeleteDialog::default(),
+            bin: start.bin,
             updates: Some(updates),
             launch_editor: start.launch_editor,
             mode: start.mode,
@@ -217,7 +227,25 @@ impl Browser {
         browser.reload();
         browser.check_last_run();
         browser.start_refresh(ctx);
+        if start.delete_preview {
+            browser.preview_delete(ctx);
+        }
         browser
+    }
+
+    /// Opens the Delete project question for the sample project with the
+    /// most files beside it (screenshots; nothing is deleted without a click).
+    fn preview_delete(&mut self, ctx: &egui::Context) {
+        let sample = self
+            .projects
+            .iter()
+            .filter(|p| p.issue.is_none())
+            .max_by_key(|p| project::side_files::existing(&p.path).len());
+        if let Some(sample) = sample {
+            let (path, name) = (sample.path.clone(), sample.name.clone());
+            self.selected = Some(path.clone());
+            self.delete.begin(ctx, &self.data_dir, path, name);
+        }
     }
 
     /// On the first run, makes a project folder in the person's documents.
@@ -383,9 +411,12 @@ impl Browser {
                     self.file_job = None;
                     self.status.clear();
                     match result {
-                        Ok((from, to)) => {
-                            self.with_index(|index| index.moved(&from, &to).map(|_| ()));
-                            self.selected = Some(to);
+                        Ok((from, moved)) => {
+                            self.with_index(|index| index.moved(&from, &moved.to).map(|_| ()));
+                            self.selected = Some(moved.to);
+                            if let Some(err) = moved.left_behind {
+                                self.errors.push(&err);
+                            }
                         }
                         Err(err) => self.errors.push(&err),
                     }
@@ -583,8 +614,10 @@ impl Browser {
                     });
                 }
                 CardAction::MoveTo { project, folder } => {
+                    let data_dir = self.data_dir.clone();
                     self.run_file_job(ctx, "Moving…", move || {
-                        files::move_project(&project, &folder).map(|to| (project, to))
+                        recovery::refuse_if_open_in_editor(&data_dir, &project, "moved")?;
+                        files::move_project(&project, &folder).map(|moved| (project, moved))
                     });
                 }
                 CardAction::ShowInFileManager(path) => {
@@ -598,6 +631,12 @@ impl Browser {
                         self.selected = None;
                     }
                 }
+                CardAction::Delete(path) => {
+                    let name = self.project_name(&path);
+                    if self.file_job.is_some() || !self.delete.begin(ctx, &self.data_dir, path, name) {
+                        self.status = "Wait for the last change to finish.".into();
+                    }
+                }
             }
         }
     }
@@ -606,9 +645,9 @@ impl Browser {
         &mut self,
         ctx: &egui::Context,
         status: &str,
-        job: impl FnOnce() -> diag::Result<(PathBuf, PathBuf)> + Send + 'static,
+        job: impl FnOnce() -> diag::Result<(PathBuf, files::Moved)> + Send + 'static,
     ) {
-        if self.file_job.is_some() {
+        if self.file_job.is_some() || self.delete.is_working() {
             self.status = "Wait for the last change to finish.".into();
             return;
         }
@@ -779,8 +818,9 @@ impl Browser {
                     .color(self.theme.faint),
             );
         }
-        if !self.status.is_empty() {
-            ui.label(RichText::new(&self.status).color(self.theme.text_secondary));
+        let status = self.delete.status().unwrap_or_else(|| self.status.clone());
+        if !status.is_empty() {
+            ui.label(RichText::new(status).color(self.theme.text_secondary));
         }
         ui.add_space(12.0);
 
@@ -1008,12 +1048,31 @@ impl Browser {
             }
             if confirmed {
                 let (path, name) = (dialog.path.clone(), dialog.name.clone());
+                let data_dir = self.data_dir.clone();
                 self.rename = None;
                 self.run_file_job(ctx, "Renaming…", move || {
-                    files::rename_project(&path, &name).map(|to| (path, to))
+                    recovery::refuse_if_open_in_editor(&data_dir, &path, "renamed")?;
+                    files::rename_project(&path, &name).map(|moved| (path, moved))
                 });
             } else if done {
                 self.rename = None;
+            }
+        }
+
+        match self.delete.show(ctx, &self.theme, &self.bin) {
+            None => {}
+            Some(delete_dialog::Event::Failed(err)) => self.errors.push(&err),
+            Some(delete_dialog::Event::Deleted { project, name, moved }) => {
+                self.with_index(|index| index.deleted(&project));
+                self.notes.remove(&project);
+                if self.selected.as_deref() == Some(project.as_path()) {
+                    self.selected = None;
+                }
+                self.status = if moved == 0 {
+                    format!("{name} was taken off the list.")
+                } else {
+                    format!("{name} is in the {}.", Bin::NAME)
+                };
             }
         }
 
@@ -1074,6 +1133,7 @@ impl Browser {
     fn keyboard(&mut self, ctx: &egui::Context) {
         let dialog_open = self.new_project.is_some()
             || self.rename.is_some()
+            || self.delete.is_asking()
             || self.recovery.is_some()
             || self.rollback.is_some()
             || self.graphics.is_asking();
@@ -1100,7 +1160,7 @@ impl Browser {
             RunMode::Normal => {}
             RunMode::SmokeTest => {
                 ctx.request_repaint();
-                if self.frames >= 30 && self.refresh.is_none() {
+                if self.frames >= 30 && self.refresh.is_none() && !self.delete.is_working() {
                     let message = format!(
                         "Launcher smoke test passed: {} frames drawn, {} projects listed.",
                         self.frames,
@@ -1111,7 +1171,11 @@ impl Browser {
             }
             RunMode::Screenshot(path) => {
                 ctx.request_repaint();
-                if self.frames >= 10 && self.refresh.is_none() && !self.screenshot_requested {
+                if self.frames >= 10
+                    && self.refresh.is_none()
+                    && !self.delete.is_working()
+                    && !self.screenshot_requested
+                {
                     self.screenshot_requested = true;
                     let (path, saved, report) = (
                         path.clone(),

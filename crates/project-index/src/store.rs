@@ -172,6 +172,16 @@ impl Index {
         Ok(())
     }
 
+    /// Drops a project whose files were deleted. Unlike [`Index::forget`],
+    /// nothing is remembered: if the file comes back (restored from the
+    /// recycle bin into a project folder), the next refresh lists it again.
+    pub fn deleted(&self, path: &Path) -> diag::Result<()> {
+        self.conn
+            .execute("DELETE FROM projects WHERE path = ?1", params![path_text(path)?])
+            .or_explain(unreadable)?;
+        Ok(())
+    }
+
     /// Follows a project file that was moved or renamed, keeping when it was last opened.
     pub fn moved(&self, from: &Path, to: &Path) -> diag::Result<ProjectEntry> {
         let (from, to_text) = (path_text(from)?, path_text(to)?);
@@ -199,15 +209,29 @@ impl Index {
         }
         let mut statement = self
             .conn
-            .prepare("SELECT path FROM projects")
+            .prepare("SELECT path, last_opened FROM projects")
             .or_explain(unreadable)?;
         let known = statement
-            .query_map([], |row| row.get::<_, String>(0))
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?))
+            })
             .or_explain(unreadable)?;
-        for path in known {
-            paths.insert(path.or_explain(unreadable)?.into());
+        let mut listed_by_mistake = Vec::new();
+        for row in known {
+            let (path, last_opened) = row.or_explain(unreadable)?;
+            let path = PathBuf::from(path);
+            // Saved versions used to be found as projects of their own.
+            // Those cards go, unless the person opened one on purpose.
+            if last_opened.is_none() && crate::scan::is_saved_version(&path) {
+                listed_by_mistake.push(path);
+            } else {
+                paths.insert(path);
+            }
         }
         drop(statement);
+        for path in listed_by_mistake {
+            self.deleted(&path)?;
+        }
         for path in paths {
             self.store(&path, true)?;
         }
@@ -242,6 +266,11 @@ impl Index {
                         params![text, Issue::Missing.key()],
                     )
                     .or_explain(unreadable)?;
+                return Ok(());
+            }
+            if only_if_changed {
+                // A refresh found it a moment ago and it has been deleted
+                // since: there is nothing to list and nothing wrong.
                 return Ok(());
             }
             return Err(AppError::new("The project file can't be found")
@@ -572,6 +601,63 @@ mod tests {
         assert!(index.projects().unwrap().is_empty());
         index.record(&a).unwrap();
         assert_eq!(index.projects().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn saved_versions_are_not_listed_as_projects() {
+        let tmp = tempfile::tempdir().unwrap();
+        let index = Index::open_in_memory().unwrap();
+        index.add_folder(tmp.path(), FolderKind::Projects).unwrap();
+        let a = tmp.path().join(format!("a.{}", ext()));
+        write_project(&a, "A", SequenceSettings::GAME_CLIP);
+        let project = project::file::load(&a).unwrap();
+        let first = project::versions::save(&project, &a, "First cut").unwrap();
+        let second = project::versions::save(&project, &a, "Second cut").unwrap();
+        index.refresh().unwrap();
+        assert_eq!(index.projects().unwrap().len(), 1, "only the project itself");
+
+        // A list made before versions were left out has them: they go,
+        // except one the person opened on purpose.
+        index.record(&first.path).unwrap();
+        index.record(&second.path).unwrap();
+        index.mark_opened(&second.path, now()).unwrap();
+        index.refresh().unwrap();
+        let mut paths: Vec<PathBuf> = index.projects().unwrap().into_iter().map(|p| p.path).collect();
+        paths.sort();
+        let mut expected = vec![a, second.path];
+        expected.sort();
+        assert_eq!(paths, expected);
+    }
+
+    #[test]
+    fn a_deleted_project_leaves_the_list_and_returns_if_its_file_does() {
+        let tmp = tempfile::tempdir().unwrap();
+        let index = Index::open_in_memory().unwrap();
+        index.add_folder(tmp.path(), FolderKind::Projects).unwrap();
+        let a = tmp.path().join(format!("a.{}", ext()));
+        let kept = tmp.path().join(format!("kept.{}", ext()));
+        write_project(&a, "A", SequenceSettings::GAME_CLIP);
+        write_project(&kept, "Kept", SequenceSettings::GAME_CLIP);
+        index.refresh().unwrap();
+
+        std::fs::remove_file(&a).unwrap();
+        index.deleted(&a).unwrap();
+        index.refresh().unwrap();
+        assert_eq!(index.project(&a).unwrap(), None, "no card saying it is missing");
+        let names: Vec<String> = index.projects().unwrap().into_iter().map(|p| p.name).collect();
+        assert_eq!(names, ["Kept"]);
+        index.deleted(&a).unwrap(); // deleting what is not listed is fine
+        // A refresh that still had the file on its list is not upset either.
+        index.store(&a, true).unwrap();
+        assert!(
+            index.record(&a).is_err(),
+            "opening a file that is gone still says so"
+        );
+
+        // Restored from the recycle bin: found again like any project file.
+        write_project(&a, "A", SequenceSettings::GAME_CLIP);
+        index.refresh().unwrap();
+        assert_eq!(index.projects().unwrap().len(), 2);
     }
 
     #[test]
