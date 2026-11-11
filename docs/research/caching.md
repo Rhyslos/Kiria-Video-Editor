@@ -315,15 +315,15 @@ It makes stepping, short scrubs, going back and forth, replaying and playing bac
 - **Auto** builds a proxy for a file when a jump in it can't make 50 ms: judged from the file's longest key frame distance and a decode timed at import, not from the codec's name. On this evidence that is every 1440p recording.
 - While scrubbing, the proxy frame goes on screen first and the exact frame replaces it when the pointer rests. With proxy mode On the exact frame is skipped.
 
-**4. A first picture for files without a proxy yet.** Build D's cheap form, a picture per key frame, in the pass that makes the clip thumbnails (both only need the key frames). It gives A's picture in under a millisecond without a second decoder at the playhead. If the test machine shows the GPU decoding a key frame in well under 50 ms, A can do the job instead with nothing stored.
+**4. A first picture for files without a proxy yet.** A: seek, decode the key frame before the target, show it, then carry on to the exact frame. On the test machine this takes 4 to 6 ms on the GPU and 32 to 42 ms in software, so nothing needs storing; the picture per key frame (D) stays unbuilt.
 
 ### How this meets 50 ms
 
 | Situation | On screen within 50 ms | The exact frame |
 | --- | --- | --- |
 | Stepping, a short scrub, back and forth, playing backwards, inside the kept stretch | the exact frame, from memory (0 to 2 ms) | the same |
-| A drag or a jump anywhere, proxy built | the right frame at 540p, from the proxy (0.5 to 3 ms) | from memory if kept; else one jump later (170 to 300 ms on the test machine today) |
-| The same, no proxy yet | the key frame before the target, from the picture index (under 1 ms); up to one key frame distance early | one jump later |
+| A drag or a jump anywhere, proxy built | the right frame at 540p, from the proxy (0.5 to 3 ms) | from memory if kept; else one jump later (80 to 140 ms at the median, 210 to 300 ms at worst, on the test machine) |
+| The same, no proxy yet | the key frame before the target, decoded on the spot (4 to 6 ms on the GPU); up to one key frame distance early | one jump later |
 | Proxy mode On | the right frame at 540p | not shown |
 
 The exact, full-resolution frame at a place never visited can't be had in 50 ms from a file with key frames seconds apart, by any approach here. The checkpoint asks for "a frame within 50 ms": the proxy frame is the right moment at a lower resolution, and it sharpens when the pointer rests.
@@ -394,14 +394,42 @@ One cache with two stores. The keys and the rules are the same; only where the p
 
 ### On the test machine
 
-Still to come. The "Caching spike" workflow builds the same program for Windows, where it decodes through Direct3D 11 with a copy, the editor's current path. Its tables go here. They have to settle:
+Run on 11 November 2026 with the "Caching spike" workflow's Windows build: a current desktop GPU, a 24-thread CPU, decoding through Direct3D 11 with a copy (the editor's path at the time), pictures fitted into 1280×720. The first 20 s of each test clip and the first 60 s of two real 1440p H.265 recordings. The spike picks FFmpeg's default AV1 decoder, which is software only, so its AV1 column is a software column; the editor itself decodes AV1 on the GPU.
 
-- **A:** how long a seek and one key frame take on the GPU. Well under 50 ms means A can stand in for the picture index.
-- **B:** what bringing every frame back from the GPU adds per frame (the "decoding frames in a row" table), and the hit rates on the 1440p traces once the decoder has headroom.
-- **C:** how fast proxies build with GPU decoding and all threads, and whether fetches stay at 1 to 3 ms.
-- **Helpers:** whether the GPU decoder really leaves frames out when asked ("frames decoded"), and whether real recordings have any frames to leave out.
-- **Real recordings:** their key frame distances, and whether their containers list every key frame.
-- **Playing backwards** at 1440p: the "play back" trace with B.
+| Median / worst, ms | H.264 1080p | H.265 1440p | H.265 1440p, key frames 8 s apart | Real 1440p recordings | AV1 1440p, software |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Jump to the exact frame, today | 39 / 121 | 94 / 288 | 297 / 832 | 140 / 290 | 377 / 949 |
+| The same with a key frame index | 37 / 96 | 80 / 213 | 288 / 902 | 131 / 297 | 358 / 677 |
+| A: seek and one key frame | 4.1 / 14 | 5.6 / 15 | 5.7 / 14 | 5.3 / 15 | 32 / 42 |
+| C: a frame from the proxy (a key frame every 8 frames) | 1.2 / 2.4 | 1.2 / 2.4 | 1.2 / 2.4 | 2.0 / 3.5 | 1.1 / 2.2 |
+| Decoding one frame in a row | 0.48 | 1.09 | 1.09 | 1.05 | 7.01 |
+| and keeping it at 720p, YUV 4:2:0 | 2.29 | 3.75 | 3.74 | 4.2 | 7.29 |
+| Proxy build, times faster than playing | 17.5 | 8.9 | 8.9 | 9.4 | 4.9 |
+| Proxy size, MB per minute | 31 | 27 | 27 | 31 | 29 |
+
+The traces, for the files decoded on the GPU (per cent of positions answered within 50 ms, then the worst response in ms):
+
+| Trace | Today | Cancelling only | B memory | B+C |
+| --- | ---: | ---: | ---: | ---: |
+| Slow drag back, H.265 1440p | 2 %, 418 | 14 %, 320 | 98 %, 134 | 100 %, 13 |
+| Fast drag, H.265 1440p | 2 %, 491 | 8 %, 298 | 54 %, 242 | 100 %, 33 |
+| Step back, H.265 1440p | 30 %, 467 | 30 %, 238 | 100 %, 34 | 100 %, 1.9 |
+| Play backwards, H.265 1440p | 4 %, 447 | 17 %, 234 | 97 %, 146 | 100 %, 14 |
+| Play backwards, key frames 8 s apart | 2 %, 1657 | 10 %, 811 | 92 %, 196 | 100 %, 13 |
+| Fast drag, real recordings | 4 %, 438 | 9 %, 298 | 57 %, 245 | 100 %, 34 |
+| Play backwards, real recordings | 4 %, 449 | 20 %, 238 | 93 %, 176 | 100 %, 13 |
+
+What this settles:
+
+- **A:** a seek and one key frame take 4 to 6 ms on the GPU and never more than 15 ms; 32 to 42 ms even in software. A can stand in for the picture index, so step 4 stores nothing. On its own A is not an answer: its picture is 0.7 to 1.2 s early at the median with key frames 2 s apart, and in the fast drag it shows the right frame in about one position in ten.
+- **B:** bringing every frame back from the GPU and scaling it costs 2 to 3 ms a frame, two to three times the decode itself. That still fills the cache four times faster than playback. Inside the kept stretch 90 to 98 % of the positions come from memory; the misses are first visits (130 to 600 ms alone). The zero-copy path removes most of this cost, which is the case for its GPU store later.
+- **C:** proxies build 9 times faster than playing at 1440p (an hour of recording in under 7 minutes, about 1.9 GB), 17 times at 1080p. Fetches stay at 1 to 4 ms.
+- **B+C** answers within 50 ms in 99 to 100 % of the positions of every trace on every file, with a worst response of 2 to 61 ms, and shows the exact frame from memory in 84 to 98 % of them outside the drags.
+- **Helpers:** dropping a stale decode is the largest gain that costs nothing: it halves the median wait in every moving trace (step back on the real recordings 256 to 82 ms; playing backwards with key frames 8 s apart 973 to 249 ms). A key frame index takes 5 to 15 % off a jump. The GPU decoder decodes every frame whatever it is asked to leave out, and turning the deblocking filter off changes nothing: neither is worth building.
+- **Real recordings:** key frames exactly 2 s apart, every one listed by the container; finding them by reading the packets takes 12 to 41 ms for a minute of video.
+- **Playing backwards** at 1440p with B alone: 55 to 58 pictures a second of 60, 93 to 97 % within 50 ms; with the proxy behind it, all of them.
+
+The recommendation stands, in the same order, with step 4 reduced to "show the key frame first".
 
 ## Sources
 
