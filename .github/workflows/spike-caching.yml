@@ -1,0 +1,55 @@
+# Builds the caching measurement program (spikes/caching) for Windows as a
+# ready-to-run zip. Started by hand, or when the spike changes.
+name: Caching spike
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ["spikes/caching/**", ".github/workflows/spike-caching.yml"]
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+      - name: Toolchain
+        run: rustup toolchain install stable --profile minimal
+      - name: FFmpeg (the pinned build)
+        run: |
+          source packaging/ffmpeg.env
+          curl -sSL -o ffmpeg.zip "$FFMPEG_WINDOWS_URL"
+          7z x -y ffmpeg.zip > /dev/null
+          echo "FFMPEG_DIR=$(cygpath -w "$PWD/$(ls -d ffmpeg-*-win64-gpl-shared-*/ | head -1)")" >> "$GITHUB_ENV"
+      - name: Build
+        working-directory: spikes/caching
+        env:
+          RUSTUP_TOOLCHAIN: stable
+          LIBCLANG_PATH: C:\Program Files\LLVM\bin
+        run: cargo build --release
+      - name: Tests and a short run
+        working-directory: spikes/caching
+        env:
+          RUSTUP_TOOLCHAIN: stable
+          LIBCLANG_PATH: C:\Program Files\LLVM\bin
+        run: |
+          export PATH="$(cygpath -u "$FFMPEG_DIR")/bin:$PATH"
+          cargo test --release
+          ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=1280x720:rate=60 -t 3 -g 120 -bf 0 -c:v libx264 smoke.mp4
+          target/release/cache-bench.exe --quick --decode software --work smoke-work smoke.mp4
+          # The build machine has no GPU video decoder, so this only shows that asking for one is safe.
+          target/release/cache-bench.exe --quick --decode d3d11va --work smoke-work smoke.mp4 || echo "the d3d11va run failed here; it needs a real GPU"
+      - name: Package
+        run: |
+          mkdir -p pkg/bin
+          cp spikes/caching/run.ps1 spikes/caching/run.bat pkg/
+          cp spikes/caching/target/release/cache-bench.exe pkg/bin/
+          cp "$(cygpath -u "$FFMPEG_DIR")"/bin/ffmpeg.exe "$(cygpath -u "$FFMPEG_DIR")"/bin/*.dll pkg/bin/
+          cp "$(cygpath -u "$FFMPEG_DIR")"/LICENSE* pkg/bin/ 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cache-bench-windows
+          path: pkg/
