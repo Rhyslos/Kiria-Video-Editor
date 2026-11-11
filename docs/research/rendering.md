@@ -2,7 +2,7 @@
 
 Turning what is on the timeline at a moment into one picture: every visible clip placed, cropped, scaled, coloured and laid over the ones below it. The viewer shows that picture; export, project pictures and the Color page's scopes will read the same one. Build plan steps 4C "Inspector", "Split view", "Facecam layouts", titles, speed ramps with frame blending, nested timelines, and everything in phases 6, 7 and 9 that touches pixels.
 
-Status: measured on the test machine and chosen (section 4): a worker composes into a floating-point frame in linear light on the window's device. Built: `render::Compositor`, `engine::frame` (what a frame is made of) and `engine::compose` (the worker's part).
+Status: measured on the test machine and chosen (section 4): a worker composes into a floating-point frame in linear light on the window's device. Built: `render::Compositor`, `engine::frame` (what a frame is made of) and `engine::compose` (the worker's part). Confirmed in the editor on the test machine: playing, scrubbing and closing behave as before, with pictures decoded on the card staying there.
 
 ## 1. Problem
 

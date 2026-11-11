@@ -79,9 +79,14 @@ impl Look {
     /// Five stops either way.
     pub const EXPOSURE: i32 = 5 * ONE;
 
+    /// Whether the picture is moved, resized or turned.
+    pub fn is_moved(&self) -> bool {
+        (self.x, self.y, self.scale, self.turn) != (0, 0, ONE, 0)
+    }
+
     /// Whether the picture is moved, resized, turned or cut.
     pub fn is_placed(&self) -> bool {
-        (self.x, self.y, self.scale, self.turn) != (0, 0, ONE, 0) || self.is_cropped()
+        self.is_moved() || self.is_cropped()
     }
 
     pub fn is_cropped(&self) -> bool {

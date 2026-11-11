@@ -9,6 +9,7 @@ pub mod drawer;
 pub mod errors;
 pub mod fonts;
 pub mod icon;
+pub mod inspector;
 pub mod keyboard;
 pub mod layout;
 pub mod master;

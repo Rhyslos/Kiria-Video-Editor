@@ -76,6 +76,8 @@ pub struct Editor {
     track_paces: timeline_panel::TrackPaces,
     relink: crate::relink::Relinker,
     drawer: crate::media_drawer::MediaDrawer,
+    /// The selected clip's settings, on the right of the Edit page.
+    inspector: crate::inspector::Inspector,
     frame_grab: crate::frame_grab::FrameGrab,
     silence: crate::silence_panel::SilencePanel,
     label_editor: Option<crate::label_editor::LabelEditor>,
@@ -258,6 +260,7 @@ impl Editor {
                 open: drawer_open,
                 ..Default::default()
             },
+            inspector: crate::inspector::Inspector::default(),
             play_when_ready,
             show_timeline_settings: false,
             show_settings: false,
@@ -1272,6 +1275,29 @@ impl Editor {
         )
     }
 
+    /// The right-hand panel of the Edit page: the selected clip's settings.
+    /// A finished change is applied as one undo step.
+    fn inspector_panel(&mut self, ui: &mut egui::Ui) {
+        let Some(document) = &self.document else { return };
+        let commands = egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                self.inspector
+                    .ui(ui, &self.theme, document.project(), &self.selected)
+            })
+            .inner;
+        for command in commands {
+            let speed = matches!(command, Command::SetSpeed { .. });
+            if let Err(err) = self.with_document(|d| d.apply(command)) {
+                self.errors.push(&err);
+            }
+            if speed {
+                // The sound follows the clip's new length.
+                self.play_on_with_new_mix();
+            }
+        }
+    }
+
     fn top_bar(&mut self, ui: &mut egui::Ui) {
         let name = self
             .document
@@ -1443,10 +1469,12 @@ impl Editor {
                 self.settings
                     .viewer_split
                     .top_height(shared_height, least_viewer, least_timeline);
+            // A value being dragged in the inspector is seen at once.
+            let being_changed = self.inspector.shown(p);
             transport_click = self.viewer.ui(
                 ui,
                 &self.theme,
-                p,
+                being_changed.as_ref().unwrap_or(p),
                 &mut self.settings.preview_quality,
                 needle,
                 viewer_height,
@@ -1992,6 +2020,17 @@ impl eframe::App for Editor {
                 .exact_size(layout::TOP_BAR_HEIGHT)
                 .frame(egui::Frame::new().fill(self.theme.panel))
                 .show(ui, |ui| self.top_bar(ui));
+            if self.page == Page::Edit && self.document.is_some() {
+                egui::Panel::right("inspector")
+                    .exact_size(layout::RIGHT_PANEL_WIDTH)
+                    .resizable(false)
+                    .frame(
+                        egui::Frame::new()
+                            .fill(self.theme.panel)
+                            .inner_margin(egui::Margin::symmetric(12, 10)),
+                    )
+                    .show(ui, |ui| self.inspector_panel(ui));
+            }
             egui::CentralPanel::default()
                 .frame(
                     egui::Frame::new()

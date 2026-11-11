@@ -13,6 +13,7 @@ mod editor;
 mod fake_pointer;
 mod frame_grab;
 mod import;
+mod inspector;
 mod label_editor;
 mod looping;
 mod media_drawer;
