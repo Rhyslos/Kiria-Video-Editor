@@ -25,6 +25,7 @@ pub mod audio;
 pub mod decode;
 mod ffi;
 pub mod fingerprint;
+pub mod jump;
 pub mod probe;
 pub mod relink;
 pub mod timing;
@@ -32,7 +33,7 @@ pub mod vulkan;
 pub mod yuv;
 
 pub use audio::AudioDecoder;
-pub use decode::{Decoded, Decoding, Frame, Level, VideoDecoder};
+pub use decode::{Decoded, Decoding, Frame, Level, Newer, Reached, VideoDecoder};
 pub use fingerprint::fingerprint;
 pub use probe::{Probe, probe};
 pub use vulkan::{GpuFrame, WindowDevice};

@@ -299,6 +299,17 @@ No single approach is enough. Build them in this order; each step is useful on i
 
 This takes the worst waits out (today a stale decode holds the worker for a whole jump) but shows nothing new within 50 ms.
 
+*Built (November 2026), except two parts.* The decoder reads the container's list of key frames when a file is opened (`media::jump`) and jumps when one lies between where it is and where it is going; the preview worker asks between frames what is wanted by now, gives up a decode the newer request can't use, stops early at a newer moment it reaches first, and finishes one that is on the way (`VideoDecoder::picture_at_while`, `engine::preview`). On a ten-minute 720p recording with key frames 2 s apart, decoded on the CPU of the cloud machine (one jump to the slow end of a group takes about 120 ms there):
+
+| From a click to its picture, median | Before | Now |
+| --- | ---: | ---: |
+| A click while an earlier jump is a third done | 208 ms | 122 ms |
+| A click while an earlier jump is two thirds done | 174 ms | 125 ms |
+| 2.9 s ahead, past a key frame | 180 ms | 94 ms |
+| One click, nothing else going on | 121 ms | 117 ms |
+
+A second click now always costs one jump, never the rest of the first one as well. Left out: checking the container's list against the packets (the list is used as it is, with a fixed distance as the rule where it has holes), and stopping at the target instead of one frame after it, which needs each frame's length and gains one frame per jump.
+
 **2. B: frames in memory.** This is the build plan's "RAM frame cache ahead of the playhead in the play direction".
 
 - YUV 4:2:0 at the size the viewer asks for, found by file, stream, size and timestamp. A frame lasts until the next frame's timestamp, so variable frame rates need nothing special.
@@ -386,8 +397,8 @@ One cache with two stores. The keys and the rules are the same; only where the p
 
 ### In the existing code, whatever is built
 
-- `engine::Preview` can't drop a decode: add the check between frames (step 1).
-- `VideoDecoder::frame_at` seeks only when the target is behind or more than 3 s ahead. With key frames 2 s apart it decodes through a key frame it could have jumped to. With key frames further apart, a target more than 3 s ahead in the same group makes it seek back and decode again what it had already passed.
+- `engine::Preview` couldn't drop a decode. (Done: it asks between frames, see step 1.)
+- (Done, see step 1: it now goes by the container's key frames.) `VideoDecoder::frame_at` sought only when the target was behind or more than 3 s ahead. With key frames 2 s apart it decodes through a key frame it could have jumped to. With key frames further apart, a target more than 3 s ahead in the same group makes it seek back and decode again what it had already passed.
 - `frame_at` decodes one frame past the target before it answers.
 - `cache::thumbs` asks for a frame every 2 s or more, wherever the key frames are. When they don't line up, every thumbnail decodes up from the key frame before it. Taking the key frames themselves is what the "picture per key frame" row above does, 26 to 110 times faster than playing even in software.
 - `app::Viewer::poll` converts every picture pixel by pixel on the interface thread before it is uploaded. Timed on its own on this machine, the conversion and one copy take about 4 ms for a 1440p picture and 2 ms at 1080p: at or above the 2 ms rule.
