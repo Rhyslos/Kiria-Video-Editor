@@ -23,9 +23,11 @@ cargo run -p app -- --responsiveness-test  # 8-second background job; fails unle
 cargo run -p app -- --screenshot out.png # save a PNG of the window and close (waits for imports and the viewer's picture first)
 cargo run -p app -- --graphics-warning --screenshot out.png  # with the question about a failed start with Vulkan
 cargo run -p app -- trip.kiria --import match.mkv --hold-reading 0.4 --screenshot out.png  # with waveforms and clip pictures stopped 40 % read, to see reading in progress
+cargo run -p app -- trip.kiria --pointer 640,420 --screenshot out.png  # with the pointer resting there: hover marks and tooltips
+cargo run -p app -- trip.kiria --pointer 640,420 --drag-to 640,480 --screenshot out.png  # while the left button drags from the first place to the second
 ```
 
-The last five are for CI and for checking the look without a screen (`xvfb-run` on Linux).
+The last seven are for CI and for checking the look without a screen (`xvfb-run` on Linux).
 
 ## Files
 
@@ -52,6 +54,7 @@ The last five are for CI and for checking the look without a screen (`xvfb-run` 
 | `src/video_picture.rs` | Whether this window converts colour on the GPU (`--cpu-colour` or a window without wgpu says no), and a decoded frame's planes as the viewer's picture; its tests draw the shader into a texture and compare with the CPU's conversion |
 | `src/settings.rs` | `Settings` (theme, resource budgets, "Edit at the playhead", how the height is shared between the viewer and the timeline), saved as `settings.ron` in the app's data folder. The Graphics choice has its own file, shared with the launcher |
 | `src/run_mode.rs` | Command-line options |
+| `src/fake_pointer.rs` | A scripted pointer for automated runs (`--pointer`, `--drag-to`): rests somewhere, or drags from there and keeps holding, so screenshots can show hover marks, tooltips and drags |
 
 ## Notes
 

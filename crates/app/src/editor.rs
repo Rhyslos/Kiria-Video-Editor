@@ -34,6 +34,8 @@ pub struct Start {
     pub report: Arc<Mutex<RunReport>>,
     /// Problems found before the window opened, shown once it has.
     pub problems: Vec<AppError>,
+    /// A scripted pointer, for screenshots of pointing and dragging.
+    pub pointer: Option<crate::fake_pointer::FakePointer>,
 }
 
 pub struct Editor {
@@ -99,6 +101,8 @@ pub struct Editor {
     looping: bool,
     last_input: Instant,
     mode: RunMode,
+    /// `--pointer`: a scripted pointer for screenshots.
+    pointer: Option<crate::fake_pointer::FakePointer>,
     frames: u64,
     probe: Probe,
     report: Arc<Mutex<RunReport>>,
@@ -106,6 +110,8 @@ pub struct Editor {
 
 /// The longest a screenshot waits for imports and the viewer's picture.
 const SCREENSHOT_WAIT: Duration = Duration::from_secs(20);
+/// How long a scripted pointer rests before the screenshot, so tooltips are up.
+const POINTER_REST: Duration = Duration::from_millis(1500);
 
 /// Measurements for the automated runs.
 #[derive(Default)]
@@ -131,6 +137,7 @@ impl Editor {
             mode,
             report,
             problems,
+            pointer,
         } = start;
         ui_kit::setup(&cc.egui_ctx, settings.theme);
         let jobs = JobSystem::new(settings.resources.resolve(&jobs::Machine::detect()));
@@ -247,6 +254,7 @@ impl Editor {
             looping: false,
             last_input: Instant::now(),
             mode,
+            pointer,
             frames: 0,
             probe: Probe::default(),
             report,
@@ -1756,7 +1764,12 @@ impl Editor {
                 let since = *self.probe.started.get_or_insert(now);
                 let ready = (self.importer.busy() == 0 && self.viewer.settled())
                     || now.duration_since(since) > SCREENSHOT_WAIT;
-                if self.frames >= 10 && ready && !self.probe.screenshot_requested {
+                // A scripted pointer has done its part, and rested long
+                // enough for a tooltip to come up.
+                let pointed = self.pointer.is_none_or(|p| {
+                    self.frames >= p.settled_at() && now.duration_since(since) > POINTER_REST
+                });
+                if self.frames >= 10 && ready && pointed && !self.probe.screenshot_requested {
                     self.probe.screenshot_requested = true;
                     let (path, saved, report) = (
                         path.clone(),
@@ -1841,6 +1854,12 @@ impl Editor {
 }
 
 impl eframe::App for Editor {
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        if let Some(pointer) = &self.pointer {
+            pointer.apply(self.frames, &mut raw_input.events);
+        }
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let started = Instant::now();
         let ctx = ui.ctx().clone();

@@ -28,6 +28,10 @@ pub struct Options {
     /// Stop the background reading of waveforms and clip pictures at this
     /// share, 0 to 1 (`--hold-reading 0.4`, for screenshots of reading in progress).
     pub hold_reading: Option<f32>,
+    /// Put the pointer here, and maybe drag it from there with the left
+    /// button held (`--pointer 640,420 [--drag-to 640,480]`, for
+    /// screenshots of what pointing and dragging show).
+    pub pointer: Option<crate::fake_pointer::FakePointer>,
     pub mode: RunMode,
 }
 
@@ -65,6 +69,24 @@ impl Options {
                 "--action" => {
                     let name = args.next().ok_or("--action needs a command name")?;
                     options.actions.push(name);
+                }
+                "--pointer" | "--drag-to" => {
+                    let pos = args
+                        .next()
+                        .as_deref()
+                        .and_then(crate::fake_pointer::FakePointer::parse_pos)
+                        .ok_or_else(|| format!("{arg} needs a position such as 640,420"))?;
+                    options.pointer = Some(match (arg.as_str(), options.pointer) {
+                        ("--drag-to", Some(pointer)) => crate::fake_pointer::FakePointer {
+                            drag_to: Some(pos),
+                            ..pointer
+                        },
+                        ("--drag-to", None) => return Err("--drag-to needs --pointer before it".into()),
+                        _ => crate::fake_pointer::FakePointer {
+                            at: pos,
+                            drag_to: None,
+                        },
+                    });
                 }
                 "--hold-reading" => {
                     let share = args
@@ -119,5 +141,13 @@ mod tests {
             Some(0.4)
         );
         assert!(parse(&["p.x", "--hold-reading", "soon"]).is_err());
+        let o = parse(&["p.x", "--pointer", "640,420", "--drag-to", "640,480"]).unwrap();
+        let pointer = o.pointer.unwrap();
+        assert_eq!(
+            (pointer.at, pointer.drag_to),
+            (egui::pos2(640.0, 420.0), Some(egui::pos2(640.0, 480.0)))
+        );
+        assert!(parse(&["p.x", "--drag-to", "640,480"]).is_err(), "from where?");
+        assert!(parse(&["p.x", "--pointer", "640"]).is_err());
     }
 }
