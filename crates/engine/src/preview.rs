@@ -5,6 +5,13 @@
 //! come back through [`Preview::latest`], and a notifier (the window's repaint
 //! request) runs when one is ready.
 //!
+//! Getting to a moment in a file can mean decoding a hundred frames from the
+//! key frame before it. A request that arrives meanwhile is looked at between
+//! frames ([`Waiting`]): a decode the newer request can't use is given up at
+//! once, so a jump that has been overtaken never holds up the next one; a
+//! decode that is on the way to it carries on, and the pictures it passes
+//! are shown. Not every request gets an answer, but the newest always does.
+//!
 //! Decoders are kept open for the files used most recently, so moving around
 //! one recording only seeks.
 //!
@@ -20,7 +27,7 @@
 //! the last way's failure does.
 
 use crate::timeline::video_at;
-use media::{Decoded, Decoding, Level, VideoDecoder, WindowDevice};
+use media::{Decoded, Decoding, Level, Newer, Reached, VideoDecoder, WindowDevice};
 use project::{MediaId, Project, SequenceId, Time};
 use std::collections::{HashSet, VecDeque};
 use std::path::Path;
@@ -202,21 +209,76 @@ impl Preview {
 }
 
 fn run(inbox: &Receiver<Request>, outbox: &Sender<Picture>, mut worker: Worker, notify: &dyn Fn()) {
-    while let Ok(mut request) = inbox.recv() {
-        // Only the newest request counts.
-        loop {
-            match inbox.try_recv() {
-                Ok(newer) => request = newer,
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => return,
-            }
-        }
-        let picture = worker.picture(&request);
+    let mut waiting = Waiting::new(inbox);
+    while let Some(request) = waiting.next() {
+        // A decode the next request can't use is given up: nothing to send.
+        let Some(picture) = worker.picture(&request, &mut waiting) else {
+            continue;
+        };
         if outbox.send(picture).is_err() {
             return;
         }
         notify();
     }
+}
+
+/// The requests that have arrived and not been worked on: only the newest
+/// counts. It is taken in while a picture is being decoded too, so the
+/// decode can be asked whether it is still wanted.
+struct Waiting<'a> {
+    inbox: &'a Receiver<Request>,
+    newest: Option<Request>,
+    /// Nobody asks any more: the preview was closed or dropped.
+    closed: bool,
+}
+
+impl<'a> Waiting<'a> {
+    fn new(inbox: &'a Receiver<Request>) -> Waiting<'a> {
+        Waiting {
+            inbox,
+            newest: None,
+            closed: false,
+        }
+    }
+
+    /// Takes in what has arrived. Returns whether a newer request did.
+    fn take_in(&mut self) -> bool {
+        let mut newer = false;
+        loop {
+            match self.inbox.try_recv() {
+                Ok(request) => {
+                    self.newest = Some(request);
+                    newer = true;
+                }
+                Err(TryRecvError::Empty) => return newer,
+                Err(TryRecvError::Disconnected) => {
+                    self.closed = true;
+                    return newer;
+                }
+            }
+        }
+    }
+
+    /// The request to work on next: the newest waiting, or the next to
+    /// arrive. `None` when nobody asks any more.
+    fn next(&mut self) -> Option<Request> {
+        self.take_in();
+        if self.newest.is_none() && !self.closed {
+            self.newest = self.inbox.recv().ok();
+            self.take_in();
+        }
+        if self.closed { None } else { self.newest.take() }
+    }
+}
+
+/// The file, stream and moment in the file a request shows; `None` in a gap.
+fn source_of(r: &Request) -> Option<((MediaId, u32), f64)> {
+    let sequence = r.project.sequences.iter().find(|s| s.id == r.sequence)?;
+    let showing = video_at(&r.project, sequence, r.at)?;
+    Some((
+        (showing.media.id, showing.clip.stream),
+        showing.source_time.as_secs_f64(),
+    ))
 }
 
 /// What the worker thread keeps between requests.
@@ -233,7 +295,10 @@ struct Worker {
 }
 
 impl Worker {
-    fn picture(&mut self, r: &Request) -> Picture {
+    /// The picture for `r`, or for a request that arrived while it was
+    /// decoded and was reached first (the picture's `at` says which).
+    /// `None` when the decode was given up for a newer request it can't serve.
+    fn picture(&mut self, r: &Request, waiting: &mut Waiting<'_>) -> Option<Picture> {
         let started = Instant::now();
         let mut out = Picture {
             at: r.at,
@@ -243,10 +308,10 @@ impl Worker {
             method: None,
         };
         let Some(sequence) = r.project.sequences.iter().find(|s| s.id == r.sequence) else {
-            return out;
+            return Some(out);
         };
         let Some(showing) = video_at(&r.project, sequence, r.at) else {
-            return out; // a gap: black
+            return Some(out); // a gap: black
         };
         let key = (showing.media.id, showing.clip.stream);
         let file = File {
@@ -261,17 +326,55 @@ impl Worker {
                 Ok(decoder) => decoder,
                 Err(err) => {
                     out.error = Some(err);
-                    return out;
+                    return Some(out);
                 }
             },
         };
         let at = showing.source_time.as_secs_f64();
+        // What the decoder is told between frames: what the newest request
+        // waiting means for this file. Moments of this file that were asked
+        // for meanwhile are remembered with their place on the timeline, to
+        // name the picture if the decode stops at one of them.
+        let mut asked_meanwhile: Vec<(f64, Time)> = Vec::new();
+        let mut now_wanted = Newer::Nothing;
+        let mut newer = || {
+            if waiting.take_in()
+                && let Some(next) = &waiting.newest
+            {
+                now_wanted = match source_of(next) {
+                    Some((k, moment)) if k == key => {
+                        asked_meanwhile.push((moment, next.at));
+                        Newer::At(moment)
+                    }
+                    _ => Newer::Elsewhere,
+                };
+            }
+            if waiting.closed {
+                Newer::Elsewhere
+            } else {
+                now_wanted
+            }
+        };
         // Decode; when a way fails for this file (an unusual profile, a
         // driver problem), open it one way down and ask again.
+        let mut dropped = false;
         loop {
-            match self.decode(&mut decoder, at, r) {
-                Ok(frame) => {
-                    out.frame = Some(frame);
+            match self.decode(&mut decoder, at, r, &mut newer) {
+                Ok(Reached::Shown { picture, at: reached }) => {
+                    out.frame = Some(picture);
+                    // Stopped at a moment asked for meanwhile: it is that request's picture.
+                    if (reached - at).abs() > 1e-9
+                        && let Some((_, on_timeline)) = asked_meanwhile
+                            .iter()
+                            .rev()
+                            .find(|(moment, _)| (moment - reached).abs() <= 1e-9)
+                    {
+                        out.at = *on_timeline;
+                    }
+                    break;
+                }
+                Ok(Reached::Dropped) => {
+                    dropped = true;
                     break;
                 }
                 Err(err) => {
@@ -302,8 +405,15 @@ impl Worker {
         // Most recently used first.
         self.decoders.push_front((key, decoder));
         self.decoders.truncate(OPEN_DECODERS);
+        if dropped {
+            return None;
+        }
+        // The waiting request has its answer already when the decode stopped at it.
+        if waiting.newest.as_ref().is_some_and(|next| next.at == out.at) {
+            waiting.newest = None;
+        }
         out.took = started.elapsed();
-        out
+        Some(out)
     }
 
     /// The ways to try for a file: all of them, or those below the window's
@@ -364,9 +474,25 @@ impl Worker {
     }
 
     /// The picture at `at` from this decoder, the way the viewer takes it.
-    fn decode(&self, decoder: &mut VideoDecoder, at: f64, r: &Request) -> diag::Result<Decoded> {
+    /// Decodes towards `at`, asking `newer` between frames whether that is
+    /// still what is wanted (`VideoDecoder::picture_at_while`).
+    fn decode(
+        &self,
+        decoder: &mut VideoDecoder,
+        at: f64,
+        r: &Request,
+        newer: &mut dyn FnMut() -> Newer,
+    ) -> diag::Result<Reached<Decoded>> {
+        let (w, h) = (r.max_width, r.max_height);
+        let rgba = |reached: Reached<media::Frame>| match reached {
+            Reached::Shown { picture, at } => Reached::Shown {
+                picture: Decoded::Rgba(picture),
+                at,
+            },
+            Reached::Dropped => Reached::Dropped,
+        };
         let Convert::WhileDrawing { largest_side } = self.convert else {
-            return decoder.frame_at(at, r.max_width, r.max_height).map(Decoded::Rgba);
+            return decoder.frame_at_while(at, w, h, newer).map(rgba);
         };
         let watch = match (&self.on_device, decoder.level()) {
             (Some(on_device), Level::Device) => Some(&on_device.watch),
@@ -375,22 +501,28 @@ impl Worker {
         if let Some(watch) = watch {
             watch.about_to_decode();
         }
-        let picture = decoder.picture_at(at, r.max_width, r.max_height);
-        if let (Some(watch), Ok(_)) = (watch, &picture) {
+        let reached = decoder.picture_at_while(at, w, h, newer);
+        if let (Some(watch), Ok(_)) = (watch, &reached) {
             watch.answered(); // an error is reported by the caller
         }
-        match picture? {
+        let (picture, at) = match reached? {
+            Reached::Shown { picture, at } => (picture, at),
+            Reached::Dropped => return Ok(Reached::Dropped),
+        };
+        let picture = match picture {
+            // The frame is held already: this only converts it.
             Decoded::Yuv(planes) if planes.width.max(planes.height) > largest_side => {
-                decoder.frame_at(at, r.max_width, r.max_height).map(Decoded::Rgba)
+                Decoded::Rgba(decoder.frame_at(at, w, h)?)
             }
             // Pictures on the graphics card come at the file's size: one too
             // large for a texture goes down a way instead.
             Decoded::Gpu(frame) if frame.planes.size().0.max(frame.planes.size().1) > largest_side => {
-                Err(diag::AppError::new("The video can't be shown")
-                    .why("The picture is larger than a texture on this graphics card can be."))
+                return Err(diag::AppError::new("The video can't be shown")
+                    .why("The picture is larger than a texture on this graphics card can be."));
             }
-            picture => Ok(picture),
-        }
+            picture => picture,
+        };
+        Ok(Reached::Shown { picture, at })
     }
 }
 
@@ -593,6 +725,90 @@ mod tests {
         std::thread::sleep(Duration::from_millis(100));
         assert!(preview.latest().is_none(), "nothing is decoded after closing");
         assert!(preview.close(Duration::from_millis(10)), "closing twice is fine");
+    }
+
+    /// A project with the two-second fixture on the timeline, and a worker
+    /// that decodes on the CPU.
+    fn worker_and_project() -> (Worker, Project, SequenceId) {
+        let p = Project::new_automatic("T");
+        let seq = p.active_sequence;
+        let media = media::describe(&fixture("game-3-audio.mkv")).unwrap();
+        let p = Command::Import { sequence: seq, media }.apply(&p).unwrap();
+        let worker = Worker {
+            ladder: ladder(Decoding::Software, Convert::OnCpu, false),
+            convert: Convert::OnCpu,
+            on_device: None,
+            decoders: VecDeque::new(),
+            off_device: HashSet::new(),
+        };
+        (worker, p, seq)
+    }
+
+    fn request(p: &Project, seq: SequenceId, millis: i64) -> Request {
+        Request {
+            project: p.clone(),
+            sequence: seq,
+            at: Time::from_ratio(millis, 1000).unwrap(),
+            max_width: 160,
+            max_height: 160,
+        }
+    }
+
+    #[test]
+    fn only_the_newest_request_waiting_counts() {
+        let (_, p, seq) = worker_and_project();
+        let (requests, inbox) = channel::<Request>();
+        let mut waiting = Waiting::new(&inbox);
+        for millis in [100, 200, 300] {
+            requests.send(request(&p, seq, millis)).unwrap();
+        }
+        assert_eq!(waiting.next().map(|r| r.at), Time::from_ratio(300, 1000));
+        requests.send(request(&p, seq, 400)).unwrap();
+        assert!(waiting.take_in(), "a newer one arrived");
+        assert!(!waiting.take_in(), "nothing since");
+        assert_eq!(waiting.next().map(|r| r.at), Time::from_ratio(400, 1000));
+        // Nobody asks any more: what was still waiting is not worked on.
+        requests.send(request(&p, seq, 500)).unwrap();
+        drop(requests);
+        assert!(waiting.next().is_none());
+    }
+
+    #[test]
+    fn a_jump_overtaken_by_a_request_elsewhere_is_given_up() {
+        let (mut worker, p, seq) = worker_and_project();
+        let (requests, inbox) = channel::<Request>();
+        let mut waiting = Waiting::new(&inbox);
+        // While 1.8 s is decoded, a moment after the clip's end (a gap) is asked for.
+        requests.send(request(&p, seq, 30_000)).unwrap();
+        assert!(worker.picture(&request(&p, seq, 1800), &mut waiting).is_none());
+        // The newer request is still waiting, and is answered next.
+        let next = waiting.next().unwrap();
+        assert_eq!(Some(next.at), Time::from_ratio(30_000, 1000));
+        let gap = worker.picture(&next, &mut waiting).unwrap();
+        assert!(gap.frame.is_none() && gap.error.is_none());
+    }
+
+    #[test]
+    fn a_request_reached_on_the_way_gets_the_picture() {
+        let (mut worker, p, seq) = worker_and_project();
+        let (requests, inbox) = channel::<Request>();
+        let mut waiting = Waiting::new(&inbox);
+        // While 1.8 s is decoded from the start, 0.5 s is asked for: the
+        // decode stops there, and the picture is that request's.
+        requests.send(request(&p, seq, 500)).unwrap();
+        let picture = worker.picture(&request(&p, seq, 1800), &mut waiting).unwrap();
+        assert_eq!(Some(picture.at), Time::from_ratio(500, 1000));
+        let frame = picture.frame.unwrap();
+        assert!((frame.time() - 0.5).abs() < 0.02, "{}", frame.time());
+        assert!(waiting.newest.is_none(), "answered: not decoded a second time");
+        // A later moment on the way does not stop the one before it.
+        requests.send(request(&p, seq, 1900)).unwrap();
+        let picture = worker.picture(&request(&p, seq, 1200), &mut waiting).unwrap();
+        assert_eq!(Some(picture.at), Time::from_ratio(1200, 1000));
+        assert_eq!(
+            waiting.newest.as_ref().map(|r| r.at),
+            Time::from_ratio(1900, 1000)
+        );
     }
 
     #[test]

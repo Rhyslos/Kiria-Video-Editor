@@ -27,6 +27,7 @@
 //! first before that and steps down per file when a way fails.
 
 use crate::ffi::{Input, error_text};
+use crate::jump::KeyFrames;
 use crate::vulkan::{GpuFrame, WindowDevice, device_error};
 use crate::yuv::{Colour, PlaneRef, Pool, Source, YuvFrame, step_for};
 use diag::AppError;
@@ -105,8 +106,27 @@ pub enum Level {
     Software,
 }
 
-/// How far ahead (seconds) decoding onward is still cheaper than seeking.
-const DECODE_ON_LIMIT: f64 = 3.0;
+/// What has been asked for since a decode began, as far as its file goes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Newer {
+    /// Nothing: carry on.
+    Nothing,
+    /// Another moment of the same file (seconds from its start).
+    At(f64),
+    /// Something this decoder can't give: another file, nothing at all.
+    Elsewhere,
+}
+
+/// How a decode that may be overtaken by a newer request ended.
+#[derive(Debug)]
+pub enum Reached<T> {
+    /// The picture at `at`: the moment asked for, or the newer one when
+    /// that turned out to be on the way before it.
+    Shown { picture: T, at: f64 },
+    /// Given up: what was asked for meanwhile can't use this decode. The
+    /// decoder is where it had got to; ask it for the newer moment.
+    Dropped,
+}
 
 pub struct VideoDecoder {
     input: Input,
@@ -123,6 +143,8 @@ pub struct VideoDecoder {
     /// The next frame, decoded already.
     ahead: *mut ff::AVFrame,
     ahead_time: Option<f64>,
+    /// Where the container says the key frames are.
+    keys: KeyFrames,
     scratch: *mut ff::AVFrame,
     copy: *mut ff::AVFrame,
     packet: *mut ff::AVPacket,
@@ -404,6 +426,7 @@ impl VideoDecoder {
                 held_time: None,
                 ahead: ff::av_frame_alloc(),
                 ahead_time: None,
+                keys: KeyFrames::default(),
                 scratch: ff::av_frame_alloc(),
                 copy: ff::av_frame_alloc(),
                 packet: ff::av_packet_alloc(),
@@ -435,8 +458,53 @@ impl VideoDecoder {
             if r < 0 {
                 return Err(explain(path, "Opening the decoder", r));
             }
+            this.keys = this.listed_key_frames();
             Ok(this)
         }
+    }
+
+    /// The key frames the container lists for this stream, without reading
+    /// the file through. Call before anything is decoded: some containers
+    /// only read their list when first asked to jump (until then they know
+    /// the few key frames passed while the file was opened), so the file is
+    /// made to jump to its start.
+    fn listed_key_frames(&mut self) -> KeyFrames {
+        let mut times = Vec::new();
+        // SAFETY: the context is open and the stream index was checked when
+        // it was opened; entries are read while nothing else uses the context.
+        unsafe {
+            let raw = self.input.raw();
+            let st = *(*raw).streams.add(self.stream as usize);
+            let first = if (*st).start_time == ff::AV_NOPTS_VALUE {
+                0
+            } else {
+                (*st).start_time
+            };
+            ff::av_seek_frame(raw, self.stream, first, ff::AVSEEK_FLAG_BACKWARD);
+            for i in 0..ff::avformat_index_get_entries_count(st) {
+                let entry = ff::avformat_index_get_entry(st, i);
+                if !entry.is_null() && (*entry).flags() & ff::AVINDEX_KEYFRAME != 0 {
+                    times.push((*entry).timestamp as f64 * self.time_base - self.start);
+                }
+            }
+            // The list may hold decode times: a frame is shown up to this
+            // long after it is decoded (the stream's reordering, and one
+            // frame more to be on the safe side).
+            let rate = (*st).avg_frame_rate;
+            let frame = if rate.num > 0 && rate.den > 0 {
+                f64::from(rate.den) / f64::from(rate.num)
+            } else {
+                1.0 / 24.0
+            };
+            let reordered_by = f64::from((*(*st).codecpar).video_delay.max(0) + 1);
+            KeyFrames::new(times, reordered_by * frame)
+        }
+    }
+
+    /// The key frames the file's container lists for this stream (it may
+    /// list none, or not all).
+    pub fn key_frames(&self) -> &KeyFrames {
+        &self.keys
     }
 
     /// Sets the codec up to decode on the window's device, into `format`
@@ -492,10 +560,25 @@ impl VideoDecoder {
     /// The frame on screen at `seconds` from the start of the file, scaled
     /// to fit in `max_width × max_height` (never enlarged) and turned upright.
     pub fn frame_at(&mut self, seconds: f64, max_width: u32, max_height: u32) -> diag::Result<Frame> {
-        self.hold(seconds)?;
-        let source = self.in_memory()?;
-        // SAFETY: `source` was just returned by `in_memory`.
-        unsafe { self.convert(source, max_width, max_height) }
+        self.hold(seconds, &mut || Newer::Nothing)?;
+        self.held_as_frame(max_width, max_height)
+    }
+
+    /// [`VideoDecoder::frame_at`] for a request that may be overtaken: see
+    /// [`VideoDecoder::picture_at_while`].
+    pub fn frame_at_while(
+        &mut self,
+        seconds: f64,
+        max_width: u32,
+        max_height: u32,
+        newer: &mut dyn FnMut() -> Newer,
+    ) -> diag::Result<Reached<Frame>> {
+        match self.hold(seconds, newer)? {
+            Some(at) => self
+                .held_as_frame(max_width, max_height)
+                .map(|picture| Reached::Shown { picture, at }),
+            None => Ok(Reached::Dropped),
+        }
     }
 
     /// The frame on screen at `seconds`, as the decoder's own planes when
@@ -511,7 +594,47 @@ impl VideoDecoder {
     /// eighth of it when that still fills `max_width × max_height` as
     /// sharply as the box can show.
     pub fn picture_at(&mut self, seconds: f64, max_width: u32, max_height: u32) -> diag::Result<Decoded> {
-        self.hold(seconds)?;
+        self.hold(seconds, &mut || Newer::Nothing)?;
+        self.held_as_picture(max_width, max_height)
+    }
+
+    /// [`VideoDecoder::picture_at`] for a request that may be overtaken
+    /// while it is decoded. Getting to a moment can mean decoding a hundred
+    /// frames; between frames `newer` is asked what is wanted by now:
+    ///
+    /// - the same, or a later moment this decode is on the way to: it is
+    ///   finished, and its picture shown, first;
+    /// - an earlier moment this decode has not passed yet: decoding stops
+    ///   there, and that picture is given instead;
+    /// - anything this decode can't serve (a moment behind it, one a key
+    ///   frame away, another file): it is given up at once.
+    ///
+    /// So a jump that has been overtaken never holds up the next one, and
+    /// decoding that is going the right way is never thrown away.
+    pub fn picture_at_while(
+        &mut self,
+        seconds: f64,
+        max_width: u32,
+        max_height: u32,
+        newer: &mut dyn FnMut() -> Newer,
+    ) -> diag::Result<Reached<Decoded>> {
+        match self.hold(seconds, newer)? {
+            Some(at) => self
+                .held_as_picture(max_width, max_height)
+                .map(|picture| Reached::Shown { picture, at }),
+            None => Ok(Reached::Dropped),
+        }
+    }
+
+    /// The frame held, scaled and turned upright in memory.
+    fn held_as_frame(&mut self, max_width: u32, max_height: u32) -> diag::Result<Frame> {
+        let source = self.in_memory()?;
+        // SAFETY: `source` was just returned by `in_memory`.
+        unsafe { self.convert(source, max_width, max_height) }
+    }
+
+    /// The frame held, the way [`VideoDecoder::picture_at`] gives it.
+    fn held_as_picture(&mut self, max_width: u32, max_height: u32) -> diag::Result<Decoded> {
         if let Some((device, copier)) = &mut self.on_device {
             let time = self.held_time.unwrap_or(0.0);
             // SAFETY: `held` holds a frame this decoder decoded on `device`,
@@ -528,15 +651,20 @@ impl VideoDecoder {
         }
     }
 
-    /// Decodes (seeking first when that is quicker) until `held` is the
-    /// frame on screen at `seconds`.
-    fn hold(&mut self, seconds: f64) -> diag::Result<()> {
-        let target = seconds.max(0.0);
-        let seek = match self.held_time {
-            Some(t) => target + 1e-6 < t || target - t > DECODE_ON_LIMIT,
-            None => target > DECODE_ON_LIMIT || self.ended,
-        };
-        if seek {
+    /// Whether getting to `target` from where the decoder is now is quicker
+    /// by jumping than by decoding on.
+    fn jumps_to(&self, target: f64) -> bool {
+        self.keys
+            .jump(self.held_time, self.ahead_time, target, self.ended)
+    }
+
+    /// Decodes (jumping first when that is quicker) until `held` is the
+    /// frame on screen at `seconds`, asking `newer` between frames what is
+    /// wanted by now (see [`VideoDecoder::picture_at_while`]). Returns the
+    /// moment `held` is the frame for, or `None` when the decode was given up.
+    fn hold(&mut self, seconds: f64, newer: &mut dyn FnMut() -> Newer) -> diag::Result<Option<f64>> {
+        let mut target = seconds.max(0.0);
+        if self.jumps_to(target) {
             self.seek(target)?;
         }
         loop {
@@ -552,6 +680,20 @@ impl VideoDecoder {
                 }
                 break;
             }
+            // Another frame has to be decoded: is this still what is wanted?
+            match newer() {
+                Newer::Nothing => {}
+                Newer::Elsewhere => return Ok(None),
+                Newer::At(wanted) => {
+                    let wanted = wanted.max(0.0);
+                    if self.jumps_to(wanted) {
+                        return Ok(None);
+                    }
+                    // Reachable by decoding on. Earlier than the target: stop
+                    // there. Later: the target is on the way, finish it first.
+                    target = target.min(wanted);
+                }
+            }
             match self.decode_next()? {
                 Some(t) => self.ahead_time = Some(t),
                 None => break,
@@ -562,7 +704,7 @@ impl VideoDecoder {
                 .why("No picture could be decoded at this point of the file.")
                 .fix("The file may be damaged. Check that it plays in a media player."));
         }
-        Ok(())
+        Ok(Some(target))
     }
 
     fn seek(&mut self, target: f64) -> diag::Result<()> {

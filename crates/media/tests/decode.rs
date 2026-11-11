@@ -3,7 +3,7 @@
 // Test helpers may panic: a failure here is a failing test.
 #![allow(clippy::unwrap_used)]
 
-use media::{Decoded, Decoding, VideoDecoder};
+use media::{Decoded, Decoding, Newer, Reached, VideoDecoder};
 use std::path::{Path, PathBuf};
 
 fn fixture(name: &str) -> PathBuf {
@@ -183,4 +183,75 @@ fn colours_follow_the_matrix_and_range_the_file_names() {
             assert!(near, "{path} path, square {index}: got {got:?}, wanted {want:?}");
         }
     }
+}
+
+#[test]
+fn the_containers_key_frames_are_listed() {
+    // One key frame at the start of this two-second recording.
+    assert_eq!(open("game-3-audio.mkv", 0).key_frames().len(), 1);
+    // This one has a second key frame, 2.15 s in.
+    assert_eq!(open("vfr-60.mkv", 0).key_frames().len(), 2);
+}
+
+/// What a decode is told between frames, changing after `after` frames.
+fn then(after: u32, to: Newer) -> impl FnMut() -> Newer {
+    let mut asked = 0;
+    move || {
+        asked += 1;
+        if asked > after { to } else { Newer::Nothing }
+    }
+}
+
+fn shown_at(reached: Reached<media::Frame>) -> Option<(f64, f64)> {
+    match reached {
+        Reached::Shown { picture, at } => Some((at, picture.time)),
+        Reached::Dropped => None,
+    }
+}
+
+#[test]
+fn a_decode_nobody_can_use_any_more_is_given_up() {
+    let mut d = open("game-3-audio.mkv", 0);
+    // Another file is wanted by now.
+    let mut newer = then(10, Newer::Elsewhere);
+    let reached = d.frame_at_while(1.8, 160, 160, &mut newer).unwrap();
+    assert!(shown_at(reached).is_none());
+    // Or a moment behind where the decode has got to.
+    let mut d = open("game-3-audio.mkv", 0);
+    d.frame_at(1.0, 160, 160).unwrap();
+    let mut newer = then(10, Newer::At(0.5));
+    let reached = d.frame_at_while(1.8, 160, 160, &mut newer).unwrap();
+    assert!(shown_at(reached).is_none());
+    // The decoder is none the worse: it gives the right frame afterwards.
+    let straight = open("game-3-audio.mkv", 0).frame_at(0.5, 160, 160).unwrap();
+    let after = d.frame_at(0.5, 160, 160).unwrap();
+    assert_eq!(after.time, straight.time);
+    assert_eq!(after.rgba, straight.rgba);
+}
+
+#[test]
+fn an_earlier_moment_still_ahead_stops_the_decode_there() {
+    let mut d = open("game-3-audio.mkv", 0);
+    // On the way to 1.8 s, with 20 frames (a third of a second) decoded, 0.9 s is wanted.
+    let mut newer = then(20, Newer::At(0.9));
+    let reached = d.frame_at_while(1.8, 160, 160, &mut newer).unwrap();
+    let (at, time) = shown_at(reached).unwrap();
+    assert_eq!(at, 0.9);
+    assert!((time - 0.9).abs() < 0.02, "{time}");
+    let straight = open("game-3-audio.mkv", 0).frame_at(0.9, 160, 160).unwrap();
+    assert_eq!(time, straight.time);
+}
+
+#[test]
+fn a_later_moment_on_the_way_does_not_stop_the_one_before_it() {
+    let mut d = open("game-3-audio.mkv", 0);
+    let mut newer = then(20, Newer::At(1.9));
+    let reached = d.frame_at_while(1.2, 160, 160, &mut newer).unwrap();
+    let (at, time) = shown_at(reached).unwrap();
+    assert_eq!(at, 1.2);
+    assert!((time - 1.2).abs() < 0.02, "{time}");
+    // And the later one follows without a jump: the decoder carries on.
+    let (at, time) = shown_at(d.frame_at_while(1.9, 160, 160, &mut || Newer::Nothing).unwrap()).unwrap();
+    assert_eq!(at, 1.9);
+    assert!((time - 1.9).abs() < 0.02, "{time}");
 }
