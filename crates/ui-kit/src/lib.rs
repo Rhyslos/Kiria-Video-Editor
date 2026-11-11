@@ -26,13 +26,13 @@ pub mod yuv_renderer;
 pub use dialog::dialog;
 pub use errors::{ErrorCenter, ErrorResponse, ShownError, accent_button, status_dot};
 pub use layout::Page;
-pub use shortcuts::{Action, Shortcut, ShortcutTable};
+pub use shortcuts::{Action, Context, Shortcut, ShortcutTable};
 pub use theme::{Theme, ThemeName, status};
 pub use timeline::{
     ClipEdge, ClipPictures, ClipWaveform, DraggedMedia, TimelineClip, TimelineData, TimelineEvent,
     TimelineMarker, TimelineTrack, TimelineView, Tool, ViewStep,
 };
-pub use top_bar::{TitleBar, TopBar, TopBarClicks, logo_mark};
+pub use top_bar::{TitleBar, TopBar, TopBarClicks, logo_mark, with_keys};
 pub use transport::TransportClick;
 pub use video_picture::{ChromaLayout, ComposedPicture, PlaneTextures, VideoPicture, YuvImage};
 pub use viewer::PreviewQuality;

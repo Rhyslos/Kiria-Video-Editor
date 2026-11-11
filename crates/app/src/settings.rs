@@ -20,6 +20,11 @@ pub struct Settings {
     /// How the height is shared between the viewer and the timeline (the
     /// handle between them), on every page that has both.
     pub viewer_split: ui_kit::splitter::Split,
+    /// The shortcuts that were changed on the keyboard shortcuts page (the
+    /// usual ones are not written down).
+    pub shortcuts: ui_kit::shortcuts::SavedBindings,
+    /// The keyboard the shortcuts page draws.
+    pub keyboard_layout: ui_kit::keyboard::LayoutId,
 }
 
 impl Settings {
@@ -96,6 +101,11 @@ mod tests {
             ui_kit::splitter::Split::default(),
             "settings from before the handle between viewer and timeline"
         );
+        assert_eq!(
+            ui_kit::ShortcutTable::restored(&loaded.shortcuts),
+            ui_kit::ShortcutTable::default(),
+            "settings from before shortcuts could be changed"
+        );
     }
 
     #[test]
@@ -107,6 +117,67 @@ mod tests {
         };
         settings.save(tmp.path()).unwrap();
         assert_eq!(Settings::load(tmp.path()).0.viewer_split.0, 0.7);
+    }
+
+    #[test]
+    fn changed_shortcuts_and_the_keyboard_are_remembered() {
+        use ui_kit::{Action, Shortcut, ShortcutTable};
+        let tmp = tempfile::tempdir().unwrap();
+        let mut table = ShortcutTable::default();
+        let split = table
+            .lines()
+            .iter()
+            .position(|b| b.action == Action::Split)
+            .unwrap();
+        // Split and Save trade places, and Undo loses its shortcut.
+        table.swap(split, Shortcut::ctrl(egui::Key::S));
+        let undo = table
+            .lines()
+            .iter()
+            .position(|b| b.action == Action::Undo)
+            .unwrap();
+        table.clear(undo);
+        let settings = Settings {
+            shortcuts: table.saved(),
+            keyboard_layout: ui_kit::keyboard::LayoutId::Norwegian,
+            ..Settings::default()
+        };
+        settings.save(tmp.path()).unwrap();
+
+        let text = std::fs::read_to_string(Settings::path(tmp.path())).unwrap();
+        assert!(text.contains("\"Ctrl+S\""), "kept as readable text: {text}");
+        let (loaded, problem) = Settings::load(tmp.path());
+        assert!(problem.is_none());
+        assert_eq!(loaded, settings);
+        let restored = ShortcutTable::restored(&loaded.shortcuts);
+        assert_eq!(restored, table);
+        assert_eq!(
+            restored.shortcut_for(Action::Split),
+            Some(Shortcut::ctrl(egui::Key::S))
+        );
+        assert_eq!(
+            restored.shortcut_for(Action::Save),
+            Some(Shortcut::key(egui::Key::S))
+        );
+        assert_eq!(restored.shortcut_for(Action::Undo), None);
+    }
+
+    #[test]
+    fn shortcuts_this_version_does_not_know_never_cost_the_other_settings() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            Settings::path(tmp.path()),
+            "(edit_at_playhead: true, shortcuts: [(command: \"FlyToTheMoon\", nth: 0, keys: Some(\"Ctrl+M\")), (command: \"Split\", keys: Some(\"F9\"))])",
+        )
+        .unwrap();
+        let (loaded, problem) = Settings::load(tmp.path());
+        assert!(problem.is_none());
+        assert!(loaded.edit_at_playhead);
+        let table = ui_kit::ShortcutTable::restored(&loaded.shortcuts);
+        assert_eq!(
+            table.shortcut_for(ui_kit::Action::Split),
+            Some(ui_kit::Shortcut::key(egui::Key::F9))
+        );
     }
 
     #[test]

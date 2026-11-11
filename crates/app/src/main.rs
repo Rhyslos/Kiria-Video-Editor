@@ -1,11 +1,12 @@
 //! The editor: window, pages and the start-up sequence.
 //!
-//! Usage: `editor [project file] [--open-last-save] [--import <media file>]... [--playhead <seconds>] [--play] [--cpu-colour] [--graphics-warning] [--decoding-warning] [--smoke-test | --responsiveness-test | --screenshot <file.png>]`.
+//! Usage: `editor [project file] [--open-last-save] [--import <media file>]... [--playhead <seconds>] [--play] [--cpu-colour] [--graphics-warning] [--decoding-warning] [--shortcuts-page <filter|rebinding|clash>] [--cheat-sheet <file.html>] [--smoke-test | --responsiveness-test | --screenshot <file.png>]`.
 //! The extra options are for automated checks; normal use needs none.
 
 // Release builds on Windows open no console window next to the editor.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod cheat_sheet;
 mod clip_pictures;
 mod device_decoding;
 mod editor;
@@ -70,6 +71,25 @@ fn main() -> ExitCode {
                 .fix("Open your project: unsaved changes are recovered automatically. A crash report may be in the crash-reports folder."),
         );
     }
+    // `--cheat-sheet`: the sheet for the shortcuts in these settings, and nothing else.
+    if let Some(path) = &options.cheat_sheet {
+        let table = ui_kit::ShortcutTable::restored(&settings.shortcuts);
+        let written = cheat_sheet::write(path, &table, settings.keyboard_layout);
+        if let Err(err) = &written {
+            eprintln!("{}", err.report());
+        }
+        if let Some(d) = diagnostics
+            && let Err(err) = d.finish()
+        {
+            eprintln!("{}", err.report());
+        }
+        return if written.is_ok() {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
+        };
+    }
+
     // Which graphics system to try, and whether the last start with Vulkan failed.
     // Automated runs only read: no marker is written and no setting changes.
     let automated = options.mode != RunMode::Normal;
@@ -121,6 +141,7 @@ fn main() -> ExitCode {
         report: Arc::clone(&report),
         problems,
         pointer,
+        shortcuts_page: options.shortcuts_page,
     };
 
     let mut code = ExitCode::SUCCESS;

@@ -72,6 +72,16 @@ pub mod status {
     pub const EDIT_NEEDLE: Color32 = Color32::from_rgb(0xE5, 0x48, 0x4D);
 }
 
+/// Context colours for the keyboard shortcuts page: one per place a
+/// command acts, the same in every theme and on the printed cheat sheet.
+pub mod context {
+    use egui::Color32;
+    pub const ANYWHERE: Color32 = Color32::from_rgb(0x6C, 0xA6, 0xE8);
+    pub const VIEWER: Color32 = Color32::from_rgb(0x4F, 0xC4, 0xB0);
+    pub const TIMELINE: Color32 = Color32::from_rgb(0xB5, 0x8B, 0xE8);
+    pub const DRAGGING: Color32 = Color32::from_rgb(0xE0, 0x7B, 0xA8);
+}
+
 const fn hex(rgb: u32) -> Color32 {
     Color32::from_rgb((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8)
 }

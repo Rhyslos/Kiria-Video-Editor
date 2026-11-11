@@ -79,6 +79,7 @@ Building needs libclang (for the FFmpeg bindings); on Windows set `LIBCLANG_PATH
 - The project file is versioned from its first commit; every format change gets a migration and a stored sample.
 - How a project is looked at (track heights, the video/audio divider) is view state, not an edit: it lives in `<project file>.view` beside the project, never in the project file, and makes no undo step.
 - The files that belong to a project (journal, backups, thumbnail, timeline layout, saved versions) are listed in one place, `project::side_files`. Moving, renaming and deleting a project go by that list; a new kind of file kept beside projects is added there. Deleting moves files to the recycle bin and never touches recordings.
+- Shortcuts can be changed (the keyboard shortcuts page), so the shortcut table holds the combinations in use and interface text asks it for key names (`keys_for`, `keys_or_name`, `tip`) instead of typing them. Settings keep only the changed ones, by key position. No two commands share a combination.
 - FFmpeg is linked dynamically and its licence text ships with the app.
 - Every program calls `diag::start(brand::VERSION)` first and `finish()` on a clean exit (logging, crash reports, crash detection).
 - Releases are tagged `vX.Y.Z` (pushed, or typed into "Run workflow"); the release workflow builds, tests, signs and publishes. Pushes to `main` publish automatic betas (`brand::VERSION` comes from `BUILD_VERSION` then). Updates are trusted only with a valid signature from the `RELEASE_SIGNING_KEY` secret.

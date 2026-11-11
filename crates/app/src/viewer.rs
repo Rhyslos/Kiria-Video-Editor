@@ -348,7 +348,9 @@ impl Viewer {
     }
 
     /// Draws the viewer, its transport and the timecodes in `height`, and asks
-    /// for the picture it needs. Returns a transport button pressed.
+    /// for the picture it needs. Returns a transport button pressed. The
+    /// transport's tooltips name the keys in `shortcuts`.
+    #[allow(clippy::too_many_arguments)]
     pub fn ui(
         &mut self,
         ui: &mut egui::Ui,
@@ -357,6 +359,7 @@ impl Viewer {
         quality: &mut PreviewQuality,
         needle: Option<Time>,
         height: f32,
+        shortcuts: &ui_kit::ShortcutTable,
     ) -> Option<TransportClick> {
         let seq = project.active()?;
         let rate = seq.settings.frame_rate;
@@ -375,7 +378,7 @@ impl Viewer {
             }
         });
         let (frame, _) = ui_kit::viewer::viewer(ui, theme, size, timeline, picture, &self.note);
-        let click = ui_kit::transport::transport(ui, theme, frame, self.frame_interval.is_some());
+        let click = ui_kit::transport::transport(ui, theme, frame, self.frame_interval.is_some(), shortcuts);
 
         ui.add_space(6.0);
         ui.horizontal(|ui| {

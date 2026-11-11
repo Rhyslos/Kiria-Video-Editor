@@ -226,8 +226,10 @@ fn browse(
     if options.graphics_warning {
         graphics_start = graphics_start.with_warning_preview();
     }
+    let shared = editor_settings(&data_dir);
     let start = Start {
-        theme: saved_theme(&data_dir),
+        theme: shared.theme,
+        shortcuts: shared.shortcuts,
         data_dir: data_dir.clone(),
         check_updates: options.check_updates,
         launch_editor: !automated && options.demo.is_none(),
@@ -388,22 +390,46 @@ fn update_in_background(data_dir: &Path) {
     }
 }
 
-/// The theme chosen in the editor's Settings, so both windows look alike.
-fn saved_theme(data_dir: &Path) -> ui_kit::ThemeName {
-    #[derive(serde::Deserialize, Default)]
-    #[serde(default)]
-    struct EditorSettings {
-        theme: ui_kit::ThemeName,
-    }
+/// What the launcher shares with the editor's Settings, so both windows
+/// look and answer alike: the theme, and the shortcuts changed there.
+#[derive(serde::Deserialize, Default)]
+#[serde(default)]
+struct EditorSettings {
+    theme: ui_kit::ThemeName,
+    shortcuts: ui_kit::shortcuts::SavedBindings,
+}
+
+fn editor_settings(data_dir: &Path) -> EditorSettings {
     std::fs::read_to_string(data_dir.join("settings.ron"))
         .ok()
         .and_then(|text| ron::from_str::<EditorSettings>(&text).ok())
         .unwrap_or_default()
-        .theme
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_launcher_uses_the_theme_and_the_shortcuts_changed_in_the_editor() {
+        let tmp = tempfile::tempdir().unwrap();
+        let shared = super::editor_settings(tmp.path());
+        assert_eq!(shared.theme, ui_kit::ThemeName::default(), "no settings yet");
+        assert_eq!(
+            ui_kit::ShortcutTable::restored(&shared.shortcuts),
+            ui_kit::ShortcutTable::default()
+        );
+
+        std::fs::write(
+            tmp.path().join("settings.ron"),
+            "(theme: Carbon, edit_at_playhead: true, shortcuts: [(command: \"Search\", nth: 0, keys: Some(\"Ctrl+F\"))])",
+        )
+        .unwrap();
+        let shared = super::editor_settings(tmp.path());
+        assert_eq!(shared.theme, ui_kit::ThemeName::Carbon);
+        let table = ui_kit::ShortcutTable::restored(&shared.shortcuts);
+        assert_eq!(table.keys_for(ui_kit::Action::Search), "Ctrl+F");
+        assert_eq!(table.keys_for(ui_kit::Action::OpenSettings), "Ctrl+Comma");
+    }
+
     use graphics::{Backend, GraphicsSettings, Platform, Program, RunKind, StartMarker};
     use updater::health::{self, StartOutcome};
 

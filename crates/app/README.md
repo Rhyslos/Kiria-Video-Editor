@@ -6,7 +6,7 @@ The editor window and its five pages. Binary name: `editor`.
 
 Phase 0.6 done: the window, the shared top bar, five empty pages that switch instantly, shortcuts, Settings, search for commands, inline errors and Diagnostics. Autosave runs on a worker. The pages fill up from Phase 4.
 
-Phase 4A so far: importing media (Ctrl+I, the Import button, or dropping files on the window), the viewer with its transport, the timeline (click a clip to select it, drag to move it, drag its edge to trim; V, B, R, T, Y and U pick the Select, Blade, Ripple, Roll, Slip and Slide tools; N snapping; audio tracks show waveforms and have mute, solo and volume; Delete, Backspace and S act on the selection; drag the red needle; Ctrl+wheel zooms at the pointer, = and - zoom in and out, \\ shows it all, Shift+wheel pans, the middle button drags the view), playback with sound (Space plays; pausing goes back to where playback started, Stop stays), a scrub bar and preview quality (Left/Right step a frame, Home/End jump), and Timeline settings (Automatic until the first video is imported, a template, or the same as one of the project's videos). Every track's height can be changed (drag the edge of its name, double-click for the usual height, Alt+wheel or Alt with = and - for every track of an area; Alt+\\ puts them back); heights and the divider between video and audio are kept per project. The handle between the viewer and the timeline shares the height between them (drag it; double-click for the usual split), and is remembered. Also: Ctrl+/ for the keyboard shortcuts page, F for a full-screen viewer (Escape returns), the region and timeline labels (Shift-drag in the ruler, L loops, right-click menu), the project picture for the launcher, and finding missing media.
+Phase 4A so far: importing media (Ctrl+I, the Import button, or dropping files on the window), the viewer with its transport, the timeline (click a clip to select it, drag to move it, drag its edge to trim; V, B, R, T, Y and U pick the Select, Blade, Ripple, Roll, Slip and Slide tools; N snapping; audio tracks show waveforms and have mute, solo and volume; Delete, Backspace and S act on the selection; drag the red needle; Ctrl+wheel zooms at the pointer, = and - zoom in and out, \\ shows it all, Shift+wheel pans, the middle button drags the view), playback with sound (Space plays; pausing goes back to where playback started, Stop stays), a scrub bar and preview quality (Left/Right step a frame, Home/End jump), and Timeline settings (Automatic until the first video is imported, a template, or the same as one of the project's videos). Every track's height can be changed (drag the edge of its name, double-click for the usual height, Alt+wheel or Alt with = and - for every track of an area; Alt+\\ puts them back); heights and the divider between video and audio are kept per project. The handle between the viewer and the timeline shares the height between them (drag it; double-click for the usual split), and is remembered. Also: Ctrl+/ for the keyboard shortcuts page (every shortcut can be changed there; changes are kept in settings and used by the launcher too; "Cheat sheet…" saves a page to print), F for a full-screen viewer (Escape returns), the region and timeline labels (Shift-drag in the ruler, L loops, right-click menu), the project picture for the launcher, and finding missing media.
 
 ## Running
 
@@ -25,9 +25,11 @@ cargo run -p app -- --graphics-warning --screenshot out.png  # with the question
 cargo run -p app -- trip.kiria --import match.mkv --hold-reading 0.4 --screenshot out.png  # with waveforms and clip pictures stopped 40 % read, to see reading in progress
 cargo run -p app -- trip.kiria --pointer 640,420 --screenshot out.png  # with the pointer resting there: hover marks and tooltips
 cargo run -p app -- trip.kiria --pointer 640,420 --drag-to 640,480 --screenshot out.png  # while the left button drags from the first place to the second
+cargo run -p app -- --shortcuts-page clash --screenshot out.png  # with the keyboard shortcuts page open: `filter` (one chip picked), `rebinding` (waiting for keys) or `clash` (keys another command has)
+cargo run -p app -- --cheat-sheet keys.html  # write the printable cheat sheet for the shortcuts in settings and exit, without a window
 ```
 
-The last seven are for CI and for checking the look without a screen (`xvfb-run` on Linux).
+The last nine are for CI and for checking the look without a screen (`xvfb-run` on Linux).
 
 ## Files
 
@@ -41,7 +43,7 @@ The last seven are for CI and for checking the look without a screen (`xvfb-run`
 | `src/import.rs` | `Importer`: the file dialog (its own thread), reading dropped or chosen files on workers, and applying them in the order chosen; `summary` describes an imported file in one line |
 | `src/timeline_panel.rs` | The open timeline as the timeline widget's data (linked clips show selected together), label colours, the selection; which clips are still waiting for their waveform or pictures, and how much of each track is ready (`TrackPaces` adds the time left); the stretches the cache bar marks (today: where waveforms and clip pictures are still being read) |
 | `src/media_drawer.rs` | The Edit page's media drawer: the project's files by name with a filter; double-click or + places one at the end of the timeline; right-click to insert or overwrite at the edit point, or drag it onto the timeline (overwrite there; Ctrl inserts) |
-| `src/search.rs` | The search palette (Ctrl+K): commands with their shortcuts, both settings windows, the keyboard shortcuts page, timeline labels and clips; Enter picks the first |
+| `src/search.rs` | The search palette (Ctrl+K): every command with the shortcut it has now, both settings windows, the keyboard shortcuts page, timeline labels and clips; Enter picks the first |
 | `src/silence_panel.rs` | The Remove silence window (Ctrl+Shift+R): track, threshold, minimum length and edge to keep; marks what it found on the timeline and cuts it all out as one step |
 | `src/relink.rs` | Missing media: checked on a worker whenever the project's media changes; the banner on the Edit page and "Find them…", which searches a picked folder and relinks what it finds |
 | `src/label_editor.rs` | The window for one timeline label (double-click it): name, colour, or remove |
@@ -54,7 +56,8 @@ The last seven are for CI and for checking the look without a screen (`xvfb-run`
 | `src/slow_pictures.rs` | The last few pictures that took more than 50 ms, each in words with where its time went (the jump, the first frame, the frames after it, handing over), for the Diagnostics line "Pictures that took long" |
 | `src/video_picture.rs` | Whether this window converts colour on the GPU (`--cpu-colour` or a window without wgpu says no), and a decoded frame's planes as the viewer's picture; its tests draw the shader into a texture and compare with the CPU's conversion |
 | `src/device_decoding.rs` | Decoding on the window's graphics device, wired up (`wrap` hands the worker a picture's images as textures to put together from): the device `graphics` opened becomes the decoder's (`media::WindowDevice`), with the guard around setting it up, its guard becomes the preview worker's watcher, and a decoded picture's images become the viewer's textures. `None` when the device can't, the switch is off, or colour is converted on the CPU |
-| `src/settings.rs` | `Settings` (theme, resource budgets, "Edit at the playhead", how the height is shared between the viewer and the timeline), saved as `settings.ron` in the app's data folder. The Graphics choice has its own file, shared with the launcher |
+| `src/settings.rs` | `Settings` (theme, resource budgets, "Edit at the playhead", how the height is shared between the viewer and the timeline, the shortcuts that were changed, the keyboard the shortcuts page draws), saved as `settings.ron` in the app's data folder. The Graphics choice has its own file, shared with the launcher |
+| `src/cheat_sheet.rs` | The printable cheat sheet (the shortcuts page's "Cheat sheet…"): asks where, then writes the page `ui-kit` makes from the shortcut table on a worker |
 | `src/run_mode.rs` | Command-line options |
 | `src/fake_pointer.rs` | A scripted pointer for automated runs (`--pointer`, `--drag-to`): rests somewhere, or drags from there and keeps holding, so screenshots can show hover marks, tooltips and drags |
 
@@ -62,6 +65,7 @@ The last seven are for CI and for checking the look without a screen (`xvfb-run`
 
 - Opening a project that has unsaved work from a crash recovers it, unless `--open-last-save` is given. The launcher asks which the person wants and passes the flag.
 - Resource and Graphics setting changes apply on the next start.
+- The shortcut table is made once at start from the usual shortcuts and the changed ones in settings (`ShortcutTable::restored`). The shortcuts page changes that same table, so menus, tooltips, hints and search follow at once; the launcher reads the changes from the same settings file at its next start. While the page waits for new keys the window runs no commands from the keyboard.
 - `--decoding-warning` shows the question about video decoding that stopped the app although nothing did, for screenshots.
 
 ## Graphics

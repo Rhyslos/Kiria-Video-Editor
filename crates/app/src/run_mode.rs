@@ -21,6 +21,12 @@ pub struct Options {
     pub full_screen: bool,
     /// Commands to run once open, by name (`--action KeyboardShortcuts`, repeatable, for screenshots).
     pub actions: Vec<String>,
+    /// Open the keyboard shortcuts page in a state: `filter`, `rebinding` or
+    /// `clash` (`--shortcuts-page clash`, for screenshots).
+    pub shortcuts_page: Option<ui_kit::keyboard::Preview>,
+    /// Write the printable cheat sheet here and exit, without opening a
+    /// window (`--cheat-sheet keys.html`, for checks).
+    pub cheat_sheet: Option<PathBuf>,
     /// Convert the viewer's colour on the CPU instead of the GPU (`--cpu-colour`, for comparing the two).
     pub cpu_colour: bool,
     /// Show the question about a failed start with Vulkan (`--graphics-warning`, for screenshots).
@@ -72,6 +78,18 @@ impl Options {
                 "--action" => {
                     let name = args.next().ok_or("--action needs a command name")?;
                     options.actions.push(name);
+                }
+                "--cheat-sheet" => {
+                    let path = args.next().ok_or("--cheat-sheet needs a file name")?;
+                    options.cheat_sheet = Some(path.into());
+                }
+                "--shortcuts-page" => {
+                    let state = args
+                        .next()
+                        .as_deref()
+                        .and_then(ui_kit::keyboard::Preview::from_name)
+                        .ok_or("--shortcuts-page needs filter, rebinding or clash")?;
+                    options.shortcuts_page = Some(state);
                 }
                 "--pointer" | "--drag-to" => {
                     let pos = args
@@ -153,5 +171,15 @@ mod tests {
         assert!(parse(&["p.x", "--drag-to", "640,480"]).is_err(), "from where?");
         assert!(parse(&["p.x", "--pointer", "640"]).is_err());
         assert!(parse(&["--decoding-warning"]).unwrap().decoding_warning);
+        assert_eq!(
+            parse(&["--shortcuts-page", "clash"]).unwrap().shortcuts_page,
+            Some(ui_kit::keyboard::Preview::Clash)
+        );
+        assert!(parse(&["--shortcuts-page", "sideways"]).is_err());
+        assert_eq!(
+            parse(&["--cheat-sheet", "keys.html"]).unwrap().cheat_sheet,
+            Some("keys.html".into())
+        );
+        assert!(parse(&["--cheat-sheet"]).is_err());
     }
 }

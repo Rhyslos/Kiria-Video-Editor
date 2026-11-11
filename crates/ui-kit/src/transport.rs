@@ -3,6 +3,7 @@
 //! that has a viewer.
 
 use crate::Theme;
+use crate::shortcuts::{Action, ShortcutTable};
 use egui::{Color32, Pos2, Rect, Sense, Shape, Stroke, Ui, pos2, vec2};
 
 /// A button pressed on the transport.
@@ -27,8 +28,24 @@ const BUTTON: f32 = 34.0;
 const GAP: f32 = 6.0;
 const HEIGHT: f32 = 44.0;
 
-/// Draws the transport over the bottom of `viewer`. Returns the button clicked.
-pub fn transport(ui: &mut Ui, theme: &Theme, viewer: Rect, playing: bool) -> Option<TransportClick> {
+/// What a button says when pointed at: its words, and the keys for it as
+/// they are now, if it has any.
+fn tip(words: &str, shortcuts: &ShortcutTable, action: Action) -> String {
+    match shortcuts.shortcut_for(action) {
+        Some(keys) => format!("{words} ({})", keys.label()),
+        None => words.to_owned(),
+    }
+}
+
+/// Draws the transport over the bottom of `viewer`. Returns the button
+/// clicked. The tooltips name the keys from `shortcuts`.
+pub fn transport(
+    ui: &mut Ui,
+    theme: &Theme,
+    viewer: Rect,
+    playing: bool,
+    shortcuts: &ShortcutTable,
+) -> Option<TransportClick> {
     // Two buttons each side of play keep play centred.
     let width = BUTTON * 5.0 + GAP * 4.0 + 20.0;
     let bar = Rect::from_center_size(
@@ -52,29 +69,33 @@ pub fn transport(ui: &mut Ui, theme: &Theme, viewer: Rect, playing: bool) -> Opt
             -1.0,
             Icon::FrameBack,
             TransportClick::FrameBack,
-            "Back one frame (←)",
+            tip("Back one frame", shortcuts, Action::PreviousFrame),
         ),
         (
             0.0,
             if playing { Icon::Pause } else { Icon::Play },
             TransportClick::PlayPause,
-            if playing {
-                "Pause: back to where playback started (Space)"
-            } else {
-                "Play (Space)"
-            },
+            tip(
+                if playing {
+                    "Pause: back to where playback started"
+                } else {
+                    "Play"
+                },
+                shortcuts,
+                Action::PlayPause,
+            ),
         ),
         (
             1.0,
             Icon::FrameForward,
             TransportClick::FrameForward,
-            "Forward one frame (→)",
+            tip("Forward one frame", shortcuts, Action::NextFrame),
         ),
         (
             2.0,
             Icon::Stop,
             TransportClick::Stop,
-            "Stop: leave the playhead here",
+            tip("Stop: leave the playhead here", shortcuts, Action::Stop),
         ),
     ];
     let mut clicked = None;
@@ -82,7 +103,7 @@ pub fn transport(ui: &mut Ui, theme: &Theme, viewer: Rect, playing: bool) -> Opt
         let x = bar.center().x + slot * (BUTTON + GAP);
         let rect = Rect::from_center_size(pos2(x, bar.center().y), vec2(BUTTON, BUTTON));
         let id = ui.scope_id().with(("transport", i));
-        let response = ui.interact(rect, id, Sense::click()).on_hover_text(*tip);
+        let response = ui.interact(rect, id, Sense::click()).on_hover_text(tip.as_str());
         let main = *click == TransportClick::PlayPause;
         let fill = if main {
             theme.accent
@@ -147,5 +168,29 @@ fn draw(ui: &Ui, icon: Icon, c: Pos2, colour: Color32) {
                 colour,
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Shortcut;
+
+    #[test]
+    fn tooltips_name_the_keys_in_use() {
+        let mut table = ShortcutTable::default();
+        assert_eq!(tip("Play", &table, Action::PlayPause), "Play (Space)");
+        assert_eq!(
+            tip("Stop: leave the playhead here", &table, Action::Stop),
+            "Stop: leave the playhead here",
+            "no shortcut, no brackets"
+        );
+        let play = table
+            .lines()
+            .iter()
+            .position(|b| b.action == Action::PlayPause)
+            .unwrap();
+        table.swap(play, Shortcut::key(egui::Key::K));
+        assert_eq!(tip("Play", &table, Action::PlayPause), "Play (K)");
     }
 }

@@ -16,6 +16,10 @@ pub struct TopBar<'a> {
     pub page: Page,
     /// The resource readout, for example "CPU 12%  GPU –  RAM 1.4 GB".
     pub usage: &'a str,
+    /// The shortcuts of Search and Settings as they are now ("Ctrl+K"),
+    /// from the shortcut table; empty when they have none.
+    pub search_keys: &'a str,
+    pub settings_keys: &'a str,
 }
 
 /// What was clicked this frame.
@@ -112,7 +116,7 @@ impl TopBar<'_> {
             egui::UiBuilder::new().max_rect(right.shrink2(vec2(12.0, 0.0))),
             |ui| {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if settings_button(ui).clicked() {
+                    if settings_button(ui, self.settings_keys).clicked() {
                         clicks.settings = true;
                     }
                     ui.add_space(6.0);
@@ -132,8 +136,11 @@ impl TopBar<'_> {
                     ui.add_space(6.0);
                     if ui
                         .add(
-                            egui::Button::new(RichText::new("Search   Ctrl K").color(theme.text_secondary))
-                                .stroke(Stroke::new(1.0, theme.line_strong)),
+                            egui::Button::new(
+                                RichText::new(with_keys("Search", self.search_keys))
+                                    .color(theme.text_secondary),
+                            )
+                            .stroke(Stroke::new(1.0, theme.line_strong)),
                         )
                         .clicked()
                     {
@@ -169,6 +176,8 @@ pub fn logo_mark(ui: &mut Ui, theme: &Theme) {
 #[derive(Debug, Clone)]
 pub struct TitleBar<'a> {
     pub title: &'a str,
+    /// The shortcut of Settings as it is now, from the shortcut table.
+    pub settings_keys: &'a str,
 }
 
 impl TitleBar<'_> {
@@ -199,7 +208,7 @@ impl TitleBar<'_> {
             egui::UiBuilder::new().max_rect(right.shrink2(vec2(12.0, 0.0))),
             |ui| {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    settings = settings_button(ui).clicked();
+                    settings = settings_button(ui, self.settings_keys).clicked();
                 });
             },
         );
@@ -209,7 +218,23 @@ impl TitleBar<'_> {
     }
 }
 
-fn settings_button(ui: &mut Ui) -> egui::Response {
+fn settings_button(ui: &mut Ui, keys: &str) -> egui::Response {
+    let tip = if keys.is_empty() {
+        "Settings".to_owned()
+    } else {
+        format!("Settings ({keys})")
+    };
     ui.add(egui::Button::new(RichText::new("⚙").size(15.0)).frame(false))
-        .on_hover_text("Settings (Ctrl+,)")
+        .on_hover_text(tip)
+}
+
+/// A button's or field's words with the keys for it after a gap, the way
+/// the search button shows them: "Search   Ctrl+K". Just the words when
+/// there are no keys.
+pub fn with_keys(words: &str, keys: &str) -> String {
+    if keys.is_empty() {
+        words.to_owned()
+    } else {
+        format!("{words}   {keys}")
+    }
 }

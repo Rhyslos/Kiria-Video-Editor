@@ -69,7 +69,7 @@ New projects go to one chosen folder, shown with a quiet "new projects" badge in
 
 A folder picked this way is added to the Projects group (unless a listed folder already contains it), so its projects show up in the grid. While a project folder is open in the grid, New project suggests that folder instead.
 
-Preferences are read from `<data folder>/updates.ron` (defaults: automatic, Stable channel) and `<data folder>/launcher.ron` (the folder for new projects). The theme follows the editor's `settings.ron`; the Graphics choice is in `<data folder>/graphics.ron`, shared with the editor.
+Preferences are read from `<data folder>/updates.ron` (defaults: automatic, Stable channel) and `<data folder>/launcher.ron` (the folder for new projects). The theme and any changed shortcuts (Search and Settings are the two the launcher uses) follow the editor's `settings.ron`, read at start; the Graphics choice is in `<data folder>/graphics.ron`, shared with the editor.
 
 ## Files
 
