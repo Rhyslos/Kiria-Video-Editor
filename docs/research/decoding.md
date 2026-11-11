@@ -112,9 +112,35 @@ Software decoding can be measured on any machine. B and C need the real GPU, so 
 Even where playing keeps up, a jump takes 0.2 to 2.3 seconds, because every frame from the key frame before the target is decoded on the CPU. That is 4 to 46 times the 50 ms target. A desktop CPU with more cores is faster, but not by that much, so software decoding alone can't meet the scrubbing target; it stays as the fallback. Approaches B and C need the real GPU and are measured with the Windows package from the "Decoding spike" workflow.
 
 
+**On the test machine** (Windows, a current desktop GPU with hardware H.264, H.265 and AV1 decoding, a 24-thread CPU; generated clips plus two real 1440p H.265 game recordings; median of the measurements below):
+
+| Clip | Approach | Play fps | CPU % | Jump median ms | Jump worst ms |
+| --- | --- | ---: | ---: | ---: | ---: |
+| H.264 1080p 60 | A software | 1723 | 978 | 45 | 67 |
+| H.264 1080p 60 | B hardware, Direct3D 11 | 980 | 97 | 47 | 94 |
+| H.264 1080p 60 | C zero-copy, Vulkan | 1158 | 57 | 41 | 85 |
+| H.265 1440p 60 | A software | 613 | 1116 | 137 | 250 |
+| H.265 1440p 60 | B hardware, Direct3D 11 | 452 | 79 | 98 | 257 |
+| H.265 1440p 60 | C zero-copy, Vulkan | 519 | 28 | 88 | 232 |
+| H.265 1440p 144 | B hardware, Direct3D 11 | 473 | 73 | 205 | 568 |
+| H.265 1440p 144 | C zero-copy, Vulkan | 556 | 26 | 189 | 505 |
+| Real recordings (H.265 1440p) | B hardware, Direct3D 11 | 256–259 | 53–69 | 250–306 | 620–798 |
+| Real recordings (H.265 1440p) | B hardware, Direct3D 12 | 263–264 | 50–60 | 247–304 | 614–792 |
+| Real recordings (H.265 1440p) | C zero-copy, Vulkan | 526–535 | 21–30 | 169–172 | 457–651 |
+| AV1 1440p 60 | A software | 190 | 182 | 348 | 650 |
+
+What it shows:
+
+- **C works on this card and is the best on real recordings:** twice B's playing speed, a third less waiting on a jump, half the CPU. On generated clips the gap is smaller.
+- **B through Direct3D 11 is the safe fallback;** Direct3D 12 is no better and refused the H.264 clip. FFmpeg's Vulkan decoding with a copy back (B on Vulkan) failed on every clip, so it is never used.
+- **AV1 never reached the GPU,** in any approach. FFmpeg's default AV1 decoder is a software one with no GPU support; the GPU path needs FFmpeg's own AV1 decoder, picked by name. The editor now picks the decoder that supports the GPU for each codec, and falls back to the CPU per file when the GPU can't decode one.
+- **Software decoding is strong with many CPU threads,** even matching the GPU on H.264 jumps, at ten times the CPU.
+- **No approach meets the 50 ms jump target on real H.265 recordings** (about 170 ms at best). Their key frames are far apart, so a jump decodes many frames. The frame cache (showing the nearest key frame at once, then the exact frame) has to close that gap; faster decoding alone can't.
+- The real recordings use full-range colour (`yuvj420p`), which the spike's software path didn't handle; the editor converts it.
+
 **Choice (November 2026):** the owner chose to go ahead without running the GPU measurements. The decoder tries the approaches in order and falls back per file, so a failure only costs speed, never a picture:
 
-1. **C, zero-copy Vulkan,** when wgpu runs on Vulkan and the driver offers a video decode queue for the codec.
+1. **C, zero-copy Vulkan,** when wgpu runs on Vulkan and the driver offers a video decode queue for the codec. Measured above as the fastest; built next.
 2. **B, hardware decoding with a copy,** through Direct3D 11 on Windows and VA-API on Linux.
 3. **A, software decoding,** always.
 
