@@ -61,33 +61,56 @@ struct GithubAsset {
     size: u64,
 }
 
+/// Releases asked for at a time (the most GitHub gives), and how many times
+/// at most. GitHub lists releases by day, newest day first, and within a
+/// day by tag name as text, so "beta.101" comes after "beta.99" and the
+/// newest release can be far down the list: every release has to be looked
+/// at, not just the first few.
+const PAGE: usize = 100;
+const PAGES: usize = 5;
+
 /// Asks GitHub for the newest release for this channel.
 pub fn check(current: &str, prefs: &UpdatePrefs) -> diag::Result<CheckResult> {
-    let url = format!(
-        "https://api.github.com/repos/{}/{}/releases?per_page=20",
-        brand::RELEASE_REPO_OWNER,
-        brand::RELEASE_REPO_NAME
-    );
     let agent = crate::agent(CHECK_TIMEOUT);
-    let body = agent
-        .get(&url)
-        .header("Accept", "application/vnd.github+json")
-        .call()
-        .map_err(|err| explain_http(&err))?
-        .body_mut()
-        .read_to_string()
-        .or_explain(|| unreachable_server("The answer from GitHub was cut off."))?;
-    decide(current, prefs, &body)
+    let mut releases = Vec::new();
+    for page in 1..=PAGES {
+        let url = format!(
+            "https://api.github.com/repos/{}/{}/releases?per_page={PAGE}&page={page}",
+            brand::RELEASE_REPO_OWNER,
+            brand::RELEASE_REPO_NAME
+        );
+        let body = agent
+            .get(&url)
+            .header("Accept", "application/vnd.github+json")
+            .call()
+            .map_err(|err| explain_http(&err))?
+            .body_mut()
+            .read_to_string()
+            .or_explain(|| unreachable_server("The answer from GitHub was cut off."))?;
+        let listed = parse(&body)?;
+        let last = listed.len() < PAGE;
+        releases.extend(listed);
+        if last {
+            break;
+        }
+    }
+    newest(current, prefs, releases)
 }
 
-/// Picks the newest suitable release from GitHub's answer. Separate from
-/// [`check`] so it can be tested without a network.
+fn parse(github_json: &str) -> diag::Result<Vec<GithubRelease>> {
+    serde_json::from_str(github_json).or_explain(|| unreachable_server("GitHub's answer could not be read."))
+}
+
+/// Picks the newest suitable release from GitHub's answer, wherever it is
+/// in the list. Separate from [`check`] so it can be tested without a network.
 pub fn decide(current: &str, prefs: &UpdatePrefs, github_json: &str) -> diag::Result<CheckResult> {
+    newest(current, prefs, parse(github_json)?)
+}
+
+fn newest(current: &str, prefs: &UpdatePrefs, releases: Vec<GithubRelease>) -> diag::Result<CheckResult> {
     let current = Version::parse(current).or_explain(|| {
         AppError::new("The update check could not run").why(format!("\"{current}\" is not a version number."))
     })?;
-    let releases: Vec<GithubRelease> = serde_json::from_str(github_json)
-        .or_explain(|| unreachable_server("GitHub's answer could not be read."))?;
     // A beta build keeps following betas, whatever the channel setting says.
     let betas = prefs.channel == Channel::Beta || !current.pre.is_empty();
     let newest = releases
@@ -181,6 +204,22 @@ mod tests {
             panic!()
         };
         assert_eq!(release.version.to_string(), "0.3.0-beta.1");
+    }
+
+    /// GitHub's order on the day the betas passed 100: by tag name as text
+    /// within the day, which put the newest release far down the list.
+    #[test]
+    fn the_newest_release_wins_wherever_it_is_listed() {
+        let listed: String = ["99", "97", "36", "101", "8", "34"]
+            .iter()
+            .map(|n| format!(r#"{{"tag_name": "v0.1.1-beta.{n}", "prerelease": true, "assets": []}}"#))
+            .collect::<Vec<_>>()
+            .join(",");
+        let r = decide("0.1.1-beta.99", &UpdatePrefs::default(), &format!("[{listed}]")).unwrap();
+        let CheckResult::Available(release) = r else {
+            panic!("{r:?}")
+        };
+        assert_eq!(release.version.to_string(), "0.1.1-beta.101");
     }
 
     #[test]
