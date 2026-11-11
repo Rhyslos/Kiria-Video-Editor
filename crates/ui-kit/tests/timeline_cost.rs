@@ -71,6 +71,7 @@ fn timeline_frame_cost() {
                     playhead: frame as f64 * 0.5,
                     needle: Some(10.0),
                     region: None,
+                    highlights: &[],
                     markers: &[],
                     follow: !zoomed_out,
                 };

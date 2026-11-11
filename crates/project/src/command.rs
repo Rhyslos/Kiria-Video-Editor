@@ -113,6 +113,12 @@ pub enum Command {
         clip: ClipId,
         by: Time,
     },
+    /// Cuts these stretches out of the whole timeline (every track) and
+    /// closes the gaps, as one step. Labels after a stretch move with it.
+    RemoveRanges {
+        sequence: SequenceId,
+        ranges: Vec<Region>,
+    },
     /// Splits at `at`: only `clip` and its linked clips, or every clip under `at` when `None`.
     Split {
         sequence: SequenceId,
@@ -256,6 +262,9 @@ impl Command {
             Command::Roll { sequence, clip, to } => crate::edits::roll(&mut p, *sequence, *clip, *to)?,
             Command::Slip { sequence, clip, by } => crate::edits::slip(&mut p, *sequence, *clip, *by)?,
             Command::Slide { sequence, clip, by } => crate::edits::slide(&mut p, *sequence, *clip, *by)?,
+            Command::RemoveRanges { sequence, ranges } => {
+                crate::edits::remove_ranges(&mut p, *sequence, ranges)?
+            }
             Command::Split { sequence, at, clip } => split(&mut p, *sequence, *at, *clip)?,
             Command::AddLabel { sequence, label } => {
                 if label.at.is_negative() {
@@ -502,7 +511,12 @@ fn place_media(p: &mut Project, sequence: SequenceId, id: MediaId) -> diag::Resu
     Ok(())
 }
 
-fn split(p: &mut Project, sequence: SequenceId, at: Time, only: Option<ClipId>) -> diag::Result<()> {
+pub(crate) fn split(
+    p: &mut Project,
+    sequence: SequenceId,
+    at: Time,
+    only: Option<ClipId>,
+) -> diag::Result<()> {
     let targets = match only {
         Some(clip) => Some(with_linked(sequence_ref(p, sequence)?, clip)?),
         None => None,
@@ -560,7 +574,7 @@ fn split(p: &mut Project, sequence: SequenceId, at: Time, only: Option<ClipId>) 
     Ok(())
 }
 
-fn sequence_ref(p: &Project, id: SequenceId) -> diag::Result<&Sequence> {
+pub(crate) fn sequence_ref(p: &Project, id: SequenceId) -> diag::Result<&Sequence> {
     p.sequences
         .iter()
         .find(|s| s.id == id)
@@ -1389,5 +1403,46 @@ mod tests {
             media: MediaId(9_999),
         };
         assert!(gone.apply(&p).is_err());
+    }
+
+    #[test]
+    fn removing_stretches_closes_every_gap() {
+        let (p, seq) = imported(); // 0-30 s and 30-40 s
+        let ranges = vec![
+            Region::between(Time::seconds(35), Time::seconds(37)).unwrap(),
+            Region::between(Time::seconds(5), Time::seconds(10)).unwrap(),
+            Region::between(Time::seconds(8), Time::seconds(12)).unwrap(),
+        ];
+        let q = Command::RemoveRanges {
+            sequence: seq,
+            ranges,
+        }
+        .apply(&p)
+        .unwrap();
+        let s = q.active().unwrap();
+        assert_eq!(s.length(), Time::seconds(40 - 7 - 2), "5-12 and 35-37 gone");
+        let v: Vec<(Time, Time, Time)> = s.video_tracks[0]
+            .clips
+            .iter()
+            .map(|c| (c.start, c.source_in, c.duration))
+            .collect();
+        assert_eq!(
+            v,
+            [
+                (Time::ZERO, Time::ZERO, Time::seconds(5)),
+                (Time::seconds(5), Time::seconds(12), Time::seconds(18)),
+                (Time::seconds(23), Time::ZERO, Time::seconds(5)),
+                (Time::seconds(28), Time::seconds(7), Time::seconds(3)),
+            ]
+        );
+        assert_eq!(s.audio_tracks[1].clips.len(), 2, "the mic track was cut too");
+        assert!(
+            Command::RemoveRanges {
+                sequence: seq,
+                ranges: vec![]
+            }
+            .apply(&p)
+            .is_err()
+        );
     }
 }

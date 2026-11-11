@@ -76,6 +76,9 @@ pub struct TimelineData<'a> {
     pub needle: Option<f64>,
     pub region: Option<(f64, f64)>,
     pub markers: &'a [TimelineMarker],
+    /// Stretches to mark over every track (seconds), such as the silences a
+    /// removal would cut.
+    pub highlights: &'a [(f64, f64)],
     /// Keep the playhead in view (while playing).
     pub follow: bool,
 }
@@ -482,6 +485,24 @@ impl TimelineView {
             theme.panel,
         );
         draw_ruler(&ui.painter_at(layout.ruler), theme, self, &layout, data.fps);
+        if !data.highlights.is_empty() {
+            let body = Rect::from_min_max(
+                pos2(left, layout.labels.bottom()),
+                pos2(rect.right(), layout.scrollbar.top()),
+            );
+            let mark = ui.painter_at(body);
+            let fill = crate::status::ERROR.gamma_multiply(0.22);
+            for &(a, b) in data.highlights {
+                let (x0, x1) = (self.x_of(left, a), self.x_of(left, b));
+                if x1 >= body.left() && x0 <= body.right() {
+                    mark.rect_filled(
+                        Rect::from_min_max(pos2(x0, body.top()), pos2(x1.max(x0 + 1.0), body.bottom())),
+                        0.0,
+                        fill,
+                    );
+                }
+            }
+        }
         let region = self.region_drag.map(|(_, r)| r).or(data.region);
         if let Some((a, b)) = region {
             let (x0, x1) = (self.x_of(left, a), self.x_of(left, b));

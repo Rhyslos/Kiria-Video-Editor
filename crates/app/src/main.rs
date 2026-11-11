@@ -15,6 +15,7 @@ mod relink;
 mod run_mode;
 mod search;
 mod settings;
+mod silence_panel;
 mod timeline_panel;
 mod viewer;
 mod waveforms;
