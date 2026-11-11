@@ -53,6 +53,7 @@ pub struct Editor {
     drawer: crate::media_drawer::MediaDrawer,
     frame_grab: crate::frame_grab::FrameGrab,
     silence: crate::silence_panel::SilencePanel,
+    label_editor: Option<crate::label_editor::LabelEditor>,
     /// Save this frame was asked for; the dialog opens on the next frame.
     save_frame_requested: bool,
     /// `--play`: start playing as soon as the imports are in.
@@ -152,6 +153,7 @@ impl Editor {
             relink: crate::relink::Relinker::default(),
             frame_grab: crate::frame_grab::FrameGrab::default(),
             silence: crate::silence_panel::SilencePanel::default(),
+            label_editor: None,
             save_frame_requested: false,
             drawer: crate::media_drawer::MediaDrawer {
                 open: drawer_open,
@@ -559,6 +561,14 @@ impl Editor {
                     self.errors.push(&err);
                 }
             }
+            E::EditLabel(id) => {
+                self.label_editor = self
+                    .document
+                    .as_ref()
+                    .and_then(|d| d.project().active())
+                    .and_then(|s| s.labels.iter().find(|l| l.id.0 == id))
+                    .map(crate::label_editor::LabelEditor::new);
+            }
             E::AddLabel(at) => {
                 if let Err(err) = self.add_label(seconds(at)) {
                     self.errors.push(&err);
@@ -805,6 +815,36 @@ impl Editor {
             }
             Some(crate::frame_grab::Saved::Failed(err)) => self.errors.push(&err),
             None => {}
+        }
+    }
+
+    /// The window for one timeline label, and what it asks for.
+    fn label_window(&mut self, ctx: &egui::Context) {
+        use crate::label_editor::Asked;
+        let Some(editor) = self.label_editor.as_mut() else {
+            return;
+        };
+        let asked = editor.ui(ctx, &self.theme);
+        let result = match asked {
+            Asked::Nothing => return,
+            Asked::Close => Ok(()),
+            Asked::Save { id, name, color } => self.with_document(|d| {
+                let sequence = d.project().active_sequence;
+                d.apply(Command::EditLabel {
+                    sequence,
+                    label: id,
+                    name,
+                    color,
+                })
+            }),
+            Asked::Remove(label) => self.with_document(|d| {
+                let sequence = d.project().active_sequence;
+                d.apply(Command::RemoveLabel { sequence, label })
+            }),
+        };
+        match result {
+            Ok(()) => self.label_editor = None,
+            Err(err) => self.errors.push(&err),
         }
     }
 
@@ -1523,6 +1563,7 @@ impl eframe::App for Editor {
         self.timeline_settings_window(&ctx);
         self.search_window(&ctx);
         self.silence_window(&ctx);
+        self.label_window(&ctx);
         let mut diagnostics = self.show_diagnostics;
         self.errors
             .diagnostics_window(&ctx, &mut diagnostics, &self.theme);

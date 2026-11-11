@@ -56,6 +56,7 @@ pub struct TimelineTrack {
 /// A timeline label (a named, coloured marker).
 #[derive(Debug, Clone, PartialEq)]
 pub struct TimelineMarker {
+    pub id: u64,
     pub at: f64,
     pub name: String,
     pub colour: Color32,
@@ -117,6 +118,8 @@ pub enum TimelineEvent {
     },
     /// The region was drawn or adjusted (`None`: cleared).
     SetRegion(Option<(f64, f64)>),
+    /// A timeline label was double-clicked (or "Edit" chosen on it).
+    EditLabel(u64),
     /// "Add a label here" from the right-click menu.
     AddLabel(f64),
     /// "Split here" from the right-click menu: one clip (with its linked
@@ -856,6 +859,28 @@ impl TimelineView {
             }
         }
 
+        // Labels: click one to go to it, double-click to rename or recolour it.
+        if let Some(pos) = ui.input(|i| i.pointer.interact_pos())
+            && layout.labels.contains(pos)
+            && let Some(marker) = self.marker_near(left, data.markers, pos.x)
+        {
+            let (double, single) = ui.input(|i| {
+                (
+                    i.pointer.button_double_clicked(egui::PointerButton::Primary),
+                    i.pointer.button_clicked(egui::PointerButton::Primary),
+                )
+            });
+            ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+            if double {
+                events.push(TimelineEvent::EditLabel(marker.id));
+                return;
+            }
+            if single {
+                events.push(TimelineEvent::Seek(marker.at));
+                return;
+            }
+        }
+
         // Ruler: click or drag to move the playhead; Shift-drag draws the region.
         let ruler = ui.interact(
             layout.ruler.union(layout.labels),
@@ -1096,6 +1121,21 @@ impl TimelineView {
                 });
             }
         }
+    }
+
+    /// The label drawn nearest to `x`, if one is within a few pixels.
+    fn marker_near<'m>(
+        &self,
+        left: f32,
+        markers: &'m [TimelineMarker],
+        x: f32,
+    ) -> Option<&'m TimelineMarker> {
+        markers
+            .iter()
+            .map(|m| (m, (self.x_of(left, m.at) - x).abs()))
+            .filter(|(_, d)| *d <= 7.0)
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(m, _)| m)
     }
 
     /// `raw` (seconds) adjusted so the dragged edge lands on the nearest snap
@@ -1501,6 +1541,26 @@ mod tests {
             link: None,
             waveform: None,
         }
+    }
+
+    #[test]
+    fn the_nearest_label_within_reach_is_hit() {
+        let v = TimelineView {
+            zoom: 100.0,
+            scroll: 0.0,
+            ..Default::default()
+        };
+        let marker = |id: u64, at: f64| TimelineMarker {
+            id,
+            at,
+            name: String::new(),
+            colour: Color32::WHITE,
+        };
+        let markers = [marker(1, 1.0), marker(2, 1.1)];
+        // At 100 px a second, the labels sit at x = 100 and 110.
+        assert_eq!(v.marker_near(0.0, &markers, 103.0).map(|m| m.id), Some(1));
+        assert_eq!(v.marker_near(0.0, &markers, 107.0).map(|m| m.id), Some(2));
+        assert!(v.marker_near(0.0, &markers, 130.0).is_none());
     }
 
     #[test]

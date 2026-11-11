@@ -9,6 +9,7 @@
 mod editor;
 mod frame_grab;
 mod import;
+mod label_editor;
 mod looping;
 mod media_drawer;
 mod relink;

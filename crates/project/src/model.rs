@@ -268,6 +268,19 @@ pub enum LabelColor {
     Grey,
 }
 
+impl LabelColor {
+    pub const ALL: [LabelColor; 8] = [
+        LabelColor::Blue,
+        LabelColor::Green,
+        LabelColor::Pink,
+        LabelColor::Yellow,
+        LabelColor::Orange,
+        LabelColor::Purple,
+        LabelColor::Red,
+        LabelColor::Grey,
+    ];
+}
+
 /// A stretch of the timeline marked in the ruler: used to loop playback,
 /// pre-render, and as an export range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
