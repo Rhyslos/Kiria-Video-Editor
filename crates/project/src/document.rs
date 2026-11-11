@@ -290,6 +290,13 @@ fn read_only() -> AppError {
 }
 
 /// `<project file>.journal`.
+/// The project's picture for the launcher: `<file>.thumbnail.png`.
+pub fn thumbnail_path(project: &Path) -> PathBuf {
+    let mut name = project.as_os_str().to_owned();
+    name.push(".thumbnail.png");
+    PathBuf::from(name)
+}
+
 pub fn journal_path(project: &Path) -> PathBuf {
     let mut name = project.as_os_str().to_owned();
     name.push(".journal");

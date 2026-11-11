@@ -35,6 +35,10 @@ pub struct Editor {
     usage: UsageMonitor,
     document: Option<Document>,
     pending_save: Option<(u64, JobHandle<()>)>,
+    /// The launcher's picture of the project, being written after a save.
+    thumbnail: Option<JobHandle<bool>>,
+    /// A save finished (or the project has no picture yet): write one.
+    thumbnail_due: Thumbnail,
     importer: Importer,
     import_requested: bool,
     viewer: Viewer,
@@ -128,6 +132,8 @@ impl Editor {
             usage: UsageMonitor::start(Duration::from_secs(1)),
             document,
             pending_save: None,
+            thumbnail: None,
+            thumbnail_due: Thumbnail::IfMissing,
             importer,
             import_requested: false,
             viewer: Viewer::new(&cc.egui_ctx, start_at),
@@ -157,7 +163,9 @@ impl Editor {
         let result = match action {
             Action::Undo => self.with_document(|d| d.undo().map(|_| ())),
             Action::Redo => self.with_document(|d| d.redo().map(|_| ())),
-            Action::Save => self.with_document(Document::save),
+            Action::Save => self.with_document(Document::save).map(|()| {
+                self.thumbnail_due = Thumbnail::Now;
+            }),
             Action::AddLabel => {
                 let at = self.edit_point();
                 self.add_label(at)
@@ -630,8 +638,9 @@ impl Editor {
         if let Some((seq, handle)) = &self.pending_save
             && let Some(result) = handle.try_result()
         {
-            if let Err(err) = document.finish_save(*seq, result) {
-                self.errors.push(&err);
+            match document.finish_save(*seq, result) {
+                Ok(()) => self.thumbnail_due = Thumbnail::Now,
+                Err(err) => self.errors.push(&err),
             }
             self.pending_save = None;
         }
@@ -646,6 +655,41 @@ impl Editor {
                 });
             self.pending_save = Some((seq, handle));
         }
+    }
+
+    /// Writes the launcher's picture of the project on a worker when due:
+    /// the frame at the playhead, or the first clip's in a gap.
+    fn thumbnails(&mut self) {
+        if let Some(handle) = &self.thumbnail
+            && let Some(result) = handle.try_result()
+        {
+            if let Err(err) = result {
+                tracing::info!("no project picture: {}", err.report());
+            }
+            self.thumbnail = None;
+        }
+        let Some(document) = &self.document else { return };
+        if self.thumbnail.is_some() || self.thumbnail_due == Thumbnail::No || document.is_read_only() {
+            return;
+        }
+        let only_if_missing = self.thumbnail_due == Thumbnail::IfMissing;
+        self.thumbnail_due = Thumbnail::No;
+        let (project, out, at) = (
+            document.project().clone(),
+            project::thumbnail_path(document.path()),
+            self.viewer.playhead,
+        );
+        self.thumbnail = Some(self.jobs.submit(
+            PoolKind::Analysis,
+            Priority::Background,
+            "project picture",
+            move |_| {
+                if only_if_missing && out.exists() {
+                    return Ok(false);
+                }
+                engine::thumbnail::write(&project, project.active_sequence, at, &out)
+            },
+        ));
     }
 
     fn usage_text(&self) -> String {
@@ -1207,6 +1251,7 @@ impl eframe::App for Editor {
             self.errors.push(&err);
         }
         self.autosave(now, idle);
+        self.thumbnails();
 
         egui::Panel::top("top-bar")
             .exact_size(layout::TOP_BAR_HEIGHT)
@@ -1249,11 +1294,32 @@ impl eframe::App for Editor {
         }
         if let Some(document) = self.document.as_mut()
             && document.has_unsaved_changes()
-            && let Err(err) = document.save()
         {
-            tracing::error!("saving on exit failed: {}", err.report());
+            match document.save() {
+                Ok(()) => self.thumbnail_due = Thumbnail::Now,
+                Err(err) => tracing::error!("saving on exit failed: {}", err.report()),
+            }
+        }
+        if self.thumbnail_due == Thumbnail::Now
+            && let Some(document) = &self.document
+        {
+            // One small frame on the way out, so the launcher shows the latest.
+            let p = document.project();
+            let out = project::thumbnail_path(document.path());
+            if let Err(err) = engine::thumbnail::write(p, p.active_sequence, self.viewer.playhead, &out) {
+                tracing::info!("no project picture: {}", err.report());
+            }
         }
     }
+}
+
+/// Whether the launcher's picture of the project needs writing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Thumbnail {
+    No,
+    /// On opening: only for a project that has none yet.
+    IfMissing,
+    Now,
 }
 
 fn limit_row<T>(ui: &mut egui::Ui, label: &str, limit: &mut Limit<T>, min: T, max: T)

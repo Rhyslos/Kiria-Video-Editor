@@ -10,6 +10,7 @@ Phase 4A in progress: the picture at the playhead, the timeline's sound, and pla
 
 | File | What it holds |
 |---|---|
+| `src/thumbnail.rs` | The project's picture for the launcher: one frame of the timeline (at the playhead, or the first clip's), fitted into 480×270 on black, written as `<file>.thumbnail.png` |
 | `src/timeline.rs` | `video_at`: the top visible video clip at a time and where in its file that is |
 | `src/preview.rs` | `Preview`: a worker thread that decodes the picture at the playhead. Only the newest request counts (scrubbing never queues); decoders stay open for the four files used last; errors come back with the picture |
 | `src/mix.rs` | `Mixer`: the timeline's sound at any moment: audible tracks (mute, solo, volume) summed, decoders kept open per file and stream, seeking only when a clip doesn't continue |

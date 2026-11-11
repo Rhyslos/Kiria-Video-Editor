@@ -20,6 +20,7 @@ mod new_project;
 mod prefs;
 mod recovery;
 mod run_mode;
+mod thumbnails;
 mod updates;
 mod work;
 

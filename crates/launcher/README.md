@@ -58,6 +58,7 @@ Preferences are read from `<data folder>/updates.ron` (defaults: automatic, Stab
 | `src/updates.rs` | The version panel, the update window (Update available → download bar → Update ready), and the background check and download |
 | `src/files.rs` | Creating, renaming and moving project files (the autosave journal moves along) |
 | `src/editor_start.rs` | Starting the editor; showing a folder in the file manager |
+| `src/thumbnails.rs` | The pictures on the cards: read on a worker (four at a time) when a card first shows, and again when its project changes |
 | `src/work.rs` | `Task`: run work on a thread, pick the result up on a later frame |
 | `src/demo.rs` | Sample projects in a temporary folder for screenshots and tests |
 | `src/recovery.rs` | Unsaved work left by a crash: reads the editor's session marker and project journals |

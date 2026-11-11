@@ -76,6 +76,10 @@ pub fn prepare(count: usize, crash: bool) -> diag::Result<PathBuf> {
         std::fs::write(&path, text).or_explain(explain)?;
         index.record(&path)?;
         index.mark_opened(&path, now - (i as i64 * i as i64 * 1800 + 120))?;
+        // Most samples have a picture, as if saved in the editor; some don't yet.
+        if i % 3 != 2 {
+            sample_picture(&project::thumbnail_path(&path), i)?;
+        }
     }
     if count > 2 {
         let gone =
@@ -110,4 +114,33 @@ pub fn prepare(count: usize, crash: bool) -> diag::Result<PathBuf> {
         }
     }
     Ok(data)
+}
+
+/// A soft two-colour gradient standing in for a frame of the timeline.
+fn sample_picture(out: &std::path::Path, seed: usize) -> diag::Result<()> {
+    const HUES: [[u8; 3]; 6] = [
+        [0x2E, 0x5C, 0x8A],
+        [0x8A, 0x3E, 0x5C],
+        [0x3E, 0x7A, 0x52],
+        [0x9A, 0x6A, 0x2E],
+        [0x5A, 0x3E, 0x8A],
+        [0x2E, 0x7A, 0x7A],
+    ];
+    let (a, b) = (HUES[seed % HUES.len()], HUES[(seed + 2) % HUES.len()]);
+    let (w, h) = (480u32, 270u32);
+    let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h {
+        for x in 0..w {
+            let t = (x + y) as f32 / (w + h) as f32;
+            for c in 0..3 {
+                rgba.push((f32::from(a[c]) * (1.0 - t) + f32::from(b[c]) * t) as u8);
+            }
+            rgba.push(255);
+        }
+    }
+    image::save_buffer(out, &rgba, w, h, image::ExtendedColorType::Rgba8).map_err(|e| {
+        AppError::new("The sample projects can't be made")
+            .why(format!("Writing {} failed: {e}.", out.display()))
+            .fix("Check that the temporary folder has space.")
+    })
 }

@@ -11,6 +11,7 @@ publish = false
 cpal = "0.18"
 rtrb = "0.4"
 diag = { path = "../diag" }
+image = { version = "0.25", default-features = false, features = ["png"] }
 media = { path = "../media" }
 project = { path = "../project" }
 tracing = "0.1"
