@@ -59,6 +59,9 @@ pub struct Editor {
     viewer: Viewer,
     playback: Option<engine::Playback>,
     timeline: ui_kit::TimelineView,
+    /// Keeps the timeline's layout (track heights, the divider between
+    /// video and audio) in a small file beside the project.
+    view_keeper: Option<crate::view_state::ViewKeeper>,
     /// Clips picked on the timeline (their linked clips go with them).
     selected: Vec<project::ClipId>,
     /// The timeline was fitted to the project once already.
@@ -178,6 +181,14 @@ impl Editor {
                 None
             }
         });
+        let mut timeline = ui_kit::TimelineView::default();
+        let view_keeper = document.as_ref().map(|d| {
+            crate::view_state::ViewKeeper::open(
+                project::view_path(d.path()),
+                !d.is_read_only(),
+                &mut timeline,
+            )
+        });
         let mut importer = Importer::default();
         if !imports.is_empty() {
             importer.read(&jobs, &cc.egui_ctx, imports);
@@ -200,7 +211,8 @@ impl Editor {
             import_requested: false,
             viewer: Viewer::new(&cc.egui_ctx, start_at, convert),
             playback: None,
-            timeline: ui_kit::TimelineView::default(),
+            timeline,
+            view_keeper,
             selected: Vec::new(),
             fitted: false,
             waveforms: crate::waveforms::Waveforms::default(),
@@ -334,10 +346,17 @@ impl Editor {
                 self.fitted = false;
                 Ok(())
             }
-            Action::ZoomIn | Action::ZoomOut => {
+            Action::ZoomIn
+            | Action::ZoomOut
+            | Action::TallerTracks
+            | Action::ShorterTracks
+            | Action::UsualTrackHeights => {
                 self.timeline.step(match action {
                     Action::ZoomIn => ui_kit::ViewStep::ZoomIn,
-                    _ => ui_kit::ViewStep::ZoomOut,
+                    Action::ZoomOut => ui_kit::ViewStep::ZoomOut,
+                    Action::TallerTracks => ui_kit::ViewStep::TallerTracks,
+                    Action::ShorterTracks => ui_kit::ViewStep::ShorterTracks,
+                    _ => ui_kit::ViewStep::UsualTrackHeights,
                 });
                 Ok(())
             }
@@ -1845,6 +1864,9 @@ impl eframe::App for Editor {
             self.errors.push(&err);
         }
         self.autosave(now, idle);
+        if let Some(keeper) = &mut self.view_keeper {
+            keeper.tick(now, &self.timeline, &self.jobs);
+        }
         self.thumbnails();
 
         if std::mem::take(&mut self.full_screen_changed) {
@@ -1896,6 +1918,9 @@ impl eframe::App for Editor {
     }
 
     fn on_exit(&mut self) {
+        if let Some(keeper) = &mut self.view_keeper {
+            keeper.close(&self.timeline);
+        }
         if let Some((seq, handle)) = self.pending_save.take()
             && let Some(document) = self.document.as_mut()
         {

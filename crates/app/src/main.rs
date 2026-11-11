@@ -21,6 +21,7 @@ mod silence_panel;
 mod timeline_panel;
 mod versions_window;
 mod video_picture;
+mod view_state;
 mod viewer;
 mod waveforms;
 

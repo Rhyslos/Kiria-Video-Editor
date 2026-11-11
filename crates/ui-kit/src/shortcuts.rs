@@ -30,6 +30,9 @@ pub enum Action {
     ZoomToFit,
     ZoomIn,
     ZoomOut,
+    TallerTracks,
+    ShorterTracks,
+    UsualTrackHeights,
     SelectTool,
     BladeTool,
     ToggleSnapping,
@@ -70,6 +73,9 @@ impl Action {
             Action::ZoomToFit => "Show the whole timeline",
             Action::ZoomIn => "Zoom in on the timeline",
             Action::ZoomOut => "Zoom out of the timeline",
+            Action::TallerTracks => "Taller tracks (the area under the pointer, or all)",
+            Action::ShorterTracks => "Shorter tracks (the area under the pointer, or all)",
+            Action::UsualTrackHeights => "Tracks back to their usual height",
             Action::SelectTool => "Select tool: pick, move and trim clips",
             Action::BladeTool => "Blade tool: cut clips where clicked",
             Action::ToggleSnapping => "Snapping on or off",
@@ -119,6 +125,13 @@ impl Shortcut {
     pub const fn shift(key: Key) -> Shortcut {
         Shortcut {
             shift: true,
+            ..Shortcut::key(key)
+        }
+    }
+
+    pub const fn alt(key: Key) -> Shortcut {
+        Shortcut {
+            alt: true,
             ..Shortcut::key(key)
         }
     }
@@ -186,6 +199,10 @@ impl Default for ShortcutTable {
                 (Action::ZoomIn, Shortcut::key(Key::Equals)),
                 (Action::ZoomIn, Shortcut::shift(Key::Equals)),
                 (Action::ZoomOut, Shortcut::key(Key::Minus)),
+                // Alt is for height: the same three keys, and Alt+wheel on the timeline.
+                (Action::TallerTracks, Shortcut::alt(Key::Equals)),
+                (Action::ShorterTracks, Shortcut::alt(Key::Minus)),
+                (Action::UsualTrackHeights, Shortcut::alt(Key::Backslash)),
                 (Action::SelectTool, Shortcut::key(Key::V)),
                 (Action::BladeTool, Shortcut::key(Key::B)),
                 (Action::ToggleSnapping, Shortcut::key(Key::N)),
@@ -297,6 +314,16 @@ mod tests {
         );
         assert_eq!(first(Key::Minus, Modifiers::NONE), Some(Action::ZoomOut));
         assert_eq!(first(Key::Backslash, Modifiers::NONE), Some(Action::ZoomToFit));
+    }
+
+    #[test]
+    fn alt_with_the_zoom_keys_changes_track_heights() {
+        let table = ShortcutTable::default();
+        let first = |key| table.actions_for(key, Modifiers::ALT).next();
+        assert_eq!(first(Key::Equals), Some(Action::TallerTracks));
+        assert_eq!(first(Key::Minus), Some(Action::ShorterTracks));
+        assert_eq!(first(Key::Backslash), Some(Action::UsualTrackHeights));
+        assert_eq!(Shortcut::alt(Key::Minus).label(), "Alt+Minus");
     }
 
     #[test]

@@ -297,6 +297,15 @@ pub fn thumbnail_path(project: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
+/// Where the editor keeps how a project's timeline was laid out when last
+/// open (track heights and such): `<file>.view`. View state only, never
+/// part of the project: deleting it loses nothing but the layout.
+pub fn view_path(project: &Path) -> PathBuf {
+    let mut name = project.as_os_str().to_owned();
+    name.push(".view");
+    PathBuf::from(name)
+}
+
 pub fn journal_path(project: &Path) -> PathBuf {
     let mut name = project.as_os_str().to_owned();
     name.push(".journal");
