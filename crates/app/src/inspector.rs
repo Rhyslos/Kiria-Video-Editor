@@ -149,6 +149,45 @@ impl Inspector {
                         touched.changed = true;
                     }
                 });
+                // One click for the usual places: a small picture in a
+                // corner (a facecam over a recording), or one half of the
+                // frame (two pictures stacked on a vertical timeline).
+                let now = values.look(frame, &before);
+                let mut placed = None;
+                ui.horizontal(|ui| {
+                    inspector::label_cell(ui, theme, "Layout", 86.0);
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    for (label, tip, right, bottom) in [
+                        ("↖", "Small, in the top left corner", false, false),
+                        ("↗", "Small, in the top right corner", true, false),
+                        ("↙", "Small, in the bottom left corner", false, true),
+                        ("↘", "Small, in the bottom right corner", true, true),
+                    ] {
+                        if ui.button(label).on_hover_text(tip).clicked() {
+                            placed = Some(in_corner(&now, picture, frame, right, bottom));
+                        }
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.add_space(90.0);
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    for (label, tip, bottom) in [
+                        ("Top half", "Fills the top half of the frame, cut to fit", false),
+                        (
+                            "Bottom half",
+                            "Fills the bottom half of the frame, cut to fit",
+                            true,
+                        ),
+                    ] {
+                        if ui.button(label).on_hover_text(tip).clicked() {
+                            placed = Some(in_half(&now, picture, frame, bottom));
+                        }
+                    }
+                });
+                if let Some(look) = placed {
+                    values = Values::of(&look, frame);
+                    touched.changed = true;
+                }
             },
         );
         if clicks.reset {
@@ -396,6 +435,73 @@ fn fill_percent(picture: (u32, u32), frame: (u32, u32)) -> f64 {
     across.max(down) / across.min(down) * 100.0
 }
 
+/// How large a picture in a corner is, as a share of its fitted size, and
+/// how far it stays from the frame's edges, as a share of the frame's width.
+const CORNER_SIZE: f64 = 0.3;
+const CORNER_MARGIN: f64 = 0.03;
+
+/// The size a picture of `picture`'s shape has when fitted into `frame`, in
+/// frame pixels.
+fn fitted_size(picture: (u32, u32), frame: (u32, u32)) -> (f64, f64) {
+    let (pw, ph) = (f64::from(picture.0.max(1)), f64::from(picture.1.max(1)));
+    let scale = (f64::from(frame.0) / pw).min(f64::from(frame.1) / ph);
+    (pw * scale, ph * scale)
+}
+
+fn millionths(share: f64) -> i32 {
+    (share * ONE_F).round() as i32
+}
+
+/// `look` with the picture small in a corner of the frame: a third of its
+/// fitted size, a little in from the edges, upright and uncut. Its opacity
+/// and quick colour stay.
+fn in_corner(look: &Look, picture: (u32, u32), frame: (u32, u32), right: bool, bottom: bool) -> Look {
+    let (fw, fh) = (f64::from(frame.0.max(1)), f64::from(frame.1.max(1)));
+    let (w, h) = fitted_size(picture, frame);
+    let (w, h) = (w * CORNER_SIZE, h * CORNER_SIZE);
+    let margin = CORNER_MARGIN * fw;
+    // The centre's distance from the frame's centre, as a share of the frame.
+    let x = (fw / 2.0 - margin - w / 2.0) / fw;
+    let y = (fh / 2.0 - margin - h / 2.0) / fh;
+    Look {
+        x: millionths(if right { x } else { -x }),
+        y: millionths(if bottom { y } else { -y }),
+        scale: millionths(CORNER_SIZE),
+        turn: 0,
+        crop_left: 0,
+        crop_top: 0,
+        crop_right: 0,
+        crop_bottom: 0,
+        ..*look
+    }
+    .within_limits()
+}
+
+/// `look` with the picture filling the top or bottom half of the frame:
+/// large enough to cover it, centred in it, and what sticks out cut off.
+fn in_half(look: &Look, picture: (u32, u32), frame: (u32, u32), bottom: bool) -> Look {
+    let (fw, fh) = (f64::from(frame.0.max(1)), f64::from(frame.1.max(1)));
+    let (w, h) = fitted_size(picture, frame);
+    let (half_w, half_h) = (fw, fh / 2.0);
+    // Covers the half: the larger of the two scales.
+    let scale = (half_w / w).max(half_h / h);
+    let (w, h) = (w * scale, h * scale);
+    let cut_x = ((w - half_w) / 2.0 / w).max(0.0);
+    let cut_y = ((h - half_h) / 2.0 / h).max(0.0);
+    Look {
+        x: 0,
+        y: millionths(if bottom { 0.25 } else { -0.25 }),
+        scale: millionths(scale),
+        turn: 0,
+        crop_left: millionths(cut_x),
+        crop_right: millionths(cut_x),
+        crop_top: millionths(cut_y),
+        crop_bottom: millionths(cut_y),
+        ..*look
+    }
+    .within_limits()
+}
+
 /// A number without a trailing ".0".
 fn short(value: f64, decimals: usize) -> String {
     let text = format!("{value:.decimals$}");
@@ -572,6 +678,57 @@ mod tests {
         assert_eq!(
             colour_summary(&warm),
             "Exposure +0.25 · Saturation −10 · Temperature +15"
+        );
+    }
+
+    #[test]
+    fn a_corner_layout_is_a_third_of_the_size_a_little_in_from_the_edges() {
+        let tinted = Look {
+            opacity: ONE / 2,
+            temperature: 100_000,
+            crop_left: 200_000,
+            turn: 5 * ONE,
+            ..Look::PLAIN
+        };
+        let corner = in_corner(&tinted, (1920, 1080), FRAME, true, true);
+        assert_eq!(corner.scale, 300_000);
+        // 576 x 324, 57.6 px in from the right and the bottom edge.
+        let values = Values::of(&corner, FRAME);
+        assert!((values.x - (960.0 - 57.6 - 288.0)).abs() < 0.01, "{}", values.x);
+        assert!((values.y - (540.0 - 57.6 - 162.0)).abs() < 0.01, "{}", values.y);
+        assert_eq!((corner.turn, corner.crop_left), (0, 0), "upright and uncut");
+        assert_eq!(
+            (corner.opacity, corner.temperature),
+            (ONE / 2, 100_000),
+            "the rest stays"
+        );
+        let top_left = in_corner(&tinted, (1920, 1080), FRAME, false, false);
+        assert_eq!((top_left.x, top_left.y), (-corner.x, -corner.y));
+    }
+
+    #[test]
+    fn a_half_layout_covers_its_half_and_cuts_what_sticks_out() {
+        // A wide recording on a tall timeline: fitted it is 1080 x 607.5.
+        let tall = (1080, 1920);
+        let top = in_half(&Look::PLAIN, (1920, 1080), tall, false);
+        // To cover 1080 x 960 it is scaled by 960 / 607.5.
+        assert_eq!(top.scale, 1_580_247);
+        assert_eq!(top.y, -250_000);
+        // 1706.7 wide then: 313.3 cut off each side, nothing above or below.
+        assert!(
+            (f64::from(top.crop_left) / ONE_F - 313.33 / 1706.67).abs() < 1e-4,
+            "{}",
+            top.crop_left
+        );
+        assert_eq!(top.crop_left, top.crop_right);
+        assert_eq!((top.crop_top, top.crop_bottom), (0, 0));
+        assert_eq!(in_half(&Look::PLAIN, (1920, 1080), tall, true).y, 250_000);
+        // On a wide frame the half is wider than high: top and bottom are cut.
+        let wide = in_half(&Look::PLAIN, (1920, 1080), FRAME, false);
+        assert_eq!(wide.scale, ONE);
+        assert_eq!(
+            (wide.crop_left, wide.crop_top, wide.crop_bottom),
+            (0, 250_000, 250_000)
         );
     }
 
