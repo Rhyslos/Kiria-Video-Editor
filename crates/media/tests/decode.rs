@@ -334,3 +334,56 @@ fn a_later_moment_on_the_way_does_not_stop_the_one_before_it() {
     assert_eq!(at, 1.9);
     assert!((time - 1.9).abs() < 0.02, "{time}");
 }
+
+/// The frames handed over on the way to a picture, as (starts, next starts).
+fn kept_on_the_way_to(d: &mut VideoDecoder, seconds: f64) -> (Vec<(f64, f64)>, f64) {
+    let mut kept = Vec::new();
+    let mut keep = |picture: Decoded, until: f64| kept.push((picture.time(), until));
+    let reached = d
+        .picture_at_while(seconds, 160, 160, &mut || Newer::Nothing, Some(&mut keep))
+        .unwrap();
+    let Reached::Shown { picture, .. } = reached else {
+        panic!("nothing overtook it");
+    };
+    (kept, picture.time())
+}
+
+#[test]
+fn every_frame_passed_is_handed_over_with_how_long_it_is_on_screen() {
+    let mut d = open("game-3-audio.mkv", 0);
+    d.keep_every_kind(true);
+    assert!(d.keeps_frames());
+    // From the start of the file to half a second: frames 0 to 30.
+    let (kept, shown) = kept_on_the_way_to(&mut d, 0.5);
+    assert_eq!(kept.len(), 31);
+    assert_eq!(kept[0].0, 0.0);
+    for pair in kept.windows(2) {
+        assert_eq!(pair[0].1, pair[1].0, "on screen until the next one starts");
+    }
+    let last = kept[kept.len() - 1];
+    assert_eq!(last.0, shown, "the one shown is kept too");
+    assert!(last.1 > 0.5 && last.1 - last.0 < 0.02, "{last:?}");
+    // Carrying on hands over only what is new.
+    let (more, shown) = kept_on_the_way_to(&mut d, 0.6);
+    assert_eq!(more.len(), 6);
+    assert_eq!(more[0].0, last.1);
+    assert_eq!(more[more.len() - 1].0, shown);
+    // The same frame again: nothing is decoded, nothing handed over.
+    assert!(kept_on_the_way_to(&mut d, 0.6).0.is_empty());
+    // Back to 0.2 s: from the key frame up to it again.
+    let (again, shown) = kept_on_the_way_to(&mut d, 0.2);
+    assert_eq!(again.len(), 13);
+    assert_eq!((again[0].0, again[12].0), (0.0, shown));
+    // The file's last frame stays on screen for good.
+    let (to_the_end, shown) = kept_on_the_way_to(&mut d, 99.0);
+    let last = to_the_end[to_the_end.len() - 1];
+    assert_eq!(last.0, shown);
+    assert!(last.1.is_infinite());
+}
+
+#[test]
+fn nothing_is_handed_over_unless_the_decoder_keeps_frames() {
+    let mut d = open("game-3-audio.mkv", 0);
+    assert!(!d.keeps_frames(), "a decoder on the CPU doesn't, by itself");
+    assert!(kept_on_the_way_to(&mut d, 0.5).0.is_empty());
+}

@@ -8,7 +8,7 @@ Done for approach C in `docs/research/decoding.md`: the handle, the images a dec
 
 ## What is in it
 
-`VideoDevice` is everything the decoder needs to know about the window's Vulkan device: the instance, the card and the device, the extensions and features they were created with, the queue families set aside for the decoder, and the kinds of video the device decodes (`Codec`: H.264, H.265, AV1). It also holds the renderer's own handles, so the device outlives every user of the handle.
+`VideoDevice` is everything the decoder needs to know about the window's Vulkan device: the instance, the card and the device, the extensions and features they were created with, the queue families set aside for the decoder, and the kinds of video the device decodes (`Codec`: H.264, H.265, AV1). It also holds the renderer's own handles, so the device outlives every user of the handle. `card_memory()` is the size of the card's own memory, for deciding how many decoded frames to keep there.
 
 ## From the decoder's image to the viewer's
 

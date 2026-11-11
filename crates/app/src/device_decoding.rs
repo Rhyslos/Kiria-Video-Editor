@@ -77,6 +77,7 @@ impl WindowDecoding {
         OnDevice {
             device: self.device.clone(),
             watch: Arc::new(Watch(self.guard.clone())),
+            frames_kept: engine::frames::budget_on_card(self.device.card_memory()),
         }
     }
 

@@ -177,6 +177,12 @@ pub struct VideoDecoder {
     tick: f64,
     /// Where the time of the last picture went.
     work: Work,
+    /// The frame held, as a picture, when it was made for keeping. One on
+    /// the graphics card is handed out again rather than copied twice.
+    held_picture: Option<Decoded>,
+    /// Frames passed are handed over whatever the decoder runs on
+    /// ([`VideoDecoder::keep_every_kind`]).
+    keep_any: bool,
     scratch: *mut ff::AVFrame,
     copy: *mut ff::AVFrame,
     packet: *mut ff::AVPacket,
@@ -461,6 +467,8 @@ impl VideoDecoder {
                 keys: KeyFrames::default(),
                 tick: 1e-6,
                 work: Work::default(),
+                held_picture: None,
+                keep_any: false,
                 scratch: ff::av_frame_alloc(),
                 copy: ff::av_frame_alloc(),
                 packet: ff::av_packet_alloc(),
@@ -547,6 +555,29 @@ impl VideoDecoder {
         self.work
     }
 
+    /// How far a frame's stored time may be from its true time, in seconds:
+    /// the frame on screen at a moment is the last one stored up to this
+    /// much after it.
+    pub fn tick(&self) -> f64 {
+        self.tick
+    }
+
+    /// Whether this decoder hands over the frames it passes on the way to
+    /// a picture ([`VideoDecoder::picture_at_while`]'s `keep`). A decoder
+    /// on the window's device does: its pictures are made by a copy on the
+    /// graphics card, which costs next to nothing.
+    pub fn keeps_frames(&self) -> bool {
+        self.on_device.is_some() || self.keep_any
+    }
+
+    /// Makes any decoder hand over the frames it passes, as planes in
+    /// memory. That is a copy of every frame on the CPU (and for a GPU
+    /// decoder a trip back from the card), so nothing does it yet but the
+    /// tests of the keeping itself; a frame cache in memory will.
+    pub fn keep_every_kind(&mut self, keep: bool) {
+        self.keep_any = keep;
+    }
+
     /// Sets the codec up to decode on the window's device, into `format`
     /// frames that stay on the graphics card.
     unsafe fn use_device(
@@ -600,7 +631,7 @@ impl VideoDecoder {
     /// The frame on screen at `seconds` from the start of the file, scaled
     /// to fit in `max_width × max_height` (never enlarged) and turned upright.
     pub fn frame_at(&mut self, seconds: f64, max_width: u32, max_height: u32) -> diag::Result<Frame> {
-        self.hold(seconds, &mut || Newer::Nothing)?;
+        self.hold(seconds, (max_width, max_height), &mut || Newer::Nothing, None)?;
         self.held_as_frame(max_width, max_height)
     }
 
@@ -613,7 +644,7 @@ impl VideoDecoder {
         max_height: u32,
         newer: &mut dyn FnMut() -> Newer,
     ) -> diag::Result<Reached<Frame>> {
-        match self.hold(seconds, newer)? {
+        match self.hold(seconds, (max_width, max_height), newer, None)? {
             Some(at) => self
                 .held_as_frame(max_width, max_height)
                 .map(|picture| Reached::Shown { picture, at }),
@@ -634,7 +665,7 @@ impl VideoDecoder {
     /// eighth of it when that still fills `max_width × max_height` as
     /// sharply as the box can show.
     pub fn picture_at(&mut self, seconds: f64, max_width: u32, max_height: u32) -> diag::Result<Decoded> {
-        self.hold(seconds, &mut || Newer::Nothing)?;
+        self.hold(seconds, (max_width, max_height), &mut || Newer::Nothing, None)?;
         self.held_as_picture(max_width, max_height)
     }
 
@@ -651,14 +682,21 @@ impl VideoDecoder {
     ///
     /// So a jump that has been overtaken never holds up the next one, and
     /// decoding that is going the right way is never thrown away.
+    ///
+    /// `keep` is given every frame decoded on the way, the one asked for
+    /// included, as a picture with the time the next frame starts (infinite
+    /// for the file's last frame): a frame is on screen from its own time
+    /// until then. Whoever keeps them can show any of them again without
+    /// decoding. Only decoders that [`VideoDecoder::keeps_frames`] call it.
     pub fn picture_at_while(
         &mut self,
         seconds: f64,
         max_width: u32,
         max_height: u32,
         newer: &mut dyn FnMut() -> Newer,
+        keep: Option<&mut dyn FnMut(Decoded, f64)>,
     ) -> diag::Result<Reached<Decoded>> {
-        match self.hold(seconds, newer)? {
+        match self.hold(seconds, (max_width, max_height), newer, keep)? {
             Some(at) => self
                 .held_as_picture(max_width, max_height)
                 .map(|picture| Reached::Shown { picture, at }),
@@ -673,13 +711,24 @@ impl VideoDecoder {
         unsafe { self.convert(source, max_width, max_height) }
     }
 
+    /// The frame held, as a picture on the graphics card. `None` when this
+    /// decoder isn't on the window's device.
+    fn held_on_card(&mut self) -> Option<diag::Result<GpuFrame>> {
+        let (device, copier) = self.on_device.as_mut()?;
+        let time = self.held_time.unwrap_or(0.0);
+        // SAFETY: `held` holds a frame this decoder decoded on `device`,
+        // and stays as it is until the next call on self.
+        Some(unsafe { device.copy_out(self.held, copier, self.rotation, time) })
+    }
+
     /// The frame held, the way [`VideoDecoder::picture_at`] gives it.
     fn held_as_picture(&mut self, max_width: u32, max_height: u32) -> diag::Result<Decoded> {
-        if let Some((device, copier)) = &mut self.on_device {
-            let time = self.held_time.unwrap_or(0.0);
-            // SAFETY: `held` holds a frame this decoder decoded on `device`,
-            // and stays as it is until the next call on self.
-            return unsafe { device.copy_out(self.held, copier, self.rotation, time) }.map(Decoded::Gpu);
+        // Made already, for keeping: the same picture again.
+        if let Some(Decoded::Gpu(picture)) = &self.held_picture {
+            return Ok(Decoded::Gpu(picture.clone()));
+        }
+        if let Some(picture) = self.held_on_card() {
+            return picture.map(Decoded::Gpu);
         }
         let source = self.in_memory()?;
         // SAFETY: `source` was just returned by `in_memory`.
@@ -701,12 +750,22 @@ impl VideoDecoder {
 
     /// Decodes (jumping first when that is quicker) until `held` is the
     /// frame on screen at `seconds`, asking `newer` between frames what is
-    /// wanted by now (see [`VideoDecoder::picture_at_while`]). Returns the
-    /// moment `held` is the frame for, or `None` when the decode was given up.
-    fn hold(&mut self, seconds: f64, newer: &mut dyn FnMut() -> Newer) -> diag::Result<Option<f64>> {
+    /// wanted by now and handing frames to `keep` (see
+    /// [`VideoDecoder::picture_at_while`] for both). Returns the moment
+    /// `held` is the frame for, or `None` when the decode was given up.
+    fn hold(
+        &mut self,
+        seconds: f64,
+        size: (u32, u32),
+        newer: &mut dyn FnMut() -> Newer,
+        mut keep: Option<&mut dyn FnMut(Decoded, f64)>,
+    ) -> diag::Result<Option<f64>> {
         let started = Instant::now();
         let mut target = seconds.max(0.0);
         self.work = Work::default();
+        if !self.keeps_frames() {
+            keep = None;
+        }
         if self.jumps_to(target) {
             self.seek(target)?;
             self.work.jumped = true;
@@ -723,6 +782,13 @@ impl VideoDecoder {
                         ff::av_frame_move_ref(self.held, self.ahead);
                     }
                     self.held_time = self.ahead_time.take();
+                    // A frame that will be kept is made a picture now; it
+                    // is handed over once the next frame says how long it
+                    // is on screen.
+                    self.held_picture = None;
+                    if keep.is_some() {
+                        self.held_picture = Some(self.held_as_picture(size.0, size.1)?);
+                    }
                     continue;
                 }
                 break Some(target);
@@ -742,13 +808,27 @@ impl VideoDecoder {
                     }
                 }
             }
-            match self.decode_next()? {
-                Some(t) => {
-                    self.ahead_time = Some(t);
-                    self.work.frames += 1;
-                    self.work.first_frame.get_or_insert_with(|| started.elapsed());
+            let next = self.decode_next()?;
+            if let Some(t) = next {
+                self.ahead_time = Some(t);
+                self.work.frames += 1;
+                self.work.first_frame.get_or_insert_with(|| started.elapsed());
+            }
+            // The frame held is on screen until the next one starts, or for
+            // good when there is none.
+            let until = next.unwrap_or(f64::INFINITY);
+            match (keep.as_mut(), &self.held_picture) {
+                // A picture on the card is shared: it may be the answer too.
+                (Some(keep), Some(Decoded::Gpu(picture))) => keep(Decoded::Gpu(picture.clone()), until),
+                (Some(keep), Some(_)) => {
+                    if let Some(picture) = self.held_picture.take() {
+                        keep(picture, until);
+                    }
                 }
-                None => break Some(target),
+                _ => {}
+            }
+            if next.is_none() {
+                break Some(target);
             }
         };
         self.work.decoding = started.elapsed();
@@ -773,6 +853,7 @@ impl VideoDecoder {
             ff::av_frame_unref(self.held);
             ff::av_frame_unref(self.ahead);
         }
+        self.held_picture = None;
         self.held_time = None;
         self.ahead_time = None;
         self.ended = false;
