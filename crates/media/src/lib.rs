@@ -23,6 +23,7 @@
 
 pub mod audio;
 pub mod decode;
+pub mod encode;
 mod ffi;
 pub mod fingerprint;
 pub mod jump;
