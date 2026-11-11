@@ -51,6 +51,9 @@ pub struct Editor {
     waveforms: crate::waveforms::Waveforms,
     relink: crate::relink::Relinker,
     drawer: crate::media_drawer::MediaDrawer,
+    frame_grab: crate::frame_grab::FrameGrab,
+    /// Save this frame was asked for; the dialog opens on the next frame.
+    save_frame_requested: bool,
     /// `--play`: start playing as soon as the imports are in.
     play_when_ready: bool,
     show_timeline_settings: bool,
@@ -146,6 +149,8 @@ impl Editor {
             fitted: false,
             waveforms: crate::waveforms::Waveforms::default(),
             relink: crate::relink::Relinker::default(),
+            frame_grab: crate::frame_grab::FrameGrab::default(),
+            save_frame_requested: false,
             drawer: crate::media_drawer::MediaDrawer {
                 open: drawer_open,
                 ..Default::default()
@@ -190,6 +195,9 @@ impl Editor {
                 Ok(())
             }
             Action::ClearRegion => self.set_region(None),
+            Action::SaveFrame => self
+                .with_document(|_| Ok(()))
+                .map(|()| self.save_frame_requested = true),
             Action::Split => {
                 let at = self.edit_point();
                 let clip = self.selected.first().copied();
@@ -770,6 +778,31 @@ impl Editor {
                 engine::thumbnail::write(&project, project.active_sequence, at, &out)
             },
         ));
+    }
+
+    /// Opens the save dialog when asked, and reports finished saves.
+    fn frame_grabs(&mut self, ctx: &egui::Context) {
+        if std::mem::take(&mut self.save_frame_requested)
+            && let Some(document) = &self.document
+            && let Some(seq) = document.project().active()
+        {
+            let at = seq.settings.frame_rate.snap(self.viewer.playhead);
+            let name = crate::frame_grab::default_name(
+                &document.project().name,
+                &at.timecode(seq.settings.frame_rate),
+            );
+            self.frame_grab.start(ctx, document.project(), at, name);
+        }
+        match self.frame_grab.poll(&self.jobs, ctx) {
+            Some(crate::frame_grab::Saved::Done(path)) => {
+                let name = path
+                    .file_name()
+                    .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+                self.status = format!("Saved the frame as {name}.");
+            }
+            Some(crate::frame_grab::Saved::Failed(err)) => self.errors.push(&err),
+            None => {}
+        }
     }
 
     /// The tab on the left edge and the media drawer it opens.
@@ -1427,6 +1460,7 @@ impl eframe::App for Editor {
         self.follow_playback(&ctx);
         self.waveforms.poll();
         self.relinking(&ctx);
+        self.frame_grabs(&ctx);
         if let Some(err) = self.viewer.poll(&ctx, self.settings.preview_quality)
             && !self.relink.explains_errors()
         {
