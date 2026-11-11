@@ -8,6 +8,12 @@ license.workspace = true
 publish = false
 
 [dependencies]
+# The graphics library the windows are drawn with, at the same version.
+wgpu = "30"
+
+[dev-dependencies]
+# Waits for the graphics device in the compositor's tests.
+pollster = "1"
 
 [lints]
 workspace = true

@@ -1372,10 +1372,13 @@ dependencies = [
  "diag",
  "image",
  "media",
+ "pollster",
  "project",
+ "render",
  "rtrb",
  "tracing",
  "video-device",
+ "wgpu",
 ]
 
 [[package]]
@@ -3724,6 +3727,10 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 [[package]]
 name = "render"
 version = "0.1.0"
+dependencies = [
+ "pollster",
+ "wgpu",
+]
 
 [[package]]
 name = "renderdoc-sys"
@@ -4785,6 +4792,7 @@ dependencies = [
  "egui",
  "egui-wgpu",
  "image",
+ "render",
  "serde",
  "tracing",
 ]

@@ -18,7 +18,7 @@ The Cargo workspace members. One engine with no interface, and thin pages on top
 | [media](media/) | Probe, demux, decode, encode (FFmpeg wrapper) | 4A (probe, picture and sound decoding done) |
 | [cache](cache/) | RAM, GPU and disk caches, proxies, thumbnails, waveforms | 4A (waveforms done) |
 | [audio](audio/) | Real-time mixer, effects, meters, loudness | 4A, 8 |
-| [render](render/) | GPU compositor, colour, effects | 4 onwards |
+| [render](render/) | GPU compositor (layers into a frame, a frame shown), colour, effects | 4C (compositor done), 7, 9 |
 | [engine](engine/) | Playback scheduler and export pipeline | 4A (preview picture, mixing, playback done), 6 |
 | [library](library/) | Media index and search | 5 |
 | [ml](ml/) | Model inference (background removal) | 9 |
