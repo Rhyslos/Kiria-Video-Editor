@@ -71,3 +71,24 @@ fn best_decoding_falls_back_when_there_is_no_gpu() {
     let mut d = VideoDecoder::open(&fixture("game-3-audio.mkv"), 0, 0, Decoding::Best).unwrap();
     assert!(d.frame_at(0.5, 320, 320).is_ok(), "decodes with {}", d.method);
 }
+
+/// The middle pixel of one of the three squares in `colour-709-full.mp4`.
+fn square(frame: &media::Frame, index: usize) -> [u8; 3] {
+    let at = (16 * frame.width as usize + 16 + 32 * index) * 4;
+    [frame.rgba[at], frame.rgba[at + 1], frame.rgba[at + 2]]
+}
+
+#[test]
+fn colours_follow_the_matrix_and_range_the_file_names() {
+    // Three squares (red, green and blue at three quarters), stored as
+    // BT.709 with full range in a picture small enough that guessing by
+    // size would say BT.601. Made with FFmpeg's `color` sources, `hstack`
+    // and `scale=out_color_matrix=bt709:out_range=pc`.
+    let mut d = open("colour-709-full.mp4", 0);
+    let rgba = d.frame_at(0.0, 4000, 4000).unwrap();
+    for (index, want) in [[192, 0, 0], [0, 192, 0], [0, 0, 192]].into_iter().enumerate() {
+        let got = square(&rgba, index);
+        let near = got.iter().zip(want).all(|(g, w)| g.abs_diff(w) <= 4);
+        assert!(near, "square {index}: got {got:?}, wanted {want:?}");
+    }
+}

@@ -7,7 +7,8 @@
 //!
 //! Moving forward a little decodes onward from where it is; jumping back or
 //! far ahead seeks to the key frame before the target first. The picture is
-//! scaled to the size asked for and turned upright, as RGBA.
+//! scaled to the size asked for and turned upright, as RGBA, in the colour
+//! matrix and range the file names (BT.601 or BT.709 by size when it doesn't).
 //!
 //! The GPU's video decoder is tried first (Direct3D 11 on Windows, VA-API on
 //! Linux); when it can't open or can't handle the codec, the CPU decodes.
@@ -463,6 +464,7 @@ impl VideoDecoder {
                     .why("The picture's format can't be converted for display.")
                     .fix("Report it with the file attached."));
             }
+            self.set_scaler_colour(sw as u32, sh as u32);
             let mut rgba = vec![0u8; dw as usize * dh as usize * 4];
             let dst = [
                 rgba.as_mut_ptr(),
@@ -489,6 +491,66 @@ impl VideoDecoder {
             })
         }
     }
+
+    /// Tells the scaler which colour matrix and range `held` uses, so
+    /// pictures show the colours the file means. Left alone, the scaler
+    /// reads everything as BT.601 and only knows full range by the
+    /// old format names.
+    ///
+    /// # Safety
+    /// The scaler must have been made, and a decoded frame be held.
+    unsafe fn set_scaler_colour(&mut self, width: u32, height: u32) {
+        // SAFETY: the scaler was just made; `held` holds a decoded frame; the
+        // coefficient tables are static.
+        unsafe {
+            let held = &*self.held;
+            let space = match held.colorspace {
+                // The usual guess when the file doesn't say.
+                ff::AVColorSpace::AVCOL_SPC_UNSPECIFIED if is_high_definition(width, height) => {
+                    ff::SWS_CS_ITU709
+                }
+                ff::AVColorSpace::AVCOL_SPC_UNSPECIFIED => ff::SWS_CS_ITU601,
+                // FFmpeg numbers the scaler's tables as it numbers colour spaces.
+                said => said as i32,
+            };
+            let (mut inverse, mut table) = (ptr::null_mut(), ptr::null_mut());
+            let (mut source_range, mut target_range, mut brightness, mut contrast, mut saturation) =
+                (0, 0, 0, 0, 0);
+            // Not every format pair has colour settings (RGB sources don't).
+            if ff::sws_getColorspaceDetails(
+                self.scaler,
+                &mut inverse,
+                &mut source_range,
+                &mut table,
+                &mut target_range,
+                &mut brightness,
+                &mut contrast,
+                &mut saturation,
+            ) < 0
+            {
+                return;
+            }
+            if held.color_range == ff::AVColorRange::AVCOL_RANGE_JPEG {
+                source_range = 1;
+            }
+            ff::sws_setColorspaceDetails(
+                self.scaler,
+                ff::sws_getCoefficients(space),
+                source_range,
+                table,
+                target_range,
+                brightness,
+                contrast,
+                saturation,
+            );
+        }
+    }
+}
+
+/// The usual guess for a file that doesn't say which colour matrix it uses:
+/// high definition sizes are BT.709, smaller ones BT.601.
+pub(crate) fn is_high_definition(width: u32, height: u32) -> bool {
+    width >= 1280 || height > 576
 }
 
 /// Turns an RGBA picture clockwise by 0, 90, 180 or 270 degrees.
