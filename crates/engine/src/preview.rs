@@ -142,6 +142,9 @@ pub struct Picture {
     /// The renderer could not take a picture decoded on the window's device:
     /// whoever started the worker starts one that decodes the usual way.
     pub refused: bool,
+    /// Some of a composed picture had its colour converted on the CPU (a
+    /// format the planes way doesn't take): work that a smaller size saves.
+    pub converted_on_cpu: bool,
     pub error: Option<diag::AppError>,
     /// How long decoding took, with copying the planes out or converting to RGBA.
     pub took: Duration,
@@ -513,6 +516,7 @@ impl Worker {
             };
             let mut got = self.decoded(r.at, &target, waiting, role)?;
             if let Some(decoded) = got.frame.take() {
+                out.converted_on_cpu |= matches!(decoded, Decoded::Rgba(_));
                 pictures.push((index, decoded));
             }
             // The corner and Diagnostics describe the top layer; any
@@ -1045,6 +1049,7 @@ impl Picture {
             frame: None,
             composed: None,
             refused: false,
+            converted_on_cpu: false,
             error: None,
             took: Duration::ZERO,
             work: None,

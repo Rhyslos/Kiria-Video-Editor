@@ -221,7 +221,15 @@ impl Editor {
             thumbnail_due: Thumbnail::IfMissing,
             importer,
             import_requested: false,
-            viewer: Viewer::new(&cc.egui_ctx, start_at, convert, decoding),
+            viewer: Viewer::new(
+                &cc.egui_ctx,
+                start_at,
+                convert,
+                decoding,
+                cc.wgpu_render_state
+                    .as_ref()
+                    .map(|state| (state.device.clone(), state.queue.clone())),
+            ),
             playback: None,
             timeline,
             view_keeper,

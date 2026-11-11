@@ -94,6 +94,14 @@ impl WindowDecoding {
         }))
     }
 
+    /// What turns a picture decoded on the device into the textures the
+    /// preview worker draws it from when it puts the timeline's picture
+    /// together. Nothing is copied.
+    pub fn wrap(&self) -> Arc<engine::compose::Wrap> {
+        let renderer = self.renderer.clone();
+        Arc::new(move |frame: &GpuFrame| graphics::plane_textures(&renderer, &frame.planes))
+    }
+
     /// A picture decoded on the device was drawn, and the frame it was in
     /// went to the screen.
     pub fn drawn(&self) {

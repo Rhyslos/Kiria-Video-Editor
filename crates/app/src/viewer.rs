@@ -11,6 +11,10 @@
 //! picture decoded on the window's own graphics device are on the card
 //! already and are drawn from there (`device_decoding`).
 //!
+//! When the window is drawn on a graphics card, the worker puts every
+//! visible layer together there into one frame of the timeline's shape
+//! (`engine::compose`), and this only shows that frame.
+//!
 //! Preview quality sets the size asked for. Planes come at the nearest
 //! halving of the file's size that still fills it (less to copy and upload,
 //! and a cleaner picture than the GPU shrinking a big one in one go); RGBA
@@ -22,7 +26,8 @@
 
 use crate::device_decoding::WindowDecoding;
 use crate::video_picture;
-use engine::{Convert, Preview};
+use eframe::wgpu;
+use engine::{Composing, Convert, Preview};
 use media::{Decoded, Decoding};
 use project::{Project, Rate, Time};
 use ui_kit::{PreviewQuality, Theme, TransportClick, VideoPicture};
@@ -33,6 +38,13 @@ enum Shown {
     Texture(egui::TextureHandle),
     /// YUV planes, converted by the GPU while drawing.
     Video(VideoPicture),
+    /// The timeline's picture, put together by the worker. The frame is
+    /// held for as long as it is on show, so the worker draws the next
+    /// picture into another.
+    Whole {
+        picture: VideoPicture,
+        _frame: engine::Composed,
+    },
 }
 
 /// Counting a picture decoded on the window's device as drawn.
@@ -52,6 +64,9 @@ pub struct Viewer {
     convert: Convert,
     /// Decoding on the window's graphics device, while it is in use.
     decoding: Option<WindowDecoding>,
+    /// The device and queue the window is drawn with, when the worker puts
+    /// the timeline's picture together there.
+    renderer: Option<(wgpu::Device, wgpu::Queue)>,
     drawn: Drawn,
     shown: Option<Shown>,
     note: String,
@@ -72,18 +87,24 @@ pub struct Viewer {
 impl Viewer {
     /// `start_at` places the playhead (seconds) before anything is imported.
     /// `convert` says whether the window can convert colour while drawing,
-    /// `decoding` whether video is decoded on the window's graphics device.
+    /// `decoding` whether video is decoded on the window's graphics device,
+    /// and `renderer` is the device and queue the window is drawn with (none
+    /// when it isn't drawn on a graphics card, or colour is converted on
+    /// the CPU: then the top clip's picture is shown alone).
     pub fn new(
         ctx: &egui::Context,
         start_at: Option<f64>,
         convert: Convert,
         decoding: Option<WindowDecoding>,
+        renderer: Option<(wgpu::Device, wgpu::Queue)>,
     ) -> Viewer {
+        let renderer = renderer.filter(|_| matches!(convert, Convert::WhileDrawing { .. }));
         Viewer {
-            preview: start_preview(ctx, convert, decoding.as_ref()),
+            preview: start_preview(ctx, convert, decoding.as_ref(), renderer.as_ref()),
             ctx: ctx.clone(),
             convert,
             decoding,
+            renderer,
             drawn: Drawn::No,
             shown: None,
             note: String::new(),
@@ -120,7 +141,7 @@ impl Viewer {
         self.count_drawn();
         let picture = self.preview.latest()?;
         self.answered = Some(picture.at);
-        if picture.frame.is_some() {
+        if picture.frame.is_some() || picture.composed.is_some() {
             self.slow.note(
                 picture.took,
                 picture.method.as_deref().unwrap_or_default(),
@@ -142,6 +163,17 @@ impl Viewer {
                 }
             }
             Some(Decoded::Yuv(_) | Decoded::Gpu(_)) => self.play_scale = 1,
+            None if picture.composed.is_some() => {
+                if !picture.converted_on_cpu {
+                    self.play_scale = 1;
+                } else if let Some(interval) = self.frame_interval
+                    && quality == PreviewQuality::Auto
+                    && picture.took.as_secs_f64() > interval
+                    && self.play_scale < 4
+                {
+                    self.play_scale *= 2;
+                }
+            }
             None => {}
         }
         let mut problem = None;
@@ -154,6 +186,35 @@ impl Viewer {
         } else {
             self.last_error = None;
         }
+        // The renderer could not take a picture decoded on the window's
+        // device when the worker put the timeline's picture together.
+        if picture.refused {
+            self.decode_the_usual_way();
+            return problem;
+        }
+        let converted_on_cpu = picture.converted_on_cpu;
+        let whole = picture.composed.map(|frame| {
+            let (size, on_device) = (frame.size(), frame.on_device);
+            let picture = VideoPicture::from_composed(ui_kit::ComposedPicture {
+                frame: frame.view().clone(),
+                working: frame.working(),
+                size,
+            });
+            let colour = if converted_on_cpu {
+                "put together on the GPU · colour on the CPU"
+            } else {
+                "put together on the GPU"
+            };
+            (
+                Shown::Whole {
+                    picture,
+                    _frame: frame,
+                },
+                colour,
+                size,
+                on_device,
+            )
+        });
         // A picture decoded on the window's device becomes the renderer's
         // textures here; one the renderer can't take is left out.
         let frame = match picture.frame {
@@ -183,7 +244,7 @@ impl Viewer {
                     false,
                 ))
             }
-            None => None,
+            None => whole,
         };
         self.drawn = Drawn::No;
         match frame {
@@ -240,7 +301,7 @@ impl Viewer {
         if let Some(decoding) = self.decoding.take() {
             decoding.failed();
         }
-        self.preview = start_preview(&self.ctx, self.convert, None);
+        self.preview = start_preview(&self.ctx, self.convert, None, self.renderer.as_ref());
         self.requested = None;
         self.ctx.request_repaint();
     }
@@ -309,7 +370,9 @@ impl Viewer {
         }
         let picture = self.shown.as_ref().map(|shown| match shown {
             Shown::Texture(texture) => ui_kit::viewer::Picture::Texture(texture),
-            Shown::Video(video) => ui_kit::viewer::Picture::Video(video),
+            Shown::Video(video) | Shown::Whole { picture: video, .. } => {
+                ui_kit::viewer::Picture::Video(video)
+            }
         });
         let (frame, _) = ui_kit::viewer::viewer(ui, theme, size, timeline, picture, &self.note);
         let click = ui_kit::transport::transport(ui, theme, frame, self.frame_interval.is_some());
@@ -360,12 +423,25 @@ impl Viewer {
 const CLOSES_WITHIN: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// Starts the preview worker, on the window's graphics device when there is one.
-fn start_preview(ctx: &egui::Context, convert: Convert, decoding: Option<&WindowDecoding>) -> Preview {
+/// With `renderer` (what the window is drawn with) the worker also puts the
+/// timeline's whole picture together there.
+fn start_preview(
+    ctx: &egui::Context,
+    convert: Convert,
+    decoding: Option<&WindowDecoding>,
+    renderer: Option<&(wgpu::Device, wgpu::Queue)>,
+) -> Preview {
     let ctx = ctx.clone();
-    Preview::start(
+    let composing = renderer.map(|(device, queue)| Composing {
+        device: device.clone(),
+        queue: queue.clone(),
+        wrap: decoding.map(WindowDecoding::wrap),
+    });
+    Preview::start_composing(
         Decoding::Best,
         convert,
         decoding.map(WindowDecoding::for_worker),
+        composing,
         move || ctx.request_repaint(),
     )
 }

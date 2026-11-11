@@ -11,6 +11,10 @@
 //!   window's own graphics device. Nothing is written; the textures are
 //!   drawn from as they are.
 //!
+//! A picture the timeline's layers were put together into already (a
+//! [`ComposedPicture`]: a finished frame on the window's device) is drawn
+//! the same way, as one rectangle, with nothing converted or written.
+//!
 //! [`install`] sets this up once per window. Without it (the window isn't
 //! drawn with wgpu) pages keep showing RGBA textures.
 
@@ -98,6 +102,7 @@ impl PlaneTextures {
 enum Fresh {
     Memory(YuvImage),
     Textures(PlaneTextures),
+    Composed(ComposedPicture),
 }
 
 /// Where the corners of the rectangle on screen fall in the stored picture,
@@ -113,9 +118,23 @@ pub fn texture_axes(rotation: u16) -> [[f32; 2]; 3] {
     }
 }
 
-/// The renderer kept with the window, and which picture its textures hold.
+/// A finished frame on the window's device: the timeline's layers put
+/// together already.
+#[derive(Debug, Clone)]
+pub struct ComposedPicture {
+    pub frame: wgpu::TextureView,
+    /// What the frame was made in: linear light, or display values.
+    pub working: render::Working,
+    pub size: (u32, u32),
+}
+
+/// The renderers kept with the window, and which picture they hold.
 struct Shown {
     renderer: YuvRenderer,
+    /// Draws finished frames.
+    shower: render::Shower,
+    /// The finished frame on show, when the picture is one.
+    composed: Option<render::Showing>,
     picture: Option<u64>,
 }
 
@@ -127,6 +146,8 @@ pub fn install(render_state: Option<&egui_wgpu::RenderState>) -> Option<u32> {
     let renderer = YuvRenderer::new(&state.device, state.target_format);
     state.renderer.write().callback_resources.insert(Shown {
         renderer,
+        shower: render::Shower::new(&state.device, state.target_format),
+        composed: None,
         picture: None,
     });
     Some(state.device.limits().max_texture_dimension_2d)
@@ -156,6 +177,11 @@ impl VideoPicture {
     /// A picture whose planes are textures already.
     pub fn from_textures(planes: PlaneTextures) -> VideoPicture {
         VideoPicture::from_fresh(planes.upright_size(), Fresh::Textures(planes))
+    }
+
+    /// A picture that is a finished frame already.
+    pub fn from_composed(composed: ComposedPicture) -> VideoPicture {
+        VideoPicture::from_fresh(composed.size, Fresh::Composed(composed))
     }
 
     fn from_fresh(size: (u32, u32), fresh: Fresh) -> VideoPicture {
@@ -201,9 +227,20 @@ impl egui_wgpu::CallbackTrait for Draw {
         let fresh = self.fresh.lock().ok().and_then(|mut fresh| fresh.take());
         if let (Some(fresh), Some(shown)) = (fresh, resources.get_mut::<Shown>()) {
             let started = std::time::Instant::now();
+            shown.composed = None;
             let (taken, bytes) = match &fresh {
                 Fresh::Memory(image) => (shown.renderer.upload(device, queue, image), image.bytes().len()),
                 Fresh::Textures(planes) => (shown.renderer.show(device, queue, planes), 0),
+                Fresh::Composed(composed) => {
+                    shown.renderer.clear();
+                    shown.composed = Some(shown.shower.showing(
+                        device,
+                        queue,
+                        &composed.frame,
+                        composed.working,
+                    ));
+                    (true, 0)
+                }
             };
             shown.picture = taken.then_some(self.id);
             tracing::debug!(
@@ -226,7 +263,10 @@ impl egui_wgpu::CallbackTrait for Draw {
         if let Some(shown) = resources.get::<Shown>()
             && shown.picture == Some(self.id)
         {
-            shown.renderer.draw(pass);
+            match &shown.composed {
+                Some(composed) => shown.shower.draw(pass, composed),
+                None => shown.renderer.draw(pass),
+            }
         }
     }
 }

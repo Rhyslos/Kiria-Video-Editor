@@ -14,6 +14,8 @@ egui = "0.37"
 # The window's renderer (the one the windowing crate already brings), for the
 # video picture's paint callback and its shader.
 egui-wgpu = "0.37"
+# Draws a finished frame of the timeline (the compositor's other half).
+render = { path = "../render" }
 serde = { version = "1", features = ["derive"] }
 tracing = "0.1"
 
