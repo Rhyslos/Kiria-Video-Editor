@@ -36,10 +36,22 @@ impl GraphicsChoice {
 }
 
 /// The contents of `graphics.ron`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GraphicsSettings {
     pub choice: GraphicsChoice,
+    /// Decode video on the window's own graphics device when it can: the
+    /// fastest way. Off means the older ways only.
+    pub decode_on_window_device: bool,
+}
+
+impl Default for GraphicsSettings {
+    fn default() -> GraphicsSettings {
+        GraphicsSettings {
+            choice: GraphicsChoice::default(),
+            decode_on_window_device: true,
+        }
+    }
 }
 
 impl GraphicsSettings {
@@ -73,6 +85,7 @@ impl GraphicsSettings {
         let earlier: EditorSettings = ron::from_str(&text).ok()?;
         Some(GraphicsSettings {
             choice: earlier.graphics,
+            ..GraphicsSettings::default()
         })
     }
 
@@ -100,6 +113,7 @@ mod tests {
         assert_eq!(GraphicsSettings::load(tmp.path()), GraphicsSettings::default());
         let chosen = GraphicsSettings {
             choice: GraphicsChoice::Direct3D12,
+            decode_on_window_device: false,
         };
         chosen.save(tmp.path()).unwrap();
         assert_eq!(GraphicsSettings::load(tmp.path()), chosen);
@@ -123,6 +137,7 @@ mod tests {
 
         GraphicsSettings {
             choice: GraphicsChoice::Vulkan,
+            ..GraphicsSettings::default()
         }
         .save(tmp.path())
         .unwrap();
@@ -136,5 +151,22 @@ mod tests {
             GraphicsSettings::load(tmp.path()).choice,
             GraphicsChoice::Automatic
         );
+    }
+
+    #[test]
+    fn decoding_on_the_windows_device_is_on_until_turned_off() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(GraphicsSettings::load(tmp.path()).decode_on_window_device);
+        // A file written before the setting existed keeps the choice and gets the default.
+        std::fs::write(GraphicsSettings::path(tmp.path()), "(choice: Vulkan)").unwrap();
+        let earlier = GraphicsSettings::load(tmp.path());
+        assert_eq!(earlier.choice, GraphicsChoice::Vulkan);
+        assert!(earlier.decode_on_window_device);
+        let off = GraphicsSettings {
+            decode_on_window_device: false,
+            ..earlier
+        };
+        off.save(tmp.path()).unwrap();
+        assert_eq!(GraphicsSettings::load(tmp.path()), off);
     }
 }

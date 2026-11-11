@@ -50,8 +50,9 @@ The last seven are for CI and for checking the look without a screen (`xvfb-run`
 | `src/view_state.rs` | How a project's timeline was laid out when last open (track heights, the divider between video and audio), kept in `<project file>.view` beside the project: read on opening, written on a worker a moment after the layout stops changing and on closing. Not part of the project file or its undo history |
 | `src/versions_window.rs` | Saved versions (Ctrl+Shift+V): save the project under a name and restore any earlier one, both on workers |
 | `src/timeline_panel.rs` (also) | `fold_sound`: the rough cut view (Ctrl+Shift+T) folds each video clip's linked sound into it |
-| `src/viewer.rs` | The Edit page's viewer: asks the engine for the picture at the playhead (only when something changed) and shows the newest, as YUV planes the GPU converts or as an RGBA texture; the scrub bar and preview quality under it (planes come halved to suit the size wanted; on Auto, RGBA pictures are lowered further when playback can't keep up) |
+| `src/viewer.rs` | The Edit page's viewer: asks the engine for the picture at the playhead (only when something changed) and shows the newest, as YUV planes the GPU converts (from memory, or straight from the graphics card for video decoded on the window's device) or as an RGBA texture; the corner says how each picture was decoded ("hardware (vulkan, stays on the GPU)" for the window's device); counts pictures drawn for the crash guard, and goes back to the older ways for the session if the renderer can't take a picture; the scrub bar and preview quality under it (planes come halved to suit the size wanted; on Auto, RGBA pictures are lowered further when playback can't keep up) |
 | `src/video_picture.rs` | Whether this window converts colour on the GPU (`--cpu-colour` or a window without wgpu says no), and a decoded frame's planes as the viewer's picture; its tests draw the shader into a texture and compare with the CPU's conversion |
+| `src/device_decoding.rs` | Decoding on the window's graphics device, wired up: the device `graphics` opened becomes the decoder's (`media::WindowDevice`), with the guard around setting it up, its guard becomes the preview worker's watcher, and a decoded picture's images become the viewer's textures. `None` when the device can't, the switch is off, or colour is converted on the CPU |
 | `src/settings.rs` | `Settings` (theme, resource budgets, "Edit at the playhead", how the height is shared between the viewer and the timeline), saved as `settings.ron` in the app's data folder. The Graphics choice has its own file, shared with the launcher |
 | `src/run_mode.rs` | Command-line options |
 | `src/fake_pointer.rs` | A scripted pointer for automated runs (`--pointer`, `--drag-to`): rests somewhere, or drags from there and keeps holding, so screenshots can show hover marks, tooltips and drags |
@@ -60,6 +61,7 @@ The last seven are for CI and for checking the look without a screen (`xvfb-run`
 
 - Opening a project that has unsaved work from a crash recovers it, unless `--open-last-save` is given. The launcher asks which the person wants and passes the flag.
 - Resource and Graphics setting changes apply on the next start.
+- `--decoding-warning` shows the question about video decoding that stopped the app although nothing did, for screenshots.
 
 ## Graphics
 

@@ -1364,6 +1364,7 @@ dependencies = [
  "project",
  "rtrb",
  "tracing",
+ "video-device",
 ]
 
 [[package]]
@@ -2452,6 +2453,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "tracing",
+ "video-device",
 ]
 
 [[package]]

@@ -390,7 +390,13 @@ mod tests {
         let editor_plan = || {
             let marker = StartMarker::in_dir(Program::Editor, &data);
             let choice = GraphicsSettings::load(&data).choice;
-            graphics::plan(Platform::Windows, choice, marker.state(), RunKind::Normal)
+            graphics::plan(
+                Platform::Windows,
+                choice,
+                marker.state(),
+                graphics::DecodingFound::FRESH,
+                RunKind::Normal,
+            )
         };
 
         // Start 1: the editor notes that it starts with Vulkan, then the driver crashes.

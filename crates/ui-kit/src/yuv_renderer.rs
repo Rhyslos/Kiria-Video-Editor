@@ -3,10 +3,13 @@
 //! while drawing. Plain wgpu, nothing of the interface toolkit, so the same
 //! renderer can draw into any target.
 //!
-//! Textures are made again only when the picture's size or layout changes;
-//! otherwise a new picture is written into the ones there.
+//! A picture comes one of two ways. Planes in memory are written into the
+//! renderer's own textures, which are made again only when the picture's
+//! size or layout changes. Planes that are textures already
+//! ([`PlaneTextures`]: a picture decoded on the graphics card) are drawn
+//! from as they are, with nothing written at all.
 
-use crate::video_picture::{ChromaLayout, YuvImage, texture_axes};
+use crate::video_picture::{ChromaLayout, PlaneTextures, YuvImage, texture_axes};
 use egui_wgpu::wgpu;
 
 /// What the textures in use were made for.
@@ -20,6 +23,8 @@ struct Shape {
 #[derive(Debug)]
 struct Textures {
     shape: Shape,
+    /// Made here, to be written into; not someone else's, only to be read.
+    own: bool,
     luma: wgpu::Texture,
     /// One two-channel texture when interleaved, else U and V.
     chroma: Vec<wgpu::Texture>,
@@ -155,7 +160,7 @@ impl YuvRenderer {
             self.textures = None;
             return false;
         }
-        if self.textures.as_ref().is_none_or(|t| t.shape != shape) {
+        if self.textures.as_ref().is_none_or(|t| t.shape != shape || !t.own) {
             self.textures = Some(self.textures_for(device, shape));
         }
         let Some(textures) = &self.textures else {
@@ -171,7 +176,44 @@ impl YuvRenderer {
                 write_plane(queue, &textures.chroma[1], v, 1);
             }
         }
-        queue.write_buffer(&self.uniforms, 0, &uniform_bytes(image, self.linear_target));
+        let settings = uniform_bytes(image.to_rgb, image.rotation, image.layout, self.linear_target);
+        queue.write_buffer(&self.uniforms, 0, &settings);
+        true
+    }
+
+    /// Takes in a picture whose planes are textures already: they are drawn
+    /// from directly and kept until the next picture. False, and nothing
+    /// left to draw, when they aren't a one-byte luma texture with a
+    /// two-byte colour texture of half its size.
+    pub fn show(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, planes: &PlaneTextures) -> bool {
+        let luma = (planes.luma.width(), planes.luma.height());
+        let shape = Shape {
+            luma,
+            chroma: (luma.0.div_ceil(2), luma.1.div_ceil(2)),
+            layout: ChromaLayout::Interleaved,
+        };
+        let fits = planes.luma.format() == wgpu::TextureFormat::R8Unorm
+            && planes.chroma.format() == wgpu::TextureFormat::Rg8Unorm
+            && (planes.chroma.width(), planes.chroma.height()) == shape.chroma;
+        if !fits {
+            self.textures = None;
+            return false;
+        }
+        let bind_group = self.bind_group(device, &planes.luma, &planes.chroma, &planes.chroma);
+        self.textures = Some(Textures {
+            shape,
+            own: false,
+            luma: planes.luma.clone(),
+            chroma: vec![planes.chroma.clone()],
+            bind_group,
+        });
+        let settings = uniform_bytes(
+            planes.to_rgb,
+            planes.rotation,
+            ChromaLayout::Interleaved,
+            self.linear_target,
+        );
+        queue.write_buffer(&self.uniforms, 0, &settings);
         true
     }
 
@@ -219,11 +261,28 @@ impl YuvRenderer {
                 texture(shape.chroma, wgpu::TextureFormat::R8Unorm),
             ],
         };
-        let view = |t: &wgpu::Texture| t.create_view(&wgpu::TextureViewDescriptor::default());
-        let (luma_view, u_view) = (view(&luma), view(&chroma[0]));
         // Interleaved: the shader reads both channels from the one texture.
-        let v_view = view(chroma.last().unwrap_or(&chroma[0]));
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let bind_group = self.bind_group(device, &luma, &chroma[0], chroma.last().unwrap_or(&chroma[0]));
+        Textures {
+            shape,
+            own: true,
+            luma,
+            chroma,
+            bind_group,
+        }
+    }
+
+    /// The shader's inputs for a picture in these textures.
+    fn bind_group(
+        &self,
+        device: &wgpu::Device,
+        luma: &wgpu::Texture,
+        u: &wgpu::Texture,
+        v: &wgpu::Texture,
+    ) -> wgpu::BindGroup {
+        let view = |t: &wgpu::Texture| t.create_view(&wgpu::TextureViewDescriptor::default());
+        let (luma_view, u_view, v_view) = (view(luma), view(u), view(v));
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("video picture"),
             layout: &self.layout,
             entries: &[
@@ -248,13 +307,7 @@ impl YuvRenderer {
                     resource: wgpu::BindingResource::TextureView(&v_view),
                 },
             ],
-        });
-        Textures {
-            shape,
-            luma,
-            chroma,
-            bind_group,
-        }
+        })
     }
 }
 
@@ -277,19 +330,20 @@ fn write_plane(queue: &wgpu::Queue, texture: &wgpu::Texture, bytes: &[u8], bytes
     );
 }
 
-/// The shader's `Picture` block for an image.
-fn uniform_bytes(image: &YuvImage, linear_target: bool) -> Vec<u8> {
-    let [origin, across, down] = texture_axes(image.rotation);
+/// The shader's `Picture` block: the conversion, the turn, how the colour
+/// planes are stored and what kind of target is drawn into.
+fn uniform_bytes(to_rgb: [[f32; 4]; 3], rotation: u16, layout: ChromaLayout, linear_target: bool) -> Vec<u8> {
+    let [origin, across, down] = texture_axes(rotation);
     let flag = |on: bool| if on { 1.0 } else { 0.0 };
     let rows = [
-        image.to_rgb[0],
-        image.to_rgb[1],
-        image.to_rgb[2],
+        to_rgb[0],
+        to_rgb[1],
+        to_rgb[2],
         [origin[0], origin[1], across[0], across[1]],
         [
             down[0],
             down[1],
-            flag(image.layout == ChromaLayout::Interleaved),
+            flag(layout == ChromaLayout::Interleaved),
             flag(linear_target),
         ],
     ];
@@ -302,18 +356,12 @@ mod tests {
 
     #[test]
     fn the_shader_block_is_five_rows_of_four() {
-        let image = YuvImage {
-            luma_size: (4, 2),
-            layout: ChromaLayout::Interleaved,
-            planes: Box::new(vec![0u8; 12]),
-            to_rgb: [
-                [1.0, 2.0, 3.0, 4.0],
-                [5.0, 6.0, 7.0, 8.0],
-                [9.0, 10.0, 11.0, 12.0],
-            ],
-            rotation: 90,
-        };
-        let bytes = uniform_bytes(&image, true);
+        let to_rgb = [
+            [1.0, 2.0, 3.0, 4.0],
+            [5.0, 6.0, 7.0, 8.0],
+            [9.0, 10.0, 11.0, 12.0],
+        ];
+        let bytes = uniform_bytes(to_rgb, 90, ChromaLayout::Interleaved, true);
         assert_eq!(bytes.len() as u64, UNIFORM_BYTES);
         let numbers: Vec<f32> = bytes
             .chunks_exact(4)
@@ -327,12 +375,7 @@ mod tests {
         // picture's bottom left; going right goes up the stored picture.
         assert_eq!(numbers[12..16], [0.0, 1.0, 0.0, -1.0]);
         assert_eq!(numbers[16..], [1.0, 0.0, 1.0, 1.0], "interleaved, linear target");
-        let planar = YuvImage {
-            layout: ChromaLayout::Planar,
-            rotation: 0,
-            ..image
-        };
-        let bytes = uniform_bytes(&planar, false);
+        let bytes = uniform_bytes(to_rgb, 0, ChromaLayout::Planar, false);
         assert_eq!(bytes[72..], [0u8; 8], "both flags off");
     }
 }

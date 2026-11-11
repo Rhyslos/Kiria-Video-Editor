@@ -23,7 +23,7 @@ A fast, light, native video editor written in Rust. A hobby project, open source
 3. **Shared visuals stay put.** Top bar, page tabs (centred over the viewport), panel widths and theme tokens come from `crates/ui-kit` only.
 4. **No name-dropping.** Code, comments, docs, commit messages and interface text never name other companies' products. Describe the feature instead.
 5. **Documented folders.** Every crate and every folder with more than a couple of files has a `README.md`. This file is the map. Both are updated in the same commit as the code they describe.
-6. **Readable, clean, stable code.** Small modules, clear names, consistent patterns. No `unsafe` outside the future FFmpeg and GPU wrappers. No `unwrap()` or `expect()` outside tests: return an explained error.
+6. **Readable, clean, stable code.** Small modules, clear names, consistent patterns. No `unsafe` outside the FFmpeg and GPU wrappers (`crates/media`, `crates/video-device`, `crates/graphics/src/vulkan_device.rs`), each block with its reason. No `unwrap()` or `expect()` outside tests: return an explained error.
 7. **Research and compare big systems.** For playback, caching, the timeline widget, rendering, the audio engine, background removal, auto white balance and the highlight finder: write a note in `docs/research/`, prototype two or three approaches in `spikes/`, measure them on the same clips, then build the winner properly.
 8. **One name, one place.** The app's name and identifiers live only in `crates/brand`. A test fails if the name is typed in any other Rust file; read `brand::APP_NAME` instead.
 

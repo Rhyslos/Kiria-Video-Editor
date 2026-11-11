@@ -9,6 +9,8 @@
 //! - [`audio`]: sound as stereo float samples at any rate, from any point.
 //! - [`decode`]: the picture at any moment of a video, scaled and upright.
 //! - [`yuv`]: that picture as the decoder's own planes, for the GPU to convert.
+//! - [`vulkan`]: decoding on the window's own graphics device, where the
+//!   picture never leaves the graphics card.
 //! - [`fingerprint`]: recognises a file's contents quickly, so a moved file can
 //!   be found again.
 //! - [`describe`]: both of the above as a [`project::MediaRef`] ready to import.
@@ -26,12 +28,14 @@ pub mod fingerprint;
 pub mod probe;
 pub mod relink;
 pub mod timing;
+pub mod vulkan;
 pub mod yuv;
 
 pub use audio::AudioDecoder;
-pub use decode::{Decoded, Decoding, Frame, VideoDecoder};
+pub use decode::{Decoded, Decoding, Frame, Level, VideoDecoder};
 pub use fingerprint::fingerprint;
 pub use probe::{Probe, probe};
+pub use vulkan::{GpuFrame, WindowDevice};
 pub use yuv::{Colour, Layout, Matrix, Planes, Range, YuvFrame};
 
 use project::{MediaId, MediaRef};

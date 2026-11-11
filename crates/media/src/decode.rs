@@ -14,16 +14,27 @@
 //! back to RGBA for every other format. [`VideoDecoder::frame_at`] always
 //! gives RGBA, scaled to the size asked for and turned upright, on the CPU.
 //!
-//! The GPU's video decoder is tried first (Direct3D 11 on Windows, VA-API on
-//! Linux); when it can't open or can't handle the codec, the CPU decodes.
-//! See `docs/research/decoding.md` for the faster paths still to come.
+//! There are three ways to decode, fastest first (`docs/research/decoding.md`):
+//!
+//! - on the window's own graphics device ([`VideoDecoder::open_on_device`],
+//!   [`crate::vulkan`]): the picture stays on the graphics card;
+//! - on the GPU's video decoder with a copy back to memory (Direct3D 11 on
+//!   Windows, VA-API on Linux);
+//! - on the CPU.
+//!
+//! [`VideoDecoder::open`] with [`Decoding::Best`] takes the second when it
+//! can open and handles the codec, else the third. The preview tries the
+//! first before that and steps down per file when a way fails.
 
 use crate::ffi::{Input, error_text};
+use crate::vulkan::{GpuFrame, WindowDevice, device_error};
 use crate::yuv::{Colour, PlaneRef, Pool, Source, YuvFrame, step_for};
 use diag::AppError;
 use ffmpeg_sys_next as ff;
 use std::path::Path;
 use std::ptr;
+use std::sync::Arc;
+use video_device::Copier;
 
 /// A decoded picture, upright, RGBA, `width × height`.
 #[derive(Clone, PartialEq)]
@@ -48,6 +59,9 @@ pub enum Decoded {
     Yuv(YuvFrame),
     /// Converted on the CPU, for formats the planes path doesn't take.
     Rgba(Frame),
+    /// Decoded on the window's graphics device and still there: two images
+    /// the GPU converts while drawing.
+    Gpu(GpuFrame),
 }
 
 impl Decoded {
@@ -56,6 +70,7 @@ impl Decoded {
         match self {
             Decoded::Yuv(frame) => frame.time,
             Decoded::Rgba(frame) => frame.time,
+            Decoded::Gpu(frame) => frame.time,
         }
     }
 
@@ -64,6 +79,7 @@ impl Decoded {
         match self {
             Decoded::Yuv(frame) => frame.upright_size(),
             Decoded::Rgba(frame) => (frame.width, frame.height),
+            Decoded::Gpu(frame) => frame.upright_size(),
         }
     }
 }
@@ -74,6 +90,18 @@ pub enum Decoding {
     /// The GPU's video decoder when it works, else the CPU.
     Best,
     /// Always the CPU.
+    Software,
+}
+
+/// The way a decoder works, fastest first. A file that fails one way is
+/// opened again one step down.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Level {
+    /// On the window's own graphics device; pictures stay on the card.
+    Device,
+    /// On the GPU's video decoder, each picture copied back to memory.
+    Hardware,
+    /// On the CPU.
     Software,
 }
 
@@ -101,6 +129,9 @@ pub struct VideoDecoder {
     scaler: *mut ff::SwsContext,
     /// Plane buffers that came back from pictures no longer shown.
     pool: Pool,
+    /// Decoding on the window's device: the shared device, and what copies
+    /// pictures out of the decoder's images.
+    on_device: Option<(Arc<WindowDevice>, Copier)>,
     ended: bool,
     /// "hardware (d3d11va)" or "software", for the log.
     pub method: String,
@@ -149,6 +180,51 @@ unsafe extern "C" fn pick_format(
         }
         first_software
     }
+}
+
+/// Picks the hardware format stored in `opaque` when FFmpeg offers it, and
+/// nothing otherwise, which makes FFmpeg report an error instead of quietly
+/// decoding on the CPU.
+unsafe extern "C" fn pick_format_or_none(
+    ctx: *mut ff::AVCodecContext,
+    offered: *const ff::AVPixelFormat,
+) -> ff::AVPixelFormat {
+    // SAFETY: FFmpeg passes a valid context and a list ended by AV_PIX_FMT_NONE.
+    unsafe {
+        let wanted = (*ctx).opaque as isize as i32;
+        let mut p = offered;
+        while *p != ff::AVPixelFormat::AV_PIX_FMT_NONE {
+            if *p as i32 == wanted {
+                return *p;
+            }
+            p = p.add(1);
+        }
+        ff::AVPixelFormat::AV_PIX_FMT_NONE
+    }
+}
+
+/// Whether pictures in this format (a stream's, as its header gives it) can
+/// be drawn from the graphics card by the viewer's shader: 8 bits with
+/// colour at half size both ways. A format the header doesn't give is let
+/// through; the decoded picture is checked again.
+fn shader_takes(format: i32) -> bool {
+    [
+        ff::AVPixelFormat::AV_PIX_FMT_YUV420P,
+        ff::AVPixelFormat::AV_PIX_FMT_YUVJ420P,
+        ff::AVPixelFormat::AV_PIX_FMT_NONE,
+    ]
+    .iter()
+    .any(|taken| *taken as i32 == format)
+}
+
+/// How to open a decoder.
+#[derive(Clone, Copy)]
+enum Way<'a> {
+    /// On the window's own graphics device, or not at all.
+    Device(&'a Arc<WindowDevice>),
+    /// On the GPU's video decoder with a copy back, else on the CPU.
+    Best,
+    Software,
 }
 
 const HARDWARE: &str = if cfg!(windows) { "d3d11va" } else { "vaapi" };
@@ -228,6 +304,38 @@ impl VideoDecoder {
     /// Opens stream `stream` of the file. `rotation` is the clockwise turn
     /// that shows it upright (from probing).
     pub fn open(path: &Path, stream: u32, rotation: u16, decoding: Decoding) -> diag::Result<VideoDecoder> {
+        let way = match decoding {
+            Decoding::Best => Way::Best,
+            Decoding::Software => Way::Software,
+        };
+        VideoDecoder::open_as(path, stream, rotation, way)
+    }
+
+    /// Opens stream `stream` of the file for decoding on the window's own
+    /// graphics device. Fails, with the reason, when the device doesn't
+    /// decode this kind of video or FFmpeg can't set it up: open the file
+    /// with [`VideoDecoder::open`] then.
+    pub fn open_on_device(
+        path: &Path,
+        stream: u32,
+        rotation: u16,
+        device: &Arc<WindowDevice>,
+    ) -> diag::Result<VideoDecoder> {
+        VideoDecoder::open_as(path, stream, rotation, Way::Device(device))
+    }
+
+    /// How this decoder works.
+    pub fn level(&self) -> Level {
+        if self.on_device.is_some() {
+            Level::Device
+        } else if self.hw_format.is_some() {
+            Level::Hardware
+        } else {
+            Level::Software
+        }
+    }
+
+    fn open_as(path: &Path, stream: u32, rotation: u16, way: Way<'_>) -> diag::Result<VideoDecoder> {
         let input = Input::open(path).map_err(|e| {
             AppError::new("The video can't be shown")
                 .why(format!("{}: {}.", path.display(), e.text))
@@ -247,10 +355,26 @@ impl VideoDecoder {
             // The decoder that can use the GPU, when hardware is wanted: for
             // AV1 that is FFmpeg's own decoder, not the default one, which is
             // software only.
-            let hardware = if decoding == Decoding::Best {
-                hardware_decoder((*par).codec_id)
-            } else {
-                None
+            let hardware = match way {
+                Way::Device(device) => {
+                    if !device.decodes((*par).codec_id) {
+                        return Err(device_error(
+                            "The device's decoder doesn't take this kind of video.",
+                        ));
+                    }
+                    if !shader_takes((*par).format) {
+                        return Err(device_error(
+                            "The picture isn't 8-bit with colour at half size (10-bit and the like go the usual way).",
+                        ));
+                    }
+                    let vulkan = ff::AVHWDeviceType::AV_HWDEVICE_TYPE_VULKAN;
+                    let found = decoder_for((*par).codec_id, vulkan).ok_or_else(|| {
+                        device_error("This FFmpeg build has no Vulkan decoder for this kind of video.")
+                    })?;
+                    Some(found)
+                }
+                Way::Best => hardware_decoder((*par).codec_id),
+                Way::Software => None,
             };
             let decoder = match hardware {
                 Some((d, _)) => d,
@@ -285,6 +409,7 @@ impl VideoDecoder {
                 packet: ff::av_packet_alloc(),
                 scaler: ptr::null_mut(),
                 pool: Pool::default(),
+                on_device: None,
                 ended: false,
                 method: "software".into(),
             };
@@ -297,12 +422,14 @@ impl VideoDecoder {
             }
             (*codec).thread_count = 0;
             (*codec).thread_type = ff::FF_THREAD_FRAME | ff::FF_THREAD_SLICE;
-            if let Some((_, format)) = hardware
-                && !this.try_hardware(format)
-            {
-                // No GPU device after all: the default decoder, in software.
-                drop(this);
-                return VideoDecoder::open(path, stream, rotation, Decoding::Software);
+            match (way, hardware) {
+                (Way::Device(device), Some((_, format))) => this.use_device(device, format)?,
+                (_, Some((_, format))) if !this.try_hardware(format) => {
+                    // No GPU device after all: the default decoder, in software.
+                    drop(this);
+                    return VideoDecoder::open(path, stream, rotation, Decoding::Software);
+                }
+                _ => {}
             }
             let r = ff::avcodec_open2(codec, decoder, ptr::null_mut());
             if r < 0 {
@@ -310,6 +437,36 @@ impl VideoDecoder {
             }
             Ok(this)
         }
+    }
+
+    /// Sets the codec up to decode on the window's device, into `format`
+    /// frames that stay on the graphics card.
+    unsafe fn use_device(
+        &mut self,
+        device: &Arc<WindowDevice>,
+        format: ff::AVPixelFormat,
+    ) -> diag::Result<()> {
+        let copier = Copier::new(device.device()).map_err(device_error)?;
+        // SAFETY: called before avcodec_open2 on a fresh context; the new
+        // reference to FFmpeg's device context is handed to the codec
+        // context, which owns it from then on.
+        unsafe {
+            let reference = device.new_reference();
+            if reference.is_null() {
+                return Err(device_error("Memory ran out."));
+            }
+            (*self.codec).hw_device_ctx = reference;
+            (*self.codec).opaque = format as i32 as isize as *mut std::ffi::c_void;
+            // Only the device's own frames will do: anything else is an
+            // error here, and the file is opened the usual way instead.
+            (*self.codec).get_format = Some(pick_format_or_none);
+            // One thread, as in the measurements: the graphics card does the work.
+            (*self.codec).thread_count = 1;
+        }
+        self.hw_format = Some(format);
+        self.on_device = Some((Arc::clone(device), copier));
+        self.method = "hardware (vulkan, stays on the GPU)".into();
+        Ok(())
     }
 
     /// Hands the codec a GPU device producing `format` frames. False when
@@ -345,11 +502,22 @@ impl VideoDecoder {
     /// its format allows (nothing is converted or turned: the GPU does both
     /// while drawing), else as [`VideoDecoder::frame_at`] gives it.
     ///
+    /// A decoder on the window's device gives the picture as images on the
+    /// graphics card, always at the file's size, or fails with the reason
+    /// (a format the shader doesn't take, a problem on the card): open the
+    /// file one [`Level`] down then.
+    ///
     /// The planes come at the file's size, or at a half, a quarter or an
     /// eighth of it when that still fills `max_width × max_height` as
     /// sharply as the box can show.
     pub fn picture_at(&mut self, seconds: f64, max_width: u32, max_height: u32) -> diag::Result<Decoded> {
         self.hold(seconds)?;
+        if let Some((device, copier)) = &mut self.on_device {
+            let time = self.held_time.unwrap_or(0.0);
+            // SAFETY: `held` holds a frame this decoder decoded on `device`,
+            // and stays as it is until the next call on self.
+            return unsafe { device.copy_out(self.held, copier, self.rotation, time) }.map(Decoded::Gpu);
+        }
         let source = self.in_memory()?;
         // SAFETY: `source` was just returned by `in_memory`.
         unsafe {
@@ -753,6 +921,22 @@ impl Drop for VideoDecoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_8_bit_pictures_with_colour_at_half_size_are_decoded_on_the_device() {
+        use ff::AVPixelFormat::*;
+        for taken in [AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUVJ420P, AV_PIX_FMT_NONE] {
+            assert!(shader_takes(taken as i32), "{taken:?}");
+        }
+        for other in [
+            AV_PIX_FMT_YUV420P10LE,
+            AV_PIX_FMT_YUV422P,
+            AV_PIX_FMT_YUV444P,
+            AV_PIX_FMT_RGB24,
+        ] {
+            assert!(!shader_takes(other as i32), "{other:?}");
+        }
+    }
 
     #[test]
     fn av1_on_the_gpu_uses_the_decoder_that_supports_it() {

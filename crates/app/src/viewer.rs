@@ -7,7 +7,9 @@
 //!
 //! A picture arrives as the decoder's YUV planes, which the GPU converts
 //! while drawing (`ui_kit::video_picture`), or as RGBA for formats that can't
-//! go that way and when the window has no GPU drawing to offer.
+//! go that way and when the window has no GPU drawing to offer. Planes of a
+//! picture decoded on the window's own graphics device are on the card
+//! already and are drawn from there (`device_decoding`).
 //!
 //! Preview quality sets the size asked for. Planes come at the nearest
 //! halving of the file's size that still fills it (less to copy and upload,
@@ -15,7 +17,10 @@
 //! pictures are scaled to it. On Auto, playback that can't keep up lowers
 //! RGBA pictures further, since scaling them is real work on the CPU;
 //! planes aren't lowered, because there is no such work left to save.
+//! A picture decoded on the window's device always comes at the file's size:
+//! nothing is copied to memory or uploaded, so there is nothing to save.
 
+use crate::device_decoding::WindowDecoding;
 use crate::video_picture;
 use engine::{Convert, Preview};
 use media::{Decoded, Decoding};
@@ -30,8 +35,24 @@ enum Shown {
     Video(VideoPicture),
 }
 
+/// Counting a picture decoded on the window's device as drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Drawn {
+    /// Nothing to count.
+    No,
+    /// On show, and not drawn yet.
+    Waiting,
+    /// Drawn in the last frame: counts once that frame is behind us.
+    LastFrame,
+}
+
 pub struct Viewer {
     preview: Preview,
+    ctx: egui::Context,
+    convert: Convert,
+    /// Decoding on the window's graphics device, while it is in use.
+    decoding: Option<WindowDecoding>,
+    drawn: Drawn,
     shown: Option<Shown>,
     note: String,
     pub playhead: Time,
@@ -48,11 +69,20 @@ pub struct Viewer {
 
 impl Viewer {
     /// `start_at` places the playhead (seconds) before anything is imported.
-    /// `convert` says whether the window can convert colour while drawing.
-    pub fn new(ctx: &egui::Context, start_at: Option<f64>, convert: Convert) -> Viewer {
-        let ctx = ctx.clone();
+    /// `convert` says whether the window can convert colour while drawing,
+    /// `decoding` whether video is decoded on the window's graphics device.
+    pub fn new(
+        ctx: &egui::Context,
+        start_at: Option<f64>,
+        convert: Convert,
+        decoding: Option<WindowDecoding>,
+    ) -> Viewer {
         Viewer {
-            preview: Preview::start(Decoding::Best, convert, move || ctx.request_repaint()),
+            preview: start_preview(ctx, convert, decoding.as_ref()),
+            ctx: ctx.clone(),
+            convert,
+            decoding,
+            drawn: Drawn::No,
             shown: None,
             note: String::new(),
             playhead: start_at
@@ -84,6 +114,7 @@ impl Viewer {
 
     /// Takes in a finished picture. Returns an error to show, once per new problem.
     pub fn poll(&mut self, ctx: &egui::Context, quality: PreviewQuality) -> Option<diag::AppError> {
+        self.count_drawn();
         let picture = self.preview.latest()?;
         self.answered = Some(picture.at);
         // Drop resolution before dropping frames: on Auto, an RGBA picture
@@ -100,7 +131,7 @@ impl Viewer {
                     self.play_scale *= 2;
                 }
             }
-            Some(Decoded::Yuv(_)) => self.play_scale = 1,
+            Some(Decoded::Yuv(_) | Decoded::Gpu(_)) => self.play_scale = 1,
             None => {}
         }
         let mut problem = None;
@@ -113,29 +144,57 @@ impl Viewer {
         } else {
             self.last_error = None;
         }
-        match picture.frame {
-            Some(frame) => {
-                let (width, height) = frame.size();
+        // A picture decoded on the window's device becomes the renderer's
+        // textures here; one the renderer can't take is left out.
+        let frame = match picture.frame {
+            Some(Decoded::Gpu(frame)) => match self.decoding.as_ref().and_then(|d| d.picture(&frame)) {
+                Some(video) => Some((
+                    Shown::Video(video),
+                    "colour on the GPU",
+                    frame.upright_size(),
+                    true,
+                )),
+                None => {
+                    self.decode_the_usual_way();
+                    return problem;
+                }
+            },
+            Some(Decoded::Yuv(planes)) => {
+                let size = planes.upright_size();
+                let video = VideoPicture::new(video_picture::image(planes));
+                Some((Shown::Video(video), "colour on the GPU", size, false))
+            }
+            Some(Decoded::Rgba(frame)) => {
+                let size = (frame.width, frame.height);
+                Some((
+                    Shown::Texture(self.texture(ctx, &frame)),
+                    "colour on the CPU",
+                    size,
+                    false,
+                ))
+            }
+            None => None,
+        };
+        self.drawn = Drawn::No;
+        match frame {
+            Some((shown, colour, (width, height), on_device)) => {
                 let lowered = if self.play_scale > 1 {
                     format!(" · lowered to 1/{} to keep playing smoothly", self.play_scale)
                 } else {
                     String::new()
                 };
-                // Which way the colour was converted, for telling the two apart.
-                let colour = match &frame {
-                    Decoded::Yuv(_) => "colour on the GPU",
-                    Decoded::Rgba(_) => "colour on the CPU",
-                };
+                // The corner says how the picture was decoded and which way
+                // its colour was converted, for telling the ways apart.
                 self.note = format!(
                     "{}{lowered} · {width}×{height} · {} ms · {} · {colour}",
                     quality.label(),
                     picture.took.as_millis(),
                     picture.method.unwrap_or_default()
                 );
-                self.shown = Some(match frame {
-                    Decoded::Yuv(planes) => Shown::Video(VideoPicture::new(video_picture::image(planes))),
-                    Decoded::Rgba(frame) => Shown::Texture(self.texture(ctx, &frame)),
-                });
+                self.shown = Some(shown);
+                if on_device {
+                    self.drawn = Drawn::Waiting;
+                }
             }
             None => {
                 self.shown = None;
@@ -143,6 +202,33 @@ impl Viewer {
             }
         }
         problem
+    }
+
+    /// The renderer could not take a picture decoded on the window's device:
+    /// from here on every file is decoded the way it was before, by a new
+    /// worker without the device. The picture at the playhead is asked for again.
+    fn decode_the_usual_way(&mut self) {
+        tracing::warn!(
+            "the renderer could not take a picture decoded on the window's device: video is decoded the usual way from now on"
+        );
+        if let Some(decoding) = self.decoding.take() {
+            decoding.failed();
+        }
+        self.preview = start_preview(&self.ctx, self.convert, None);
+        self.requested = None;
+        self.ctx.request_repaint();
+    }
+
+    /// Tells the guard about a picture decoded on the window's device once
+    /// the frame that drew it is behind us: only then did the driver get
+    /// through sampling it.
+    fn count_drawn(&mut self) {
+        if self.drawn == Drawn::LastFrame {
+            if let Some(decoding) = &self.decoding {
+                decoding.drawn();
+            }
+            self.drawn = Drawn::No;
+        }
     }
 
     /// An RGBA picture as a texture, written into the one on show when there is one.
@@ -189,6 +275,12 @@ impl Viewer {
         let rate = seq.settings.frame_rate;
         let timeline = (seq.settings.width, seq.settings.height);
         let size = egui::vec2(ui.available_width(), (height - 34.0).max(120.0));
+        self.count_drawn();
+        if self.drawn == Drawn::Waiting {
+            // Drawn below, in this frame; counted in the next.
+            self.drawn = Drawn::LastFrame;
+            ui.ctx().request_repaint();
+        }
         let picture = self.shown.as_ref().map(|shown| match shown {
             Shown::Texture(texture) => ui_kit::viewer::Picture::Texture(texture),
             Shown::Video(video) => ui_kit::viewer::Picture::Video(video),
@@ -236,4 +328,15 @@ impl Viewer {
         }
         click
     }
+}
+
+/// Starts the preview worker, on the window's graphics device when there is one.
+fn start_preview(ctx: &egui::Context, convert: Convert, decoding: Option<&WindowDecoding>) -> Preview {
+    let ctx = ctx.clone();
+    Preview::start(
+        Decoding::Best,
+        convert,
+        decoding.map(WindowDecoding::for_worker),
+        move || ctx.request_repaint(),
+    )
 }
