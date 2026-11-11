@@ -13,6 +13,15 @@ const GAP: f32 = 16.0;
 /// Height of the text under a thumbnail: name, details and the issue line.
 const TEXT_HEIGHT: f32 = 62.0;
 
+/// What a card has to say besides its issue.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Notes {
+    /// Changes left in the journal by a crash.
+    pub unsaved: usize,
+    /// Media files that are not where the project says.
+    pub missing_media: usize,
+}
+
 /// Something done to a card this frame.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CardAction {
@@ -24,6 +33,21 @@ pub enum CardAction {
     Forget(PathBuf),
 }
 
+/// The line under a card's details: unsaved work first, then missing media.
+fn note_text(note: Notes) -> Option<String> {
+    let plural = |n: usize| if n == 1 { "" } else { "s" };
+    match note {
+        Notes { unsaved: 1, .. } => Some("1 unsaved change from a crash".into()),
+        Notes { unsaved: n, .. } if n > 1 => Some(format!("{n} unsaved changes from a crash")),
+        Notes { missing_media: 0, .. } => None,
+        Notes { missing_media: n, .. } => Some(format!(
+            "{n} media file{} can't be found. Open the project to find {}.",
+            plural(n),
+            if n == 1 { "it" } else { "them" }
+        )),
+    }
+}
+
 /// Draws the cards. `now` is the current time in seconds since 1970.
 #[allow(clippy::too_many_arguments)]
 pub fn grid(
@@ -32,7 +56,7 @@ pub fn grid(
     projects: &[&ProjectEntry],
     selected: Option<&Path>,
     folders: &[Folder],
-    recoverable: &HashMap<PathBuf, usize>,
+    notes: &HashMap<PathBuf, Notes>,
     thumbnails: &mut crate::thumbnails::Thumbnails,
     now: i64,
 ) -> Vec<CardAction> {
@@ -53,14 +77,14 @@ pub fn grid(
                     ui.spacing_mut().item_spacing.x = GAP;
                     for entry in projects.iter().skip(row * COLUMNS).take(COLUMNS) {
                         let is_selected = selected == Some(entry.path.as_path());
-                        let unsaved = recoverable.get(&entry.path).copied().unwrap_or(0);
+                        let note = notes.get(&entry.path).copied().unwrap_or_default();
                         let picture = thumbnails.get(ui.ctx(), entry).map(|t| t.id());
                         card(
                             ui,
                             theme,
                             entry,
                             is_selected,
-                            unsaved,
+                            note,
                             picture,
                             folders,
                             now,
@@ -81,7 +105,7 @@ fn card(
     theme: &Theme,
     entry: &ProjectEntry,
     selected: bool,
-    unsaved: usize,
+    note: Notes,
     picture: Option<egui::TextureId>,
     folders: &[Folder],
     now: i64,
@@ -177,13 +201,8 @@ fn card(
             FontId::proportional(11.5),
             colour,
         );
-    } else if unsaved > 0 {
+    } else if let Some(text) = note_text(note) {
         painter.circle_filled(pos2(rect.left() + 4.0, y + 7.0), 3.5, status::WARNING);
-        let text = if unsaved == 1 {
-            "1 unsaved change from a crash".to_owned()
-        } else {
-            format!("{unsaved} unsaved changes from a crash")
-        };
         one_line(
             &painter,
             pos2(rect.left() + 14.0, y),

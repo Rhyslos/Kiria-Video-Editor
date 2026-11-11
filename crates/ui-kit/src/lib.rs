@@ -18,7 +18,7 @@ pub mod transport;
 pub mod viewer;
 
 pub use dialog::dialog;
-pub use errors::{ErrorCenter, ErrorResponse, ShownError, accent_button};
+pub use errors::{ErrorCenter, ErrorResponse, ShownError, accent_button, status_dot};
 pub use layout::Page;
 pub use shortcuts::{Action, Shortcut, ShortcutTable};
 pub use theme::{Theme, ThemeName, status};

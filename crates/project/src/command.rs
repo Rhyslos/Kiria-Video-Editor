@@ -11,6 +11,7 @@ use crate::model::{
 use crate::time::Time;
 use diag::AppError;
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 /// One change to a project.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -20,6 +21,11 @@ pub enum Command {
     },
     AddMedia {
         media: MediaRef,
+    },
+    /// Points a media file at where it is now (it was moved or renamed).
+    Relink {
+        media: MediaId,
+        path: PathBuf,
     },
     /// Adds a media file and places it at the end of the timeline as one step:
     /// its picture on the first video track and each sound stream on its own
@@ -122,6 +128,9 @@ impl Command {
             Command::AddMedia { media } => {
                 let id: MediaId = p.allocate_id();
                 p.media.insert(id, MediaRef { id, ..media.clone() });
+            }
+            Command::Relink { media, path } => {
+                p.media.get_mut(media).ok_or_else(|| missing("media file"))?.path = path.clone();
             }
             Command::Import { sequence, media } => import(&mut p, *sequence, media)?,
             Command::AddTrack { sequence, kind, name } => {
@@ -1145,5 +1154,24 @@ mod tests {
             gain_db: 40.0,
         };
         assert!(loud.apply(&f.p).is_err());
+    }
+
+    #[test]
+    fn relinking_points_the_media_at_its_new_place() {
+        let (p, _) = imported();
+        let id = *p.media.keys().next().unwrap();
+        let moved = PathBuf::from("/recordings/moved.mkv");
+        let after = Command::Relink {
+            media: id,
+            path: moved.clone(),
+        }
+        .apply(&p)
+        .unwrap();
+        assert_eq!(after.media[&id].path, moved);
+        let unknown = Command::Relink {
+            media: MediaId(999_999),
+            path: moved,
+        };
+        assert!(unknown.apply(&p).is_err());
     }
 }

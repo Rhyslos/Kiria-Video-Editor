@@ -107,9 +107,10 @@ pub struct Browser {
     focus_search: bool,
     selected: Option<PathBuf>,
     status: String,
-    refresh: Option<Task<diag::Result<HashMap<PathBuf, usize>>>>,
+    refresh: Option<Task<diag::Result<HashMap<PathBuf, cards::Notes>>>>,
     /// Projects with unsaved changes left by a crash, and how many.
-    recoverable: HashMap<PathBuf, usize>,
+    /// Unsaved changes from a crash and missing media, per project.
+    notes: HashMap<PathBuf, cards::Notes>,
     thumbnails: crate::thumbnails::Thumbnails,
     recovery: Option<RecoveryDialog>,
     /// Shown once after a version failed to start and the previous one came back.
@@ -174,7 +175,7 @@ impl Browser {
             selected: None,
             status: String::new(),
             refresh: None,
-            recoverable: HashMap::new(),
+            notes: HashMap::new(),
             thumbnails: Default::default(),
             recovery: None,
             rollback: None,
@@ -267,14 +268,17 @@ impl Browser {
         self.refresh = Some(Task::spawn(ctx, move || {
             let index = Index::open(&file)?;
             index.refresh()?;
-            // Only projects with a journal are read further, so this stays quick.
+            // Only each file's short summary and journal are read, so this stays quick.
             Ok(index
                 .projects()?
                 .into_iter()
                 .filter(|p| p.issue.is_none())
-                .filter_map(|p| match recovery::unsaved_changes(&p.path) {
-                    0 => None,
-                    n => Some((p.path, n)),
+                .filter_map(|p| {
+                    let notes = cards::Notes {
+                        unsaved: recovery::unsaved_changes(&p.path),
+                        missing_media: missing_media(&p.path),
+                    };
+                    (notes != cards::Notes::default()).then_some((p.path, notes))
                 })
                 .collect())
         }));
@@ -344,7 +348,7 @@ impl Browser {
                 Poll::Done(result) => {
                     self.refresh = None;
                     match result {
-                        Ok(recoverable) => self.recoverable = recoverable,
+                        Ok(notes) => self.notes = notes,
                         Err(err) => self.errors.push(&err),
                     }
                     self.reload();
@@ -803,7 +807,7 @@ impl Browser {
             &shown,
             self.selected.as_deref(),
             &self.folders,
-            &self.recoverable,
+            &self.notes,
             &mut self.thumbnails,
             project_index::now(),
         );
@@ -1244,4 +1248,12 @@ fn save_png(image: &egui::ColorImage, path: &Path) -> Result<(), String> {
     let bytes: Vec<u8> = image.pixels.iter().flat_map(|c| c.to_array()).collect();
     image::save_buffer(path, &bytes, w as u32, h as u32, image::ExtendedColorType::Rgba8)
         .map_err(|e| format!("The screenshot could not be saved: {e}"))
+}
+
+/// How many of the project's media files are not where it says.
+fn missing_media(project: &Path) -> usize {
+    match project::file::read_summary(project) {
+        Ok(Some(summary)) => summary.media.iter().filter(|m| !m.exists()).count(),
+        _ => 0,
+    }
 }

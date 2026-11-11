@@ -23,6 +23,7 @@ pub mod decode;
 mod ffi;
 pub mod fingerprint;
 pub mod probe;
+pub mod relink;
 pub mod timing;
 
 pub use audio::AudioDecoder;
