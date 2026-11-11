@@ -12,6 +12,8 @@ The Linux AppImage is paused for now: releases and betas are Windows only. The w
 
 Every push to `main` (except documentation-only changes) publishes a beta release with no manual step: version `<next patch>-beta.<run number>`, for example `0.1.1-beta.12` after `0.1.0`. Beta builds follow betas by themselves, so a copy installed from a beta picks up every merged feature on its next start. Stable copies only see betas when *Betas too* is chosen in the launcher's settings.
 
+Only the ten newest automatic betas stay on the releases page: after publishing, the workflow removes older ones and their tags (`packaging/prune-betas.sh`). Stable releases are never removed.
+
 ## When a version needs a newer launcher
 
 Raise `MIN_LAUNCHER_VERSION` in `crates/brand/src/lib.rs`. Installed copies with an older launcher then replace it as soon as they install that version, instead of waiting until it has started properly.

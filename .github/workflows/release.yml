@@ -177,3 +177,15 @@ jobs:
           # For a hand-started run or a beta the tag is created on this commit.
           gh release create "$RELEASE_TAG" $prerelease --target "${{ github.sha }}" \
             --title "$APP_NAME $APP_VERSION" "${notes[@]}" dist/*
+      # Only the newest automatic betas stay on the releases page (see the
+      # script for why). A pull request's run only says what would go.
+      - name: Remove old automatic betas
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          packaging/prune-betas.sh --self-test
+          if [ -n "$RELEASE_TAG" ]; then
+            packaging/prune-betas.sh "${{ github.repository }}" || echo "::warning::Old betas could not be removed."
+          else
+            packaging/prune-betas.sh "${{ github.repository }}" --dry-run || echo "::warning::Old betas could not be listed."
+          fi
