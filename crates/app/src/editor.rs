@@ -57,6 +57,9 @@ pub struct Editor {
     label_editor: Option<crate::label_editor::LabelEditor>,
     master: ui_kit::master::MasterColumn,
     versions: crate::versions_window::VersionsWindow,
+    shortcuts_page: Option<ui_kit::keyboard::ShortcutsPage>,
+    /// Commands asked for on the command line, run on the first frames.
+    startup_actions: Vec<Action>,
     /// The viewer fills the screen (F; Escape returns).
     full_screen: bool,
     /// Tell the window about a full-screen change on the next frame.
@@ -117,6 +120,25 @@ impl Editor {
         let play_when_ready = project.as_ref().is_some_and(|p| p.play);
         let drawer_open = project.as_ref().is_some_and(|p| p.media_drawer);
         let full_screen = project.as_ref().is_some_and(|p| p.full_screen);
+        let shortcuts = ShortcutTable::default();
+        let startup_actions: Vec<Action> = project
+            .as_ref()
+            .map(|p| {
+                p.actions
+                    .iter()
+                    .filter_map(|name| {
+                        let found = shortcuts
+                            .bindings()
+                            .iter()
+                            .find(|(a, _)| format!("{a:?}") == *name);
+                        if found.is_none() {
+                            tracing::warn!("--action {name}: no such command");
+                        }
+                        found.map(|(a, _)| *a)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         let document = project.and_then(|p| match open_or_create(&p.path, p.recovery) {
             Ok(doc) => {
                 if doc.is_read_only() {
@@ -165,6 +187,8 @@ impl Editor {
             label_editor: None,
             master: ui_kit::master::MasterColumn::default(),
             versions: crate::versions_window::VersionsWindow::default(),
+            shortcuts_page: None,
+            startup_actions,
             full_screen,
             full_screen_changed: full_screen,
             save_frame_requested: false,
@@ -263,6 +287,10 @@ impl Editor {
                 self.versions.open = true;
                 self.versions.show_again();
             }),
+            Action::KeyboardShortcuts => {
+                self.shortcuts_page.get_or_insert_with(Default::default);
+                Ok(())
+            }
             Action::RoughCut => {
                 self.settings.rough_cut = !self.settings.rough_cut;
                 self.timeline.rough_cut = self.settings.rough_cut;
@@ -906,6 +934,22 @@ impl Editor {
         }
     }
 
+    /// The keyboard shortcuts page, in its own window.
+    fn shortcuts_window(&mut self, ctx: &egui::Context) {
+        let Some(page) = self.shortcuts_page.as_mut() else {
+            return;
+        };
+        let mut open = true;
+        egui::Window::new("Keyboard shortcuts")
+            .open(&mut open)
+            .collapsible(false)
+            .default_size([820.0, 640.0])
+            .show(ctx, |ui| page.show(ui, &self.theme, &self.shortcuts));
+        if !open {
+            self.shortcuts_page = None;
+        }
+    }
+
     /// The Saved versions window, and what it asks for.
     fn versions_window(&mut self, ctx: &egui::Context) {
         use crate::versions_window::Asked;
@@ -1505,6 +1549,9 @@ impl Editor {
                 );
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
+                    if ui.button("Keyboard shortcuts…").clicked() {
+                        self.shortcuts_page.get_or_insert_with(Default::default);
+                    }
                     if ui.button("Diagnostics…").clicked() {
                         self.show_diagnostics = true;
                     }
@@ -1580,6 +1627,7 @@ impl Editor {
             }
             Some(Hit::Settings) => self.show_settings = true,
             Some(Hit::TimelineSettings) => self.show_timeline_settings = true,
+            Some(Hit::Shortcuts) => self.run_action(Action::KeyboardShortcuts),
             None => {}
         }
     }
@@ -1695,6 +1743,11 @@ impl eframe::App for Editor {
         }
         let idle = now.duration_since(self.last_input) > IDLE_AFTER;
         self.jobs.set_idle(idle);
+        if self.frames == 2 {
+            for action in std::mem::take(&mut self.startup_actions) {
+                self.run_action(action);
+            }
+        }
         for action in self.shortcuts.pressed(&ctx) {
             self.run_action(action);
         }
@@ -1743,6 +1796,7 @@ impl eframe::App for Editor {
         self.silence_window(&ctx);
         self.label_window(&ctx);
         self.versions_window(&ctx);
+        self.shortcuts_window(&ctx);
         let mut diagnostics = self.show_diagnostics;
         self.errors
             .diagnostics_window(&ctx, &mut diagnostics, &self.theme);
@@ -1834,6 +1888,8 @@ pub struct ProjectToOpen {
     pub media_drawer: bool,
     /// Start with the viewer full screen.
     pub full_screen: bool,
+    /// Commands to run once open, by name.
+    pub actions: Vec<String>,
 }
 
 /// Opens a project, or creates it if it doesn't exist.
