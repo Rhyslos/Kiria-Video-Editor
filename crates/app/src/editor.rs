@@ -334,6 +334,13 @@ impl Editor {
                 self.fitted = false;
                 Ok(())
             }
+            Action::ZoomIn | Action::ZoomOut => {
+                self.timeline.step(match action {
+                    Action::ZoomIn => ui_kit::ViewStep::ZoomIn,
+                    _ => ui_kit::ViewStep::ZoomOut,
+                });
+                Ok(())
+            }
             Action::SelectTool => {
                 self.timeline.tool = ui_kit::Tool::Select;
                 Ok(())

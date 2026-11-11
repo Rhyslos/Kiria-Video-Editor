@@ -28,6 +28,8 @@ pub enum Action {
     Stop,
     ClearSelection,
     ZoomToFit,
+    ZoomIn,
+    ZoomOut,
     SelectTool,
     BladeTool,
     ToggleSnapping,
@@ -66,6 +68,8 @@ impl Action {
             Action::Stop => "Stop playing here",
             Action::ClearSelection => "Select nothing",
             Action::ZoomToFit => "Show the whole timeline",
+            Action::ZoomIn => "Zoom in on the timeline",
+            Action::ZoomOut => "Zoom out of the timeline",
             Action::SelectTool => "Select tool: pick, move and trim clips",
             Action::BladeTool => "Blade tool: cut clips where clicked",
             Action::ToggleSnapping => "Snapping on or off",
@@ -108,6 +112,13 @@ impl Shortcut {
     pub const fn ctrl(key: Key) -> Shortcut {
         Shortcut {
             ctrl: true,
+            ..Shortcut::key(key)
+        }
+    }
+
+    pub const fn shift(key: Key) -> Shortcut {
+        Shortcut {
+            shift: true,
             ..Shortcut::key(key)
         }
     }
@@ -171,6 +182,10 @@ impl Default for ShortcutTable {
                 (Action::GoToEnd, Shortcut::key(Key::End)),
                 (Action::ClearSelection, Shortcut::key(Key::Escape)),
                 (Action::ZoomToFit, Shortcut::key(Key::Backslash)),
+                // The key with = and +, with or without Shift, and the one beside it.
+                (Action::ZoomIn, Shortcut::key(Key::Equals)),
+                (Action::ZoomIn, Shortcut::shift(Key::Equals)),
+                (Action::ZoomOut, Shortcut::key(Key::Minus)),
                 (Action::SelectTool, Shortcut::key(Key::V)),
                 (Action::BladeTool, Shortcut::key(Key::B)),
                 (Action::ToggleSnapping, Shortcut::key(Key::N)),
@@ -268,6 +283,20 @@ mod tests {
             table.actions_for(Key::Z, Modifiers::COMMAND).next(),
             Some(Action::Undo)
         );
+    }
+
+    #[test]
+    fn the_timeline_zooms_from_the_keys_beside_backspace() {
+        let table = ShortcutTable::default();
+        let first = |key, modifiers| table.actions_for(key, modifiers).next();
+        assert_eq!(first(Key::Equals, Modifiers::NONE), Some(Action::ZoomIn));
+        assert_eq!(
+            first(Key::Equals, Modifiers::SHIFT),
+            Some(Action::ZoomIn),
+            "+ is Shift and = on many keyboards"
+        );
+        assert_eq!(first(Key::Minus, Modifiers::NONE), Some(Action::ZoomOut));
+        assert_eq!(first(Key::Backslash, Modifiers::NONE), Some(Action::ZoomToFit));
     }
 
     #[test]
