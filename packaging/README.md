@@ -10,6 +10,7 @@ Everything that turns a build into something people install. The release workflo
 | `windows/installer.iss` | Inno Setup script for `<name>-Setup-<version>.exe`: per-user install, Start menu and optional desktop shortcut to the launcher, clean uninstall |
 | `linux/build-appimage.sh` | Builds `<name>-<version>-linux-x86_64.AppImage` with the launcher, editor, FFmpeg and licences |
 | `release-env.sh` | Works out the version and release tag of a workflow run: a tag, a typed tag, an automatic beta for a push to `main`, or a deliberately broken rollback-test beta (`crash_test`) |
+| `windows/update-drill.ps1` | The update drill: installs the previous release on the workflow's clean machine and lets it update to the new build by itself, before publishing (from files served on the runner) and after (from GitHub). Refuses to run anywhere else: it empties the app's data folder |
 | `prune-betas.sh` | Removes all but the ten newest automatic betas (and their tags) from the releases page, after each release is published; `--dry-run` lists them, `--self-test` checks the choice |
 | `linux/AppRun` | The AppImage's entry point: the launcher with the bundled libraries on the library path |
 

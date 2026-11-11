@@ -75,6 +75,7 @@ Preferences are read from `<data folder>/updates.ron` (defaults: automatic, Stab
 | `src/recovery.rs` | Unsaved work left by a crash: reads the editor's session marker and project journals |
 | `src/prefs.rs` | `LauncherPrefs` in `launcher.ron`: the folder new projects are saved in |
 | `src/run_mode.rs` | Command-line options |
+| `src/drill.rs` | `--update-step <report file>`: one start's worth of updating without a window (install what is waiting, look for a newer version and download it, start the editor and wait for it to work), then a `key=value` report. The release workflow's update drill is made of these |
 
 ## Trying it without installing
 

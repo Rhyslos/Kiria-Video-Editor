@@ -81,4 +81,5 @@ Building needs libclang (for the FFmpeg bindings); on Windows set `LIBCLANG_PATH
 - FFmpeg is linked dynamically and its licence text ships with the app.
 - Every program calls `diag::start(brand::VERSION)` first and `finish()` on a clean exit (logging, crash reports, crash detection).
 - Releases are tagged `vX.Y.Z` (pushed, or typed into "Run workflow"); the release workflow builds, tests, signs and publishes. Pushes to `main` publish automatic betas (`brand::VERSION` comes from `BUILD_VERSION` then). Updates are trusted only with a valid signature from the `RELEASE_SIGNING_KEY` secret.
+- A release is only published after an installed copy of the previous one has updated to it by itself in the release workflow (the update drill, `RELEASING.md`). Anything that changes how updates are found, fetched, installed or started is covered by it; keep `launcher --update-step` working.
 - Licence: GPL-3.0-or-later (`LICENSE`). Dependencies must have GPL-compatible licences; `deny.toml` checks this in CI. Never copy code whose licence is incompatible.

@@ -10,7 +10,7 @@ Phase 1 done: checking GitHub, verifying the signed manifest, resumable verified
 
 | File | What it holds |
 |---|---|
-| `src/release.rs` | `check()`: asks GitHub for releases (3-second limit) and picks the newest for the channel (a beta build always follows betas); `decide()` is the testable part. Tags must look like `v1.2.3`; anything else (drafts, `deps-…`) is ignored |
+| `src/release.rs` | `check()`: asks GitHub for releases (3-second limit) and picks the newest for the channel (a beta build always follows betas); `decide()` is the testable part. It reads every page of the list, because GitHub does not list the newest first. `feed_variable()` names the environment variable that gives another address for the list, for the release workflow's update drill; a signed manifest is still required for anything to be installed. `token_variable()` names the one for a GitHub token, which the drill needs on shared runners. Tags must look like `v1.2.3`; anything else (drafts, `deps-…`) is ignored |
 | `src/manifest.rs` | `Manifest` (version, channel, every file's size and SHA-256), `verify_and_parse()` against `RELEASE_PUBLIC_KEY`, and `sign()` for the release workflow |
 | `src/download.rs` | `Progress` (bytes done and total, readable from the interface thread while a download runs) and `download()`: resumes a `.part` file, verifies size and checksum, only then renames it into place |
 | `src/fetch.rs` | `fetch()`: manifest and signature first, then the package for this platform. Both are kept in the download folder so they can be checked again before installing |
