@@ -21,6 +21,7 @@ mod run_mode;
 mod search;
 mod settings;
 mod silence_panel;
+mod slow_pictures;
 mod timeline_panel;
 mod versions_window;
 mod video_picture;

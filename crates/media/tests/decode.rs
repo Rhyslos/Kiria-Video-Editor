@@ -219,7 +219,13 @@ fn a_decode_nobody_can_use_any_more_is_given_up() {
     // Or a moment behind where the decode has got to.
     let mut d = open("game-3-audio.mkv", 0);
     d.frame_at(1.0, 160, 160).unwrap();
-    let mut newer = then(10, Newer::At(0.5));
+    let mut newer = then(
+        10,
+        Newer::At {
+            moment: 0.5,
+            give_up: true,
+        },
+    );
     let reached = d.frame_at_while(1.8, 160, 160, &mut newer).unwrap();
     assert!(shown_at(reached).is_none());
     // The decoder is none the worse: it gives the right frame afterwards.
@@ -230,10 +236,77 @@ fn a_decode_nobody_can_use_any_more_is_given_up() {
 }
 
 #[test]
+fn a_decode_that_may_not_be_given_up_is_finished() {
+    let mut d = open("game-3-audio.mkv", 0);
+    d.frame_at(1.0, 160, 160).unwrap();
+    // 0.5 s is behind where the decode is, but it has to be finished first.
+    let mut newer = then(
+        10,
+        Newer::At {
+            moment: 0.5,
+            give_up: false,
+        },
+    );
+    let reached = d.frame_at_while(1.8, 160, 160, &mut newer).unwrap();
+    let (at, time) = shown_at(reached).unwrap();
+    assert_eq!(at, 1.8);
+    assert!((time - 1.8).abs() < 0.02, "{time}");
+}
+
+#[test]
+fn where_the_time_went_is_kept() {
+    let mut d = open("game-3-audio.mkv", 0);
+    d.frame_at(1.5, 160, 160).unwrap();
+    let work = d.last_work();
+    assert!(!work.jumped, "from the start of the file it decodes on");
+    assert!((90..=92).contains(&work.frames), "{work:?}");
+    assert!(work.first_frame.is_some_and(|first| first <= work.decoding));
+    d.frame_at(0.2, 160, 160).unwrap();
+    let back = d.last_work();
+    assert!(back.jumped && back.jump <= back.decoding, "{back:?}");
+    assert!((13..=14).contains(&back.frames), "{back:?}");
+}
+
+/// Recordings that count in milliseconds store 60 frames a second at 0,
+/// 17, 33, 50, 67, 83 ms: two of every six a little late. Each is still the
+/// frame for its own sixtieth of a second, forwards and backwards.
+#[test]
+fn every_step_of_a_sixtieth_shows_the_next_frame() {
+    let mut d = open("game-3-audio.mkv", 0);
+    let mut times = Vec::new();
+    for step in 0..60 {
+        times.push(d.frame_at(f64::from(step) / 60.0, 160, 160).unwrap().time);
+    }
+    for (step, pair) in times.windows(2).enumerate() {
+        assert!(
+            pair[1] > pair[0],
+            "step {} shows a new frame: {:?}",
+            step + 1,
+            pair
+        );
+        assert!(
+            (pair[1] - pair[0] - 1.0 / 60.0).abs() < 0.0015,
+            "one frame on: {pair:?}"
+        );
+    }
+    // Backwards onto each of them, the same frames.
+    for step in (0..60).rev() {
+        let back = d.frame_at(f64::from(step) / 60.0, 160, 160).unwrap().time;
+        assert_eq!(back, times[step as usize], "step {step}");
+    }
+}
+
+#[test]
 fn an_earlier_moment_still_ahead_stops_the_decode_there() {
     let mut d = open("game-3-audio.mkv", 0);
     // On the way to 1.8 s, with 20 frames (a third of a second) decoded, 0.9 s is wanted.
-    let mut newer = then(20, Newer::At(0.9));
+    let mut newer = then(
+        20,
+        Newer::At {
+            moment: 0.9,
+            give_up: true,
+        },
+    );
     let reached = d.frame_at_while(1.8, 160, 160, &mut newer).unwrap();
     let (at, time) = shown_at(reached).unwrap();
     assert_eq!(at, 0.9);
@@ -245,7 +318,13 @@ fn an_earlier_moment_still_ahead_stops_the_decode_there() {
 #[test]
 fn a_later_moment_on_the_way_does_not_stop_the_one_before_it() {
     let mut d = open("game-3-audio.mkv", 0);
-    let mut newer = then(20, Newer::At(1.9));
+    let mut newer = then(
+        20,
+        Newer::At {
+            moment: 1.9,
+            give_up: true,
+        },
+    );
     let reached = d.frame_at_while(1.2, 160, 160, &mut newer).unwrap();
     let (at, time) = shown_at(reached).unwrap();
     assert_eq!(at, 1.2);

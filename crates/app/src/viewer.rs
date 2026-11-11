@@ -55,6 +55,8 @@ pub struct Viewer {
     drawn: Drawn,
     shown: Option<Shown>,
     note: String,
+    /// The last few pictures that took long, for Diagnostics.
+    slow: crate::slow_pictures::SlowPictures,
     pub playhead: Time,
     /// What was last asked for, so the same request isn't sent every frame.
     requested: Option<(Project, Time, (u32, u32))>,
@@ -85,6 +87,7 @@ impl Viewer {
             drawn: Drawn::No,
             shown: None,
             note: String::new(),
+            slow: crate::slow_pictures::SlowPictures::default(),
             playhead: start_at
                 .and_then(|s| Time::from_ratio((s * 1000.0) as i64, 1000))
                 .unwrap_or(Time::ZERO),
@@ -117,6 +120,13 @@ impl Viewer {
         self.count_drawn();
         let picture = self.preview.latest()?;
         self.answered = Some(picture.at);
+        if picture.frame.is_some() {
+            self.slow.note(
+                picture.took,
+                picture.method.as_deref().unwrap_or_default(),
+                picture.work,
+            );
+        }
         // Drop resolution before dropping frames: on Auto, an RGBA picture
         // that took longer than a frame lowers the next ones. Planes cost
         // the same at any size, so lowering them would only blur: they
@@ -202,6 +212,12 @@ impl Viewer {
             }
         }
         problem
+    }
+
+    /// The pictures that took long lately, in words, if there are new ones
+    /// since this was last asked: a line for Diagnostics.
+    pub fn slow_pictures(&mut self) -> Option<String> {
+        self.slow.take_changed()
     }
 
     /// The window is closing: the worker finishes the picture it is on and

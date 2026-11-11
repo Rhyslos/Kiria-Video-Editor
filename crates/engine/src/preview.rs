@@ -7,10 +7,12 @@
 //!
 //! Getting to a moment in a file can mean decoding a hundred frames from the
 //! key frame before it. A request that arrives meanwhile is looked at between
-//! frames ([`Waiting`]): a decode the newer request can't use is given up at
-//! once, so a jump that has been overtaken never holds up the next one; a
-//! decode that is on the way to it carries on, and the pictures it passes
-//! are shown. Not every request gets an answer, but the newest always does.
+//! frames ([`Waiting`]): a decode the newer request can't use is given up,
+//! so a click does not wait for the jump before it; a decode that is on
+//! the way to it carries on, and the pictures it passes are shown. The
+//! decode started after one was given up is always finished, so however
+//! fast requests come (dragging the playhead), pictures keep coming too.
+//! Not every request gets an answer, but the newest always does.
 //!
 //! Decoders are kept open for the files used most recently, so moving around
 //! one recording only seeks.
@@ -27,7 +29,7 @@
 //! the last way's failure does.
 
 use crate::timeline::video_at;
-use media::{Decoded, Decoding, Level, Newer, Reached, VideoDecoder, WindowDevice};
+use media::{Decoded, Decoding, Level, Newer, Reached, VideoDecoder, WindowDevice, Work};
 use project::{MediaId, Project, SequenceId, Time};
 use std::collections::{HashSet, VecDeque};
 use std::path::Path;
@@ -105,6 +107,8 @@ pub struct Picture {
     pub error: Option<diag::AppError>,
     /// How long decoding took, with copying the planes out or converting to RGBA.
     pub took: Duration,
+    /// Where the decoder's part of that went, when a picture was decoded.
+    pub work: Option<Work>,
     /// Which decoder made it, for the viewer's corner.
     pub method: Option<String>,
 }
@@ -148,6 +152,7 @@ impl Preview {
             on_device,
             decoders: VecDeque::new(),
             off_device: HashSet::new(),
+            gave_up_last: false,
         };
         let (running, ended) = channel::<()>();
         let spawned = std::thread::Builder::new().name("preview".into()).spawn(move || {
@@ -292,6 +297,8 @@ struct Worker {
     /// Files the window's device failed for: not tried there again in this
     /// session, also once their decoder has been closed to make room.
     off_device: HashSet<(MediaId, u32)>,
+    /// The last decode was given up for a newer request: the next one is finished.
+    gave_up_last: bool,
 }
 
 impl Worker {
@@ -305,8 +312,11 @@ impl Worker {
             frame: None,
             error: None,
             took: Duration::ZERO,
+            work: None,
             method: None,
         };
+        // Whatever is answered without decoding counts as a finished answer.
+        let gave_up_last = std::mem::take(&mut self.gave_up_last);
         let Some(sequence) = r.project.sequences.iter().find(|s| s.id == r.sequence) else {
             return Some(out);
         };
@@ -337,6 +347,10 @@ impl Worker {
         // name the picture if the decode stops at one of them.
         let mut asked_meanwhile: Vec<(f64, Time)> = Vec::new();
         let mut now_wanted = Newer::Nothing;
+        // A decode that follows one that was given up is finished, whatever
+        // arrives: requests that keep coming must not keep pictures from
+        // coming.
+        let give_up = !gave_up_last;
         let mut newer = || {
             if waiting.take_in()
                 && let Some(next) = &waiting.newest
@@ -344,9 +358,10 @@ impl Worker {
                 now_wanted = match source_of(next) {
                     Some((k, moment)) if k == key => {
                         asked_meanwhile.push((moment, next.at));
-                        Newer::At(moment)
+                        Newer::At { moment, give_up }
                     }
-                    _ => Newer::Elsewhere,
+                    _ if give_up => Newer::Elsewhere,
+                    _ => Newer::Nothing,
                 };
             }
             if waiting.closed {
@@ -402,9 +417,11 @@ impl Worker {
             }
         }
         out.method = Some(decoder.method.clone());
+        out.work = Some(decoder.last_work());
         // Most recently used first.
         self.decoders.push_front((key, decoder));
         self.decoders.truncate(OPEN_DECODERS);
+        self.gave_up_last = dropped;
         if dropped {
             return None;
         }
@@ -700,6 +717,7 @@ mod tests {
             on_device: None,
             decoders: VecDeque::new(),
             off_device: HashSet::new(),
+            gave_up_last: false,
         };
         assert_eq!(worker.ladder_for(failed), [Device, Hardware, Software]);
         worker.off_device.insert(failed);
@@ -740,6 +758,7 @@ mod tests {
             on_device: None,
             decoders: VecDeque::new(),
             off_device: HashSet::new(),
+            gave_up_last: false,
         };
         (worker, p, seq)
     }
@@ -786,6 +805,31 @@ mod tests {
         assert_eq!(Some(next.at), Time::from_ratio(30_000, 1000));
         let gap = worker.picture(&next, &mut waiting).unwrap();
         assert!(gap.frame.is_none() && gap.error.is_none());
+    }
+
+    #[test]
+    fn the_decode_after_one_given_up_is_finished_whatever_arrives() {
+        let (mut worker, p, seq) = worker_and_project();
+        let (requests, inbox) = channel::<Request>();
+        let mut waiting = Waiting::new(&inbox);
+        let elsewhere = 30_000; // after the clip's end
+        worker.picture(&request(&p, seq, 1900), &mut waiting).unwrap();
+        // A jump back, overtaken by a request this decode can't serve: given up.
+        requests.send(request(&p, seq, elsewhere)).unwrap();
+        assert!(worker.picture(&request(&p, seq, 500), &mut waiting).is_none());
+        // The next decode is finished, though it is overtaken the same way.
+        requests.send(request(&p, seq, elsewhere + 1)).unwrap();
+        let picture = worker.picture(&request(&p, seq, 1000), &mut waiting).unwrap();
+        assert_eq!(Some(picture.at), Time::from_ratio(1000, 1000));
+        assert!(picture.frame.is_some());
+        assert!(
+            picture.work.is_some_and(|work| work.frames > 30),
+            "{:?}",
+            picture.work
+        );
+        // After a finished one, giving up is allowed again.
+        requests.send(request(&p, seq, elsewhere + 2)).unwrap();
+        assert!(worker.picture(&request(&p, seq, 300), &mut waiting).is_none());
     }
 
     #[test]

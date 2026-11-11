@@ -310,6 +310,14 @@ This takes the worst waits out (today a stale decode holds the worker for a whol
 
 A second click now always costs one jump, never the rest of the first one as well. Left out: checking the container's list against the packets (the list is used as it is, with a fixed distance as the rule where it has holes), and stopping at the target instead of one frame after it, which needs each frame's length and gains one frame per jump.
 
+*On the test machine the first version of this did not help, and dragging got worse* (11 November 2026). Three corrections followed:
+
+- It gave up a decode for every newer request it could not serve. While the playhead is dragged such requests never stop coming, so no decode was ever finished and the picture froze until the pointer rested. Now the decode started after one was given up is always finished: a second click still does not wait for the first, and a steady stream of requests gets pictures as often as it did before.
+- It jumped to any key frame on the way, however near. A jump is not free (the decoder is emptied, the file read elsewhere), and on a GPU decoder it may cost more than the frames it saves. Now a jump ahead has to save at least a second of decoding.
+- The time in the viewer's corner is one picture's own decoding time, so the 500 to 800 ms seen there were never two jumps in a row: something inside one jump is slow on that machine that is not slow here. To find it, the decoder now keeps where each picture's time went (`media::Work`: the jump itself, the first frame out, the frames after it) and Diagnostics lists the last pictures that took more than 50 ms ("Pictures that took long").
+
+The same test found that stepping with the arrow keys showed some frames a step late. Recordings that count time in milliseconds store 60 frames a second at 0, 17, 33, 50, 67, 83 ms; the frame stored at 17 was not taken for the frame on screen at 16.667 ms, so two of every six needed a second press, and stepping back onto one cost a whole jump and showed the frame before it. A frame's stored time is now allowed to be half a step of the stream's clock off (`VideoDecoder`'s `tick`).
+
 **2. B: frames in memory.** This is the build plan's "RAM frame cache ahead of the playhead in the play direction".
 
 - YUV 4:2:0 at the size the viewer asks for, found by file, stream, size and timestamp. A frame lasts until the next frame's timestamp, so variable frame rates need nothing special.

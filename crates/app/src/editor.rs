@@ -1895,6 +1895,9 @@ impl eframe::App for Editor {
         {
             self.errors.push(&err);
         }
+        if let Some(slow) = self.viewer.slow_pictures() {
+            self.errors.set_fact(crate::slow_pictures::FACT, slow);
+        }
         self.autosave(now, idle);
         if let Some(keeper) = &mut self.view_keeper {
             keeper.tick(now, &self.timeline, &self.jobs);
