@@ -93,7 +93,11 @@ impl Writer {
     /// Starts the file at `path` (replacing one that is there), with sound
     /// when `audio` is given.
     pub fn create(path: &Path, video: &VideoSettings, audio: Option<&AudioSettings>) -> diag::Result<Writer> {
-        if video.width == 0 || video.height == 0 || video.width % 2 != 0 || video.height % 2 != 0 {
+        if video.width == 0
+            || video.height == 0
+            || !video.width.is_multiple_of(2)
+            || !video.height.is_multiple_of(2)
+        {
             return Err(cannot(format!(
                 "A picture of {}×{} can't be encoded: both sides must be even.",
                 video.width, video.height

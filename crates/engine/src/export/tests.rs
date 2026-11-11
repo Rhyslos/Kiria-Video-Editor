@@ -101,6 +101,25 @@ fn a_stretch_of_the_timeline_becomes_a_file_that_matches_it() {
         .collect();
     assert_eq!(beside, vec![std::ffi::OsString::from("out.mp4")]);
 
+    // Its sound is the timeline's: the same loudness as the mix of that second.
+    let mut mixed = vec![0.0f32; 48_000];
+    let (project, _) = recording();
+    Mixer::new(settings_of.sample_rate).mix(&project, project.active().unwrap(), 1.25, &mut mixed);
+    let mut heard = vec![0.0f32; 48_000];
+    let mut sound =
+        media::AudioDecoder::open(&path, made.info.audio[0].index, settings_of.sample_rate).unwrap();
+    sound.seek(0.25);
+    assert_eq!(
+        sound.read(&mut heard),
+        heard.len() / 2,
+        "half a second, both channels"
+    );
+    let loudness =
+        |samples: &[f32]| (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt();
+    let (was, is) = (loudness(&mixed), loudness(&heard));
+    assert!(was > 0.001, "the recording has sound there ({was})");
+    assert!((is / was - 1.0).abs() < 0.25, "mixed {was}, exported {is}");
+
     // Its pictures are the timeline's: not black.
     let mut decoder = media::VideoDecoder::open(&path, video.index, 0, Decoding::Software).unwrap();
     let media::Decoded::Yuv(frame) = decoder.picture_at(0.5, video.width, video.height).unwrap() else {

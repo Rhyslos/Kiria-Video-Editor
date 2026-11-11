@@ -78,6 +78,8 @@ pub struct Editor {
     drawer: crate::media_drawer::MediaDrawer,
     /// The selected clip's settings, on the right of the Edit page.
     inspector: crate::inspector::Inspector,
+    /// The Export page: what to export, and the export under way.
+    export_page: crate::export_page::ExportPage,
     frame_grab: crate::frame_grab::FrameGrab,
     silence: crate::silence_panel::SilencePanel,
     label_editor: Option<crate::label_editor::LabelEditor>,
@@ -156,6 +158,11 @@ impl Editor {
         let start_at = project.as_ref().and_then(|p| p.playhead);
         let play_when_ready = project.as_ref().is_some_and(|p| p.play);
         let drawer_open = project.as_ref().is_some_and(|p| p.media_drawer);
+        let start_page = if project.as_ref().is_some_and(|p| p.export_page) {
+            Page::Export
+        } else {
+            Page::default()
+        };
         let full_screen = project.as_ref().is_some_and(|p| p.full_screen);
         let hold_reading = project.as_ref().and_then(|p| p.hold_reading);
         let convert = crate::video_picture::conversion(
@@ -216,7 +223,7 @@ impl Editor {
             settings,
             data_dir,
             graphics,
-            page: Page::default(),
+            page: start_page,
             shortcuts,
             errors,
             jobs,
@@ -261,6 +268,7 @@ impl Editor {
                 ..Default::default()
             },
             inspector: crate::inspector::Inspector::default(),
+            export_page: crate::export_page::ExportPage::default(),
             play_when_ready,
             show_timeline_settings: false,
             show_settings: false,
@@ -1086,6 +1094,9 @@ impl Editor {
                     .start(ctx, &self.shortcuts, self.settings.keyboard_layout);
             }
         }
+        if let Some(err) = self.export_page.poll() {
+            self.errors.push(&err);
+        }
         match self.cheat_sheet.poll(&self.jobs, ctx) {
             Some(crate::cheat_sheet::Saved::Done(path)) => {
                 self.status = format!(
@@ -1345,6 +1356,20 @@ impl Editor {
         }
         if self.page == Page::Edit && self.document.is_some() {
             self.edit_page(ui);
+            return;
+        }
+        if self.page == Page::Export
+            && let Some(document) = &self.document
+        {
+            let viewer = &self.viewer;
+            let problem = self
+                .export_page
+                .ui(ui, &self.theme, document.project(), document.path(), || {
+                    viewer.export_devices()
+                });
+            if let Some(err) = problem {
+                self.errors.push(&err);
+            }
             return;
         }
         let (title, coming) = match self.page {
@@ -2073,6 +2098,9 @@ impl eframe::App for Editor {
         // sound card's, a decoder's or the graphics driver's code when the
         // window's graphics go away and the program ends.
         self.playback = None;
+        // An export under way is given up: its worker decodes and draws on
+        // the window's graphics device too.
+        self.export_page.stop();
         self.viewer.close();
         if !engine::playback::wait_until_quiet(AUDIO_ENDS_WITHIN) {
             tracing::warn!("the sound did not stop before the window closed");
@@ -2159,6 +2187,8 @@ pub struct ProjectToOpen {
     pub play: bool,
     /// Start with the media drawer open.
     pub media_drawer: bool,
+    /// Start on the Export page.
+    pub export_page: bool,
     /// Start with the viewer full screen.
     pub full_screen: bool,
     /// Commands to run once open, by name.

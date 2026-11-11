@@ -275,6 +275,24 @@ impl Viewer {
         problem
     }
 
+    /// What an export needs to decode and put pictures together the way
+    /// this viewer does. `None` when the window isn't drawn on a graphics
+    /// card (or converts colour on the CPU): there is nowhere to put the
+    /// timeline's picture together then.
+    pub fn export_devices(&self) -> Option<engine::export::Devices> {
+        let (device, queue) = self.renderer.as_ref()?;
+        Some(engine::export::Devices {
+            decoding: Decoding::Best,
+            convert: self.convert,
+            on_device: self.decoding.as_ref().map(WindowDecoding::for_worker),
+            composing: Composing {
+                device: device.clone(),
+                queue: queue.clone(),
+                wrap: self.decoding.as_ref().map(WindowDecoding::wrap),
+            },
+        })
+    }
+
     /// The pictures that took long lately, in words, if there are new ones
     /// since this was last asked: a line for Diagnostics.
     pub fn slow_pictures(&mut self) -> Option<String> {

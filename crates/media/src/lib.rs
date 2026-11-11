@@ -8,6 +8,7 @@
 //! - [`timing`]: constant or variable frame rate, and the nearest standard rate.
 //! - [`audio`]: sound as stereo float samples at any rate, from any point.
 //! - [`decode`]: the picture at any moment of a video, scaled and upright.
+//! - [`encode`]: writing a video file: H.264 pictures and AAC sound in an MP4.
 //! - [`yuv`]: that picture as the decoder's own planes, for the GPU to convert.
 //! - [`vulkan`]: decoding on the window's own graphics device, where the
 //!   picture never leaves the graphics card.

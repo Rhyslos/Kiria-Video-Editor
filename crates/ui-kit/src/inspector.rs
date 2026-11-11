@@ -166,11 +166,7 @@ pub fn slider(ui: &mut Ui, theme: &Theme, label: &str, value: &mut f64, how: Num
 fn row(ui: &mut Ui, theme: &Theme, label: &str, values: impl FnOnce(&mut Ui) -> Touched) -> Touched {
     ui.horizontal(|ui| {
         ui.set_min_height(24.0);
-        ui.allocate_ui_with_layout(
-            egui::vec2(LABEL_WIDTH, 20.0),
-            Layout::left_to_right(Align::Center),
-            |ui| ui.label(RichText::new(label).color(theme.text_secondary)),
-        );
+        label_cell(ui, theme, label, LABEL_WIDTH);
         values(ui)
     })
     .inner
@@ -196,6 +192,19 @@ fn touched(response: &egui::Response, value: &mut f64, before: f64, how: Number)
         changed: *value != before,
         busy: response.dragged() || response.has_focus(),
     }
+}
+
+/// A label in a cell of a fixed width, so what follows lines up from row
+/// to row whatever the labels say.
+pub fn label_cell(ui: &mut Ui, theme: &Theme, label: &str, width: f32) {
+    let (cell, _) = ui.allocate_exact_size(egui::vec2(width, 20.0), Sense::hover());
+    ui.painter().text(
+        cell.left_center(),
+        egui::Align2::LEFT_CENTER,
+        label,
+        egui::TextStyle::Body.resolve(ui.style()),
+        theme.text_secondary,
+    );
 }
 
 /// A line of quiet text: what a panel says when it has nothing to show.

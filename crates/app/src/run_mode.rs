@@ -17,6 +17,8 @@ pub struct Options {
     pub play: bool,
     /// Open the media drawer (`--media-drawer`, for screenshots).
     pub media_drawer: bool,
+    /// Start on the Export page (`--export-page`, for screenshots).
+    pub export_page: bool,
     /// Start with the viewer full screen (`--full-screen`, for screenshots).
     pub full_screen: bool,
     /// Commands to run once open, by name (`--action KeyboardShortcuts`, repeatable, for screenshots).
@@ -71,6 +73,7 @@ impl Options {
                 }
                 "--play" => options.play = true,
                 "--media-drawer" => options.media_drawer = true,
+                "--export-page" => options.export_page = true,
                 "--full-screen" => options.full_screen = true,
                 "--cpu-colour" => options.cpu_colour = true,
                 "--graphics-warning" => options.graphics_warning = true,
@@ -156,6 +159,7 @@ mod tests {
         assert_eq!(o.import, [PathBuf::from("a.mkv"), PathBuf::from("b.mp4")]);
         assert!(parse(&["--import"]).is_err());
         assert!(parse(&["p.x", "--cpu-colour"]).unwrap().cpu_colour);
+        assert!(parse(&["p.x", "--export-page"]).unwrap().export_page);
         assert!(!parse(&["p.x"]).unwrap().cpu_colour);
         assert_eq!(
             parse(&["p.x", "--hold-reading", "0.4"]).unwrap().hold_reading,

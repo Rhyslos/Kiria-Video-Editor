@@ -10,6 +10,7 @@ mod cheat_sheet;
 mod clip_pictures;
 mod device_decoding;
 mod editor;
+mod export_page;
 mod fake_pointer;
 mod frame_grab;
 mod import;
@@ -120,6 +121,7 @@ fn main() -> ExitCode {
         playhead: options.playhead,
         play: options.play,
         media_drawer: options.media_drawer,
+        export_page: options.export_page,
         full_screen: options.full_screen,
         actions: options.actions.clone(),
         cpu_colour: options.cpu_colour,
