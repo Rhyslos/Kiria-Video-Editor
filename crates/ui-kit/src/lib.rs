@@ -5,6 +5,7 @@
 //! table, the viewer, the transport, the timeline and the way errors are shown. Pages use these instead of drawing their own.
 
 pub mod dialog;
+pub mod drawer;
 pub mod errors;
 pub mod fonts;
 pub mod icon;

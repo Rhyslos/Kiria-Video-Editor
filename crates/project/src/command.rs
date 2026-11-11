@@ -22,6 +22,12 @@ pub enum Command {
     AddMedia {
         media: MediaRef,
     },
+    /// Places a file already in the project at the end of the timeline, as
+    /// [`Command::Import`] does.
+    PlaceMedia {
+        sequence: SequenceId,
+        media: MediaId,
+    },
     /// Points a media file at where it is now (it was moved or renamed).
     Relink {
         media: MediaId,
@@ -164,6 +170,7 @@ impl Command {
                 p.media.get_mut(media).ok_or_else(|| missing("media file"))?.path = path.clone();
             }
             Command::Import { sequence, media } => import(&mut p, *sequence, media)?,
+            Command::PlaceMedia { sequence, media } => place_media(&mut p, *sequence, *media)?,
             Command::AddTrack { sequence, kind, name } => {
                 let track = p.new_track(*kind, name);
                 let seq = sequence_mut(&mut p, *sequence)?;
@@ -413,6 +420,27 @@ fn trim(p: &mut Project, sequence: SequenceId, clip: ClipId, edge: Edge, to: Tim
 pub const STILL_LENGTH: Time = Time::seconds(5);
 
 fn import(p: &mut Project, sequence: SequenceId, media: &MediaRef) -> diag::Result<()> {
+    // An automatic timeline takes its settings from the first video imported.
+    if let Some(v) = &media.info.video
+        && media.kind == MediaKind::Video
+    {
+        let seq = sequence_mut(p, sequence)?;
+        if seq.automatic {
+            seq.settings = SequenceSettings::matching(v, &media.info.audio);
+            seq.automatic = false;
+        }
+    }
+    let id: MediaId = p.allocate_id();
+    p.media.insert(id, MediaRef { id, ..media.clone() });
+    place_media(p, sequence, id)
+}
+
+/// Places a file of the project at the end of the timeline: its picture on
+/// the first video track and each sound stream on its own audio track (made
+/// when missing, named after the stream), all linked.
+fn place_media(p: &mut Project, sequence: SequenceId, id: MediaId) -> diag::Result<()> {
+    let media = p.media.get(&id).cloned().ok_or_else(|| missing("media file"))?;
+    let media = &media;
     let length = match media.kind {
         MediaKind::Image => STILL_LENGTH,
         MediaKind::Video | MediaKind::Audio => media.duration,
@@ -437,20 +465,6 @@ fn import(p: &mut Project, sequence: SequenceId, media: &MediaRef) -> diag::Resu
             AppError::new("This file has nothing to place").why("No picture or sound was found in it.")
         );
     }
-
-    // An automatic timeline takes its settings from the first video imported.
-    if let Some(v) = video
-        && media.kind == MediaKind::Video
-    {
-        let seq = sequence_mut(p, sequence)?;
-        if seq.automatic {
-            seq.settings = SequenceSettings::matching(v, &media.info.audio);
-            seq.automatic = false;
-        }
-    }
-
-    let id: MediaId = p.allocate_id();
-    p.media.insert(id, MediaRef { id, ..media.clone() });
     let link: Option<LinkId> = (usize::from(video.is_some()) + audio.len() > 1).then(|| p.allocate_id());
     let at = sequence_ref(p, sequence)?.length();
     let clip = |p: &mut Project, stream: u32| Clip {
@@ -1354,5 +1368,26 @@ mod tests {
             (Time::seconds(28), Time::seconds(3), Time::seconds(5))
         );
         assert_eq!(gb.start, Time::seconds(28));
+    }
+
+    #[test]
+    fn placing_a_file_again_adds_it_at_the_end() {
+        let (p, seq) = imported();
+        let media = first_video(&p, 0).media;
+        let q = Command::PlaceMedia { sequence: seq, media }.apply(&p).unwrap();
+        let s = q.active().unwrap();
+        assert_eq!(q.media.len(), p.media.len(), "the same file, not a copy");
+        let last = s.video_tracks[0].clips.last().unwrap();
+        assert_eq!((last.start, last.media), (Time::seconds(40), media));
+        assert_eq!(
+            s.audio_tracks[1].clips.last().unwrap().start,
+            Time::seconds(40),
+            "with its sound"
+        );
+        let gone = Command::PlaceMedia {
+            sequence: seq,
+            media: MediaId(9_999),
+        };
+        assert!(gone.apply(&p).is_err());
     }
 }

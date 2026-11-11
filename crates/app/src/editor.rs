@@ -50,6 +50,7 @@ pub struct Editor {
     fitted: bool,
     waveforms: crate::waveforms::Waveforms,
     relink: crate::relink::Relinker,
+    drawer: crate::media_drawer::MediaDrawer,
     /// `--play`: start playing as soon as the imports are in.
     play_when_ready: bool,
     show_timeline_settings: bool,
@@ -102,6 +103,7 @@ impl Editor {
         let imports = project.as_ref().map(|p| p.import.clone()).unwrap_or_default();
         let start_at = project.as_ref().and_then(|p| p.playhead);
         let play_when_ready = project.as_ref().is_some_and(|p| p.play);
+        let drawer_open = project.as_ref().is_some_and(|p| p.media_drawer);
         let document = project.and_then(|p| match open_or_create(&p.path, p.recovery) {
             Ok(doc) => {
                 if doc.is_read_only() {
@@ -144,6 +146,10 @@ impl Editor {
             fitted: false,
             waveforms: crate::waveforms::Waveforms::default(),
             relink: crate::relink::Relinker::default(),
+            drawer: crate::media_drawer::MediaDrawer {
+                open: drawer_open,
+                ..Default::default()
+            },
             play_when_ready,
             show_timeline_settings: false,
             show_settings: false,
@@ -766,6 +772,43 @@ impl Editor {
         ));
     }
 
+    /// The tab on the left edge and the media drawer it opens.
+    fn drawer_panels(&mut self, ui: &mut egui::Ui) {
+        egui::Panel::left("edge-tab")
+            .exact_size(layout::EDGE_TAB_WIDTH)
+            .resizable(false)
+            .frame(egui::Frame::new())
+            .show(ui, |ui| {
+                if ui_kit::drawer::edge_tab(ui, &self.theme, "Media", self.drawer.open).clicked() {
+                    self.drawer.open = !self.drawer.open;
+                }
+            });
+        let mut picked = None;
+        let mut open = self.drawer.open;
+        egui::Panel::left("media-drawer")
+            .exact_size(layout::DRAWER_WIDTH)
+            .resizable(false)
+            .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(8, 4)))
+            .show_collapsible(ui, &mut open, |ui| {
+                if let Some(document) = &self.document {
+                    picked = self
+                        .drawer
+                        .ui(ui, &self.theme, document.project(), &self.relink.missing);
+                }
+            });
+        self.drawer.open = open;
+        if let Some(media) = picked {
+            let result = self.with_document(|d| {
+                let sequence = d.project().active_sequence;
+                d.apply(Command::PlaceMedia { sequence, media })
+            });
+            match result {
+                Ok(()) => self.fitted = false,
+                Err(err) => self.errors.push(&err),
+            }
+        }
+    }
+
     /// Notices media that moved, and points the project at files found again.
     fn relinking(&mut self, ctx: &egui::Context) {
         let Some(document) = self.document.as_mut() else {
@@ -889,6 +932,7 @@ impl Editor {
     /// The Edit page until the viewer and the timeline widget arrive: import,
     /// and a plain list of what is on the timeline.
     fn edit_page(&mut self, ui: &mut egui::Ui) {
+        self.drawer_panels(ui);
         let mut transport_click = None;
         let mut timeline_events = Vec::new();
         let mut toolbar_click = None;
@@ -1495,6 +1539,8 @@ pub struct ProjectToOpen {
     pub playhead: Option<f64>,
     /// Start playing once imports are done.
     pub play: bool,
+    /// Start with the media drawer open.
+    pub media_drawer: bool,
 }
 
 /// Opens a project, or creates it if it doesn't exist.
