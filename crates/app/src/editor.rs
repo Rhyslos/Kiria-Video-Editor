@@ -1950,6 +1950,15 @@ impl eframe::App for Editor {
     }
 
     fn on_exit(&mut self) {
+        // Playback and the viewer's decoding stop first and are waited for,
+        // briefly: closing while playing must not leave a thread inside the
+        // sound card's, a decoder's or the graphics driver's code when the
+        // window's graphics go away and the program ends.
+        self.playback = None;
+        self.viewer.close();
+        if !engine::playback::wait_until_quiet(AUDIO_ENDS_WITHIN) {
+            tracing::warn!("the sound did not stop before the window closed");
+        }
         // Background reading nobody will look at any more stops here, so
         // closing never waits for a long file.
         self.waveforms.stop();
@@ -1983,6 +1992,10 @@ impl eframe::App for Editor {
         }
     }
 }
+
+/// How long closing the app waits for the sound to let go of the sound
+/// card and its files.
+const AUDIO_ENDS_WITHIN: Duration = Duration::from_secs(2);
 
 /// Whether the launcher's picture of the project needs writing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
