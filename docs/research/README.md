@@ -12,3 +12,4 @@ Name each note after its system, for example `playback.md`, and give it these se
 - [decoding.md](decoding.md): getting video frames from files into GPU textures (4A).
 - [caching.md](caching.md): showing a frame within 50 ms while scrubbing and jumping (4A).
 - [timeline.md](timeline.md): the timeline widget (4B): painter with culling, measured.
+- [rendering.md](rendering.md): putting the timeline's picture together from its layers on the GPU (4C on). Prototypes written, to be measured.
