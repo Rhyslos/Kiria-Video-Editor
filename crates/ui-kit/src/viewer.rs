@@ -1,6 +1,7 @@
 //! The viewer: the picture of the timeline, the same on every page that shows one.
 
 use crate::Theme;
+use crate::video_picture::VideoPicture;
 use egui::{Align2, Color32, FontId, Rect, Sense, Ui, Vec2, pos2, vec2};
 use serde::{Deserialize, Serialize};
 
@@ -46,6 +47,38 @@ impl PreviewQuality {
     }
 }
 
+/// What the viewer shows.
+#[derive(Clone, Copy)]
+pub enum Picture<'a> {
+    /// An RGBA picture, already upright.
+    Texture(&'a egui::TextureHandle),
+    /// The decoder's YUV planes: the GPU converts and turns them while drawing.
+    Video(&'a VideoPicture),
+}
+
+impl std::fmt::Debug for Picture<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (kind, (w, h)) = match self {
+            Picture::Texture(_) => ("Texture", self.size()),
+            Picture::Video(_) => ("Video", self.size()),
+        };
+        write!(f, "Picture::{kind}({w}×{h})")
+    }
+}
+
+impl Picture<'_> {
+    /// The size on screen, upright.
+    fn size(&self) -> (u32, u32) {
+        match self {
+            Picture::Texture(texture) => {
+                let [w, h] = texture.size();
+                (w as u32, h as u32)
+            }
+            Picture::Video(video) => video.size(),
+        }
+    }
+}
+
 /// Where the picture goes: the largest rectangle of the timeline's shape
 /// inside `area`, centred.
 pub fn picture_rect(area: Rect, timeline: (u32, u32)) -> Rect {
@@ -66,7 +99,7 @@ pub fn viewer(
     theme: &Theme,
     size: Vec2,
     timeline: (u32, u32),
-    picture: Option<&egui::TextureHandle>,
+    picture: Option<Picture<'_>>,
     note: &str,
 ) -> (Rect, egui::Response) {
     let (area, response) = ui.allocate_exact_size(size, Sense::click_and_drag());
@@ -74,17 +107,19 @@ pub fn viewer(
     painter.rect_filled(area, 6.0, theme.viewport);
     let frame = picture_rect(area.shrink(8.0), timeline);
     painter.rect_filled(frame, 0.0, Color32::BLACK);
-    if let Some(texture) = picture {
+    if let Some(picture) = picture {
         // The picture already has the frame's shape unless the clip's shape
         // differs: fit it inside, centred, never stretched.
-        let [w, h] = texture.size();
-        let inner = picture_rect(frame, (w as u32, h as u32));
-        painter.image(
-            texture.id(),
-            inner,
-            Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
-            Color32::WHITE,
-        );
+        let inner = picture_rect(frame, picture.size());
+        match picture {
+            Picture::Texture(texture) => painter.image(
+                texture.id(),
+                inner,
+                Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+                Color32::WHITE,
+            ),
+            Picture::Video(video) => painter.add(video.shape(inner)),
+        };
     }
     if !note.is_empty() {
         painter.text(

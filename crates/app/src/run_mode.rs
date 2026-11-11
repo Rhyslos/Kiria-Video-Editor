@@ -21,6 +21,8 @@ pub struct Options {
     pub full_screen: bool,
     /// Commands to run once open, by name (`--action KeyboardShortcuts`, repeatable, for screenshots).
     pub actions: Vec<String>,
+    /// Convert the viewer's colour on the CPU instead of the GPU (`--cpu-colour`, for comparing the two).
+    pub cpu_colour: bool,
     pub mode: RunMode,
 }
 
@@ -53,6 +55,7 @@ impl Options {
                 "--play" => options.play = true,
                 "--media-drawer" => options.media_drawer = true,
                 "--full-screen" => options.full_screen = true,
+                "--cpu-colour" => options.cpu_colour = true,
                 "--action" => {
                     let name = args.next().ok_or("--action needs a command name")?;
                     options.actions.push(name);
@@ -96,5 +99,7 @@ mod tests {
         let o = parse(&["p.x", "--import", "a.mkv", "--import", "b.mp4"]).unwrap();
         assert_eq!(o.import, [PathBuf::from("a.mkv"), PathBuf::from("b.mp4")]);
         assert!(parse(&["--import"]).is_err());
+        assert!(parse(&["p.x", "--cpu-colour"]).unwrap().cpu_colour);
+        assert!(!parse(&["p.x"]).unwrap().cpu_colour);
     }
 }

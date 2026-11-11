@@ -17,9 +17,10 @@ cargo run -p app -- trip.kiria --open-last-save   # sets aside unsaved work from
 cargo run -p app -- trip.kiria --import match.mkv # imports media at start (repeatable)
 cargo run -p app -- trip.kiria --playhead 12.5     # starts with the playhead there (for screenshots)
 cargo run -p app -- trip.kiria --play              # starts playing once imports are in (for checks)
+cargo run -p app -- trip.kiria --cpu-colour        # converts the viewer's colour on the CPU, to compare with the GPU's picture
 cargo run -p app -- --smoke-test         # open, draw 30 frames, close; exit code 1 on failure
 cargo run -p app -- --responsiveness-test  # 8-second background job; fails unless 99 frames in 100 take under 16 ms of interface work (and none over 50 ms)
-cargo run -p app -- --screenshot out.png # save a PNG of the window and close
+cargo run -p app -- --screenshot out.png # save a PNG of the window and close (waits for imports and the viewer's picture first)
 ```
 
 The last three are for CI and for checking the look without a screen (`xvfb-run` on Linux).
@@ -44,7 +45,8 @@ The last three are for CI and for checking the look without a screen (`xvfb-run`
 | `src/waveforms.rs` | Waveforms for the timeline: each file's sound stream read once on a worker, kept for the session |
 | `src/versions_window.rs` | Saved versions (Ctrl+Shift+V): save the project under a name and restore any earlier one, both on workers |
 | `src/timeline_panel.rs` (also) | `fold_sound`: the rough cut view (Ctrl+Shift+T) folds each video clip's linked sound into it |
-| `src/viewer.rs` | The Edit page's viewer: asks the engine for the picture at the playhead (only when something changed) and shows the newest; the scrub bar and preview quality under it |
+| `src/viewer.rs` | The Edit page's viewer: asks the engine for the picture at the playhead (only when something changed) and shows the newest, as YUV planes the GPU converts or as an RGBA texture; the scrub bar and preview quality under it (planes come halved to suit the size wanted; on Auto, RGBA pictures are lowered further when playback can't keep up) |
+| `src/video_picture.rs` | Whether this window converts colour on the GPU (`--cpu-colour` or a window without wgpu says no), and a decoded frame's planes as the viewer's picture; its tests draw the shader into a texture and compare with the CPU's conversion |
 | `src/settings.rs` | `Settings` (theme, resource budgets, "Edit at the playhead", Graphics), saved as `settings.ron` in the app's data folder |
 | `src/run_mode.rs` | Command-line options |
 

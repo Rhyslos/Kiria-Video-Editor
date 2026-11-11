@@ -6,14 +6,20 @@
 //! right and stay in step with their sound.
 //!
 //! Moving forward a little decodes onward from where it is; jumping back or
-//! far ahead seeks to the key frame before the target first. The picture is
-//! scaled to the size asked for and turned upright, as RGBA.
+//! far ahead seeks to the key frame before the target first.
+//!
+//! The picture comes out one of two ways. [`VideoDecoder::picture_at`] hands
+//! over the decoder's own YUV planes ([`crate::yuv`]) for the GPU to convert
+//! while drawing, whenever the format is the common 8-bit 4:2:0, and falls
+//! back to RGBA for every other format. [`VideoDecoder::frame_at`] always
+//! gives RGBA, scaled to the size asked for and turned upright, on the CPU.
 //!
 //! The GPU's video decoder is tried first (Direct3D 11 on Windows, VA-API on
 //! Linux); when it can't open or can't handle the codec, the CPU decodes.
 //! See `docs/research/decoding.md` for the faster paths still to come.
 
 use crate::ffi::{Input, error_text};
+use crate::yuv::{Colour, PlaneRef, Pool, Source, YuvFrame, step_for};
 use diag::AppError;
 use ffmpeg_sys_next as ff;
 use std::path::Path;
@@ -32,6 +38,33 @@ pub struct Frame {
 impl std::fmt::Debug for Frame {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Frame({}×{} at {:.3} s)", self.width, self.height, self.time)
+    }
+}
+
+/// The picture at a moment, as [`VideoDecoder::picture_at`] could make it.
+#[derive(Debug)]
+pub enum Decoded {
+    /// The decoder's planes: the GPU converts them while drawing.
+    Yuv(YuvFrame),
+    /// Converted on the CPU, for formats the planes path doesn't take.
+    Rgba(Frame),
+}
+
+impl Decoded {
+    /// When the picture starts, in seconds from the start of the file.
+    pub fn time(&self) -> f64 {
+        match self {
+            Decoded::Yuv(frame) => frame.time,
+            Decoded::Rgba(frame) => frame.time,
+        }
+    }
+
+    /// The size on screen, upright.
+    pub fn size(&self) -> (u32, u32) {
+        match self {
+            Decoded::Yuv(frame) => frame.upright_size(),
+            Decoded::Rgba(frame) => (frame.width, frame.height),
+        }
     }
 }
 
@@ -66,6 +99,8 @@ pub struct VideoDecoder {
     copy: *mut ff::AVFrame,
     packet: *mut ff::AVPacket,
     scaler: *mut ff::SwsContext,
+    /// Plane buffers that came back from pictures no longer shown.
+    pool: Pool,
     ended: bool,
     /// "hardware (d3d11va)" or "software", for the log.
     pub method: String,
@@ -249,6 +284,7 @@ impl VideoDecoder {
                 copy: ff::av_frame_alloc(),
                 packet: ff::av_packet_alloc(),
                 scaler: ptr::null_mut(),
+                pool: Pool::default(),
                 ended: false,
                 method: "software".into(),
             };
@@ -299,6 +335,34 @@ impl VideoDecoder {
     /// The frame on screen at `seconds` from the start of the file, scaled
     /// to fit in `max_width × max_height` (never enlarged) and turned upright.
     pub fn frame_at(&mut self, seconds: f64, max_width: u32, max_height: u32) -> diag::Result<Frame> {
+        self.hold(seconds)?;
+        let source = self.in_memory()?;
+        // SAFETY: `source` was just returned by `in_memory`.
+        unsafe { self.convert(source, max_width, max_height) }
+    }
+
+    /// The frame on screen at `seconds`, as the decoder's own planes when
+    /// its format allows (nothing is converted or turned: the GPU does both
+    /// while drawing), else as [`VideoDecoder::frame_at`] gives it.
+    ///
+    /// The planes come at the file's size, or at a half, a quarter or an
+    /// eighth of it when that still fills `max_width × max_height` as
+    /// sharply as the box can show.
+    pub fn picture_at(&mut self, seconds: f64, max_width: u32, max_height: u32) -> diag::Result<Decoded> {
+        self.hold(seconds)?;
+        let source = self.in_memory()?;
+        // SAFETY: `source` was just returned by `in_memory`.
+        unsafe {
+            match self.planes(source, max_width, max_height) {
+                Some(frame) => Ok(Decoded::Yuv(frame)),
+                None => self.convert(source, max_width, max_height).map(Decoded::Rgba),
+            }
+        }
+    }
+
+    /// Decodes (seeking first when that is quicker) until `held` is the
+    /// frame on screen at `seconds`.
+    fn hold(&mut self, seconds: f64) -> diag::Result<()> {
         let target = seconds.max(0.0);
         let seek = match self.held_time {
             Some(t) => target + 1e-6 < t || target - t > DECODE_ON_LIMIT,
@@ -330,7 +394,7 @@ impl VideoDecoder {
                 .why("No picture could be decoded at this point of the file.")
                 .fix("The file may be damaged. Check that it plays in a media player."));
         }
-        self.convert(max_width, max_height)
+        Ok(())
     }
 
     fn seek(&mut self, target: f64) -> diag::Result<()> {
@@ -400,26 +464,109 @@ impl VideoDecoder {
         }
     }
 
-    /// Scales `held` to RGBA within the size given, then turns it upright.
-    fn convert(&mut self, max_width: u32, max_height: u32) -> diag::Result<Frame> {
-        let time = self.held_time.unwrap_or(0.0);
-        // SAFETY: `held` holds a decoded frame; the copy and the scaler are
-        // owned by self; the destination buffer is sized for the output.
+    /// `held` in ordinary memory: itself, or copied back from the GPU into
+    /// `copy`. The frame returned stays as it is until the next call on self.
+    fn in_memory(&mut self) -> diag::Result<*mut ff::AVFrame> {
+        // SAFETY: `held` holds a decoded frame and `copy` is a frame owned by
+        // self; FFmpeg allocates the copy's buffers.
         unsafe {
-            let mut source = self.held;
-            if self.hw_format.is_some_and(|f| (*source).format == f as i32) {
-                ff::av_frame_unref(self.copy);
-                let r = ff::av_hwframe_transfer_data(self.copy, source, 0);
-                if r < 0 {
-                    return Err(AppError::new("The video can't be shown")
-                        .why(format!(
-                            "Copying the picture from the GPU failed ({}).",
-                            error_text(r)
-                        ))
-                        .fix("Update the graphics driver. If it keeps happening, report it."));
-                }
-                source = self.copy;
+            if !self.hw_format.is_some_and(|f| (*self.held).format == f as i32) {
+                return Ok(self.held);
             }
+            ff::av_frame_unref(self.copy);
+            let r = ff::av_hwframe_transfer_data(self.copy, self.held, 0);
+            if r < 0 {
+                return Err(AppError::new("The video can't be shown")
+                    .why(format!(
+                        "Copying the picture from the GPU failed ({}).",
+                        error_text(r)
+                    ))
+                    .fix("Update the graphics driver. If it keeps happening, report it."));
+            }
+            Ok(self.copy)
+        }
+    }
+
+    /// How `held` stores colour. The copy from the GPU carries only pixels,
+    /// so this is read from the decoded frame itself. `full_range_format`
+    /// is whether the pixels came in one of the old full-range formats.
+    fn colour(&self, full_range_format: bool, width: u32, height: u32) -> Option<Colour> {
+        // SAFETY: `held` holds a decoded frame.
+        let (space, range) = unsafe { ((*self.held).colorspace, (*self.held).color_range) };
+        Colour::of(space, range, full_range_format, width, height)
+    }
+
+    /// `held` as YUV planes, copied out once. `None` when its format isn't
+    /// 8-bit 4:2:0 with a colour matrix the shader knows.
+    ///
+    /// # Safety
+    /// `source` must be what `in_memory` returned for the frame now held.
+    unsafe fn planes(&self, source: *mut ff::AVFrame, max_width: u32, max_height: u32) -> Option<YuvFrame> {
+        let time = self.held_time.unwrap_or(0.0);
+        // SAFETY: `source` is a decoded frame in ordinary memory (this
+        // function's contract); each plane's pointer and line size are
+        // checked before a slice is made over exactly the bytes FFmpeg
+        // allocated for its rows; the slices end with this block.
+        unsafe {
+            use ff::AVPixelFormat::{AV_PIX_FMT_NV12, AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUVJ420P};
+            let format = (*source).format;
+            let interleaved = format == AV_PIX_FMT_NV12 as i32;
+            if !interleaved && format != AV_PIX_FMT_YUV420P as i32 && format != AV_PIX_FMT_YUVJ420P as i32 {
+                return None;
+            }
+            let width = usize::try_from((*source).width).ok()?;
+            let height = usize::try_from((*source).height).ok()?;
+            let full_range_format = format == AV_PIX_FMT_YUVJ420P as i32;
+            let colour = self.colour(full_range_format, width as u32, height as u32)?;
+            let (cw, ch) = (width.div_ceil(2), height.div_ceil(2));
+            let plane = |index: usize, row_bytes: usize, rows: usize| -> Option<PlaneRef<'_>> {
+                let data = (*source).data[index];
+                let stride = usize::try_from((*source).linesize[index]).ok()?;
+                if data.is_null() || rows == 0 || row_bytes == 0 || stride < row_bytes {
+                    return None;
+                }
+                Some(PlaneRef {
+                    bytes: std::slice::from_raw_parts(data, stride * (rows - 1) + row_bytes),
+                    stride,
+                    row_bytes,
+                    rows,
+                })
+            };
+            let source = Source {
+                luma: plane(0, width, height)?,
+                chroma: if interleaved {
+                    [Some(plane(1, cw * 2, ch)?), None]
+                } else {
+                    [Some(plane(1, cw, ch)?), Some(plane(2, cw, ch)?)]
+                },
+                colour,
+                rotation: self.rotation,
+                time,
+            };
+            let upright = if self.rotation % 180 == 90 {
+                (height as u32, width as u32)
+            } else {
+                (width as u32, height as u32)
+            };
+            Some(source.frame(step_for(upright, max_width, max_height), &self.pool))
+        }
+    }
+
+    /// Scales `held` to RGBA within the size given, then turns it upright.
+    ///
+    /// # Safety
+    /// `source` must be what `in_memory` returned for the frame now held.
+    unsafe fn convert(
+        &mut self,
+        source: *mut ff::AVFrame,
+        max_width: u32,
+        max_height: u32,
+    ) -> diag::Result<Frame> {
+        let time = self.held_time.unwrap_or(0.0);
+        // SAFETY: `source` is a decoded frame in ordinary memory (this
+        // function's contract); the scaler is owned by self; the
+        // destination buffer is sized for the output.
+        unsafe {
             let (sw, sh) = ((*source).width, (*source).height);
             if sw <= 0 || sh <= 0 {
                 return Err(AppError::new("The video can't be shown").why("A decoded picture had no size."));
@@ -463,6 +610,7 @@ impl VideoDecoder {
                     .why("The picture's format can't be converted for display.")
                     .fix("Report it with the file attached."));
             }
+            self.set_scaler_colour(sw as u32, sh as u32);
             let mut rgba = vec![0u8; dw as usize * dh as usize * 4];
             let dst = [
                 rgba.as_mut_ptr(),
@@ -489,6 +637,66 @@ impl VideoDecoder {
             })
         }
     }
+
+    /// Tells the scaler which colour matrix and range `held` uses, so the
+    /// RGBA path shows the same colours as the planes path. Left alone, the
+    /// scaler reads everything as BT.601 and only knows full range by the
+    /// old format names.
+    ///
+    /// # Safety
+    /// The scaler must have been made, and a decoded frame be held.
+    unsafe fn set_scaler_colour(&mut self, width: u32, height: u32) {
+        // SAFETY: the scaler was just made; `held` holds a decoded frame; the
+        // coefficient tables are static.
+        unsafe {
+            let held = &*self.held;
+            let space = match held.colorspace {
+                // The same guess as the planes path when the file doesn't say.
+                ff::AVColorSpace::AVCOL_SPC_UNSPECIFIED if is_high_definition(width, height) => {
+                    ff::SWS_CS_ITU709
+                }
+                ff::AVColorSpace::AVCOL_SPC_UNSPECIFIED => ff::SWS_CS_ITU601,
+                // FFmpeg numbers the scaler's tables as it numbers colour spaces.
+                said => said as i32,
+            };
+            let (mut inverse, mut table) = (ptr::null_mut(), ptr::null_mut());
+            let (mut source_range, mut target_range, mut brightness, mut contrast, mut saturation) =
+                (0, 0, 0, 0, 0);
+            // Not every format pair has colour settings (RGB sources don't).
+            if ff::sws_getColorspaceDetails(
+                self.scaler,
+                &mut inverse,
+                &mut source_range,
+                &mut table,
+                &mut target_range,
+                &mut brightness,
+                &mut contrast,
+                &mut saturation,
+            ) < 0
+            {
+                return;
+            }
+            if held.color_range == ff::AVColorRange::AVCOL_RANGE_JPEG {
+                source_range = 1;
+            }
+            ff::sws_setColorspaceDetails(
+                self.scaler,
+                ff::sws_getCoefficients(space),
+                source_range,
+                table,
+                target_range,
+                brightness,
+                contrast,
+                saturation,
+            );
+        }
+    }
+}
+
+/// The usual guess for a file that doesn't say which colour matrix it uses:
+/// high definition sizes are BT.709, smaller ones BT.601.
+pub(crate) fn is_high_definition(width: u32, height: u32) -> bool {
+    width >= 1280 || height > 576
 }
 
 /// Turns an RGBA picture clockwise by 0, 90, 180 or 270 degrees.

@@ -7,9 +7,13 @@
 //!
 //! Decoders are kept open for the files used most recently, so moving around
 //! one recording only seeks.
+//!
+//! A picture comes back as the decoder's YUV planes when the viewer can
+//! convert colour while drawing ([`Convert::WhileDrawing`]) and the file's
+//! format allows; otherwise as RGBA, converted here on the worker.
 
 use crate::timeline::video_at;
-use media::{Decoding, Frame, VideoDecoder};
+use media::{Decoded, Decoding, VideoDecoder};
 use project::{MediaId, Project, SequenceId, Time};
 use std::collections::VecDeque;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
@@ -18,15 +22,26 @@ use std::time::{Duration, Instant};
 /// How many files keep an open decoder.
 const OPEN_DECODERS: usize = 4;
 
+/// Where a picture's colour is converted for the screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Convert {
+    /// The viewer's shader converts the decoder's planes while drawing.
+    /// Formats that can't go that way still come as RGBA, and so do planes
+    /// with a side longer than `largest_side` (the most a texture can be).
+    WhileDrawing { largest_side: u32 },
+    /// Every picture is converted to RGBA on the worker.
+    OnCpu,
+}
+
 /// A picture for one moment of the timeline.
 #[derive(Debug)]
 pub struct Picture {
     /// The timeline time asked for.
     pub at: Time,
     /// `None` in a gap (black), or when the frame couldn't be decoded (see `error`).
-    pub frame: Option<Frame>,
+    pub frame: Option<Decoded>,
     pub error: Option<diag::AppError>,
-    /// How long decoding and scaling took.
+    /// How long decoding took, with copying the planes out or converting to RGBA.
     pub took: Duration,
     /// Which decoder made it, for the viewer's corner.
     pub method: Option<String>,
@@ -53,19 +68,20 @@ impl std::fmt::Debug for Preview {
 
 impl Preview {
     /// Starts the worker. `notify` runs on the worker each time a picture is ready.
-    pub fn start(decoding: Decoding, notify: impl Fn() + Send + 'static) -> Preview {
+    pub fn start(decoding: Decoding, convert: Convert, notify: impl Fn() + Send + 'static) -> Preview {
         let (requests, inbox) = channel::<Request>();
         let (outbox, pictures) = channel::<Picture>();
         let spawned = std::thread::Builder::new()
             .name("preview".into())
-            .spawn(move || run(&inbox, &outbox, decoding, &notify));
+            .spawn(move || run(&inbox, &outbox, decoding, convert, &notify));
         if let Err(err) = spawned {
             tracing::error!("the preview worker could not start: {err}");
         }
         Preview { requests, pictures }
     }
 
-    /// Asks for the picture at `at` on `sequence`, fitted in `max_width × max_height`.
+    /// Asks for the picture at `at` on `sequence`, fitted in `max_width × max_height`
+    /// (planes come at the nearest halving that still fills it).
     /// Replaces any request not started yet.
     pub fn show(&self, project: &Project, sequence: SequenceId, at: Time, max_width: u32, max_height: u32) {
         let _ = self.requests.send(Request {
@@ -87,7 +103,13 @@ impl Preview {
     }
 }
 
-fn run(inbox: &Receiver<Request>, outbox: &Sender<Picture>, decoding: Decoding, notify: &dyn Fn()) {
+fn run(
+    inbox: &Receiver<Request>,
+    outbox: &Sender<Picture>,
+    decoding: Decoding,
+    convert: Convert,
+    notify: &dyn Fn(),
+) {
     let mut decoders: VecDeque<((MediaId, u32), VideoDecoder)> = VecDeque::new();
     while let Ok(mut request) = inbox.recv() {
         // Only the newest request counts.
@@ -98,7 +120,7 @@ fn run(inbox: &Receiver<Request>, outbox: &Sender<Picture>, decoding: Decoding, 
                 Err(TryRecvError::Disconnected) => return,
             }
         }
-        let picture = picture(&request, decoding, &mut decoders);
+        let picture = picture(&request, decoding, convert, &mut decoders);
         if outbox.send(picture).is_err() {
             return;
         }
@@ -109,6 +131,7 @@ fn run(inbox: &Receiver<Request>, outbox: &Sender<Picture>, decoding: Decoding, 
 fn picture(
     r: &Request,
     decoding: Decoding,
+    convert: Convert,
     decoders: &mut VecDeque<((MediaId, u32), VideoDecoder)>,
 ) -> Picture {
     let started = Instant::now();
@@ -148,7 +171,18 @@ fn picture(
     }
     if let Some((_, decoder)) = decoders.front_mut() {
         let at = showing.source_time.as_secs_f64();
-        match decoder.frame_at(at, r.max_width, r.max_height) {
+        let decode = |decoder: &mut VideoDecoder| match convert {
+            Convert::WhileDrawing { largest_side } => {
+                match decoder.picture_at(at, r.max_width, r.max_height)? {
+                    Decoded::Yuv(planes) if planes.width.max(planes.height) > largest_side => {
+                        decoder.frame_at(at, r.max_width, r.max_height).map(Decoded::Rgba)
+                    }
+                    picture => Ok(picture),
+                }
+            }
+            Convert::OnCpu => decoder.frame_at(at, r.max_width, r.max_height).map(Decoded::Rgba),
+        };
+        match decode(decoder) {
             Ok(frame) => out.frame = Some(frame),
             // The GPU couldn't decode this file (an unusual profile, a driver
             // problem): the CPU takes over for this file from now on.
@@ -161,7 +195,7 @@ fn picture(
                     Decoding::Software,
                 ) {
                     Ok(mut software) => {
-                        match software.frame_at(at, r.max_width, r.max_height) {
+                        match decode(&mut software) {
                             Ok(frame) => out.frame = Some(frame),
                             Err(err) => out.error = Some(err),
                         }
@@ -183,6 +217,8 @@ mod tests {
     use super::*;
     use project::Command;
     use std::path::Path;
+
+    const PLANES: Convert = Convert::WhileDrawing { largest_side: 8192 };
 
     fn fixture(name: &str) -> std::path::PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -207,13 +243,14 @@ mod tests {
         let seq = project.active_sequence;
         let media = media::describe(&fixture("game-3-audio.mkv")).unwrap();
         let project = Command::Import { sequence: seq, media }.apply(&project).unwrap();
-        let preview = Preview::start(Decoding::Software, || {});
+        let preview = Preview::start(Decoding::Software, Convert::OnCpu, || {});
 
         preview.show(&project, seq, Time::seconds(1), 160, 160);
         let p = wait(&preview);
         let frame = p.frame.expect("a picture");
-        assert_eq!((frame.width, frame.height), (160, 90));
-        assert!((frame.time - 1.0).abs() < 0.02);
+        assert!(matches!(frame, Decoded::Rgba(_)));
+        assert_eq!(frame.size(), (160, 90));
+        assert!((frame.time() - 1.0).abs() < 0.02);
         assert!(p.error.is_none());
 
         preview.show(&project, seq, Time::seconds(30), 160, 160);
@@ -225,13 +262,47 @@ mod tests {
     }
 
     #[test]
+    fn planes_for_the_viewer_to_convert() {
+        let project = Project::new_automatic("T");
+        let seq = project.active_sequence;
+        let media = media::describe(&fixture("game-3-audio.mkv")).unwrap();
+        let project = Command::Import { sequence: seq, media }.apply(&project).unwrap();
+        let preview = Preview::start(Decoding::Software, PLANES, || {});
+
+        preview.show(&project, seq, Time::seconds(1), 320, 320);
+        let p = wait(&preview);
+        let Some(Decoded::Yuv(frame)) = p.frame else {
+            panic!("planes, got {:?}", p.frame);
+        };
+        assert_eq!((frame.width, frame.height), (320, 180));
+        assert!((frame.time - 1.0).abs() < 0.02);
+        // A smaller viewer gets the planes halved.
+        preview.show(&project, seq, Time::seconds(1), 160, 160);
+        assert_eq!(wait(&preview).frame.expect("a picture").size(), (160, 90));
+    }
+
+    #[test]
+    fn planes_too_big_for_a_texture_come_as_rgba() {
+        let project = Project::new_automatic("T");
+        let seq = project.active_sequence;
+        let media = media::describe(&fixture("game-3-audio.mkv")).unwrap();
+        let project = Command::Import { sequence: seq, media }.apply(&project).unwrap();
+        let small = Convert::WhileDrawing { largest_side: 256 };
+        let preview = Preview::start(Decoding::Software, small, || {});
+        preview.show(&project, seq, Time::seconds(1), 320, 320);
+        let frame = wait(&preview).frame.expect("a picture");
+        assert!(matches!(frame, Decoded::Rgba(_)), "{frame:?}");
+        assert_eq!(frame.size(), (320, 180));
+    }
+
+    #[test]
     fn a_missing_file_is_explained() {
         let project = Project::new_automatic("T");
         let seq = project.active_sequence;
         let mut media = media::describe(&fixture("game-3-audio.mkv")).unwrap();
         media.path = fixture("moved-away.mkv");
         let project = Command::Import { sequence: seq, media }.apply(&project).unwrap();
-        let preview = Preview::start(Decoding::Software, || {});
+        let preview = Preview::start(Decoding::Software, PLANES, || {});
         preview.show(&project, seq, Time::seconds(1), 160, 160);
         let p = wait(&preview);
         assert!(p.frame.is_none());

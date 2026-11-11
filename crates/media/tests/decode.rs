@@ -3,7 +3,7 @@
 // Test helpers may panic: a failure here is a failing test.
 #![allow(clippy::unwrap_used)]
 
-use media::{Decoding, VideoDecoder};
+use media::{Decoded, Decoding, VideoDecoder};
 use std::path::{Path, PathBuf};
 
 fn fixture(name: &str) -> PathBuf {
@@ -70,4 +70,117 @@ fn variable_frame_rate_frames_are_found_by_time() {
 fn best_decoding_falls_back_when_there_is_no_gpu() {
     let mut d = VideoDecoder::open(&fixture("game-3-audio.mkv"), 0, 0, Decoding::Best).unwrap();
     assert!(d.frame_at(0.5, 320, 320).is_ok(), "decodes with {}", d.method);
+}
+
+/// The largest difference between two pictures' colour values, and the mean.
+fn difference(a: &media::Frame, b: &media::Frame) -> (u8, f64) {
+    assert_eq!((a.width, a.height), (b.width, b.height));
+    let (mut worst, mut total) = (0u8, 0u64);
+    for (x, y) in a.rgba.iter().zip(&b.rgba) {
+        worst = worst.max(x.abs_diff(*y));
+        total += u64::from(x.abs_diff(*y));
+    }
+    (worst, total as f64 / a.rgba.len() as f64)
+}
+
+#[test]
+fn planes_convert_to_the_same_picture_as_the_rgba_path() {
+    for (name, rotation) in [
+        ("game-3-audio.mkv", 0),
+        ("phone-rotated.mp4", 270),
+        ("vfr-60.mkv", 0),
+    ] {
+        let mut d = open(name, rotation);
+        let rgba = d.frame_at(0.5, 4000, 4000).unwrap();
+        let Decoded::Yuv(yuv) = d.picture_at(0.5, 4000, 4000).unwrap() else {
+            panic!("{name}: 8-bit 4:2:0 comes as planes");
+        };
+        assert_eq!(yuv.time, rgba.time);
+        assert_eq!(yuv.rotation, rotation);
+        assert_eq!(yuv.upright_size(), (rgba.width, rgba.height));
+        assert_eq!(yuv.luma().len(), (yuv.width * yuv.height) as usize);
+        let (cw, ch) = yuv.chroma_size();
+        assert_eq!(yuv.chroma().len(), (cw * ch * 2) as usize);
+        // The scaler rounds in fixed point and takes the colour samples a
+        // little differently, so single values differ by a few steps where
+        // colours change sharply; the picture as a whole is the same.
+        let (worst, mean) = difference(&yuv.to_rgba(), &rgba);
+        assert!(mean < 1.0 && worst <= 12, "{name}: mean {mean:.3}, worst {worst}");
+    }
+}
+
+#[test]
+fn planes_come_smaller_when_the_box_is() {
+    let mut d = open("game-3-audio.mkv", 0);
+    let Decoded::Yuv(full) = d.picture_at(1.0, 320, 180).unwrap() else {
+        panic!("planes");
+    };
+    assert_eq!((full.width, full.height), (320, 180));
+    let Decoded::Yuv(half) = d.picture_at(1.0, 160, 160).unwrap() else {
+        panic!("planes");
+    };
+    assert_eq!((half.width, half.height), (160, 90));
+    assert_eq!(half.chroma_size(), (80, 45));
+    // Halved by averaging: each sample is the mean of the four it replaces.
+    let mean_of_four = |plane: &[u8], width: usize, x: usize, y: usize| {
+        let at = |dx: usize, dy: usize| u32::from(plane[(y * 2 + dy) * width + x * 2 + dx]);
+        ((at(0, 0) + at(1, 0) + at(0, 1) + at(1, 1) + 2) / 4) as u8
+    };
+    for (i, sample) in half.luma().iter().enumerate() {
+        assert_eq!(
+            *sample,
+            mean_of_four(full.luma(), 320, i % 160, i / 160),
+            "luma {i}"
+        );
+    }
+    // Colour too, U and V each on their own (planar: U first, then V).
+    let (full_u, full_v) = full.chroma().split_at(160 * 90);
+    let (half_u, half_v) = half.chroma().split_at(80 * 45);
+    for i in 0..80 * 45 {
+        assert_eq!(half_u[i], mean_of_four(full_u, 160, i % 80, i / 80), "U {i}");
+        assert_eq!(half_v[i], mean_of_four(full_v, 160, i % 80, i / 80), "V {i}");
+    }
+    // A box that needs more than half keeps the file's size.
+    let Decoded::Yuv(kept) = d.picture_at(1.0, 200, 200).unwrap() else {
+        panic!("planes");
+    };
+    assert_eq!((kept.width, kept.height), (320, 180));
+}
+
+#[test]
+fn turned_video_keeps_its_planes_as_stored() {
+    let mut d = open("phone-rotated.mp4", 270);
+    let Decoded::Yuv(yuv) = d.picture_at(0.5, 1000, 1000).unwrap() else {
+        panic!("planes");
+    };
+    assert_eq!((yuv.width, yuv.height), (320, 180), "stored on its side");
+    assert_eq!(yuv.upright_size(), (180, 320));
+}
+
+/// The middle pixel of one of the three squares in `colour-709-full.mp4`.
+fn square(frame: &media::Frame, index: usize) -> [u8; 3] {
+    let at = (16 * frame.width as usize + 16 + 32 * index) * 4;
+    [frame.rgba[at], frame.rgba[at + 1], frame.rgba[at + 2]]
+}
+
+#[test]
+fn colours_follow_the_matrix_and_range_the_file_names() {
+    // Three squares (red, green and blue at three quarters), stored as
+    // BT.709 with full range in a picture small enough that guessing by
+    // size would say BT.601. Made with FFmpeg's `color` sources, `hstack`
+    // and `scale=out_color_matrix=bt709:out_range=pc`.
+    let mut d = open("colour-709-full.mp4", 0);
+    let rgba = d.frame_at(0.0, 4000, 4000).unwrap();
+    let Decoded::Yuv(yuv) = d.picture_at(0.0, 4000, 4000).unwrap() else {
+        panic!("planes");
+    };
+    assert_eq!(yuv.colour.matrix, media::Matrix::Bt709);
+    assert_eq!(yuv.colour.range, media::Range::Full);
+    let planes = yuv.to_rgba();
+    for (index, want) in [[192, 0, 0], [0, 192, 0], [0, 0, 192]].into_iter().enumerate() {
+        for (path, got) in [("RGBA", square(&rgba, index)), ("planes", square(&planes, index))] {
+            let near = got.iter().zip(want).all(|(g, w)| g.abs_diff(w) <= 4);
+            assert!(near, "{path} path, square {index}: got {got:?}, wanted {want:?}");
+        }
+    }
 }

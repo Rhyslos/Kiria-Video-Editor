@@ -101,6 +101,9 @@ pub struct Editor {
     report: Arc<Mutex<RunReport>>,
 }
 
+/// The longest a screenshot waits for imports and the viewer's picture.
+const SCREENSHOT_WAIT: Duration = Duration::from_secs(20);
+
 /// Measurements for the automated runs.
 #[derive(Default)]
 struct Probe {
@@ -138,6 +141,10 @@ impl Editor {
         let play_when_ready = project.as_ref().is_some_and(|p| p.play);
         let drawer_open = project.as_ref().is_some_and(|p| p.media_drawer);
         let full_screen = project.as_ref().is_some_and(|p| p.full_screen);
+        let convert = crate::video_picture::conversion(
+            cc.wgpu_render_state.as_ref(),
+            project.as_ref().is_some_and(|p| p.cpu_colour),
+        );
         let shortcuts = ShortcutTable::default();
         let startup_actions: Vec<Action> = project
             .as_ref()
@@ -194,7 +201,7 @@ impl Editor {
             thumbnail_due: Thumbnail::IfMissing,
             importer,
             import_requested: false,
-            viewer: Viewer::new(&cc.egui_ctx, start_at),
+            viewer: Viewer::new(&cc.egui_ctx, start_at, convert),
             playback: None,
             timeline: ui_kit::TimelineView::default(),
             selected: Vec::new(),
@@ -1730,7 +1737,13 @@ impl Editor {
             }
             RunMode::Screenshot(path) => {
                 ctx.request_repaint();
-                if self.frames >= 10 && !self.probe.screenshot_requested {
+                // Wait for what the screenshot is of: the imports read and the
+                // viewer's picture back. Not for ever, so a file that can't
+                // be shown still gets its screenshot.
+                let since = *self.probe.started.get_or_insert(now);
+                let ready = (self.importer.busy() == 0 && self.viewer.settled())
+                    || now.duration_since(since) > SCREENSHOT_WAIT;
+                if self.frames >= 10 && ready && !self.probe.screenshot_requested {
                     self.probe.screenshot_requested = true;
                     let (path, saved, report) = (
                         path.clone(),
@@ -1996,6 +2009,8 @@ pub struct ProjectToOpen {
     pub full_screen: bool,
     /// Commands to run once open, by name.
     pub actions: Vec<String>,
+    /// Convert the viewer's colour on the CPU even when the GPU could.
+    pub cpu_colour: bool,
 }
 
 /// Opens a project, or creates it if it doesn't exist.

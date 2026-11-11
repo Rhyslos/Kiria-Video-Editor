@@ -229,6 +229,7 @@ dependencies = [
  "image",
  "jobs",
  "media",
+ "pollster",
  "project",
  "rfd",
  "ron",
@@ -4706,6 +4707,7 @@ version = "0.1.0"
 dependencies = [
  "diag",
  "egui",
+ "egui-wgpu",
  "image",
  "serde",
  "tracing",
