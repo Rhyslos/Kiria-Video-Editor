@@ -15,6 +15,8 @@ pub struct Settings {
     pub edit_at_playhead: bool,
     /// How sharp the viewer's picture is.
     pub preview_quality: ui_kit::PreviewQuality,
+    /// The timeline in the rough cut view (sound folded into the pictures).
+    pub rough_cut: bool,
 }
 
 impl Settings {
