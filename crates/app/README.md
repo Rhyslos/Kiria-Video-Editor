@@ -28,7 +28,8 @@ The last three are for CI and for checking the look without a screen (`xvfb-run`
 
 | File | What it holds |
 |---|---|
-| `src/main.rs` | Start-up: options, diagnostics, settings, the window, exit code |
+| `src/main.rs` | Start-up: options, diagnostics, settings, the window (opened with the first graphics system that starts), exit code |
+| `src/graphics.rs` | Which graphics system draws the window: the Graphics setting, `plan` (what a start tries, in order), the marker that catches a start with Vulkan that never drew a frame, and the line Diagnostics shows |
 | `src/clip_pictures.rs` | The pictures inside video clips: each file's strip read once on a worker, then uploaded 24 a frame so the interface never stalls |
 | `src/editor.rs` | `Editor`: the window's state, shortcuts, autosave hand-off to workers, pages, Settings and Search windows, the automated runs |
 | `src/frame_grab.rs` | Save this frame as a picture (Ctrl+Shift+E): asks where, then writes the frame at the playhead at full size on a worker |
@@ -44,10 +45,20 @@ The last three are for CI and for checking the look without a screen (`xvfb-run`
 | `src/versions_window.rs` | Saved versions (Ctrl+Shift+V): save the project under a name and restore any earlier one, both on workers |
 | `src/timeline_panel.rs` (also) | `fold_sound`: the rough cut view (Ctrl+Shift+T) folds each video clip's linked sound into it |
 | `src/viewer.rs` | The Edit page's viewer: asks the engine for the picture at the playhead (only when something changed) and shows the newest; the scrub bar and preview quality under it |
-| `src/settings.rs` | `Settings` (theme, resource budgets, "Edit at the playhead"), saved as `settings.ron` in the app's data folder |
+| `src/settings.rs` | `Settings` (theme, resource budgets, "Edit at the playhead", Graphics), saved as `settings.ron` in the app's data folder |
 | `src/run_mode.rs` | Command-line options |
 
 ## Notes
 
 - Opening a project that has unsaved work from a crash recovers it, unless `--open-last-save` is given. The launcher asks which the person wants and passes the flag.
-- Resource setting changes apply on the next start.
+- Resource and Graphics setting changes apply on the next start.
+
+## Graphics
+
+On Windows the window is drawn through Vulkan, so that video can later be decoded straight into the window's own device (`docs/research/decoding.md`). Settings has the choice: Automatic (the default), Vulkan, or Direct3D 12. On Linux nothing changed: the window toolkit picks (Vulkan, then OpenGL) and the row is greyed out.
+
+- **Order.** Automatic and Vulkan try Vulkan, then Direct3D 12, then whatever the window toolkit picks by itself. Direct3D 12 skips the first step. Each is tried alone, so falling back to Direct3D 12 never loads the Vulkan driver. Vulkan only counts with a real graphics card: software drawing through Vulkan is passed over.
+- **An error is followed in the same start.** No Vulkan driver, no card that can draw to the window, or a device that can't be created: the next in the order opens instead. Automatic does this quietly; someone who chose Vulkan gets a notice.
+- **A crash or a freeze is caught at the next start.** `vulkan.starting` is written in the data folder before a start with Vulkan and removed once three frames are drawn (or the window closed normally, or Vulkan reported an error). If it is still there at the next start, the Graphics setting is changed to Direct3D 12, saved, and a notice says so once. Choosing Automatic or Vulkan in Settings tries Vulkan again.
+- **What is in use** is on the first line of Diagnostics (Settings, Diagnostics…), under the Graphics setting, in the log (`the window is open`) and in crash reports.
+- `WGPU_BACKEND` still works on Linux. On Windows the setting decides and the variable only affects the last resort.
