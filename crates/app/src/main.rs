@@ -75,6 +75,7 @@ fn main() -> ExitCode {
         playhead: options.playhead,
         play: options.play,
         media_drawer: options.media_drawer,
+        full_screen: options.full_screen,
     });
     // If this run crashes, the launcher offers to recover this project.
     if let (Some(diagnostics), Some(project)) = (&diagnostics, &project)

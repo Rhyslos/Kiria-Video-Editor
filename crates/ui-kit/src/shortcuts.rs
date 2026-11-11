@@ -38,6 +38,7 @@ pub enum Action {
     ToggleLoop,
     SaveFrame,
     RemoveSilence,
+    FullScreenViewer,
     ClearRegion,
 }
 
@@ -69,6 +70,7 @@ impl Action {
             Action::RollTool => "Roll tool: move the cut between two clips",
             Action::SlipTool => "Slip tool: show another part of a clip",
             Action::SlideTool => "Slide tool: move a clip between its neighbours",
+            Action::FullScreenViewer => "Viewer full screen (Escape returns)",
             Action::RemoveSilence => "Remove silence…",
             Action::SaveFrame => "Save this frame as a picture…",
             Action::ToggleLoop => "Loop playback inside the region",
@@ -173,6 +175,7 @@ impl Default for ShortcutTable {
                 (Action::ToggleLoop, Shortcut::key(Key::L)),
                 (Action::SaveFrame, Shortcut::ctrl_shift(Key::E)),
                 (Action::RemoveSilence, Shortcut::ctrl_shift(Key::R)),
+                (Action::FullScreenViewer, Shortcut::key(Key::F)),
             ],
         }
     }

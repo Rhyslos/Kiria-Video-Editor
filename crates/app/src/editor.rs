@@ -55,6 +55,10 @@ pub struct Editor {
     frame_grab: crate::frame_grab::FrameGrab,
     silence: crate::silence_panel::SilencePanel,
     label_editor: Option<crate::label_editor::LabelEditor>,
+    /// The viewer fills the screen (F; Escape returns).
+    full_screen: bool,
+    /// Tell the window about a full-screen change on the next frame.
+    full_screen_changed: bool,
     /// Save this frame was asked for; the dialog opens on the next frame.
     save_frame_requested: bool,
     /// `--play`: start playing as soon as the imports are in.
@@ -110,6 +114,7 @@ impl Editor {
         let start_at = project.as_ref().and_then(|p| p.playhead);
         let play_when_ready = project.as_ref().is_some_and(|p| p.play);
         let drawer_open = project.as_ref().is_some_and(|p| p.media_drawer);
+        let full_screen = project.as_ref().is_some_and(|p| p.full_screen);
         let document = project.and_then(|p| match open_or_create(&p.path, p.recovery) {
             Ok(doc) => {
                 if doc.is_read_only() {
@@ -156,6 +161,8 @@ impl Editor {
             frame_grab: crate::frame_grab::FrameGrab::default(),
             silence: crate::silence_panel::SilencePanel::default(),
             label_editor: None,
+            full_screen,
+            full_screen_changed: full_screen,
             save_frame_requested: false,
             drawer: crate::media_drawer::MediaDrawer {
                 open: drawer_open,
@@ -241,7 +248,15 @@ impl Editor {
                 }
             }
             Action::ClearSelection => {
-                self.selected.clear();
+                if self.full_screen {
+                    self.set_full_screen(false);
+                } else {
+                    self.selected.clear();
+                }
+                Ok(())
+            }
+            Action::FullScreenViewer => {
+                self.set_full_screen(!self.full_screen);
                 Ok(())
             }
             Action::ZoomToFit => {
@@ -881,6 +896,29 @@ impl Editor {
                 }
                 Err(err) => self.errors.push(&err),
             }
+        }
+    }
+
+    /// The viewer alone on the whole screen, or back to the page.
+    fn set_full_screen(&mut self, on: bool) {
+        self.full_screen = on && self.page == Page::Edit && self.document.is_some();
+        self.full_screen_changed = true;
+    }
+
+    /// The viewer and its transport, filling the window.
+    fn full_screen_viewer(&mut self, ui: &mut egui::Ui) {
+        let Some(document) = &self.document else { return };
+        let p = document.project();
+        let mut quality = self.settings.preview_quality;
+        let height = ui.available_height() - 28.0;
+        let click = self.viewer.ui(ui, &self.theme, p, &mut quality, None, height);
+        if let Some(click) = click {
+            self.run_action(match click {
+                ui_kit::TransportClick::FrameBack => Action::PreviousFrame,
+                ui_kit::TransportClick::FrameForward => Action::NextFrame,
+                ui_kit::TransportClick::PlayPause => Action::PlayPause,
+                ui_kit::TransportClick::Stop => Action::Stop,
+            });
         }
     }
 
@@ -1561,17 +1599,26 @@ impl eframe::App for Editor {
         self.autosave(now, idle);
         self.thumbnails();
 
-        egui::Panel::top("top-bar")
-            .exact_size(layout::TOP_BAR_HEIGHT)
-            .frame(egui::Frame::new().fill(self.theme.panel))
-            .show(ui, |ui| self.top_bar(ui));
-        egui::CentralPanel::default()
-            .frame(
-                egui::Frame::new()
-                    .fill(self.theme.bg)
-                    .inner_margin(egui::Margin::same(16)),
-            )
-            .show(ui, |ui| self.page(ui));
+        if std::mem::take(&mut self.full_screen_changed) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.full_screen));
+        }
+        if self.full_screen {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::new().fill(egui::Color32::BLACK))
+                .show(ui, |ui| self.full_screen_viewer(ui));
+        } else {
+            egui::Panel::top("top-bar")
+                .exact_size(layout::TOP_BAR_HEIGHT)
+                .frame(egui::Frame::new().fill(self.theme.panel))
+                .show(ui, |ui| self.top_bar(ui));
+            egui::CentralPanel::default()
+                .frame(
+                    egui::Frame::new()
+                        .fill(self.theme.bg)
+                        .inner_margin(egui::Margin::same(16)),
+                )
+                .show(ui, |ui| self.page(ui));
+        }
 
         self.settings_window(&ctx);
         self.timeline_settings_window(&ctx);
@@ -1667,6 +1714,8 @@ pub struct ProjectToOpen {
     pub play: bool,
     /// Start with the media drawer open.
     pub media_drawer: bool,
+    /// Start with the viewer full screen.
+    pub full_screen: bool,
 }
 
 /// Opens a project, or creates it if it doesn't exist.

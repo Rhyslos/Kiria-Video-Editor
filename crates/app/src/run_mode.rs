@@ -17,6 +17,8 @@ pub struct Options {
     pub play: bool,
     /// Open the media drawer (`--media-drawer`, for screenshots).
     pub media_drawer: bool,
+    /// Start with the viewer full screen (`--full-screen`, for screenshots).
+    pub full_screen: bool,
     pub mode: RunMode,
 }
 
@@ -48,6 +50,7 @@ impl Options {
                 }
                 "--play" => options.play = true,
                 "--media-drawer" => options.media_drawer = true,
+                "--full-screen" => options.full_screen = true,
                 "--playhead" => {
                     let secs = args
                         .next()
