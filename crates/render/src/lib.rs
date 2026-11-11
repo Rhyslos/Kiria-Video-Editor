@@ -5,6 +5,8 @@
 
 pub mod compositor;
 pub mod geometry;
+pub mod reader;
 
 pub use compositor::{Compositor, Drawn, Frame, Pixels, Shower, Showing, Working};
+pub use reader::{ReadError, Reader};
 pub use geometry::{Area, Colour, Part, Placement, Point};
