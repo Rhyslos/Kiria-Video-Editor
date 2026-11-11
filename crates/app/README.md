@@ -20,7 +20,7 @@ cargo run -p app -- trip.kiria --play              # starts playing once imports
 cargo run -p app -- trip.kiria --cpu-colour        # converts the viewer's colour on the CPU, to compare with the GPU's picture
 cargo run -p app -- --smoke-test         # open, draw 30 frames, close; exit code 1 on failure
 cargo run -p app -- --responsiveness-test  # 8-second background job; fails unless 99 frames in 100 take under 16 ms of interface work (and none over 50 ms)
-cargo run -p app -- --screenshot out.png # save a PNG of the window and close
+cargo run -p app -- --screenshot out.png # save a PNG of the window and close (waits for imports and the viewer's picture first)
 ```
 
 The last three are for CI and for checking the look without a screen (`xvfb-run` on Linux).

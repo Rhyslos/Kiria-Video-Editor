@@ -101,6 +101,9 @@ pub struct Editor {
     report: Arc<Mutex<RunReport>>,
 }
 
+/// The longest a screenshot waits for imports and the viewer's picture.
+const SCREENSHOT_WAIT: Duration = Duration::from_secs(20);
+
 /// Measurements for the automated runs.
 #[derive(Default)]
 struct Probe {
@@ -1734,7 +1737,13 @@ impl Editor {
             }
             RunMode::Screenshot(path) => {
                 ctx.request_repaint();
-                if self.frames >= 10 && !self.probe.screenshot_requested {
+                // Wait for what the screenshot is of: the imports read and the
+                // viewer's picture back. Not for ever, so a file that can't
+                // be shown still gets its screenshot.
+                let since = *self.probe.started.get_or_insert(now);
+                let ready = (self.importer.busy() == 0 && self.viewer.settled())
+                    || now.duration_since(since) > SCREENSHOT_WAIT;
+                if self.frames >= 10 && ready && !self.probe.screenshot_requested {
                     self.probe.screenshot_requested = true;
                     let (path, saved, report) = (
                         path.clone(),

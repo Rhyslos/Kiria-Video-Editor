@@ -37,6 +37,8 @@ pub struct Viewer {
     pub playhead: Time,
     /// What was last asked for, so the same request isn't sent every frame.
     requested: Option<(Project, Time, (u32, u32))>,
+    /// The timeline time of the newest picture that came back since then.
+    answered: Option<Time>,
     last_error: Option<String>,
     /// While playing on Auto: how far the picture is lowered to keep up (1, 1/2 or 1/4).
     play_scale: u32,
@@ -57,6 +59,7 @@ impl Viewer {
                 .and_then(|s| Time::from_ratio((s * 1000.0) as i64, 1000))
                 .unwrap_or(Time::ZERO),
             requested: None,
+            answered: None,
             last_error: None,
             play_scale: 1,
             frame_interval: None,
@@ -71,9 +74,18 @@ impl Viewer {
         }
     }
 
+    /// Whether the picture last asked for has come back (true when none was
+    /// asked for), so a screenshot shows what is at the playhead.
+    pub fn settled(&self) -> bool {
+        self.requested
+            .as_ref()
+            .is_none_or(|(_, at, _)| self.answered == Some(*at))
+    }
+
     /// Takes in a finished picture. Returns an error to show, once per new problem.
     pub fn poll(&mut self, ctx: &egui::Context, quality: PreviewQuality) -> Option<diag::AppError> {
         let picture = self.preview.latest()?;
+        self.answered = Some(picture.at);
         // Drop resolution before dropping frames: on Auto, an RGBA picture
         // that took longer than a frame lowers the next ones. Planes cost
         // the same at any size, so lowering them would only blur: they
@@ -220,6 +232,7 @@ impl Viewer {
         if !same {
             self.preview.show(project, seq.id, self.playhead, want.0, want.1);
             self.requested = Some((project.clone(), self.playhead, want));
+            self.answered = None;
         }
         click
     }
