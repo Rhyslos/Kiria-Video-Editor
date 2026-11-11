@@ -1247,19 +1247,18 @@ impl Editor {
     }
 
     fn search_window(&mut self, ctx: &egui::Context) {
+        use crate::search::Hit;
         let mut open = self.show_search;
-        let mut chosen = None;
-        let mut jump = None;
-        let seq = self.document.as_ref().and_then(|d| d.project().active());
+        let project = self.document.as_ref().map(Document::project);
+        let seq = project.and_then(|p| p.active());
         let fps = seq.map_or(60.0, |s| s.settings.frame_rate.as_f64());
-        let labels: Vec<(String, f64)> = seq
-            .map(|s| {
-                s.labels
-                    .iter()
-                    .map(|l| (l.name.clone(), l.at.as_secs_f64()))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let hits = crate::search::results(&self.search_text, &self.shortcuts, seq, |clip| {
+            project
+                .and_then(|p| p.media.get(&clip.media))
+                .and_then(|m| m.path.file_name())
+                .map_or_else(|| "missing".into(), |n| n.to_string_lossy().into_owned())
+        });
+        let mut chosen = None;
         egui::Window::new("Search")
             .open(&mut open)
             .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 80.0))
@@ -1268,42 +1267,41 @@ impl Editor {
             .show(ctx, |ui| {
                 let field = ui.text_edit_singleline(&mut self.search_text);
                 field.request_focus();
+                if field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    chosen = hits.first().cloned();
+                }
                 ui.label(
-                    egui::RichText::new("Commands and timeline labels; clips and settings join later.")
-                        .color(self.theme.muted),
+                    egui::RichText::new(
+                        "Commands, settings, timeline labels and clips. Enter picks the first.",
+                    )
+                    .color(self.theme.muted),
                 );
-                let needle = self.search_text.to_lowercase();
-                let mut seen = Vec::new();
-                for (action, shortcut) in self.shortcuts.bindings() {
-                    if seen.contains(action) || !action.label().to_lowercase().contains(&needle) {
-                        continue;
-                    }
-                    seen.push(*action);
-                    let text = format!("{}    {}", action.label(), shortcut.label());
-                    if ui.selectable_label(false, text).clicked() {
-                        chosen = Some(*action);
+                for hit in hits.iter().take(crate::search::SHOWN) {
+                    if ui.selectable_label(false, hit.text(fps)).clicked() {
+                        chosen = Some(hit.clone());
                     }
                 }
-                for label in labels
-                    .iter()
-                    .filter(|(name, _)| name.to_lowercase().contains(&needle))
-                {
-                    let text = format!(
-                        "Go to label: {}    {}",
-                        label.0,
-                        ui_kit::timeline::timecode(label.1, fps)
+                if hits.len() > crate::search::SHOWN {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{} more: type more of the name.",
+                            hits.len() - crate::search::SHOWN
+                        ))
+                        .color(self.theme.muted),
                     );
-                    if ui.selectable_label(false, text).clicked() {
-                        jump = Some(label.1);
-                    }
                 }
             });
-        self.show_search = open && chosen.is_none() && jump.is_none();
-        if let Some(at) = jump {
-            self.seek(at);
-        }
-        if let Some(action) = chosen {
-            self.run_action(action);
+        self.show_search = open && chosen.is_none();
+        match chosen {
+            Some(Hit::Command { action, .. }) => self.run_action(action),
+            Some(Hit::Label { at, .. }) => self.seek(at),
+            Some(Hit::Clip { id, at, .. }) => {
+                self.selected = vec![id];
+                self.seek(at);
+            }
+            Some(Hit::Settings) => self.show_settings = true,
+            Some(Hit::TimelineSettings) => self.show_timeline_settings = true,
+            None => {}
         }
     }
 

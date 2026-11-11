@@ -12,6 +12,7 @@ mod looping;
 mod media_drawer;
 mod relink;
 mod run_mode;
+mod search;
 mod settings;
 mod timeline_panel;
 mod viewer;
