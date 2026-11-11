@@ -578,6 +578,23 @@ impl Editor {
                     self.errors.push(&err);
                 }
             }
+            E::DropMedia { media, at, insert } => {
+                let result = self.with_document(|d| {
+                    let Some(seq) = d.project().active() else {
+                        return Ok(());
+                    };
+                    let at = seq.settings.frame_rate.snap(seconds(at));
+                    let (sequence, media) = (seq.id, project::MediaId(media));
+                    d.apply(if insert {
+                        Command::InsertMedia { sequence, media, at }
+                    } else {
+                        Command::OverwriteMedia { sequence, media, at }
+                    })
+                });
+                if let Err(err) = result {
+                    self.errors.push(&err);
+                }
+            }
             E::EditLabel(id) => {
                 self.label_editor = self
                     .document

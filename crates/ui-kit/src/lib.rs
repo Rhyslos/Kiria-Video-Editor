@@ -24,8 +24,8 @@ pub use layout::Page;
 pub use shortcuts::{Action, Shortcut, ShortcutTable};
 pub use theme::{Theme, ThemeName, status};
 pub use timeline::{
-    ClipEdge, ClipPictures, ClipWaveform, TimelineClip, TimelineData, TimelineEvent, TimelineMarker,
-    TimelineTrack, TimelineView, Tool,
+    ClipEdge, ClipPictures, ClipWaveform, DraggedMedia, TimelineClip, TimelineData, TimelineEvent,
+    TimelineMarker, TimelineTrack, TimelineView, Tool,
 };
 pub use top_bar::{TitleBar, TopBar, TopBarClicks, logo_mark};
 pub use transport::TransportClick;

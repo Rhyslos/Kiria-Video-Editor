@@ -90,9 +90,15 @@ impl MediaDrawer {
 /// insert or overwrite at the edit point. Returns where it was asked to go.
 fn row(ui: &mut egui::Ui, theme: &Theme, media: &MediaRef, missing: bool) -> Option<Placement> {
     let width = ui.available_width();
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 42.0), egui::Sense::click());
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 42.0), egui::Sense::click_and_drag());
+    if response.drag_started() {
+        response.dnd_set_drag_payload(ui_kit::DraggedMedia(media.id.0));
+    }
+    if response.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+    }
     let response = response.on_hover_text(format!(
-        "{}\nDouble-click to place it at the end of the timeline; right-click to insert or overwrite at the edit point.",
+        "{}\nDouble-click to place it at the end of the timeline; right-click to insert or overwrite at the edit point; or drag it onto the timeline.",
         media.path.display()
     ));
     let painter = ui.painter_at(rect);

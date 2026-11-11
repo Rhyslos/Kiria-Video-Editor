@@ -132,6 +132,9 @@ pub enum TimelineEvent {
     },
     /// The region was drawn or adjusted (`None`: cleared).
     SetRegion(Option<(f64, f64)>),
+    /// A dragged file was dropped at `at`: over what is there, or (Ctrl
+    /// held) inserted, pushing the rest later.
+    DropMedia { media: u64, at: f64, insert: bool },
     /// A timeline label was double-clicked (or "Edit" chosen on it).
     EditLabel(u64),
     /// "Add a label here" from the right-click menu.
@@ -153,6 +156,10 @@ enum RegionDrag {
     Start,
     End,
 }
+
+/// A file being dragged from a list (the media drawer) onto the timeline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DraggedMedia(pub u64);
 
 /// One end of a clip.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1014,6 +1021,23 @@ impl TimelineView {
             };
             let row_rects = rows(&area, tracks.len(), height, scroll, from_bottom);
             let t = self.time_at(left, p.x);
+            // A file dragged over the timeline: show where it would land.
+            if r.dnd_hover_payload::<DraggedMedia>().is_some() {
+                let x = self.x_of(left, t.max(0.0));
+                ui.painter().line_segment(
+                    [pos2(x, layout.video.top()), pos2(x, layout.audio.bottom())],
+                    Stroke::new(2.0, ui.visuals().selection.stroke.color),
+                );
+            }
+            if let Some(dragged) = r.dnd_release_payload::<DraggedMedia>() {
+                let insert = ui.input(|i| i.modifiers.command);
+                events.push(TimelineEvent::DropMedia {
+                    media: dragged.0,
+                    at: t.max(0.0),
+                    insert,
+                });
+                continue;
+            }
             let hit = tracks
                 .iter()
                 .zip(&row_rects)
