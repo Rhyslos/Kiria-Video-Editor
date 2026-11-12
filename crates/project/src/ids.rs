@@ -53,6 +53,15 @@ id_type!(
     LinkId, "link#"
 );
 
+id_type!(
+    /// A label put on media files (Drone, Interview…), format 13.
+    MediaLabelId, "media-label#"
+);
+id_type!(
+    /// A custom list of media files, format 13.
+    MediaListId, "list#"
+);
+
 impl MediaId {
     /// No file: the `media` of a clip that plays none (a nested timeline,
     /// an adjustment layer). Ids are handed out from 1, so no file has it.

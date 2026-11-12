@@ -347,7 +347,7 @@ fn run(inbox: &Receiver<Request>, outbox: &Sender<Picture>, mut worker: Worker, 
     let mut waiting = Waiting::new(inbox);
     loop {
         let request = match waiting.next_within(IDLE_AFTER) {
-            Next::Request(request) => request,
+            Next::Request(request) => *request,
             Next::Closed => return,
             // Nothing asked for a moment: fill in behind the playhead, a
             // stretch at a time, until there is nothing to fill or
@@ -377,7 +377,7 @@ fn run(inbox: &Receiver<Request>, outbox: &Sender<Picture>, mut worker: Worker, 
 
 /// What came of waiting for a request for a while.
 enum Next {
-    Request(Request),
+    Request(Box<Request>),
     /// Nothing was asked for in that time.
     Idle,
     /// Nobody asks any more.
@@ -433,7 +433,7 @@ impl<'a> Waiting<'a> {
             self.take_in();
         }
         match self.newest.take() {
-            Some(request) if !self.closed => Next::Request(request),
+            Some(request) if !self.closed => Next::Request(Box::new(request)),
             _ => Next::Closed,
         }
     }

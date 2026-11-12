@@ -21,6 +21,7 @@ egui = "0.37"
 graphics = { path = "../graphics" }
 image = { version = "0.25", default-features = false, features = ["png"] }
 jobs = { path = "../jobs" }
+library = { path = "../library" }
 media = { path = "../media" }
 os = { path = "../os" }
 project = { path = "../project" }
