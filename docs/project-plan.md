@@ -138,7 +138,7 @@ Note: no OS lets an app reserve an exact GPU percentage. The GPU setting is a wo
 
 - Preview resolution: Full, 1/2, 1/4, or Auto (drops during playback, full when paused).
 - Effects quality: Draft or Full. Draft uses cheaper keying and grading paths.
-- Proxy mode: Off, On, Auto (a proxy for files in which a jump can't put a picture on screen within 50 ms, judged from the file's key frame distance and a decode timed on this machine). On Auto the proxy's frame is shown at once and the exact frame when the playhead rests; On shows proxy frames only.
+- Proxy mode: Off, On, Auto (a proxy for files in which a jump can't put a picture on screen within 50 ms, judged from the file's key frame distance and a decode timed on this machine). On Auto the proxy's frame is shown at once and the exact frame when the playhead rests; On shows proxy frames only. A jump in a file without a proxy shows the nearest key frame before the moment at once and then the exact frame, or (a setting) waits for the exact frame.
 - A small indicator in the viewport always shows the current quality and why it changed.
 
 ### Targets

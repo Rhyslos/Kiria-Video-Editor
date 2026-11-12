@@ -37,7 +37,10 @@
 //! would have to jump, and the frame isn't kept) gets a first picture at
 //! once, before the exact one ([`Worker::stand_in`]): the frame at that
 //! moment from the file's proxy when it has one (`cache::proxy`), else the
-//! key frame before it (up to one key frame distance early). The exact
+//! key frame before it (up to one key frame distance early), unless that
+//! was switched off ([`Preview::set_key_frame_first`]): then a file
+//! without a proxy shows nothing first and the exact frame when it comes.
+//! The exact
 //! frame follows and replaces it; a newer request may give that decode
 //! up, since it gets a first picture of its own at once. Not while
 //! playing: playing decodes on frame by frame. With proxies On, a file
@@ -179,6 +182,8 @@ struct Request {
     proxies: Option<Arc<Shelf>>,
     /// The timeline is playing: frames are decoded on, never stood in for.
     playing: bool,
+    /// A file without a proxy may show the key frame before the moment first.
+    key_frame_first: bool,
 }
 
 pub struct Preview {
@@ -187,6 +192,8 @@ pub struct Preview {
     /// Handed along with every request: proxies may be shown.
     proxies: Option<Arc<Shelf>>,
     playing: bool,
+    /// Handed along with every request: see [`Preview::set_key_frame_first`].
+    key_frame_first: bool,
     pictures: Receiver<Picture>,
     /// Disconnects when the worker thread has ended.
     ended: Receiver<()>,
@@ -239,6 +246,7 @@ impl Preview {
             unfillable: HashSet::new(),
             stuck: None,
             playing: false,
+            key_frame_first: true,
             proxies: Proxies::default(),
             glancer: None,
             last_glance: None,
@@ -256,6 +264,7 @@ impl Preview {
             requests: Some(requests),
             proxies: None,
             playing: false,
+            key_frame_first: true,
             pictures,
             ended,
         }
@@ -266,6 +275,13 @@ impl Preview {
     /// handed it; an export's never are.
     pub fn set_proxies(&mut self, shelf: Option<Arc<Shelf>>) {
         self.proxies = shelf;
+    }
+
+    /// Whether a jump in a file without a proxy shows the key frame before
+    /// the moment at once, then the exact frame (on, the usual), or waits
+    /// for the exact frame (off). Proxy frames shown first are not affected.
+    pub fn set_key_frame_first(&mut self, on: bool) {
+        self.key_frame_first = on;
     }
 
     /// The timeline is playing (or not): while it plays, pictures are
@@ -306,6 +322,7 @@ impl Preview {
             max_height,
             proxies: self.proxies.clone(),
             playing: self.playing,
+            key_frame_first: self.key_frame_first,
         });
     }
 
@@ -474,6 +491,8 @@ struct Worker {
     stuck: Option<((MediaId, u32), f64)>,
     /// The newest request was made while playing.
     playing: bool,
+    /// The newest request lets a key frame be shown first.
+    key_frame_first: bool,
     /// Proxies: where they are and the decoders reading them.
     proxies: Proxies,
     /// A decoder of its own for a key frame shown first, and its file: the
@@ -657,6 +676,7 @@ impl Worker {
         let gave_up_last = std::mem::take(&mut self.gave_up_last);
         self.playhead = None;
         self.playing = r.playing;
+        self.key_frame_first = r.key_frame_first;
         self.proxies.take(r.proxies.as_ref());
         let Some(sequence) = r.project.sequences.iter().find(|s| s.id == r.sequence) else {
             return Some(Picture::black(r.at));
@@ -693,9 +713,9 @@ impl Worker {
     /// A first picture for `r`, when its exact picture can't be had at
     /// once: some layer isn't kept, not near its decoder's place, and (with
     /// proxies On) has no proxy to be shown from. Each layer then comes
-    /// kept, from its proxy, or as the key frame before its moment. `None`
-    /// when the exact picture is quick, while playing, or when some layer
-    /// has no first picture to give. The flag says whether a proxy gave
+    /// kept, from its proxy, or as the key frame before its moment (unless
+    /// key frames first are off). `None` when the exact picture is quick,
+    /// while playing, or when some layer has no first picture to give. The flag says whether a proxy gave
     /// one (a newer request then gets a first picture at once, too).
     fn stand_in(
         &mut self,
@@ -789,6 +809,9 @@ impl Worker {
                 pictures.push(picture);
                 quick.push(Quick::Proxy);
                 continue;
+            }
+            if !self.key_frame_first {
+                return None;
             }
             pictures.push(self.glance(target)?);
             quick.push(Quick::KeyFrame);
@@ -1913,6 +1936,7 @@ mod tests {
             unfillable: HashSet::new(),
             stuck: None,
             playing: false,
+            key_frame_first: true,
             proxies: Proxies::default(),
             glancer: None,
             last_glance: None,
@@ -1965,6 +1989,7 @@ mod tests {
             unfillable: HashSet::new(),
             stuck: None,
             playing: false,
+            key_frame_first: true,
             proxies: Proxies::default(),
             glancer: None,
             last_glance: None,
@@ -1981,6 +2006,7 @@ mod tests {
             max_height: 160,
             proxies: None,
             playing: false,
+            key_frame_first: true,
         }
     }
 
@@ -2107,6 +2133,28 @@ mod tests {
         // A small step back: no picture from far earlier first.
         let (first, _) = ask(&mut worker, &request(&p, seq, 1700), &mut waiting);
         assert!(first.is_empty());
+    }
+
+    #[test]
+    fn with_key_frames_first_off_only_the_exact_frame_or_a_proxy_comes() {
+        let (mut worker, p, seq) = worker_and_project();
+        let (_requests, inbox) = channel::<Request>();
+        let mut waiting = Waiting::new(&inbox);
+        let mut off = request(&p, seq, 1800);
+        off.key_frame_first = false;
+        let (first, answer) = ask(&mut worker, &off, &mut waiting);
+        assert!(first.is_empty(), "no key frame first");
+        let answer = answer.unwrap();
+        assert!(!answer.stand_in && answer.frame.is_some(), "the exact frame");
+        // A proxy frame still comes first: the setting is about key frames only.
+        let (mut worker, p, seq) = worker_and_project();
+        let (shelf, _dir) = shelf_with_proxy(&p, ProxyMode::Auto);
+        let mut off = with_shelf(request(&p, seq, 1800), &shelf);
+        off.key_frame_first = false;
+        let (first, answer) = ask(&mut worker, &off, &mut waiting);
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].method.as_deref(), Some(PROXY_FIRST));
+        assert!(!answer.unwrap().stand_in);
     }
 
     #[test]
