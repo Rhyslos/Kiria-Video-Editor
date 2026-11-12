@@ -83,6 +83,7 @@ impl Editor {
             Picked::BuildProxy(media) => self.proxies.build_now(media),
             Picked::DeleteProxy(media) => self.proxies.delete(&self.jobs, media),
             Picked::Import => self.run_action(Action::Import),
+            Picked::Prune => self.run_action(Action::Prune),
         }
     }
 

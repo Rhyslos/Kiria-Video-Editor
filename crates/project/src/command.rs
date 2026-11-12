@@ -160,6 +160,12 @@ pub enum Command {
         template: Box<Template>,
         at: Time,
     },
+    /// Takes files that no timeline uses out of the project (prune), with
+    /// their labels, places in lists and notes, as one step. Refused when
+    /// any of them is used. Files on disk are never touched.
+    RemoveMedia {
+        media: Vec<MediaId>,
+    },
     /// Points a media file at where it is now (it was moved or renamed).
     Relink {
         media: MediaId,
@@ -574,6 +580,7 @@ impl Command {
                 template,
                 at,
             } => crate::templates::insert(&mut p, *sequence, template, *at)?,
+            Command::RemoveMedia { media } => crate::prune::remove_media(&mut p, media)?,
             Command::Relink { media, path } => {
                 p.media.get_mut(media).ok_or_else(|| missing("media file"))?.path = path.clone();
             }

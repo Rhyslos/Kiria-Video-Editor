@@ -155,6 +155,8 @@ pub enum Picked {
     DeleteProxy(MediaId),
     /// Open the import dialog.
     Import,
+    /// Open Prune: the files no timeline uses, to take out of the project.
+    Prune,
 }
 
 impl From<Organised> for Picked {
