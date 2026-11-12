@@ -10,6 +10,8 @@ publish = false
 [dependencies]
 cpal = "0.18"
 rtrb = "0.4"
+# Proxies: the preview shows their frames first.
+cache = { path = "../cache" }
 diag = { path = "../diag" }
 image = { version = "0.25", default-features = false, features = ["png"] }
 media = { path = "../media" }

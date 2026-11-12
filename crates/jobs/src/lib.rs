@@ -85,6 +85,9 @@ impl ProgressCell {
 pub struct JobContext {
     cancelled: Arc<AtomicBool>,
     progress: Arc<ProgressCell>,
+    /// For background jobs: whether background work is held back now
+    /// (the timeline plays, under the default policy).
+    held_back: Option<Arc<AtomicBool>>,
 }
 
 impl JobContext {
@@ -98,6 +101,24 @@ impl JobContext {
     /// reads it with [`JobHandle::progress`].
     pub fn set_progress(&self, done: f32) {
         self.progress.set(done);
+    }
+
+    /// Whether background work is held back right now (the timeline plays,
+    /// under the default policy). Always false for jobs of other priorities.
+    pub fn is_held_back(&self) -> bool {
+        self.held_back
+            .as_ref()
+            .is_some_and(|held| held.load(Ordering::Relaxed))
+    }
+
+    /// For a long background job (a proxy build): waits here while
+    /// background work is held back, so a job that started before the
+    /// timeline began playing gives the machine back too. Returns at once
+    /// when the job is cancelled.
+    pub fn wait_while_held_back(&self) {
+        while self.is_held_back() && !self.is_cancelled() {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
     }
 }
 
@@ -272,6 +293,38 @@ mod tests {
             disk_cache_gb: 1,
             background,
         })
+    }
+
+    #[test]
+    fn a_running_background_job_sees_when_it_is_held_back() {
+        let jobs = system(2, BackgroundPolicy::PauseWhilePlaying);
+        let (started, running) = std::sync::mpsc::channel();
+        let (go_on, wait) = std::sync::mpsc::channel::<()>();
+        let job = jobs.submit(PoolKind::Analysis, Priority::Background, "long", move |ctx| {
+            started.send(ctx.is_held_back()).unwrap();
+            wait.recv().unwrap();
+            let held = ctx.is_held_back();
+            let since = Instant::now();
+            ctx.wait_while_held_back();
+            Ok((held, since.elapsed()))
+        });
+        assert!(!running.recv().unwrap(), "not held back before playing");
+        jobs.set_playing(true);
+        go_on.send(()).unwrap();
+        std::thread::sleep(Duration::from_millis(150));
+        jobs.set_playing(false);
+        let (held, waited) = job.wait().unwrap();
+        assert!(held, "held back while playing");
+        assert!(
+            waited >= Duration::from_millis(50),
+            "waited until playing stopped"
+        );
+        let other = jobs.submit(PoolKind::Analysis, Priority::Interactive, "now", |ctx| {
+            Ok(ctx.is_held_back())
+        });
+        jobs.set_playing(true);
+        assert!(!other.wait().unwrap(), "only background work is held back");
+        jobs.set_playing(false);
     }
 
     #[test]

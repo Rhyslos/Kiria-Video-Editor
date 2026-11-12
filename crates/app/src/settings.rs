@@ -54,6 +54,8 @@ pub struct Settings {
     pub split_view: bool,
     /// Where the viewer's own window was last, so it opens there again.
     pub viewer_window: Option<crate::viewer_window::WindowPlace>,
+    /// Proxies Off, On or Auto (the usual): the same for every project.
+    pub proxies: cache::proxy::ProxyMode,
 }
 
 impl Settings {
@@ -109,6 +111,26 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn proxies_are_auto_until_set_and_kept() {
+        assert_eq!(Settings::default().proxies, cache::proxy::ProxyMode::Auto);
+        let older: Settings = ron::from_str("(edit_at_playhead: true)").unwrap();
+        assert_eq!(
+            older.proxies,
+            cache::proxy::ProxyMode::Auto,
+            "older files read as Auto"
+        );
+        let set = Settings {
+            proxies: cache::proxy::ProxyMode::On,
+            ..Settings::default()
+        };
+        let text = ron::ser::to_string(&set).unwrap();
+        assert_eq!(
+            ron::from_str::<Settings>(&text).unwrap().proxies,
+            cache::proxy::ProxyMode::On
+        );
+    }
 
     #[test]
     fn the_ways_of_looking_at_tracks_are_off_until_turned_on_and_kept() {

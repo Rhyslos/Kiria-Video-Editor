@@ -148,6 +148,8 @@ pub struct Viewer {
     play_scale: u32,
     /// Seconds per timeline frame while playing, to tell whether pictures keep up.
     frame_interval: Option<f64>,
+    /// Where proxies are, handed to the worker (again when it is restarted).
+    proxies: Option<Arc<cache::proxy::Shelf>>,
 }
 
 impl Viewer {
@@ -185,7 +187,15 @@ impl Viewer {
             last_error: None,
             play_scale: 1,
             frame_interval: None,
+            proxies: None,
         }
+    }
+
+    /// Lets the viewer show frames from proxies (as the shelf's mode says).
+    pub fn set_proxies(&mut self, shelf: Option<Arc<cache::proxy::Shelf>>) {
+        self.preview.set_proxies(shelf.clone());
+        self.proxies = shelf;
+        self.requested = None;
     }
 
     /// A second viewer beside this one, with a worker of its own on the
@@ -195,6 +205,7 @@ impl Viewer {
         let decoding = self.decoding.as_ref().map(|d| d.sharing(4));
         let mut viewer = Viewer::new(&self.ctx, None, self.convert, decoding, self.renderer.clone());
         viewer.slot = slot;
+        viewer.set_proxies(self.proxies.clone());
         viewer
     }
 
@@ -209,6 +220,7 @@ impl Viewer {
     /// Playback started (`Some(seconds per frame)`) or stopped (`None`).
     pub fn set_playing(&mut self, frame_interval: Option<f64>) {
         self.frame_interval = frame_interval;
+        self.preview.set_playing(frame_interval.is_some());
         if frame_interval.is_none() {
             self.play_scale = 1;
         }
@@ -226,7 +238,11 @@ impl Viewer {
     pub fn poll(&mut self, ctx: &egui::Context, quality: PreviewQuality) -> Option<diag::AppError> {
         self.count_drawn();
         let picture = self.preview.latest()?;
-        self.answered = Some(picture.at);
+        // A first picture (a proxy frame, a key frame) is not the answer:
+        // the exact one is still coming.
+        if !picture.stand_in {
+            self.answered = Some(picture.at);
+        }
         if picture.frame.is_some() || picture.composed.is_some() {
             self.slow.note(
                 picture.took,
@@ -407,6 +423,8 @@ impl Viewer {
             decoding.failed();
         }
         self.preview = start_preview(&self.ctx, self.convert, None, self.renderer.as_ref());
+        self.preview.set_proxies(self.proxies.clone());
+        self.preview.set_playing(self.frame_interval.is_some());
         self.requested = None;
         self.ctx.request_repaint();
     }

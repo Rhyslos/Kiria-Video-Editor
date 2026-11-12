@@ -37,7 +37,7 @@ std::fs::read(&path).or_explain(|| {
 |---|---|
 | `src/lib.rs` | `start()` and `Diagnostics`: sets everything up in the right order |
 | `src/error.rs` | `AppError` (what, why, fix, one-click `FixAction`, cause), `Explain`, `Result` |
-| `src/paths.rs` | `AppDirs`: the app's data, logs and crash-reports folders |
+| `src/paths.rs` | `AppDirs`: the app's data, logs and crash-reports folders, and its cache folder (proxies; under `~/.cache` on Linux, `cache` in the data folder on Windows) |
 | `src/logging.rs` | Daily log files, 7 days kept; warnings also go to the terminal. `RUST_LOG` changes the level |
 | `src/crash.rs` | Panic hook that writes `crash-<time>.txt`: message, place, version, system, graphics card, last 200 log lines, backtrace |
 | `src/session.rs` | A marker file that reveals a run which did not close cleanly (crash, forced quit, power cut). It names the process and the open project (`note_open_project`), so the launcher can read it (`unfinished_run`), offer recovery and clear it (`forget_unfinished_run`) |

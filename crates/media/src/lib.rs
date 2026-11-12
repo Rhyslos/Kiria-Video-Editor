@@ -9,6 +9,8 @@
 //! - [`audio`]: sound as stereo float samples at any rate, from any point.
 //! - [`decode`]: the picture at any moment of a video, scaled and upright.
 //! - [`encode`]: writing a video file: H.264 pictures and AAC sound in an MP4.
+//! - [`proxy`]: writing a proxy, a small copy of a recording with key frames
+//!   close together and exactly the original's frame times.
 //! - [`yuv`]: that picture as the decoder's own planes, for the GPU to convert.
 //! - [`vulkan`]: decoding on the window's own graphics device, where the
 //!   picture never leaves the graphics card.
@@ -29,13 +31,14 @@ mod ffi;
 pub mod fingerprint;
 pub mod jump;
 pub mod probe;
+pub mod proxy;
 pub mod relink;
 pub mod timing;
 pub mod vulkan;
 pub mod yuv;
 
 pub use audio::AudioDecoder;
-pub use decode::{Decoded, Decoding, Frame, Level, Newer, Reached, VideoDecoder, Work};
+pub use decode::{DecodeCost, Decoded, Decoding, Frame, Level, Newer, Reached, VideoDecoder, Work};
 pub use fingerprint::fingerprint;
 pub use probe::{Probe, probe};
 pub use vulkan::{GpuFrame, WindowDevice};

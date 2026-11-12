@@ -5,7 +5,7 @@ use diag::AppError;
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, mpsc};
 use std::thread::JoinHandle;
 
@@ -49,6 +49,8 @@ struct State {
 struct Shared {
     state: Mutex<State>,
     wake: Condvar,
+    /// `State::background_paused`, readable by running jobs without the lock.
+    held_back: Arc<AtomicBool>,
 }
 
 impl Shared {
@@ -70,6 +72,7 @@ impl Pool {
         let shared = Arc::new(Shared {
             state: Mutex::new(State::default()),
             wake: Condvar::new(),
+            held_back: Arc::new(AtomicBool::new(false)),
         });
         let workers = (0..threads.max(1))
             .filter_map(|i| {
@@ -99,6 +102,7 @@ impl Pool {
         let context = JobContext {
             cancelled: Arc::clone(&cancelled),
             progress: Arc::clone(&progress),
+            held_back: (priority == Priority::Background).then(|| Arc::clone(&self.shared.held_back)),
         };
         let name = name.to_owned();
         let work: Work = Box::new(move || {
@@ -132,6 +136,7 @@ impl Pool {
 
     pub(crate) fn set_background_paused(&self, paused: bool) {
         self.shared.lock().background_paused = paused;
+        self.shared.held_back.store(paused, AtomicOrdering::Relaxed);
         self.shared.wake.notify_all();
     }
 
@@ -146,6 +151,7 @@ impl Drop for Pool {
         let mut state = self.shared.lock();
         state.shutting_down = true;
         state.background_paused = false;
+        self.shared.held_back.store(false, AtomicOrdering::Relaxed);
         drop(state);
         self.shared.wake.notify_all();
         for worker in self.workers.drain(..) {

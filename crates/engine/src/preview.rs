@@ -33,6 +33,17 @@
 //! convert colour while drawing ([`Convert::WhileDrawing`]) and the file's
 //! format allows; otherwise as RGBA, converted here on the worker.
 //!
+//! A request whose picture can't be decoded quickly (the file's decoder
+//! would have to jump, and the frame isn't kept) gets a first picture at
+//! once, before the exact one ([`Worker::stand_in`]): the frame at that
+//! moment from the file's proxy when it has one (`cache::proxy`), else the
+//! key frame before it (up to one key frame distance early). The exact
+//! frame follows and replaces it; a newer request may give that decode
+//! up, since it gets a first picture of its own at once. Not while
+//! playing: playing decodes on frame by frame. With proxies On, a file
+//! with a proxy is shown from it alone and the original is not decoded.
+//! Export never reads proxies: its workers are never handed the shelf.
+//!
 //! Each file is decoded the fastest way that works for it, and steps down
 //! when a way fails, at opening or at any picture ([`ladder`]): on the
 //! window's own graphics device when the editor hands one over
@@ -44,11 +55,12 @@ use crate::compose::{Composed, Composer, Composing};
 use crate::frame::{self, FrameDescription};
 use crate::frames::FrameCache;
 use crate::timeline::video_at;
+use cache::proxy::{ProxyMode, Shelf};
 use media::{Decoded, Decoding, GpuFrame, Level, Newer, Reached, VideoDecoder, WindowDevice, Work};
-use project::{MediaId, Project, SequenceId, Time};
+use project::{Fingerprint, MediaId, Project, SequenceId, Time};
 use render::Area;
-use std::collections::{HashSet, VecDeque};
-use std::path::Path;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError, channel};
 use std::time::{Duration, Instant};
@@ -152,6 +164,9 @@ pub struct Picture {
     pub work: Option<Work>,
     /// Which decoder made it, for the viewer's corner.
     pub method: Option<String>,
+    /// A first picture, shown until the exact one for the same request
+    /// (or a newer one) comes: a proxy frame or a key frame.
+    pub stand_in: bool,
 }
 
 struct Request {
@@ -160,11 +175,18 @@ struct Request {
     at: Time,
     max_width: u32,
     max_height: u32,
+    /// Where proxies are kept, when they may be used.
+    proxies: Option<Arc<Shelf>>,
+    /// The timeline is playing: frames are decoded on, never stood in for.
+    playing: bool,
 }
 
 pub struct Preview {
     /// `None` once closed: nothing more is asked for.
     requests: Option<Sender<Request>>,
+    /// Handed along with every request: proxies may be shown.
+    proxies: Option<Arc<Shelf>>,
+    playing: bool,
     pictures: Receiver<Picture>,
     /// Disconnects when the worker thread has ended.
     ended: Receiver<()>,
@@ -216,6 +238,10 @@ impl Preview {
             filler: None,
             unfillable: HashSet::new(),
             stuck: None,
+            playing: false,
+            proxies: Proxies::default(),
+            glancer: None,
+            last_glance: None,
         };
         let (running, ended) = channel::<()>();
         let spawned = std::thread::Builder::new().name("preview".into()).spawn(move || {
@@ -228,9 +254,24 @@ impl Preview {
         }
         Preview {
             requests: Some(requests),
+            proxies: None,
+            playing: false,
             pictures,
             ended,
         }
+    }
+
+    /// Lets the worker show frames from the proxies on `shelf` (or not,
+    /// with `None`), as the shelf's mode says. The viewer's workers are
+    /// handed it; an export's never are.
+    pub fn set_proxies(&mut self, shelf: Option<Arc<Shelf>>) {
+        self.proxies = shelf;
+    }
+
+    /// The timeline is playing (or not): while it plays, pictures are
+    /// decoded on frame by frame and nothing stands in for them.
+    pub fn set_playing(&mut self, playing: bool) {
+        self.playing = playing;
     }
 
     /// Stops the worker and waits until it has ended, at most `timeout`:
@@ -263,6 +304,8 @@ impl Preview {
             at,
             max_width,
             max_height,
+            proxies: self.proxies.clone(),
+            playing: self.playing,
         });
     }
 
@@ -291,21 +334,27 @@ fn run(inbox: &Receiver<Request>, outbox: &Sender<Picture>, mut worker: Worker, 
             Next::Closed => return,
             // Nothing asked for a moment: fill in behind the playhead, a
             // stretch at a time, until there is nothing to fill or
-            // something is asked for.
-            Next::Idle if worker.fill(&mut waiting) => continue,
+            // something is asked for. (And let go of proxies that went.)
+            Next::Idle if worker.idle(&mut waiting) => continue,
             Next::Idle => match waiting.next() {
                 Some(request) => request,
                 None => return,
             },
         };
+        let mut show = |picture: Picture| {
+            if outbox.send(picture).is_err() {
+                return false;
+            }
+            notify();
+            true
+        };
         // A decode the next request can't use is given up: nothing to send.
-        let Some(picture) = worker.picture(&request, &mut waiting) else {
+        let Some(picture) = worker.picture(&request, &mut waiting, &mut show) else {
             continue;
         };
-        if outbox.send(picture).is_err() {
+        if !show(picture) {
             return;
         }
-        notify();
     }
 }
 
@@ -423,6 +472,146 @@ struct Worker {
     /// A stretch (file, and where its kept frames begin) that a finished
     /// fill did not make any longer: left alone until that changes.
     stuck: Option<((MediaId, u32), f64)>,
+    /// The newest request was made while playing.
+    playing: bool,
+    /// Proxies: where they are and the decoders reading them.
+    proxies: Proxies,
+    /// A decoder of its own for a key frame shown first, and its file: the
+    /// one at the playhead keeps its place.
+    glancer: Option<((MediaId, u32), VideoDecoder)>,
+    /// The key frame last shown first (file, and the key frame's time):
+    /// not shown again while it is what the screen shows anyway.
+    last_glance: Option<((MediaId, u32), f64)>,
+}
+
+/// The proxies a worker reads.
+#[derive(Default)]
+struct Proxies {
+    shelf: Option<Arc<Shelf>>,
+    /// The shelf's generation the remembered answers are from.
+    generation: u64,
+    /// Each file's proxy, or none, as last looked up.
+    files: HashMap<(MediaId, u32), Option<PathBuf>>,
+    /// Open proxies, most recently used first.
+    decoders: VecDeque<((MediaId, u32), VideoDecoder)>,
+    /// Proxies that could not be read: not tried again this session.
+    broken: HashSet<PathBuf>,
+}
+
+impl Proxies {
+    /// Takes the shelf a request came with.
+    fn take(&mut self, shelf: Option<&Arc<Shelf>>) {
+        let same = match (&self.shelf, shelf) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        };
+        if !same {
+            self.shelf = shelf.cloned();
+            self.forget();
+        }
+        self.notice_changes();
+    }
+
+    fn forget(&mut self) {
+        self.files.clear();
+        self.decoders.clear();
+    }
+
+    /// A proxy was added or removed, or the mode changed: look again, and
+    /// let go of open proxies (one being deleted can't go while it is open).
+    fn notice_changes(&mut self) {
+        let Some(generation) = self.shelf.as_ref().map(|shelf| shelf.generation()) else {
+            return;
+        };
+        if generation != self.generation {
+            self.generation = generation;
+            self.forget();
+        }
+    }
+
+    fn mode(&self) -> ProxyMode {
+        self.shelf.as_ref().map_or(ProxyMode::Off, |shelf| shelf.mode())
+    }
+
+    /// The proxy of a file, when it has one and proxies aren't off.
+    fn of(&mut self, key: (MediaId, u32), fingerprint: &Fingerprint) -> Option<PathBuf> {
+        if self.mode() == ProxyMode::Off {
+            return None;
+        }
+        let shelf = self.shelf.as_ref()?;
+        if let Some(known) = self.files.get(&key) {
+            return known.clone();
+        }
+        let found = shelf
+            .ready(fingerprint, key.1)
+            .filter(|path| !self.broken.contains(path));
+        self.files.insert(key, found.clone());
+        found
+    }
+
+    /// The frame on screen at `target`'s moment, from the proxy at `path`.
+    /// `None` when it can't be read (it is not tried again).
+    fn picture(&mut self, target: &Target<'_>, path: &Path, convert: Convert) -> Option<Decoded> {
+        let key = target.key;
+        let found = self.decoders.iter().position(|(k, _)| *k == key);
+        let mut decoder = match found.and_then(|i| self.decoders.remove(i)) {
+            Some((_, decoder)) => decoder,
+            None => match VideoDecoder::open_proxy(path, target.rotation) {
+                Ok(decoder) => {
+                    if let Some(shelf) = &self.shelf {
+                        shelf.used(path);
+                    }
+                    decoder
+                }
+                Err(err) => {
+                    tracing::warn!(file = %path.display(), "a proxy could not be opened: {}", err.report());
+                    self.broken.insert(path.to_path_buf());
+                    self.files.remove(&key);
+                    return None;
+                }
+            },
+        };
+        let (w, h) = target.size;
+        let got = match convert {
+            Convert::OnCpu => decoder.frame_at(target.moment, w, h).map(Decoded::Rgba),
+            Convert::WhileDrawing { .. } => decoder.picture_at(target.moment, w, h),
+        };
+        match got {
+            Ok(picture) => {
+                self.decoders.push_front((key, decoder));
+                self.decoders.truncate(OPEN_DECODERS);
+                Some(picture)
+            }
+            Err(err) => {
+                tracing::warn!(file = %path.display(), "a proxy could not be read: {}", err.report());
+                self.broken.insert(path.to_path_buf());
+                self.files.remove(&key);
+                None
+            }
+        }
+    }
+}
+
+/// What the viewer's corner says for a proxy frame shown first.
+pub(crate) const PROXY_FIRST: &str = "proxy frame, sharpens when the playhead rests";
+/// What it says for a proxy frame with proxies On.
+pub(crate) const PROXY_ONLY: &str = "proxy frame (proxies On)";
+/// What it says for a key frame shown first.
+pub(crate) const KEY_FIRST: &str = "key frame before it, sharpening";
+
+/// A key frame is only shown first when the moment is not this little
+/// (seconds) behind the frame the decoder holds: for a step or a short drag
+/// back, a picture from up to a key frame distance earlier is more
+/// confusing than waiting for the right one.
+const GLANCE_BEHIND: f64 = 0.5;
+
+/// Where a layer's first picture came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Quick {
+    Kept,
+    Proxy,
+    KeyFrame,
 }
 
 /// A file the viewer is showing, and where in it.
@@ -454,16 +643,36 @@ impl Worker {
     /// The picture for `r`, or for a request that arrived while it was
     /// decoded and was reached first (the picture's `at` says which).
     /// `None` when the decode was given up for a newer request it can't serve.
-    fn picture(&mut self, r: &Request, waiting: &mut Waiting<'_>) -> Option<Picture> {
+    ///
+    /// A first picture is handed to `show` before the exact one is decoded,
+    /// when that would take a while ([`Worker::stand_in`]).
+    fn picture(
+        &mut self,
+        r: &Request,
+        waiting: &mut Waiting<'_>,
+        show: &mut dyn FnMut(Picture) -> bool,
+    ) -> Option<Picture> {
         let started = Instant::now();
         // Whatever is answered without decoding counts as a finished answer.
         let gave_up_last = std::mem::take(&mut self.gave_up_last);
         self.playhead = None;
+        self.playing = r.playing;
+        self.proxies.take(r.proxies.as_ref());
         let Some(sequence) = r.project.sequences.iter().find(|s| s.id == r.sequence) else {
             return Some(Picture::black(r.at));
         };
+        // A decode that follows one that was given up is finished, unless
+        // a proxy frame answered this request first: then the next request
+        // gets one at once as well, and the exact decode may be given up.
+        let mut give_up = !gave_up_last;
+        if let Some((first, from_proxy)) = self.stand_in(r, sequence, started) {
+            if !show(first) {
+                return None;
+            }
+            give_up |= from_proxy;
+        }
         if self.composing.is_some() {
-            return self.composed(r, sequence, waiting, !gave_up_last, started);
+            return self.composed(r, sequence, waiting, give_up, started);
         }
         let Some(showing) = video_at(&r.project, sequence, r.at) else {
             return Some(Picture::black(r.at)); // a gap: black
@@ -471,13 +680,189 @@ impl Worker {
         let target = Target {
             key: (showing.media.id, showing.clip.stream),
             path: &showing.media.path,
+            fingerprint: &showing.media.fingerprint,
             rotation: showing.media.info.video.as_ref().map_or(0, |v| v.rotation),
             moment: showing.source_time.as_secs_f64(),
             size: (r.max_width, r.max_height),
         };
-        let mut out = self.decoded(r.at, &target, waiting, Role::ALONE.give_up(!gave_up_last))?;
+        let mut out = self.decoded(r.at, &target, waiting, Role::ALONE.give_up(give_up))?;
         out.took = started.elapsed();
         Some(out)
+    }
+
+    /// A first picture for `r`, when its exact picture can't be had at
+    /// once: some layer isn't kept, not near its decoder's place, and (with
+    /// proxies On) has no proxy to be shown from. Each layer then comes
+    /// kept, from its proxy, or as the key frame before its moment. `None`
+    /// when the exact picture is quick, while playing, or when some layer
+    /// has no first picture to give. The flag says whether a proxy gave
+    /// one (a newer request then gets a first picture at once, too).
+    fn stand_in(
+        &mut self,
+        r: &Request,
+        sequence: &project::Sequence,
+        started: Instant,
+    ) -> Option<(Picture, bool)> {
+        if self.playing {
+            return None;
+        }
+        let mut out = Picture::black(r.at);
+        let quick;
+        if self.composing.is_some() {
+            let size = preview_size(
+                (sequence.settings.width, sequence.settings.height),
+                (r.max_width, r.max_height),
+            );
+            let description = frame::describe(&r.project, sequence, r.at).at_size(size);
+            let mut targets = Vec::with_capacity(description.layers.len());
+            for layer in &description.layers {
+                let media = r.project.media.get(&layer.media)?;
+                targets.push(Target {
+                    key: (layer.media, layer.stream),
+                    path: &media.path,
+                    fingerprint: &media.fingerprint,
+                    rotation: media.info.video.as_ref().map_or(0, |v| v.rotation),
+                    moment: layer.source_time.as_secs_f64(),
+                    size: pixels_needed(layer),
+                });
+            }
+            let (pictures, came) = self.quick_layers(&targets)?;
+            quick = came;
+            let layers = description
+                .layers
+                .iter()
+                .cloned()
+                .zip(pictures)
+                .map(|(layer, picture)| (layer, picture, None))
+                .collect();
+            let composing = self.composing.clone()?;
+            let composer = self.composer.get_or_insert_with(|| Composer::new(composing));
+            out.composed = Some(composer.compose(size, layers).ok()?);
+        } else {
+            let showing = video_at(&r.project, sequence, r.at)?;
+            let target = Target {
+                key: (showing.media.id, showing.clip.stream),
+                path: &showing.media.path,
+                fingerprint: &showing.media.fingerprint,
+                rotation: showing.media.info.video.as_ref().map_or(0, |v| v.rotation),
+                moment: showing.source_time.as_secs_f64(),
+                size: (r.max_width, r.max_height),
+            };
+            let (mut pictures, came) = self.quick_layers(&[target])?;
+            quick = came;
+            out.frame = pictures.pop();
+        }
+        // The corner describes the top layer.
+        out.method = quick.last().map(|q| q.says().to_owned());
+        out.stand_in = true;
+        out.took = started.elapsed();
+        Some((out, quick.contains(&Quick::Proxy)))
+    }
+
+    /// Pictures for these layers to be had at once, when at least one of
+    /// them can't be decoded at once; with where each came from. `None`
+    /// when none is needed or some layer has nothing quick to give.
+    fn quick_layers(&mut self, targets: &[Target<'_>]) -> Option<(Vec<Decoded>, Vec<Quick>)> {
+        let proxies_on = self.proxies.mode() == ProxyMode::On;
+        let mut slow = false;
+        for target in targets {
+            let kept = self.frames.get(target.key, target.moment).is_some();
+            let near = self
+                .decoders
+                .iter()
+                .find(|(key, _)| *key == target.key)
+                .is_some_and(|(_, decoder)| decoder.is_near(target.moment));
+            let proxy_only = proxies_on && self.proxies.of(target.key, target.fingerprint).is_some();
+            slow |= !kept && !near && !proxy_only;
+        }
+        if !slow {
+            return None;
+        }
+        let mut pictures = Vec::with_capacity(targets.len());
+        let mut quick = Vec::with_capacity(targets.len());
+        for target in targets {
+            if let Some(frame) = self.frames.get(target.key, target.moment) {
+                pictures.push(Decoded::Gpu(frame));
+                quick.push(Quick::Kept);
+                continue;
+            }
+            let proxy = self.proxies.of(target.key, target.fingerprint);
+            if let Some(picture) = proxy.and_then(|path| self.proxies.picture(target, &path, self.convert)) {
+                pictures.push(picture);
+                quick.push(Quick::Proxy);
+                continue;
+            }
+            pictures.push(self.glance(target)?);
+            quick.push(Quick::KeyFrame);
+        }
+        Some((pictures, quick))
+    }
+
+    /// The key frame before `target`'s moment, decoded on a decoder of its
+    /// own. `None` when it is the one shown first last time (the screen
+    /// shows it, or something better, already), when the moment is only
+    /// a little behind the frame the file's decoder holds, or when it
+    /// can't be had.
+    fn glance(&mut self, target: &Target<'_>) -> Option<Decoded> {
+        let key = target.key;
+        let held = self
+            .decoders
+            .iter()
+            .find(|(k, _)| *k == key)
+            .and_then(|(_, decoder)| decoder.position());
+        if held.is_some_and(|held| target.moment < held && held - target.moment < GLANCE_BEHIND) {
+            return None;
+        }
+        let mut decoder = match self.glancer.take() {
+            Some((open, decoder)) if open == key => decoder,
+            _ => {
+                let decoding = if self.ladder.contains(&Level::Hardware) {
+                    Decoding::Best
+                } else {
+                    Decoding::Software
+                };
+                match VideoDecoder::open_for_glances(target.path, key.1, target.rotation, decoding) {
+                    Ok(decoder) => decoder,
+                    Err(err) => {
+                        tracing::info!(file = %target.path.display(), "no key frame first: {}", err.report());
+                        return None;
+                    }
+                }
+            }
+        };
+        let key_time = decoder.key_frames().before(target.moment);
+        if key_time.is_some() && self.last_glance == key_time.map(|t| (key, t)) {
+            self.glancer = Some((key, decoder));
+            return None;
+        }
+        let (w, h) = target.size;
+        let rgba = matches!(self.convert, Convert::OnCpu);
+        let got = decoder.key_frame_picture(target.moment, w, h, rgba);
+        let largest = match self.convert {
+            Convert::WhileDrawing { largest_side } => largest_side,
+            Convert::OnCpu => u32::MAX,
+        };
+        let picture = match got {
+            Ok(Decoded::Yuv(planes)) if planes.width.max(planes.height) > largest => None,
+            Ok(picture) => Some(picture),
+            Err(err) => {
+                tracing::info!(file = %target.path.display(), "no key frame first: {}", err.report());
+                None
+            }
+        };
+        if picture.is_some() {
+            self.last_glance = key_time.map(|t| (key, t));
+        }
+        self.glancer = Some((key, decoder));
+        picture
+    }
+
+    /// Nothing has been asked for a moment: lets go of proxies that went,
+    /// then fills in behind the playhead ([`Worker::fill`]). Returns whether
+    /// there may be more to do.
+    fn idle(&mut self, waiting: &mut Waiting<'_>) -> bool {
+        self.proxies.notice_changes();
+        self.fill(waiting)
     }
 
     /// The timeline's whole picture for `r`: every layer that is seen,
@@ -512,6 +897,7 @@ impl Worker {
             let target = Target {
                 key: (layer.media, layer.stream),
                 path: &media.path,
+                fingerprint: &media.fingerprint,
                 rotation: media.info.video.as_ref().map_or(0, |v| v.rotation),
                 moment: layer.source_time.as_secs_f64(),
                 size: pixels_needed(layer),
@@ -624,6 +1010,14 @@ impl Worker {
         if let Some(frame) = self.frames.get(key, at) {
             out.frame = Some(Decoded::Gpu(frame));
             out.method = Some(KEPT.to_owned());
+            self.last_glance = None;
+            return Some(out);
+        }
+        // Proxies On: the proxy alone, and nothing filled in behind.
+        if let Some(picture) = self.proxy_only(target) {
+            self.playhead = None;
+            out.frame = Some(picture);
+            out.method = Some(PROXY_ONLY.to_owned());
             return Some(out);
         }
         let found = self.decoders.iter().position(|(k, _)| *k == key);
@@ -745,7 +1139,18 @@ impl Worker {
         if waiting.newest.as_ref().is_some_and(|next| next.at == out.at) {
             waiting.newest = None;
         }
+        // The exact frame is on screen: a key frame shown first again later is news.
+        self.last_glance = None;
         Some(out)
+    }
+
+    /// With proxies On, the picture of `target` from its file's proxy.
+    fn proxy_only(&mut self, target: &Target<'_>) -> Option<Decoded> {
+        if self.proxies.mode() != ProxyMode::On {
+            return None;
+        }
+        let path = self.proxies.of(target.key, target.fingerprint)?;
+        self.proxies.picture(target, &path, self.convert)
     }
 
     /// The picture of a layer under the top one: kept, or decoded to the
@@ -762,6 +1167,11 @@ impl Worker {
         if let Some(frame) = self.frames.get(key, at) {
             out.frame = Some(Decoded::Gpu(frame));
             out.method = Some(KEPT.to_owned());
+            return Some(out);
+        }
+        if let Some(picture) = self.proxy_only(target) {
+            out.frame = Some(picture);
+            out.method = Some(PROXY_ONLY.to_owned());
             return Some(out);
         }
         let found = self.decoders.iter().position(|(k, _)| *k == key);
@@ -1048,6 +1458,8 @@ fn decode(
 struct Target<'a> {
     key: (MediaId, u32),
     path: &'a Path,
+    /// The file's fingerprint, which its proxy is found by.
+    fingerprint: &'a Fingerprint,
     rotation: u16,
     /// Seconds from the start of the file.
     moment: f64,
@@ -1092,6 +1504,18 @@ impl Picture {
             took: Duration::ZERO,
             work: None,
             method: None,
+            stand_in: false,
+        }
+    }
+}
+
+impl Quick {
+    /// What the viewer's corner says for a picture that came this way.
+    fn says(self) -> &'static str {
+        match self {
+            Quick::Kept => KEPT,
+            Quick::Proxy => PROXY_FIRST,
+            Quick::KeyFrame => KEY_FIRST,
         }
     }
 }
@@ -1147,10 +1571,11 @@ mod tests {
             .join(name)
     }
 
+    /// The next answer, past any first picture shown before it.
     fn wait(preview: &Preview) -> Picture {
         let deadline = Instant::now() + Duration::from_secs(20);
         loop {
-            if let Some(p) = preview.latest() {
+            if let Some(p) = preview.latest().filter(|p| !p.stand_in) {
                 return p;
             }
             assert!(Instant::now() < deadline, "no picture in time");
@@ -1493,6 +1918,10 @@ mod tests {
             filler: None,
             unfillable: HashSet::new(),
             stuck: None,
+            playing: false,
+            proxies: Proxies::default(),
+            glancer: None,
+            last_glance: None,
         };
         assert_eq!(worker.ladder_for(failed), [Device, Hardware, Software]);
         worker.off_device.insert(failed);
@@ -1541,6 +1970,10 @@ mod tests {
             filler: None,
             unfillable: HashSet::new(),
             stuck: None,
+            playing: false,
+            proxies: Proxies::default(),
+            glancer: None,
+            last_glance: None,
         };
         (worker, p, seq)
     }
@@ -1552,7 +1985,134 @@ mod tests {
             at: Time::from_ratio(millis, 1000).unwrap(),
             max_width: 160,
             max_height: 160,
+            proxies: None,
+            playing: false,
         }
+    }
+
+    /// A shelf in `mode` holding a proxy of the fixture in `p`.
+    fn shelf_with_proxy(p: &Project, mode: ProxyMode) -> (Arc<Shelf>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let shelf = Shelf::new(dir.path(), mode);
+        let media = p.media.values().next().unwrap();
+        let steps = media::proxy::Steps {
+            cancelled: &|| false,
+            progress: &|_| {},
+            pause: &|| {},
+        };
+        shelf
+            .build(
+                &media.path,
+                0,
+                media.duration.as_secs_f64(),
+                &media.fingerprint,
+                Decoding::Software,
+                &steps,
+            )
+            .unwrap();
+        (shelf, dir)
+    }
+
+    fn with_shelf(mut r: Request, shelf: &Arc<Shelf>) -> Request {
+        r.proxies = Some(Arc::clone(shelf));
+        r
+    }
+
+    /// Runs one request, returning what was shown first and the answer.
+    fn ask(worker: &mut Worker, r: &Request, waiting: &mut Waiting<'_>) -> (Vec<Picture>, Option<Picture>) {
+        let mut first = Vec::new();
+        let answer = worker.picture(r, waiting, &mut |p| {
+            first.push(p);
+            true
+        });
+        (first, answer)
+    }
+
+    #[test]
+    fn a_jump_shows_the_proxy_frame_first_then_the_exact_one() {
+        let (mut worker, p, seq) = worker_and_project();
+        let (shelf, _dir) = shelf_with_proxy(&p, ProxyMode::Auto);
+        let (_requests, inbox) = channel::<Request>();
+        let mut waiting = Waiting::new(&inbox);
+        let (first, answer) = ask(
+            &mut worker,
+            &with_shelf(request(&p, seq, 1800), &shelf),
+            &mut waiting,
+        );
+        let answer = answer.expect("the exact picture");
+        assert_eq!(first.len(), 1, "one first picture");
+        assert!(first[0].stand_in);
+        assert_eq!(first[0].method.as_deref(), Some(PROXY_FIRST));
+        let (proxy, exact) = (first[0].frame.as_ref().unwrap(), answer.frame.as_ref().unwrap());
+        assert!(
+            (proxy.time() - exact.time()).abs() < 1e-6,
+            "the right frame, softer"
+        );
+        assert!(!answer.stand_in && answer.method.as_deref() != Some(PROXY_FIRST));
+        // Playing, or a moment just ahead of the decoder: nothing first.
+        let (first, _) = ask(
+            &mut worker,
+            &with_shelf(request(&p, seq, 1850), &shelf),
+            &mut waiting,
+        );
+        assert!(first.is_empty(), "near: decoded on at once");
+        let mut playing = with_shelf(request(&p, seq, 400), &shelf);
+        playing.playing = true;
+        let (first, answer) = ask(&mut worker, &playing, &mut waiting);
+        assert!(
+            first.is_empty() && answer.is_some(),
+            "playing decodes on, frame by frame"
+        );
+    }
+
+    #[test]
+    fn with_proxies_on_the_original_is_never_decoded() {
+        let (mut worker, p, seq) = worker_and_project();
+        let (shelf, _dir) = shelf_with_proxy(&p, ProxyMode::On);
+        let (_requests, inbox) = channel::<Request>();
+        let mut waiting = Waiting::new(&inbox);
+        for millis in [1800, 300, 1500] {
+            let (first, answer) = ask(
+                &mut worker,
+                &with_shelf(request(&p, seq, millis), &shelf),
+                &mut waiting,
+            );
+            let answer = answer.unwrap();
+            assert!(first.is_empty());
+            assert_eq!(answer.method.as_deref(), Some(PROXY_ONLY));
+            assert!(answer.frame.is_some() && !answer.stand_in);
+        }
+        assert!(worker.decoders.is_empty(), "no decoder for the original");
+        // Proxies Off: the original, and nothing from the proxy.
+        shelf.set_mode(ProxyMode::Off);
+        let (first, answer) = ask(
+            &mut worker,
+            &with_shelf(request(&p, seq, 1200), &shelf),
+            &mut waiting,
+        );
+        assert!(first.iter().all(|f| f.method.as_deref() != Some(PROXY_FIRST)));
+        assert_ne!(answer.unwrap().method.as_deref(), Some(PROXY_ONLY));
+    }
+
+    #[test]
+    fn without_a_proxy_the_key_frame_before_comes_first() {
+        let (mut worker, p, seq) = worker_and_project();
+        let (_requests, inbox) = channel::<Request>();
+        let mut waiting = Waiting::new(&inbox);
+        let (first, answer) = ask(&mut worker, &request(&p, seq, 1800), &mut waiting);
+        let exact = answer.unwrap().frame.unwrap();
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].method.as_deref(), Some(KEY_FIRST));
+        let key = first[0].frame.as_ref().unwrap();
+        assert!(
+            key.time() <= exact.time() + 1e-6,
+            "{} after {}",
+            key.time(),
+            exact.time()
+        );
+        // A small step back: no picture from far earlier first.
+        let (first, _) = ask(&mut worker, &request(&p, seq, 1700), &mut waiting);
+        assert!(first.is_empty());
     }
 
     #[test]
@@ -1593,11 +2153,15 @@ mod tests {
         let mut waiting = Waiting::new(&inbox);
         assert!(!worker.fill(&mut waiting), "no playhead yet");
         // A picture decoded on the CPU is not kept, so nothing is filled in behind it.
-        worker.picture(&request(&p, seq, 1000), &mut waiting).unwrap();
+        worker
+            .picture(&request(&p, seq, 1000), &mut waiting, &mut |_| true)
+            .unwrap();
         assert!(worker.playhead.is_some());
         assert!(!worker.fill(&mut waiting));
         // In a gap there is no file to fill in.
-        worker.picture(&request(&p, seq, 30_000), &mut waiting).unwrap();
+        worker
+            .picture(&request(&p, seq, 30_000), &mut waiting, &mut |_| true)
+            .unwrap();
         assert!(worker.playhead.is_none());
     }
 
@@ -1627,11 +2191,15 @@ mod tests {
         let mut waiting = Waiting::new(&inbox);
         // While 1.8 s is decoded, a moment after the clip's end (a gap) is asked for.
         requests.send(request(&p, seq, 30_000)).unwrap();
-        assert!(worker.picture(&request(&p, seq, 1800), &mut waiting).is_none());
+        assert!(
+            worker
+                .picture(&request(&p, seq, 1800), &mut waiting, &mut |_| true)
+                .is_none()
+        );
         // The newer request is still waiting, and is answered next.
         let next = waiting.next().unwrap();
         assert_eq!(Some(next.at), Time::from_ratio(30_000, 1000));
-        let gap = worker.picture(&next, &mut waiting).unwrap();
+        let gap = worker.picture(&next, &mut waiting, &mut |_| true).unwrap();
         assert!(gap.frame.is_none() && gap.error.is_none());
     }
 
@@ -1641,13 +2209,21 @@ mod tests {
         let (requests, inbox) = channel::<Request>();
         let mut waiting = Waiting::new(&inbox);
         let elsewhere = 30_000; // after the clip's end
-        worker.picture(&request(&p, seq, 1900), &mut waiting).unwrap();
+        worker
+            .picture(&request(&p, seq, 1900), &mut waiting, &mut |_| true)
+            .unwrap();
         // A jump back, overtaken by a request this decode can't serve: given up.
         requests.send(request(&p, seq, elsewhere)).unwrap();
-        assert!(worker.picture(&request(&p, seq, 500), &mut waiting).is_none());
+        assert!(
+            worker
+                .picture(&request(&p, seq, 500), &mut waiting, &mut |_| true)
+                .is_none()
+        );
         // The next decode is finished, though it is overtaken the same way.
         requests.send(request(&p, seq, elsewhere + 1)).unwrap();
-        let picture = worker.picture(&request(&p, seq, 1000), &mut waiting).unwrap();
+        let picture = worker
+            .picture(&request(&p, seq, 1000), &mut waiting, &mut |_| true)
+            .unwrap();
         assert_eq!(Some(picture.at), Time::from_ratio(1000, 1000));
         assert!(picture.frame.is_some());
         assert!(
@@ -1657,7 +2233,11 @@ mod tests {
         );
         // After a finished one, giving up is allowed again.
         requests.send(request(&p, seq, elsewhere + 2)).unwrap();
-        assert!(worker.picture(&request(&p, seq, 300), &mut waiting).is_none());
+        assert!(
+            worker
+                .picture(&request(&p, seq, 300), &mut waiting, &mut |_| true)
+                .is_none()
+        );
     }
 
     /// A frame kept on the graphics card is shown without a decoder being
@@ -1685,7 +2265,9 @@ mod tests {
         worker
             .frames
             .put(key, moment, moment + 1.0 / 60.0, 0.0005, 64 * 36 * 3 / 2, frame);
-        let picture = worker.picture(&request(&p, seq, 500), &mut waiting).unwrap();
+        let picture = worker
+            .picture(&request(&p, seq, 500), &mut waiting, &mut |_| true)
+            .unwrap();
         assert!(matches!(picture.frame, Some(Decoded::Gpu(_))));
         assert_eq!(picture.method.as_deref(), Some(KEPT));
         assert!(
@@ -1693,7 +2275,9 @@ mod tests {
             "no decoder was needed"
         );
         // A moment that isn't kept is decoded as always.
-        let picture = worker.picture(&request(&p, seq, 900), &mut waiting).unwrap();
+        let picture = worker
+            .picture(&request(&p, seq, 900), &mut waiting, &mut |_| true)
+            .unwrap();
         assert!(matches!(picture.frame, Some(Decoded::Rgba(_))));
         assert_eq!(worker.decoders.len(), 1);
     }
@@ -1706,14 +2290,18 @@ mod tests {
         // While 1.8 s is decoded from the start, 0.5 s is asked for: the
         // decode stops there, and the picture is that request's.
         requests.send(request(&p, seq, 500)).unwrap();
-        let picture = worker.picture(&request(&p, seq, 1800), &mut waiting).unwrap();
+        let picture = worker
+            .picture(&request(&p, seq, 1800), &mut waiting, &mut |_| true)
+            .unwrap();
         assert_eq!(Some(picture.at), Time::from_ratio(500, 1000));
         let frame = picture.frame.unwrap();
         assert!((frame.time() - 0.5).abs() < 0.02, "{}", frame.time());
         assert!(waiting.newest.is_none(), "answered: not decoded a second time");
         // A later moment on the way does not stop the one before it.
         requests.send(request(&p, seq, 1900)).unwrap();
-        let picture = worker.picture(&request(&p, seq, 1200), &mut waiting).unwrap();
+        let picture = worker
+            .picture(&request(&p, seq, 1200), &mut waiting, &mut |_| true)
+            .unwrap();
         assert_eq!(Some(picture.at), Time::from_ratio(1200, 1000));
         assert_eq!(
             waiting.newest.as_ref().map(|r| r.at),

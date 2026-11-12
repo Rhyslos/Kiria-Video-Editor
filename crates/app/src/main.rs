@@ -20,6 +20,7 @@ mod label_editor;
 mod looping;
 mod media_drawer;
 mod picture_handles;
+mod proxies;
 mod reading;
 mod relink;
 mod run_mode;
@@ -69,6 +70,11 @@ fn main() -> ExitCode {
     let data_dir = diagnostics
         .as_ref()
         .map_or_else(std::env::temp_dir, |d| d.dirs.data.clone());
+    // Proxies live in the cache folder, by the recording's fingerprint.
+    let proxy_dir = diagnostics.as_ref().map_or_else(
+        || std::env::temp_dir().join("proxies"),
+        |d| d.dirs.cache.join("proxies"),
+    );
     let (settings, settings_problem) = Settings::load(&data_dir);
     let mut problems: Vec<diag::AppError> = settings_problem.into_iter().collect();
     if diagnostics.as_ref().is_some_and(|d| d.previous_run_crashed) {
@@ -133,6 +139,7 @@ fn main() -> ExitCode {
         actions: options.actions.clone(),
         cpu_colour: options.cpu_colour,
         hold_reading: options.hold_reading,
+        hold_proxy: options.hold_proxy,
     });
     let pointer = options.pointer;
     // If this run crashes, the launcher offers to recover this project.
@@ -146,6 +153,7 @@ fn main() -> ExitCode {
     let start = editor::Start {
         settings,
         data_dir,
+        proxy_dir,
         project,
         mode: options.mode,
         report: Arc::clone(&report),

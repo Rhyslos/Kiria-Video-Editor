@@ -34,6 +34,8 @@ pub struct KeyFrames {
     /// A key frame counts as reached by a moment this much after its
     /// listed time.
     margin: f64,
+    /// How much decoding (seconds of video) a jump ahead has to save.
+    worth_jumping: f64,
 }
 
 /// No key frames listed: the fixed distance decides.
@@ -61,7 +63,41 @@ impl KeyFrames {
             times,
             decode_on: DECODE_ON_LIMIT.max(widest * 1.5),
             margin: LEAST_MARGIN.max(shown_after),
+            worth_jumping: WORTH_JUMPING,
         }
+    }
+
+    /// The same list for a file whose frames are cheap and whose key frames
+    /// are close (a proxy): any key frame on the way is jumped to, since
+    /// decoding a few small frames from it is always quicker than decoding
+    /// on through a long stretch.
+    pub fn eager(self) -> KeyFrames {
+        KeyFrames {
+            worth_jumping: f64::EPSILON,
+            ..self
+        }
+    }
+
+    /// The last listed key frame at or before `target` (seconds), if any.
+    pub fn before(&self, target: f64) -> Option<f64> {
+        let reached = self.times.partition_point(|key| *key <= target + 1e-9);
+        reached
+            .checked_sub(1)
+            .and_then(|last| self.times.get(last))
+            .copied()
+    }
+
+    /// The longest stretch between two key frames, counting from the last
+    /// one to the end of a stream `length` seconds long: what the slowest
+    /// jump has to decode. A stream with no key frames listed counts as one
+    /// stretch from start to end.
+    pub fn longest_gap(&self, length: f64) -> f64 {
+        let Some(last) = self.times.last() else {
+            return length.max(0.0);
+        };
+        let widest = self.times.windows(2).map(|w| w[1] - w[0]).fold(0.0, f64::max);
+        let first = self.times.first().map_or(0.0, |first| first.max(0.0));
+        widest.max(length - last).max(first)
     }
 
     /// How many are listed.
@@ -80,7 +116,7 @@ impl KeyFrames {
         reached
             .checked_sub(1)
             .and_then(|last| self.times.get(last))
-            .is_some_and(|key| key - position >= WORTH_JUMPING)
+            .is_some_and(|key| key - position >= self.worth_jumping)
     }
 
     /// Whether getting to `target` is quicker by jumping than by decoding on.
@@ -179,6 +215,29 @@ mod tests {
         assert!(none.jump(Some(10.0), Some(10.02), 9.0, false));
         assert!(!none.jump(None, None, 2.9, false));
         assert!(none.jump(None, None, 3.1, false));
+    }
+
+    #[test]
+    fn a_proxy_jumps_to_any_key_frame_on_the_way() {
+        // Key frames every 8 frames at 60 a second.
+        let keys = KeyFrames::new((0..100).map(|i| f64::from(i) * 8.0 / 60.0).collect(), 0.0).eager();
+        // 0.4 s ahead, past three key frames: jump rather than decode 24 frames.
+        assert!(keys.jump(Some(1.0), Some(1.02), 1.4, false));
+        // Inside the same group of 8: decode on.
+        assert!(!keys.jump(Some(1.07), Some(1.08), 1.1, false));
+    }
+
+    #[test]
+    fn the_key_frame_before_a_moment_and_the_longest_gap() {
+        let keys = every_two_seconds();
+        assert_eq!(keys.before(5.0), Some(4.0));
+        assert_eq!(keys.before(4.0), Some(4.0));
+        assert_eq!(keys.longest_gap(60.0), 2.0);
+        // The last group runs to the end of the stream.
+        assert_eq!(keys.longest_gap(65.0), 7.0);
+        // Nothing listed: one long stretch (a recording that never repeats a key frame).
+        assert_eq!(KeyFrames::default().longest_gap(30.0), 30.0);
+        assert_eq!(KeyFrames::default().before(3.0), None);
     }
 
     #[test]
