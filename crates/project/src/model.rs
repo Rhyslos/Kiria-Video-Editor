@@ -6,6 +6,7 @@
 
 use crate::ids::{ClipId, LabelId, LinkId, MediaId, SequenceId, TrackId};
 use crate::look::Look;
+use crate::sound::Sound;
 use crate::time::{Rate, Speed, Time};
 use diag::AppError;
 use imbl::{OrdMap, Vector};
@@ -251,6 +252,11 @@ pub struct Clip {
     /// Means nothing for sound.
     #[serde(default)]
     pub look: Look,
+    /// How loud it is, its pan and its fades (format 9); the sound as it is
+    /// when missing. Set on clips on audio tracks only: a picture's sound is
+    /// its linked sound clips.
+    #[serde(default)]
+    pub sound: Sound,
 }
 
 impl Clip {
@@ -450,10 +456,44 @@ impl Project {
             if clip.start.is_negative() || clip.source_in.is_negative() {
                 problems.push(format!("{place} starts before zero"));
             }
+            if clip.sound != clip.sound.within_limits() {
+                problems.push(format!("{place} has a volume or pan out of range"));
+            }
+            if !clip.sound.fits(clip.duration) {
+                problems.push(format!("{place} has fades longer than itself"));
+            }
             if previous_end.is_some_and(|end| clip.start < end) {
                 problems.push(format!("{place} overlaps the clip before it"));
             }
             previous_end = Some(clip.end());
+        }
+    }
+
+    /// Cuts every clip's fades to fit its length (see [`Sound::fitted`]).
+    /// Edits that change a clip's length (trims, rolls, slides, speed) leave
+    /// its fades as they were; this brings them back within the clip, once,
+    /// after every change. Only tracks with a clip that needs it are
+    /// touched, so snapshots keep sharing everything else.
+    pub fn fit_fades(&mut self) {
+        let needs = |track: &Track| track.clips.iter().any(|c| !c.sound.fits(c.duration));
+        for i in 0..self.sequences.len() {
+            let Some(seq) = self.sequences.get(i) else {
+                continue;
+            };
+            if !seq.tracks().any(needs) {
+                continue;
+            }
+            let Some(seq) = self.sequences.get_mut(i) else {
+                continue;
+            };
+            for track in seq.video_tracks.iter_mut().chain(seq.audio_tracks.iter_mut()) {
+                if !needs(track) {
+                    continue;
+                }
+                for clip in track.clips.iter_mut() {
+                    clip.sound = clip.sound.fitted(clip.duration);
+                }
+            }
         }
     }
 
@@ -510,6 +550,7 @@ mod tests {
             link,
             speed: Default::default(),
             look: Default::default(),
+            sound: Default::default(),
         });
         p
     }

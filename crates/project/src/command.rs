@@ -10,6 +10,7 @@ use crate::model::{
     Clip, LabelColor, MediaKind, MediaRef, Project, Region, Sequence, SequenceSettings, TimelineLabel, Track,
     TrackKind,
 };
+use crate::sound::Sound;
 use crate::templates::Template;
 use crate::time::{Speed, Time};
 use diag::AppError;
@@ -60,6 +61,14 @@ pub enum Command {
         sequence: SequenceId,
         clip: ClipId,
         look: Look,
+    },
+    /// Sets how each of `sounds`' clips sounds: its volume, pan and fades.
+    /// One step for all of them, so a picture's linked sound streams (game,
+    /// microphone) change together and are undone together. Only clips on
+    /// audio tracks: a picture's sound is its linked sound clips.
+    SetSound {
+        sequence: SequenceId,
+        sounds: Vec<(ClipId, Sound)>,
     },
     /// Puts back a whole earlier state of the project (a saved version).
     /// Undo returns to how it was just before.
@@ -334,6 +343,7 @@ impl Command {
                     None => return Err(missing("clip")),
                 }
             }
+            Command::SetSound { sequence, sounds } => set_sound(&mut p, *sequence, sounds)?,
             Command::Restore { project } => {
                 if project.active().is_none() {
                     return Err(AppError::new("That version can't be restored")
@@ -565,9 +575,38 @@ impl Command {
                 sequence_mut(&mut p, *sequence)?.edit_needle = (*at).max(Time::ZERO);
             }
         }
+        // A clip made shorter keeps its fades within it.
+        p.fit_fades();
         p.validate()?;
         Ok(p)
     }
+}
+
+fn set_sound(p: &mut Project, sequence: SequenceId, sounds: &[(ClipId, Sound)]) -> diag::Result<()> {
+    if sounds.is_empty() {
+        return Err(AppError::new("No sound to set").why("No clips were given."));
+    }
+    let seq = sequence_mut(p, sequence)?;
+    for (clip, sound) in sounds {
+        if seq
+            .video_tracks
+            .iter()
+            .any(|t| t.clips.iter().any(|c| c.id == *clip))
+        {
+            return Err(AppError::new("A picture has no sound of its own")
+                .why("A recording's sound is on audio tracks, in the sound clips linked to its picture.")
+                .fix("Select the picture or its sound clip: the inspector's Audio section sets the linked sound."));
+        }
+        let found = seq
+            .audio_tracks
+            .iter_mut()
+            .flat_map(|track| track.clips.iter_mut())
+            .find(|c| c.id == *clip)
+            .ok_or_else(|| missing("clip"))?;
+        sound.check(found.duration)?;
+        found.sound = *sound;
+    }
+    Ok(())
 }
 
 /// One end of a clip.
@@ -829,6 +868,7 @@ fn place_media(
         link,
         speed: Speed::NORMAL,
         look: Look::PLAIN,
+        sound: Default::default(),
     };
 
     if let Some(v) = video {
@@ -904,16 +944,21 @@ pub(crate) fn split(
             if let Some(i) = track.clips.iter().position(|c| c.id == *left_id) {
                 let left = track.clips[i].clone();
                 let first = at - left.start;
+                // Volume and pan stay on both halves; the fade in stays at
+                // the start, on the left half, and the fade out at the end,
+                // on the right (each cut to fit its half after the change).
                 let right = Clip {
                     id: *right_id,
                     start: at,
                     source_in: left.source_in + left.speed.scale(first),
                     duration: left.duration - first,
                     link: *right_link,
+                    sound: left.sound.without_fade_in(),
                     ..left.clone()
                 };
                 track.clips[i] = Clip {
                     duration: first,
+                    sound: left.sound.without_fade_out(),
                     ..left
                 };
                 track.clips.insert(i + 1, right);
@@ -1060,6 +1105,7 @@ mod tests {
             link,
             speed: Default::default(),
             look: Default::default(),
+            sound: Default::default(),
         }
     }
 
@@ -1901,6 +1947,136 @@ mod tests {
             .apply(&p)
             .is_err()
         );
+    }
+
+    fn faded() -> Sound {
+        Sound {
+            gain_mdb: -6_000,
+            pan: 500_000,
+            fade_in: Time::seconds(2),
+            fade_out: Time::seconds(3),
+        }
+    }
+
+    #[test]
+    fn sound_is_set_on_sound_clips_in_one_step_and_refused_elsewhere() {
+        let (p, seq) = imported(); // 0-30 s (game and mic) and 30-40 s (game)
+        let s = p.active().unwrap();
+        let (game, mic) = (s.audio_tracks[0].clips[0].id, s.audio_tracks[1].clips[0].id);
+        let quiet = Sound {
+            gain_mdb: -12_000,
+            ..Sound::PLAIN
+        };
+        let set = Command::SetSound {
+            sequence: seq,
+            sounds: vec![(game, faded()), (mic, quiet)],
+        }
+        .apply(&p)
+        .unwrap();
+        let s = set.active().unwrap();
+        assert_eq!(s.audio_tracks[0].clips[0].sound, faded());
+        assert_eq!(s.audio_tracks[1].clips[0].sound, quiet, "each its own");
+        assert_eq!(s.audio_tracks[0].clips[1].sound, Sound::PLAIN, "only those clips");
+
+        let refused = |sounds: Vec<(ClipId, Sound)>| {
+            Command::SetSound {
+                sequence: seq,
+                sounds,
+            }
+            .apply(&p)
+            .unwrap_err()
+            .to_string()
+        };
+        let picture = first_video(&p, 0).id;
+        assert!(refused(vec![(picture, faded())]).contains("no sound of its own"));
+        assert!(refused(vec![]).contains("No sound"));
+        let loud = Sound {
+            gain_mdb: 13_000,
+            ..Sound::PLAIN
+        };
+        assert!(refused(vec![(game, loud)]).contains("can't be used"));
+        let long = Sound {
+            fade_in: Time::seconds(20),
+            fade_out: Time::seconds(11),
+            ..Sound::PLAIN
+        };
+        assert!(refused(vec![(game, long)]).contains("too long"));
+        // One refused clip refuses the whole step.
+        assert!(refused(vec![(mic, quiet), (game, long)]).contains("too long"));
+        assert!(refused(vec![(ClipId(999), quiet)]).contains("no longer exists"));
+    }
+
+    #[test]
+    fn a_split_keeps_the_fade_in_left_and_the_fade_out_right() {
+        let (p, seq) = imported();
+        let game = p.active().unwrap().audio_tracks[0].clips[0].id;
+        let set = Command::SetSound {
+            sequence: seq,
+            sounds: vec![(game, faded())],
+        }
+        .apply(&p)
+        .unwrap();
+        let cut = Command::Split {
+            sequence: seq,
+            at: Time::seconds(10),
+            clip: Some(first_video(&set, 0).id),
+        }
+        .apply(&set)
+        .unwrap();
+        let clips = &cut.active().unwrap().audio_tracks[0].clips;
+        assert_eq!(clips[0].sound, faded().without_fade_out());
+        assert_eq!(clips[1].sound, faded().without_fade_in());
+        // Cut close to the start: the fade in is cut to fit the left half.
+        let near = Command::Split {
+            sequence: seq,
+            at: Time::seconds(1),
+            clip: Some(game),
+        }
+        .apply(&set)
+        .unwrap();
+        let clips = &near.active().unwrap().audio_tracks[0].clips;
+        assert_eq!(clips[0].sound.fade_in, Time::seconds(1));
+        assert_eq!(clips[1].sound.fade_out, Time::seconds(3));
+    }
+
+    #[test]
+    fn trims_and_speed_keep_the_fades_within_the_clip() {
+        let (p, seq) = imported();
+        let game = p.active().unwrap().audio_tracks[0].clips[0].id;
+        let set = Command::SetSound {
+            sequence: seq,
+            sounds: vec![(game, faded())],
+        }
+        .apply(&p)
+        .unwrap();
+        let game_clip = |p: &Project| p.active().unwrap().audio_tracks[0].clips[0].clone();
+        let trimmed = Command::Trim {
+            sequence: seq,
+            clip: game,
+            edge: Edge::End,
+            to: Time::seconds(4),
+        }
+        .apply(&set)
+        .unwrap();
+        let c = game_clip(&trimmed);
+        assert_eq!(
+            (c.sound.fade_in, c.sound.fade_out),
+            (Time::seconds(2), Time::seconds(2))
+        );
+        assert_eq!((c.sound.gain_mdb, c.sound.pan), (-6_000, 500_000));
+        let fast = Command::SetSpeed {
+            sequence: seq,
+            clip: game,
+            speed: Speed::new(4, 1).unwrap(),
+        }
+        .apply(&trimmed)
+        .unwrap();
+        let c = game_clip(&fast);
+        assert_eq!(c.duration, Time::seconds(1));
+        assert!(c.sound.fits(c.duration));
+        assert_eq!(c.sound.fade_in, Time::seconds(1));
+        // Longer again (undo is another snapshot): the fades stay as cut.
+        assert!(fast.problems().is_empty());
     }
 
     #[test]

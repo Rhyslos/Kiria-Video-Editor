@@ -1,5 +1,6 @@
 //! The Edit page's inspector: the selected clip's Transform, Crop, Quick
-//! color and Speed, on the right.
+//! color, Speed and Audio, on the right. A clip on an audio track shows
+//! Speed and Audio alone; a picture's Audio is the sound linked to it.
 //!
 //! A value being dragged is shown in the viewer at once ([`Inspector::shown`]
 //! is the project as it would be) and becomes one undo step when the drag
@@ -13,9 +14,9 @@
 //! picture, the picture follows the numbers, and either way it is one undo step.
 
 use project::look::ONE;
-use project::{ClipId, Command, Look, Project, Speed, Time};
+use project::{ClipId, Command, Look, Project, Rate, Sound, Speed, Time, TrackKind};
 use ui_kit::Theme;
-use ui_kit::inspector::{self, Number, Touched};
+use ui_kit::inspector::{self, Number, Touched, Words};
 
 /// The speeds offered as buttons, as fractions.
 const SPEEDS: [(u32, u32); 5] = [(1, 4), (1, 2), (1, 1), (2, 1), (4, 1)];
@@ -24,6 +25,9 @@ const SPEEDS: [(u32, u32); 5] = [(1, 4), (1, 2), (1, 1), (2, 1), (4, 1)];
 pub struct Inspector {
     /// A look being set and not yet an undo step: whose, and what.
     pending: Option<(ClipId, Look)>,
+    /// Sound being set and not yet an undo step: each sound clip's new
+    /// settings (a picture's linked sound clips change together).
+    pending_sound: Option<Vec<(ClipId, Sound)>>,
     /// A hand outside the panel (on the picture in the viewer) is still on
     /// the look being set: the panel leaves finishing it to that hand.
     held: bool,
@@ -63,20 +67,34 @@ impl Inspector {
     /// The project with the change being made, for the viewer to show.
     /// `None` when nothing is being changed.
     pub fn shown(&self, project: &Project) -> Option<Project> {
-        let (clip, look) = self.pending?;
-        Command::SetLook {
-            sequence: project.active_sequence,
-            clip,
-            look,
+        let sequence = project.active_sequence;
+        let looked = self
+            .pending
+            .and_then(|(clip, look)| Command::SetLook { sequence, clip, look }.apply(project).ok());
+        let Some(sounds) = &self.pending_sound else {
+            return looked;
+        };
+        Command::SetSound {
+            sequence,
+            sounds: sounds.clone(),
         }
-        .apply(project)
+        .apply(looked.as_ref().unwrap_or(project))
         .ok()
+        .or(looked)
+    }
+
+    /// Sound being set and not yet an undo step, for the timeline to draw.
+    pub fn sounds_being_set(&self) -> &[(ClipId, Sound)] {
+        self.pending_sound.as_deref().unwrap_or_default()
     }
 
     /// The clip the panel is about (see [`shown_clip`]) with its look as it
     /// is shown now. `None` when no selected clip has a picture.
     pub fn subject(&self, project: &Project, selected: &[ClipId]) -> Option<Subject> {
         let (seq, track, clip) = shown_clip(project, selected)?;
+        if track.kind != TrackKind::Video {
+            return None;
+        }
         let video = project.media.get(&clip.media)?.info.video.as_ref()?;
         let look = match self.pending {
             Some((id, look)) if id == clip.id => look,
@@ -166,6 +184,18 @@ impl Inspector {
             self.pending = None;
             self.held = false;
         }
+        let hearing: Vec<ClipId> = target
+            .map(|(seq, _, clip)| sound_clips(seq, clip).iter().map(|c| c.id).collect())
+            .unwrap_or_default();
+        if let Some(sounds) = &self.pending_sound
+            && !sounds.iter().all(|(id, _)| hearing.contains(id))
+        {
+            commands.push(Command::SetSound {
+                sequence,
+                sounds: sounds.clone(),
+            });
+            self.pending_sound = None;
+        }
         // Nothing selected: the page shows the timeline here instead.
         let Some((seq, track, clip)) = target else {
             return commands;
@@ -217,153 +247,18 @@ impl Inspector {
         let before = self.pending.map_or(stored, |(_, look)| look);
         let mut values = Values::of(&before, frame);
         let mut touched = Touched::default();
-
-        let clicks = inspector::section(
-            ui,
-            theme,
-            "Transform",
-            &transform_summary(&before, frame),
-            before.is_moved() || before.opacity != ONE,
-            |ui| {
-                touched = touched.and(inspector::pair(
-                    ui,
-                    theme,
-                    "Position",
-                    ("X", &mut values.x, pixels(frame.0)),
-                    ("Y", &mut values.y, pixels(frame.1)),
-                ));
-                touched = touched.and(inspector::number(ui, theme, "Size", &mut values.scale, SIZE));
-                touched = touched.and(inspector::number(ui, theme, "Turn", &mut values.turn, TURN));
-                touched = touched.and(inspector::slider(
-                    ui,
-                    theme,
-                    "Opacity",
-                    &mut values.opacity,
-                    PERCENT_FULL,
-                ));
-                ui.horizontal(|ui| {
-                    ui.add_space(90.0);
-                    if ui
-                        .button("Fit")
-                        .on_hover_text("As large as fits the frame, centred: nothing cut off")
-                        .clicked()
-                    {
-                        let fit = Values::of(&fitted(&before), frame);
-                        (values.x, values.y, values.scale) = (fit.x, fit.y, fit.scale);
-                        touched.changed = true;
-                    }
-                    if ui
-                        .button("Fill")
-                        .on_hover_text("Large enough to fill the frame, centred: no bars")
-                        .clicked()
-                    {
-                        (values.x, values.y, values.scale) = (0.0, 0.0, fill_percent(picture, frame));
-                        touched.changed = true;
-                    }
-                    ui.toggle_value(&mut self.on_picture, "On the picture")
-                        .on_hover_text(&self.on_picture_tip);
-                });
-                // One click for the usual places: a small picture in a
-                // corner (a facecam over a recording), or one half of the
-                // frame (two pictures stacked on a vertical timeline).
-                let now = values.look(frame, &before);
-                let mut placed = None;
-                ui.horizontal(|ui| {
-                    inspector::label_cell(ui, theme, "Layout", 86.0);
-                    ui.spacing_mut().item_spacing.x = 4.0;
-                    for (label, tip, right, bottom) in [
-                        ("↖", "Small, in the top left corner", false, false),
-                        ("↗", "Small, in the top right corner", true, false),
-                        ("↙", "Small, in the bottom left corner", false, true),
-                        ("↘", "Small, in the bottom right corner", true, true),
-                    ] {
-                        if ui.button(label).on_hover_text(tip).clicked() {
-                            placed = Some(in_corner(&now, picture, frame, right, bottom));
-                        }
-                    }
-                });
-                ui.horizontal(|ui| {
-                    ui.add_space(90.0);
-                    ui.spacing_mut().item_spacing.x = 4.0;
-                    for (label, tip, bottom) in [
-                        ("Top half", "Fills the top half of the frame, cut to fit", false),
-                        (
-                            "Bottom half",
-                            "Fills the bottom half of the frame, cut to fit",
-                            true,
-                        ),
-                    ] {
-                        if ui.button(label).on_hover_text(tip).clicked() {
-                            placed = Some(in_half(&now, picture, frame, bottom));
-                        }
-                    }
-                });
-                if let Some(look) = placed {
-                    values = Values::of(&look, frame);
-                    touched.changed = true;
-                }
-            },
-        );
-        if clicks.reset {
-            let plain = Values::of(&Look::PLAIN, frame);
-            (values.x, values.y, values.scale, values.turn, values.opacity) =
-                (plain.x, plain.y, plain.scale, plain.turn, plain.opacity);
-            touched.changed = true;
-        }
-
-        let clicks = inspector::section(
-            ui,
-            theme,
-            "Crop",
-            &crop_summary(&before),
-            before.is_cropped(),
-            |ui| {
-                for (label, value) in ["Left", "Top", "Right", "Bottom"]
-                    .into_iter()
-                    .zip(&mut values.crop)
-                {
-                    touched = touched.and(inspector::slider(ui, theme, label, value, CROP));
-                }
-            },
-        );
-        if clicks.reset {
-            values.crop = [0.0; 4];
-            touched.changed = true;
-        }
-
-        let clicks = inspector::section(
-            ui,
-            theme,
-            "Quick color",
-            &colour_summary(&before),
-            before.is_coloured(),
-            |ui| {
-                touched = touched.and(inspector::slider(
-                    ui,
-                    theme,
-                    "Exposure",
-                    &mut values.exposure,
-                    EXPOSURE,
-                ));
-                for (label, value) in [
-                    ("Contrast", &mut values.contrast),
-                    ("Saturation", &mut values.saturation),
-                    ("Temperature", &mut values.temperature),
-                    ("Tint", &mut values.tint),
-                ] {
-                    touched = touched.and(inspector::slider(ui, theme, label, value, EITHER_WAY));
-                }
-            },
-        );
-        if clicks.reset {
-            (
-                values.exposure,
-                values.contrast,
-                values.saturation,
-                values.temperature,
-                values.tint,
-            ) = (0.0, 0.0, 0.0, 0.0, 0.0);
-            touched.changed = true;
+        if track.kind == TrackKind::Video {
+            let on_picture = (&mut self.on_picture, self.on_picture_tip.as_str());
+            picture_sections(
+                ui,
+                theme,
+                &before,
+                frame,
+                picture,
+                on_picture,
+                &mut values,
+                &mut touched,
+            );
         }
 
         inspector::section(ui, theme, "Speed", &clip.speed.percent(), false, |ui| {
@@ -393,6 +288,8 @@ impl Inspector {
             );
         });
 
+        commands.extend(self.audio_section(ui, theme, seq, clip));
+
         // Shown at once; an undo step once the hand is off it, be that a
         // hand on the panel or one on the picture in the viewer.
         if touched.changed {
@@ -410,6 +307,283 @@ impl Inspector {
             });
         }
         commands
+    }
+    /// The Audio section: the sound of `clip` (itself on an audio track,
+    /// its linked sound clips for a picture). A change is shown (and seen
+    /// on the timeline) at once and becomes one undo step for all of those
+    /// clips when the hand is off it. Returns that step when it is done.
+    fn audio_section(
+        &mut self,
+        ui: &mut egui::Ui,
+        theme: &Theme,
+        seq: &project::Sequence,
+        clip: &project::Clip,
+    ) -> Option<Command> {
+        let targets = sound_clips(seq, clip);
+        let first = targets.first()?;
+        let rate = seq.settings.frame_rate;
+        let pending = self.pending_sound.as_ref();
+        let now = |c: &project::Clip| {
+            pending
+                .and_then(|sounds| sounds.iter().find(|(id, _)| *id == c.id))
+                .map_or(c.sound, |(_, sound)| *sound)
+        };
+        let before = now(first);
+        let length = first.duration;
+        let mut values = SoundValues::of(&before);
+        let mut touched = Touched::default();
+        let clicks = inspector::section(
+            ui,
+            theme,
+            "Audio",
+            &sound_summary(&before),
+            before != Sound::PLAIN,
+            |ui| {
+                let volume_words = Words {
+                    write: &|db| volume_text(db),
+                    read: &|text| read_volume(text),
+                };
+                touched = touched.and(inspector::slider_in_words(
+                    ui,
+                    theme,
+                    "Volume",
+                    &mut values.volume,
+                    VOLUME,
+                    volume_words,
+                ));
+                let pan_words = Words {
+                    write: &|pan| pan_text(pan),
+                    read: &|text| read_pan(text),
+                };
+                touched = touched.and(inspector::slider_in_words(
+                    ui,
+                    theme,
+                    "Pan",
+                    &mut values.pan,
+                    PAN,
+                    pan_words,
+                ));
+                let fade_words = Words {
+                    write: &|secs| fade_text(secs, rate),
+                    read: &|text| read_seconds(text),
+                };
+                let whole = length.as_secs_f64();
+                let fade_in_room = (whole - values.fade_out).max(0.0);
+                touched = touched.and(inspector::number_in_words(
+                    ui,
+                    theme,
+                    "Fade in",
+                    &mut values.fade_in,
+                    fade_number(fade_in_room),
+                    fade_words,
+                ));
+                let fade_out_room = (whole - values.fade_in).max(0.0);
+                touched = touched.and(inspector::number_in_words(
+                    ui,
+                    theme,
+                    "Fade out",
+                    &mut values.fade_out,
+                    fade_number(fade_out_room),
+                    fade_words,
+                ));
+                if targets.len() > 1 {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "Sets all {} sound streams of this clip together.",
+                            targets.len()
+                        ))
+                        .color(theme.muted)
+                        .size(12.0),
+                    );
+                }
+            },
+        );
+        if clicks.reset {
+            values = SoundValues::of(&Sound::PLAIN);
+            touched.changed = true;
+        }
+        if touched.changed {
+            let was = SoundValues::of(&before);
+            self.pending_sound = Some(
+                targets
+                    .iter()
+                    .map(|c| (c.id, values.sound(&was, now(c), rate, c.duration)))
+                    .collect(),
+            );
+        }
+        if touched.busy {
+            return None;
+        }
+        let sounds = self.pending_sound.take()?;
+        let changes = sounds
+            .iter()
+            .any(|(id, sound)| targets.iter().any(|c| c.id == *id && c.sound != *sound));
+        changes.then(|| Command::SetSound {
+            sequence: seq.id,
+            sounds,
+        })
+    }
+}
+
+/// Transform, Crop and Quick color: for clips with a picture.
+#[allow(clippy::too_many_arguments)]
+fn picture_sections(
+    ui: &mut egui::Ui,
+    theme: &Theme,
+    before: &Look,
+    frame: (u32, u32),
+    picture: (u32, u32),
+    on_picture: (&mut bool, &str),
+    values: &mut Values,
+    touched: &mut Touched,
+) {
+    let before = *before;
+    let clicks = inspector::section(
+        ui,
+        theme,
+        "Transform",
+        &transform_summary(&before, frame),
+        before.is_moved() || before.opacity != ONE,
+        |ui| {
+            *touched = touched.and(inspector::pair(
+                ui,
+                theme,
+                "Position",
+                ("X", &mut values.x, pixels(frame.0)),
+                ("Y", &mut values.y, pixels(frame.1)),
+            ));
+            *touched = touched.and(inspector::number(ui, theme, "Size", &mut values.scale, SIZE));
+            *touched = touched.and(inspector::number(ui, theme, "Turn", &mut values.turn, TURN));
+            *touched = touched.and(inspector::slider(
+                ui,
+                theme,
+                "Opacity",
+                &mut values.opacity,
+                PERCENT_FULL,
+            ));
+            ui.horizontal(|ui| {
+                ui.add_space(90.0);
+                if ui
+                    .button("Fit")
+                    .on_hover_text("As large as fits the frame, centred: nothing cut off")
+                    .clicked()
+                {
+                    let fit = Values::of(&fitted(&before), frame);
+                    (values.x, values.y, values.scale) = (fit.x, fit.y, fit.scale);
+                    touched.changed = true;
+                }
+                if ui
+                    .button("Fill")
+                    .on_hover_text("Large enough to fill the frame, centred: no bars")
+                    .clicked()
+                {
+                    (values.x, values.y, values.scale) = (0.0, 0.0, fill_percent(picture, frame));
+                    touched.changed = true;
+                }
+                let (on, tip) = on_picture;
+                ui.toggle_value(on, "On the picture").on_hover_text(tip);
+            });
+            // One click for the usual places: a small picture in a
+            // corner (a facecam over a recording), or one half of the
+            // frame (two pictures stacked on a vertical timeline).
+            let now = values.look(frame, &before);
+            let mut placed = None;
+            ui.horizontal(|ui| {
+                inspector::label_cell(ui, theme, "Layout", 86.0);
+                ui.spacing_mut().item_spacing.x = 4.0;
+                for (label, tip, right, bottom) in [
+                    ("↖", "Small, in the top left corner", false, false),
+                    ("↗", "Small, in the top right corner", true, false),
+                    ("↙", "Small, in the bottom left corner", false, true),
+                    ("↘", "Small, in the bottom right corner", true, true),
+                ] {
+                    if ui.button(label).on_hover_text(tip).clicked() {
+                        placed = Some(in_corner(&now, picture, frame, right, bottom));
+                    }
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.add_space(90.0);
+                ui.spacing_mut().item_spacing.x = 4.0;
+                for (label, tip, bottom) in [
+                    ("Top half", "Fills the top half of the frame, cut to fit", false),
+                    (
+                        "Bottom half",
+                        "Fills the bottom half of the frame, cut to fit",
+                        true,
+                    ),
+                ] {
+                    if ui.button(label).on_hover_text(tip).clicked() {
+                        placed = Some(in_half(&now, picture, frame, bottom));
+                    }
+                }
+            });
+            if let Some(look) = placed {
+                *values = Values::of(&look, frame);
+                touched.changed = true;
+            }
+        },
+    );
+    if clicks.reset {
+        let plain = Values::of(&Look::PLAIN, frame);
+        (values.x, values.y, values.scale, values.turn, values.opacity) =
+            (plain.x, plain.y, plain.scale, plain.turn, plain.opacity);
+        touched.changed = true;
+    }
+
+    let clicks = inspector::section(
+        ui,
+        theme,
+        "Crop",
+        &crop_summary(&before),
+        before.is_cropped(),
+        |ui| {
+            for (label, value) in ["Left", "Top", "Right", "Bottom"]
+                .into_iter()
+                .zip(&mut values.crop)
+            {
+                *touched = touched.and(inspector::slider(ui, theme, label, value, CROP));
+            }
+        },
+    );
+    if clicks.reset {
+        values.crop = [0.0; 4];
+        touched.changed = true;
+    }
+
+    let clicks = inspector::section(
+        ui,
+        theme,
+        "Quick color",
+        &colour_summary(&before),
+        before.is_coloured(),
+        |ui| {
+            *touched = touched.and(inspector::slider(
+                ui,
+                theme,
+                "Exposure",
+                &mut values.exposure,
+                EXPOSURE,
+            ));
+            for (label, value) in [
+                ("Contrast", &mut values.contrast),
+                ("Saturation", &mut values.saturation),
+                ("Temperature", &mut values.temperature),
+                ("Tint", &mut values.tint),
+            ] {
+                *touched = touched.and(inspector::slider(ui, theme, label, value, EITHER_WAY));
+            }
+        },
+    );
+    if clicks.reset {
+        (
+            values.exposure,
+            values.contrast,
+            values.saturation,
+            values.temperature,
+            values.tint,
+        ) = (0.0, 0.0, 0.0, 0.0, 0.0);
+        touched.changed = true;
     }
 }
 
@@ -455,7 +629,8 @@ pub fn timeline_rows(seq: &project::Sequence) -> Vec<(&'static str, String)> {
 
 /// The clip the inspector is about: of the selected ones with a picture,
 /// the one on the highest track (what is seen on top), and on that track
-/// the earliest.
+/// the earliest. With no picture selected, the selected sound clip on the
+/// highest audio track.
 fn shown_clip<'a>(
     project: &'a Project,
     selected: &[ClipId],
@@ -464,9 +639,203 @@ fn shown_clip<'a>(
     seq.video_tracks
         .iter()
         .rev()
+        .chain(seq.audio_tracks.iter())
         .flat_map(|track| track.clips.iter().map(move |clip| (track, clip)))
         .find(|(_, clip)| selected.contains(&clip.id))
         .map(|(track, clip)| (seq, track, clip))
+}
+
+/// The sound clips the Audio section sets for `clip`: itself when it is on
+/// an audio track, else the sound clips linked to it (none for a picture
+/// without sound).
+fn sound_clips<'a>(seq: &'a project::Sequence, clip: &project::Clip) -> Vec<&'a project::Clip> {
+    let on_audio = |c: &project::Clip| c.id == clip.id || (clip.link.is_some() && c.link == clip.link);
+    let own = seq
+        .audio_tracks
+        .iter()
+        .flat_map(|t| t.clips.iter())
+        .find(|c| c.id == clip.id);
+    match own {
+        Some(own) => vec![own],
+        None => seq
+            .audio_tracks
+            .iter()
+            .flat_map(|t| t.clips.iter())
+            .filter(|c| on_audio(c))
+            .collect(),
+    }
+}
+
+/// A clip's sound as the inspector shows it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct SoundValues {
+    /// Decibels; the bottom of the range is silent.
+    volume: f64,
+    /// -100 (all left) to 100 (all right).
+    pan: f64,
+    /// Seconds.
+    fade_in: f64,
+    fade_out: f64,
+}
+
+const VOLUME: Number = Number {
+    range: (Sound::SILENT as f64 / 1000.0, Sound::LOUDEST as f64 / 1000.0),
+    per_point: 0.1,
+    decimals: 1,
+    suffix: "",
+    usual: 0.0,
+};
+const PAN: Number = Number {
+    range: (-100.0, 100.0),
+    per_point: 1.0,
+    decimals: 0,
+    suffix: "",
+    usual: 0.0,
+};
+
+/// A fade's number: up to `room` seconds, a hundredth at a time.
+fn fade_number(room: f64) -> Number {
+    Number {
+        range: (0.0, room),
+        per_point: 0.01,
+        decimals: 2,
+        suffix: "",
+        usual: 0.0,
+    }
+}
+
+impl SoundValues {
+    fn of(sound: &Sound) -> SoundValues {
+        SoundValues {
+            volume: f64::from(sound.gain_mdb) / 1000.0,
+            pan: f64::from(sound.pan) / f64::from(Sound::SIDE) * 100.0,
+            fade_in: sound.fade_in.as_secs_f64(),
+            fade_out: sound.fade_out.as_secs_f64(),
+        }
+    }
+
+    /// `stored` with the numbers that differ from `was` set to these: a
+    /// changed fade on a whole frame of `rate`, and everything within its
+    /// range on a clip `length` long. What wasn't touched keeps `stored`'s
+    /// exact value, so linked sound clips set together keep what differs
+    /// between them in what wasn't changed.
+    fn sound(&self, was: &SoundValues, stored: Sound, rate: Rate, length: Time) -> Sound {
+        let on_frame = |secs: f64| rate.frame_start((secs.max(0.0) * rate.as_f64()).round() as i64);
+        let mut sound = stored;
+        if self.volume != was.volume {
+            sound.gain_mdb = (self.volume * 1000.0).round() as i32;
+        }
+        if self.pan != was.pan {
+            sound.pan = (self.pan / 100.0 * f64::from(Sound::SIDE)).round() as i32;
+        }
+        if self.fade_in != was.fade_in {
+            sound.fade_in = on_frame(self.fade_in).min(length - sound.fade_out.min(length));
+        }
+        if self.fade_out != was.fade_out {
+            sound.fade_out = on_frame(self.fade_out).min(length - sound.fade_in.min(length));
+        }
+        sound.within_limits().fitted(length)
+    }
+}
+
+/// "−3.0 dB", "+2.5 dB", "0.0 dB", or "Off" at the bottom of the range.
+fn volume_text(db: f64) -> String {
+    if db * 1000.0 <= f64::from(Sound::SILENT) {
+        "Off".to_owned()
+    } else if db.abs() < 0.05 {
+        "0.0 dB".to_owned()
+    } else {
+        let sign = if db < 0.0 { "−" } else { "+" };
+        format!("{sign}{:.1} dB", db.abs())
+    }
+}
+
+/// What was typed as a volume: "-3", "-3 dB", "+2.5dB", or "off".
+fn read_volume(text: &str) -> Option<f64> {
+    let text = text.trim();
+    if text.eq_ignore_ascii_case("off") || text.eq_ignore_ascii_case("silent") {
+        return Some(f64::from(Sound::SILENT) / 1000.0);
+    }
+    let number = text.trim_end_matches(|c: char| c.is_ascii_alphabetic() || c.is_whitespace());
+    number.replace('−', "-").trim().parse().ok()
+}
+
+/// "C" in the middle, "L 20" or "R 20" to a side.
+fn pan_text(pan: f64) -> String {
+    let amount = pan.abs().round();
+    if amount == 0.0 {
+        "C".to_owned()
+    } else if pan < 0.0 {
+        format!("L {amount}")
+    } else {
+        format!("R {amount}")
+    }
+}
+
+/// What was typed as a pan: "C", "L 20", "R20", or a number (negative to
+/// the left).
+fn read_pan(text: &str) -> Option<f64> {
+    let text = text.trim().replace('−', "-");
+    let (sign, rest) = match text.chars().next()? {
+        'l' | 'L' => (-1.0, &text[1..]),
+        'r' | 'R' => (1.0, &text[1..]),
+        'c' | 'C' => return Some(0.0),
+        _ => (1.0, text.as_str()),
+    };
+    let rest = rest.trim();
+    if rest.is_empty() {
+        // "L" alone is all the way.
+        return Some(sign * 100.0);
+    }
+    rest.parse::<f64>().ok().map(|n| sign * n)
+}
+
+/// "0.50 s · 30 frames": a fade's length, and in frames of the timeline.
+fn fade_text(seconds: f64, rate: Rate) -> String {
+    let frames = (seconds * rate.as_f64()).round() as i64;
+    if frames == 0 {
+        return "None".to_owned();
+    }
+    let unit = if frames == 1 { "frame" } else { "frames" };
+    format!("{seconds:.2} s · {frames} {unit}")
+}
+
+/// What was typed as a length in seconds: "0.5", "0.5 s", "none".
+fn read_seconds(text: &str) -> Option<f64> {
+    let text = text.trim();
+    if text.eq_ignore_ascii_case("none") {
+        return Some(0.0);
+    }
+    let number = text.split('·').next()?.trim().trim_end_matches('s').trim();
+    number.parse().ok()
+}
+
+/// The Audio header's line: "−3.0 dB · pan L 20 · fade in 0.5 s".
+fn sound_summary(sound: &Sound) -> String {
+    if sound.is_silent() {
+        return "Silent".to_owned();
+    }
+    let values = SoundValues::of(sound);
+    let mut parts = Vec::new();
+    if sound.gain_mdb != 0 {
+        parts.push(volume_text(values.volume));
+    }
+    if sound.pan != 0 {
+        parts.push(format!("pan {}", pan_text(values.pan)));
+    }
+    for (name, length) in [("fade in", values.fade_in), ("fade out", values.fade_out)] {
+        if length > 0.0 {
+            parts.push(format!(
+                "{name} {}",
+                ui_kit::time_text::length(length).replace(".0 s", " s")
+            ));
+        }
+    }
+    if parts.is_empty() {
+        "As recorded".to_owned()
+    } else {
+        parts.join(" · ")
+    }
 }
 
 /// A look's numbers as the inspector shows them.
@@ -1019,15 +1388,226 @@ pub(crate) mod tests {
         assert_eq!(shown(&[lower, upper]), Some(("V2".to_owned(), upper)));
         assert_eq!(shown(&[lower]), Some(("V1".to_owned(), lower)));
         assert_eq!(shown(&[]), None);
-        // Sound alone has nothing to show.
-        let sound: Vec<ClipId> = placed
+    }
+
+    /// A recording with a picture and two sound streams (game and mic), 10 s.
+    pub(crate) fn project_with_sound() -> Project {
+        let mut media = project_with_a_clip().media.values().next().unwrap().clone();
+        media.info.audio = ["Game", "Mic"]
+            .iter()
+            .enumerate()
+            .map(|(i, name)| project::AudioStream {
+                index: i as u32 + 1,
+                codec: "aac".into(),
+                channels: 2,
+                sample_rate: 48_000,
+                name: (*name).into(),
+            })
+            .collect();
+        let project = Project::new("T", SequenceSettings::GAME_CLIP);
+        Command::Import {
+            sequence: project.active_sequence,
+            media,
+        }
+        .apply(&project)
+        .unwrap()
+    }
+
+    fn sound_ids(project: &Project) -> Vec<ClipId> {
+        project
             .active()
             .unwrap()
             .audio_tracks
             .iter()
             .flat_map(|t| t.clips.iter().map(|c| c.id))
-            .collect();
-        assert_eq!(shown(&sound), None);
+            .collect()
+    }
+
+    #[test]
+    fn a_picture_shows_its_linked_sound_and_a_sound_clip_itself() {
+        let project = with_sound_and_spare();
+        let seq = project.active().unwrap();
+        let picture = &seq.video_tracks[0].clips[0];
+        let sounds = sound_ids(&project);
+        let (game, mic, spare) = (sounds[0], sounds[1], sounds[2]);
+        let of = |clip: &project::Clip| sound_clips(seq, clip).iter().map(|c| c.id).collect::<Vec<_>>();
+        assert_eq!(of(picture), vec![game, mic], "both streams, not the unlinked one");
+        let mic_clip = seq.audio_tracks[1].clips[0].clone();
+        assert_eq!(of(&mic_clip), vec![mic], "a sound clip is set alone");
+        // Selecting sound alone shows it; a picture selected with it wins.
+        let shown = |selected: &[ClipId]| shown_clip(&project, selected).map(|(_, t, c)| (t.kind, c.id));
+        assert_eq!(shown(&[spare]), Some((TrackKind::Audio, spare)));
+        assert_eq!(shown(&[mic, picture.id]), Some((TrackKind::Video, picture.id)));
+        // A sound clip has no picture to take hold of in the viewer.
+        assert!(Inspector::default().subject(&project, &[mic]).is_none());
+        assert!(Inspector::default().subject(&project, &[picture.id]).is_some());
+    }
+
+    /// The recording, plus a sound clip of its own (music) later on the mic's track.
+    fn with_sound_and_spare() -> Project {
+        let project = project_with_sound();
+        let seq = project.active().unwrap();
+        let mut spare = seq.audio_tracks[1].clips[0].clone();
+        spare.link = None;
+        spare.start = Time::seconds(20);
+        Command::PlaceClip {
+            sequence: seq.id,
+            track: seq.audio_tracks[1].id,
+            clip: spare,
+        }
+        .apply(&project)
+        .unwrap()
+    }
+
+    #[test]
+    fn a_sound_clip_shows_only_the_sections_that_apply() {
+        let project = project_with_sound();
+        let mic = sound_ids(&project)[1];
+        let picture = project.active().unwrap().video_tracks[0].clips[0].id;
+        let titles = |selected: &[ClipId]| {
+            let ctx = egui::Context::default();
+            let mut inspector = Inspector::default();
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                inspector.ui(ui, &ui_kit::ThemeName::default().theme(), &project, selected);
+            });
+            output.textures_delta.clear();
+            let text = format!("{:?}", output.shapes);
+            ["Transform", "Crop", "Quick color", "Speed", "Audio"]
+                .into_iter()
+                .filter(|title| text.contains(&format!("\"{title}\"")))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(titles(&[mic]), ["Speed", "Audio"]);
+        assert_eq!(
+            titles(&[picture]),
+            ["Transform", "Crop", "Quick color", "Speed", "Audio"]
+        );
+    }
+
+    #[test]
+    fn a_sound_change_is_shown_first_and_is_one_step_for_every_linked_stream() {
+        let project = project_with_sound();
+        let seq = project.active_sequence;
+        let sounds = sound_ids(&project);
+        let picture = project.active().unwrap().video_tracks[0].clips[0].id;
+        let quiet = Sound {
+            gain_mdb: -6_000,
+            ..Sound::PLAIN
+        };
+        let mut inspector = Inspector {
+            pending_sound: Some(sounds.iter().map(|id| (*id, quiet)).collect()),
+            ..Inspector::default()
+        };
+        assert_eq!(inspector.sounds_being_set().len(), 2);
+        let shown = inspector.shown(&project).unwrap();
+        assert!(
+            shown
+                .active()
+                .unwrap()
+                .audio_tracks
+                .iter()
+                .all(|t| t.clips[0].sound == quiet)
+        );
+        assert!(
+            project
+                .active()
+                .unwrap()
+                .audio_tracks
+                .iter()
+                .all(|t| t.clips[0].sound == Sound::PLAIN)
+        );
+        // The hand is off it: one step for both streams.
+        let commands = frame(&mut inspector, &project, &[picture]);
+        assert_eq!(
+            commands,
+            vec![Command::SetSound {
+                sequence: seq,
+                sounds: sounds.iter().map(|id| (*id, quiet)).collect()
+            }]
+        );
+        assert!(inspector.sounds_being_set().is_empty());
+        // Left hanging when another clip is chosen: finished, not lost.
+        let mut inspector = Inspector {
+            pending_sound: Some(vec![(sounds[0], quiet)]),
+            ..Inspector::default()
+        };
+        assert_eq!(frame(&mut inspector, &project, &[]).len(), 1);
+    }
+
+    #[test]
+    fn a_changed_number_sets_that_setting_alone_on_each_stream() {
+        let rate = Rate::FPS_60;
+        let length = Time::seconds(10);
+        let mic = Sound {
+            gain_mdb: -9_000,
+            pan: 300_000,
+            fade_out: Time::seconds(2),
+            ..Sound::PLAIN
+        };
+        let was = SoundValues::of(&Sound::PLAIN);
+        let mut now = was;
+        now.fade_in = 0.509;
+        let set = now.sound(&was, mic, rate, length);
+        assert_eq!(set.fade_in, rate.frame_start(31), "on a whole frame");
+        assert_eq!(
+            (set.gain_mdb, set.pan, set.fade_out),
+            (mic.gain_mdb, mic.pan, mic.fade_out)
+        );
+        // Too long for what the fade out leaves: cut to fit.
+        now.fade_in = 9.0;
+        assert_eq!(now.sound(&was, mic, rate, length).fade_in, Time::seconds(8));
+        let mut louder = was;
+        louder.volume = 2.54;
+        louder.pan = -100.0;
+        let set = louder.sound(&was, mic, rate, length);
+        assert_eq!((set.gain_mdb, set.pan), (2_540, -Sound::SIDE));
+        // Shown and read back, nothing changes.
+        assert_eq!(
+            SoundValues::of(&mic).sound(&SoundValues::of(&mic), mic, rate, length),
+            mic
+        );
+    }
+
+    #[test]
+    fn sound_is_written_and_read_in_plain_words() {
+        assert_eq!(volume_text(-3.0), "−3.0 dB");
+        assert_eq!(volume_text(2.54), "+2.5 dB");
+        assert_eq!(volume_text(0.0), "0.0 dB");
+        assert_eq!(volume_text(-60.0), "Off");
+        assert_eq!(read_volume("-3 dB"), Some(-3.0));
+        assert_eq!(read_volume("−4.5"), Some(-4.5));
+        assert_eq!(read_volume("off"), Some(-60.0));
+        assert_eq!(pan_text(0.0), "C");
+        assert_eq!(pan_text(-20.0), "L 20");
+        assert_eq!(pan_text(100.0), "R 100");
+        assert_eq!(read_pan("L 20"), Some(-20.0));
+        assert_eq!(read_pan("r35"), Some(35.0));
+        assert_eq!(read_pan("C"), Some(0.0));
+        assert_eq!(read_pan("-40"), Some(-40.0));
+        assert_eq!(read_pan("L"), Some(-100.0));
+        assert_eq!(fade_text(0.5, Rate::FPS_60), "0.50 s · 30 frames");
+        assert_eq!(fade_text(0.0, Rate::FPS_60), "None");
+        assert_eq!(read_seconds("0.75 s · 45 frames"), Some(0.75));
+        assert_eq!(read_seconds("1.2"), Some(1.2));
+        assert_eq!(read_seconds("none"), Some(0.0));
+        assert_eq!(sound_summary(&Sound::PLAIN), "As recorded");
+        let set = Sound {
+            gain_mdb: -3_000,
+            pan: -200_000,
+            fade_in: Time::from_ratio(1, 2).unwrap(),
+            fade_out: Time::seconds(1),
+        };
+        assert_eq!(
+            sound_summary(&set),
+            "−3.0 dB · pan L 20 · fade in 0.5 s · fade out 1 s"
+        );
+        assert_eq!(
+            sound_summary(&Sound {
+                gain_mdb: Sound::SILENT,
+                ..set
+            }),
+            "Silent"
+        );
     }
 
     /// Runs the inspector for one frame without a window.

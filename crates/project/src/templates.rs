@@ -233,11 +233,20 @@ impl Template {
 fn cut_to(clip: &Clip, range: Region) -> Option<Clip> {
     let start = clip.start.max(range.start);
     let end = clip.end().min(range.end);
+    // A cut end loses its fade there, as a split does.
+    let mut sound = clip.sound;
+    if start > clip.start {
+        sound = sound.without_fade_in();
+    }
+    if end < clip.end() {
+        sound = sound.without_fade_out();
+    }
     (start < end).then(|| Clip {
         start: start - range.start,
         // A cut start also moves where in the file the clip begins, by its speed.
         source_in: clip.source_at(start),
         duration: end - start,
+        sound: sound.fitted(end - start),
         ..clip.clone()
     })
 }
@@ -694,6 +703,7 @@ mod tests {
             link,
             speed,
             look: Look::PLAIN,
+            sound: Default::default(),
         };
         for (track, clip) in [
             (v1, clip(video, 0, 0, 0, 10, Some(title_link), Speed::NORMAL)),

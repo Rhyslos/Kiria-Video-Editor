@@ -48,11 +48,13 @@
 //! (seconds as `f64`, for drawing only) and gets back [`TimelineEvent`]s.
 
 pub mod cache_bar;
+mod fades;
 mod headers;
 mod loading;
 mod rows;
 
 pub use cache_bar::{CacheBar, CacheRange, CacheState};
+pub use fades::ClipSound;
 pub use loading::{LoadKind, LoadState, Loading};
 pub use rows::{MAX_TRACK, MIN_TRACK, TrackHeights};
 
@@ -81,6 +83,9 @@ pub struct TimelineClip {
     /// Background reading the clip's waveform or pictures still wait for
     /// (or that failed): shown as a slim bar with a percentage on the clip.
     pub loading: Option<Loading>,
+    /// Its sound's volume and fades: the waveform is drawn as loud as the
+    /// clip is set, and its fades as lines from the corners.
+    pub sound: ClipSound,
 }
 
 /// Small pictures along a clip's file: one every `every` seconds from the
@@ -1039,6 +1044,7 @@ impl TimelineView {
                         let wave_colour = if audio { colour } else { AUDIO_COLOURS[0] };
                         self.draw_waveform(&clip_painter, wave_r, clip, start, w, wave_colour, track.muted);
                     }
+                    fades::draw(&clip_painter, wave_r, &clip.sound, self.zoom);
                     draw_clip_marks(&clip_painter, theme, r, clip);
                     if let Some(loading) = &clip.loading {
                         loading::draw_on_clip(&clip_painter, theme, r, loading);
@@ -1441,7 +1447,7 @@ impl TimelineView {
             if a >= w.peaks.len() {
                 break;
             }
-            let peak = w.peaks[a..b].iter().fold(0f32, |m, v| m.max(*v));
+            let peak = (w.peaks[a..b].iter().fold(0f32, |m, v| m.max(*v)) * clip.sound.gain).min(1.0);
             let h = (peak.sqrt() * half).max(0.5);
             mesh.add_colored_rect(
                 Rect::from_min_max(pos2(x, mid - h), pos2(x + 1.0, mid + h)),
@@ -2559,6 +2565,7 @@ mod tests {
             waveform: None,
             pictures: None,
             loading: None,
+            sound: ClipSound::default(),
         }
     }
 

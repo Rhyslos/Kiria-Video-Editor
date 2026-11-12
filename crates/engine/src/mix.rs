@@ -1,12 +1,14 @@
 //! Mixing the timeline's sound: every audible clip at a moment, summed.
 //!
 //! Tracks that are muted, or not soloed while another track is, are silent.
-//! Each track's volume applies. Decoders stay open per file and stream and
+//! Each clip's own sound (volume, pan, fades) applies, then its track's
+//! volume, then the master's. Decoders stay open per file and stream and
 //! only seek when the next clip doesn't continue where they are.
 
 use media::AudioDecoder;
 use media::audio::CHANNELS;
-use project::{MediaId, Project, Sequence};
+use project::{Clip, MediaId, Project, Sequence, Sound};
+use std::f64::consts::FRAC_PI_2;
 
 /// How far a decoder may be from where it is needed before it seeks (seconds).
 const SEEK_SLACK: f64 = 0.005;
@@ -58,6 +60,9 @@ impl Mixer {
             }
             let gain = 10f32.powf(track.gain_db / 20.0);
             for clip in &track.clips {
+                if clip.sound.is_silent() {
+                    continue;
+                }
                 let (cs, ce) = (clip.start.as_secs_f64(), clip.end().as_secs_f64());
                 let (a, b) = (cs.max(start), ce.min(end));
                 if a >= b {
@@ -91,6 +96,11 @@ impl Mixer {
                     }
                     None => 0,
                 };
+                if let Some(shape) = Shape::of(clip) {
+                    // Seconds into the clip of the first sample read.
+                    let from = start + first as f64 / rate - cs;
+                    shape.apply(&mut scratch[..got * CHANNELS], from, rate);
+                }
                 for (o, s) in out[first * CHANNELS..(first + got) * CHANNELS]
                     .iter_mut()
                     .zip(&scratch)
@@ -129,6 +139,94 @@ impl Mixer {
             }
         }
         self.decoders.first_mut().map(|(_, d)| d)
+    }
+}
+
+/// A decibel value in thousandths as a factor on samples. The bottom of the
+/// range is silence.
+pub fn volume(gain_mdb: i32) -> f32 {
+    if gain_mdb <= Sound::SILENT {
+        0.0
+    } else {
+        10f32.powf(gain_mdb as f32 / 20_000.0)
+    }
+}
+
+/// The factors on the left and right channel for a pan in millionths
+/// (-1 000 000 all left, 1 000 000 all right). Equal power: the two
+/// factors' squares always add up to the same, so a sound moved across
+/// keeps its loudness; scaled so that the centre leaves both channels as
+/// they are (all the way to one side is that side 3 dB louder).
+pub fn pan_gains(pan: i32) -> (f32, f32) {
+    let share = f64::from(pan.clamp(-Sound::SIDE, Sound::SIDE)) / f64::from(Sound::SIDE);
+    let angle = (share + 1.0) * std::f64::consts::FRAC_PI_4;
+    let wide = std::f64::consts::SQRT_2;
+    ((angle.cos() * wide) as f32, (angle.sin() * wide) as f32)
+}
+
+/// How far up a fade is at `share` of its length (0 silent, 1 full): a
+/// quarter of a sine, which sounds even (at the middle it is 3 dB down, half
+/// the power) where a straight line seems to rush at the end.
+pub fn fade(share: f64) -> f32 {
+    (share.clamp(0.0, 1.0) * FRAC_PI_2).sin() as f32
+}
+
+/// What a clip's own sound does to its samples.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Shape {
+    left: f32,
+    right: f32,
+    /// Seconds on the timeline: fades last as long whatever the clip's speed.
+    fade_in: f64,
+    fade_out: f64,
+    length: f64,
+}
+
+impl Shape {
+    /// `None` when the clip sounds as recorded: nothing to do.
+    fn of(clip: &Clip) -> Option<Shape> {
+        let sound = clip.sound;
+        if sound == Sound::PLAIN {
+            return None;
+        }
+        let gain = volume(sound.gain_mdb);
+        let (left, right) = pan_gains(sound.pan);
+        Some(Shape {
+            left: left * gain,
+            right: right * gain,
+            fade_in: sound.fade_in.as_secs_f64(),
+            fade_out: sound.fade_out.as_secs_f64(),
+            length: clip.duration.as_secs_f64(),
+        })
+    }
+
+    /// The fades' factor `at` seconds into the clip.
+    fn faded(&self, at: f64) -> f32 {
+        let mut level = 1.0;
+        if self.fade_in > 0.0 && at < self.fade_in {
+            level *= fade(at / self.fade_in);
+        }
+        let left = self.length - at;
+        if self.fade_out > 0.0 && left < self.fade_out {
+            level *= fade(left / self.fade_out);
+        }
+        level
+    }
+
+    /// Shapes interleaved stereo `samples` whose first frame is `from`
+    /// seconds into the clip, at `rate` frames a second.
+    fn apply(&self, samples: &mut [f32], from: f64, rate: f64) {
+        let fading_from = self.length - self.fade_out;
+        for (i, frame) in samples.chunks_exact_mut(CHANNELS).enumerate() {
+            let at = from + i as f64 / rate;
+            let level = if at >= self.fade_in && at <= fading_from {
+                1.0
+            } else {
+                self.faded(at)
+            };
+            frame[0] *= self.left * level;
+            frame[1] *= self.right * level;
+        }
     }
 }
 
@@ -203,6 +301,172 @@ mod tests {
             m / one
         );
         let _ = Time::ZERO;
+    }
+
+    #[test]
+    fn decibels_pan_and_fade_curve() {
+        assert_eq!(volume(0), 1.0);
+        assert!((volume(-6_000) - 0.501).abs() < 0.001);
+        assert!((volume(12_000) - 3.981).abs() < 0.001);
+        assert_eq!(volume(Sound::SILENT), 0.0, "the bottom is silence");
+        assert_eq!(pan_gains(0), (1.0, 1.0), "the centre changes nothing");
+        let (l, r) = pan_gains(-Sound::SIDE);
+        assert!((l - std::f32::consts::SQRT_2).abs() < 1e-6 && r.abs() < 1e-6);
+        for pan in [-700_000, -200_000, 300_000, 1_000_000] {
+            let (l, r) = pan_gains(pan);
+            assert!((l * l + r * r - 2.0).abs() < 1e-5, "equal power at {pan}");
+        }
+        let (l, r) = pan_gains(500_000);
+        assert!(r > l, "to the right");
+        assert_eq!(fade(0.0), 0.0);
+        assert!(
+            (fade(0.5) - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6,
+            "3 dB down halfway"
+        );
+        assert_eq!(fade(1.0), 1.0);
+    }
+
+    #[test]
+    fn fades_follow_the_clips_start_and_end_to_the_sample() {
+        let shape = Shape {
+            left: 1.0,
+            right: 1.0,
+            fade_in: 1.0,
+            fade_out: 0.5,
+            length: 2.0,
+        };
+        let rate = 48_000.0;
+        let mut ones = vec![1f32; 96_000 * CHANNELS];
+        shape.apply(&mut ones, 0.0, rate);
+        let at = |frame: usize| ones[frame * CHANNELS];
+        assert_eq!(at(0), 0.0, "silent at the very start");
+        assert!((at(24_000) - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6);
+        assert_eq!(at(60_000), 1.0, "full between the fades");
+        assert!(
+            (at(84_000) - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6,
+            "fade out halfway"
+        );
+        assert!(at(95_999) < 0.001, "almost silent at the end");
+        // Read from the middle of the fade in, the curve goes on from there.
+        let mut later = vec![1f32; 100 * CHANNELS];
+        shape.apply(&mut later, 0.5, rate);
+        assert!((later[0] - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6);
+    }
+
+    /// The fixture with only its first sound track heard, and that clip's sound set.
+    fn first_track_with(sound: Sound, speed: Option<project::Speed>) -> Project {
+        let mut p = project();
+        let seq = p.active_sequence;
+        if let Some(speed) = speed {
+            let clip = p.active().unwrap().video_tracks[0].clips[0].id;
+            p = Command::SetSpeed {
+                sequence: seq,
+                clip,
+                speed,
+            }
+            .apply(&p)
+            .unwrap();
+        }
+        let clip = p.active().unwrap().audio_tracks[0].clips[0].id;
+        p = Command::SetSound {
+            sequence: seq,
+            sounds: vec![(clip, sound)],
+        }
+        .apply(&p)
+        .unwrap();
+        p.sequences[0].audio_tracks[0].solo = true;
+        p
+    }
+
+    fn channel(buf: &[f32], which: usize) -> Vec<f32> {
+        buf.iter().skip(which).step_by(CHANNELS).copied().collect()
+    }
+
+    #[test]
+    fn a_clips_volume_and_pan_are_heard() {
+        let plain = first_track_with(Sound::PLAIN, None);
+        let mut mixer = Mixer::new(48_000);
+        let mut buf = vec![0f32; 4_800 * CHANNELS];
+        mixer.mix(&plain, plain.active().unwrap(), 0.5, &mut buf);
+        let (l, r) = (loudness(&channel(&buf, 0)), loudness(&channel(&buf, 1)));
+        assert!(l > 0.01 && r > 0.01, "{l} {r}");
+
+        let quiet = first_track_with(
+            Sound {
+                gain_mdb: -6_000,
+                ..Sound::PLAIN
+            },
+            None,
+        );
+        mixer.mix(&quiet, quiet.active().unwrap(), 0.5, &mut buf);
+        let q = loudness(&channel(&buf, 0));
+        assert!((q / l - 0.501).abs() < 0.005, "-6 dB: {}", q / l);
+
+        let left = first_track_with(
+            Sound {
+                pan: -Sound::SIDE,
+                ..Sound::PLAIN
+            },
+            None,
+        );
+        mixer.mix(&left, left.active().unwrap(), 0.5, &mut buf);
+        let (pl, pr) = (loudness(&channel(&buf, 0)), loudness(&channel(&buf, 1)));
+        assert!(pr < 1e-6, "nothing on the right: {pr}");
+        assert!(
+            (pl / l - std::f32::consts::SQRT_2).abs() < 0.01,
+            "+3 dB on the left: {}",
+            pl / l
+        );
+
+        let silent = first_track_with(
+            Sound {
+                gain_mdb: Sound::SILENT,
+                ..Sound::PLAIN
+            },
+            None,
+        );
+        mixer.mix(&silent, silent.active().unwrap(), 0.5, &mut buf);
+        assert_eq!(loudness(&buf), 0.0);
+    }
+
+    /// Sample by sample, the faded mix over the plain one: the fade's own curve.
+    fn fade_heard(speed: Option<project::Speed>) -> Vec<(usize, f32)> {
+        let half_second = project::Time::from_ratio(1, 2).unwrap();
+        let faded = first_track_with(
+            Sound {
+                fade_in: half_second,
+                ..Sound::PLAIN
+            },
+            speed,
+        );
+        let plain = first_track_with(Sound::PLAIN, speed);
+        let mut mixer = Mixer::new(48_000);
+        let (mut a, mut b) = (vec![0f32; 48_000 * CHANNELS], vec![0f32; 48_000 * CHANNELS]);
+        mixer.mix(&faded, faded.active().unwrap(), 0.0, &mut a);
+        let mut mixer = Mixer::new(48_000);
+        mixer.mix(&plain, plain.active().unwrap(), 0.0, &mut b);
+        let (a, b) = (channel(&a, 0), channel(&b, 0));
+        [0usize, 6_000, 12_000, 18_000, 24_000, 30_000]
+            .iter()
+            .map(|&i| {
+                // The nearest sample loud enough to divide by.
+                let j = (i..i + 200).find(|&j| b[j].abs() > 0.01).unwrap();
+                (j, a[j] / b[j])
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_fade_in_rises_on_a_sine_from_the_clips_start_whatever_its_speed() {
+        for speed in [None, Some(project::Speed::new(1, 2).unwrap())] {
+            for (frame, ratio) in fade_heard(speed) {
+                let expected = fade(frame as f64 / 24_000.0);
+                assert!(
+                    (ratio - expected).abs() < 1e-4,
+                    "at sample {frame} ({speed:?}): {ratio}, expected {expected}"
+                );
+            }
+        }
     }
 
     #[test]

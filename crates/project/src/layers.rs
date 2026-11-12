@@ -88,6 +88,7 @@ pub(crate) fn lay(
         link,
         speed: Speed::NORMAL,
         look: Look::PLAIN,
+        sound: Default::default(),
     };
 
     if let Some(v) = video {
@@ -757,6 +758,7 @@ mod tests {
                 link: None,
                 speed: Default::default(),
                 look: Default::default(),
+                sound: Default::default(),
             },
         }
         .apply(&p)

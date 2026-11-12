@@ -219,6 +219,7 @@ pub fn drawn(
                         ..p
                     }),
                     loading: state.map(|state| Loading { what, state }),
+                    sound: drawn_sound(&c.sound),
                 }
             })
             .collect();
@@ -254,6 +255,28 @@ pub fn drawn(
     }
 }
 
+/// Draws `sounds` on their clips instead of what the project says: sound
+/// being set and not yet an undo step.
+pub fn show_sounds(drawn: &mut Drawn, sounds: &[(ClipId, project::Sound)]) {
+    if sounds.is_empty() {
+        return;
+    }
+    for clip in drawn.audio.iter_mut().flat_map(|t| t.clips.iter_mut()) {
+        if let Some((_, sound)) = sounds.iter().find(|(id, _)| id.0 == clip.id) {
+            clip.sound = drawn_sound(sound);
+        }
+    }
+}
+
+/// A clip's sound as the timeline draws it.
+fn drawn_sound(sound: &project::Sound) -> ui_kit::ClipSound {
+    ui_kit::ClipSound {
+        gain: engine::mix::volume(sound.gain_mdb),
+        fade_in: sound.fade_in.as_secs_f64(),
+        fade_out: sound.fade_out.as_secs_f64(),
+    }
+}
+
 /// The rough cut view: each video clip shows its sound inside it (the first
 /// sound clip linked to it), and sound clips that belong to a video clip
 /// leave the audio area. Tracks left empty there are not shown.
@@ -272,6 +295,7 @@ pub fn fold_sound(drawn: &mut Drawn) {
             .flat_map(|t| t.clips.iter())
             .find(|a| a.link == Some(link));
         clip.waveform = sound.and_then(|a| a.waveform.clone());
+        clip.sound = sound.map_or_else(Default::default, |a| a.sound);
         // Its pictures' reading shows first; then its sound's.
         if clip.loading.is_none() {
             clip.loading = sound.and_then(|a| a.loading);
@@ -499,6 +523,7 @@ mod tests {
             }),
             pictures: None,
             loading: None,
+            sound: Default::default(),
         }
     }
 
