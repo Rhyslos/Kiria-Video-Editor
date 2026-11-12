@@ -10,6 +10,7 @@ use crate::model::{
     Clip, LabelColor, MediaKind, MediaRef, Project, Region, Sequence, SequenceSettings, TimelineLabel, Track,
     TrackKind,
 };
+use crate::templates::Template;
 use crate::time::{Speed, Time};
 use diag::AppError;
 use serde::{Deserialize, Serialize};
@@ -64,6 +65,15 @@ pub enum Command {
     /// Undo returns to how it was just before.
     Restore {
         project: Box<Project>,
+    },
+    /// Drops a template in at `at`: everything from there on, on every
+    /// track, moves later by the template's length (clips under `at` are
+    /// split), and the template's clips fill the room. Tracks it needs are
+    /// made, media the project doesn't have yet is added, and every id is new.
+    InsertTemplate {
+        sequence: SequenceId,
+        template: Box<Template>,
+        at: Time,
     },
     /// Points a media file at where it is now (it was moved or renamed).
     Relink {
@@ -302,6 +312,11 @@ impl Command {
                 }
                 p = (**project).clone();
             }
+            Command::InsertTemplate {
+                sequence,
+                template,
+                at,
+            } => crate::templates::insert(&mut p, *sequence, template, *at)?,
             Command::Relink { media, path } => {
                 p.media.get_mut(media).ok_or_else(|| missing("media file"))?.path = path.clone();
             }
@@ -628,7 +643,14 @@ fn trim(p: &mut Project, sequence: SequenceId, clip: ClipId, edge: Edge, to: Tim
 pub const STILL_LENGTH: Time = Time::seconds(5);
 
 fn import(p: &mut Project, sequence: SequenceId, media: &MediaRef) -> diag::Result<()> {
-    // An automatic timeline takes its settings from the first video imported.
+    settle_automatic(p, sequence, media)?;
+    let id: MediaId = p.allocate_id();
+    p.media.insert(id, MediaRef { id, ..media.clone() });
+    place_media(p, sequence, id, None, None)
+}
+
+/// An automatic timeline takes its settings from the first video it gets.
+pub(crate) fn settle_automatic(p: &mut Project, sequence: SequenceId, media: &MediaRef) -> diag::Result<()> {
     if let Some(v) = &media.info.video
         && media.kind == MediaKind::Video
     {
@@ -638,9 +660,7 @@ fn import(p: &mut Project, sequence: SequenceId, media: &MediaRef) -> diag::Resu
             seq.automatic = false;
         }
     }
-    let id: MediaId = p.allocate_id();
-    p.media.insert(id, MediaRef { id, ..media.clone() });
-    place_media(p, sequence, id, None, None)
+    Ok(())
 }
 
 /// How long a file's clips are when placed.

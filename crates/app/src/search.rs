@@ -138,6 +138,21 @@ mod tests {
             }),
             "a command without a shortcut is found too"
         );
+        let commands = |q: &str| -> Vec<Action> {
+            find(q)
+                .iter()
+                .filter_map(|h| match h {
+                    Hit::Command { action, .. } => Some(*action),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(
+            commands("template"),
+            [Action::Templates, Action::SaveTemplate],
+            "both template commands, with their keys"
+        );
+        assert!(commands("intro").contains(&Action::Templates));
         assert!(find("theme").contains(&Hit::Settings));
         assert!(find("frame rate").contains(&Hit::TimelineSettings));
         assert!(find("hotkeys").contains(&Hit::Shortcuts));

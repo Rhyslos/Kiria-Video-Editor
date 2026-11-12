@@ -171,18 +171,23 @@ pub fn save(project: &Project, path: &Path) -> diag::Result<()> {
 pub fn save_with_journal_seq(project: &Project, path: &Path, journal_seq: u64) -> diag::Result<()> {
     project.validate()?;
     let text = to_string_with_journal_seq(project, journal_seq)?;
-    let temp = temp_path(path);
     let explain_write = || {
         AppError::new("The project can't be saved")
             .why(format!("Writing to {} failed.", path.display()))
             .fix("Check that the disk is not full and that you can write to this folder.")
     };
-    let mut file = File::create(&temp).or_explain(explain_write)?;
-    file.write_all(text.as_bytes()).or_explain(explain_write)?;
-    file.sync_all().or_explain(explain_write)?;
+    write_atomic(path, &text).or_explain(explain_write)
+}
+
+/// Writes `text` to `path` so that a crash never leaves half a file: to a
+/// temporary file beside it, flushed to disk, then renamed over the old one.
+pub(crate) fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
+    let temp = temp_path(path);
+    let mut file = File::create(&temp)?;
+    file.write_all(text.as_bytes())?;
+    file.sync_all()?;
     drop(file);
-    fs::rename(&temp, path).or_explain(explain_write)?;
-    Ok(())
+    fs::rename(&temp, path)
 }
 
 /// The file text for `project` in the current format.

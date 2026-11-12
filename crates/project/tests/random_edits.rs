@@ -7,8 +7,8 @@
 
 use project::{
     AudioStream, Clip, ClipId, Command, Document, Fingerprint, LabelColor, LabelId, MediaId, MediaInfo,
-    MediaKind, MediaRef, Project, Rate, Recovery, Region, SequenceSettings, Time, TimelineLabel, TrackKind,
-    VideoStream,
+    MediaKind, MediaRef, Project, Rate, Recovery, Region, SequenceSettings, Template, Time, TimelineLabel,
+    TrackKind, VideoStream,
 };
 use proptest::prelude::*;
 
@@ -75,6 +75,13 @@ enum Action {
     Needle {
         at: i64,
     },
+    /// Saves the stretch between `a` and `b` (the whole timeline when they
+    /// are equal) as a template and drops it in at `at`.
+    Template {
+        a: i64,
+        b: i64,
+        at: i64,
+    },
     Undo,
     Redo,
 }
@@ -99,7 +106,8 @@ fn action() -> impl Strategy<Value = Action> {
         1 => t.clone().prop_map(|at| Action::AddLabel { at }),
         1 => any::<usize>().prop_map(|pick| Action::RemoveLabel { pick }),
         1 => (t.clone(), t.clone()).prop_map(|(a, b)| Action::Region { a, b }),
-        1 => t.prop_map(|at| Action::Needle { at }),
+        1 => t.clone().prop_map(|at| Action::Needle { at }),
+        2 => (t.clone(), t.clone(), t).prop_map(|(a, b, at)| Action::Template { a, b, at }),
         2 => Just(Action::Undo),
         1 => Just(Action::Redo),
     ]
@@ -240,6 +248,15 @@ fn command_for(action: &Action, p: &Project, media: MediaId, recording: MediaId)
             sequence,
             at: Time::seconds(at),
         },
+        Action::Template { a, b, at } => {
+            let range = Region::between(Time::seconds(a), Time::seconds(b));
+            Command::InsertTemplate {
+                sequence,
+                // A stretch with no clips in it is nothing to save.
+                template: Box::new(Template::capture(p, sequence, range).ok()?),
+                at: Time::from_ratio(at * 2 + 1, 2)?,
+            }
+        }
         Action::Undo | Action::Redo => return None,
     })
 }

@@ -204,6 +204,8 @@ const USUAL: &[(Action, Shortcut)] = &[
     (Action::RemoveSilence, Shortcut::ctrl_shift(Key::R)),
     (Action::FullScreenViewer, Shortcut::key(Key::F)),
     (Action::Versions, Shortcut::ctrl_shift(Key::V)),
+    (Action::Templates, Shortcut::ctrl(Key::T)),
+    (Action::SaveTemplate, Shortcut::ctrl_shift(Key::S)),
     (Action::RoughCut, Shortcut::ctrl_shift(Key::T)),
     (Action::KeyboardShortcuts, Shortcut::ctrl(Key::Slash)),
 ];
@@ -460,6 +462,23 @@ mod tests {
         assert_eq!(first(Key::Minus), Some(Action::ShorterTracks));
         assert_eq!(first(Key::Backslash), Some(Action::UsualTrackHeights));
         assert_eq!(Shortcut::alt(Key::Minus).label(), "Alt+Minus");
+    }
+
+    #[test]
+    fn templates_have_their_keys() {
+        let table = ShortcutTable::default();
+        let first = |key, modifiers| table.actions_for(key, modifiers).next();
+        assert_eq!(first(Key::T, Modifiers::COMMAND), Some(Action::Templates));
+        assert_eq!(
+            first(Key::S, Modifiers::COMMAND | Modifiers::SHIFT),
+            Some(Action::SaveTemplate)
+        );
+        assert_eq!(
+            first(Key::T, Modifiers::NONE),
+            Some(Action::RollTool),
+            "plain T is still a tool"
+        );
+        assert_eq!(first(Key::S, Modifiers::COMMAND), Some(Action::Save));
     }
 
     #[test]
