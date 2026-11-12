@@ -12,7 +12,7 @@ use crate::geometry::{Area, Colour, Part, WEIGHTS};
 /// Ten rows of four numbers: see `Layer` in the shader.
 const LAYER_BYTES: u64 = 10 * 4 * 4;
 /// One row of four: see `Show` in the shader.
-const SHOW_BYTES: u64 = 4 * 4;
+const SHOW_BYTES: u64 = 2 * 4 * 4;
 
 /// What a frame is made in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -300,7 +300,12 @@ pub struct Shower {
 #[derive(Debug)]
 pub struct Showing {
     group: wgpu::BindGroup,
+    uniforms: wgpu::Buffer,
 }
+
+/// The whole frame, as [`Shower::show_part`] takes a part: left, top,
+/// right and bottom, 0 to 1 across and down.
+pub const WHOLE: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
 
 impl Shower {
     pub fn new(device: &wgpu::Device, target: wgpu::TextureFormat) -> Shower {
@@ -336,6 +341,7 @@ impl Shower {
             0.0,
         ];
         queue.write_buffer(&uniforms, 0, &bytes(&flags));
+        queue.write_buffer(&uniforms, 16, &bytes(&WHOLE));
         Showing {
             group: device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("show"),
@@ -352,7 +358,15 @@ impl Shower {
                     texture_binding(2, frame),
                 ],
             }),
+            uniforms,
         }
+    }
+
+    /// Shows only `part` of the frame from now on (left, top, right and
+    /// bottom, 0 to 1 across and down; [`WHOLE`] for all of it), stretched
+    /// over the viewport: for a zoomed-in viewer, which draws what is seen.
+    pub fn show_part(&self, queue: &wgpu::Queue, showing: &Showing, part: [f32; 4]) {
+        queue.write_buffer(&showing.uniforms, 16, &bytes(&part));
     }
 
     /// Draws the frame over the whole viewport of `pass`.

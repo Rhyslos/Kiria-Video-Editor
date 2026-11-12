@@ -184,6 +184,13 @@ impl Slots {
             .map(|(_, shown)| shown)
     }
 
+    fn get_mut(&mut self, slot: Slot) -> Option<&mut Shown> {
+        self.shown
+            .iter_mut()
+            .find(|(s, _)| *s == slot)
+            .map(|(_, shown)| shown)
+    }
+
     /// The slot's renderers, made now if this is its first picture.
     fn get_or_make(&mut self, slot: Slot, device: &wgpu::Device) -> &mut Shown {
         let index = match self.shown.iter().position(|(s, _)| *s == slot) {
@@ -270,12 +277,16 @@ impl VideoPicture {
         self.size
     }
 
-    /// The shape that draws this picture filling `rect`.
-    pub(crate) fn shape(&self, rect: egui::Rect) -> egui::Shape {
+    /// The shape that draws `part` of this picture (left, top, right and
+    /// bottom, 0 to 1 across and down; `render::WHOLE` for all of it)
+    /// filling `rect`. A zoomed-in viewer draws only what is seen: a
+    /// rectangle past the window's edge would be squeezed into it.
+    pub(crate) fn shape(&self, rect: egui::Rect, part: [f32; 4]) -> egui::Shape {
         let draw = Draw {
             id: self.id,
             slot: self.slot,
             fresh: Arc::clone(&self.fresh),
+            part,
         };
         egui::Shape::Callback(egui_wgpu::Callback::new_paint_callback(rect, draw))
     }
@@ -287,6 +298,8 @@ struct Draw {
     id: u64,
     slot: Slot,
     fresh: Arc<Mutex<Option<Fresh>>>,
+    /// The part of the picture drawn.
+    part: [f32; 4],
 }
 
 impl egui_wgpu::CallbackTrait for Draw {
@@ -324,6 +337,18 @@ impl egui_wgpu::CallbackTrait for Draw {
                 shown = taken,
                 "video planes handed to the renderer"
             );
+        }
+        // The part shown, every frame: zooming and panning change it
+        // without a new picture.
+        if let Some(shown) = resources
+            .get_mut::<Slots>()
+            .and_then(|slots| slots.get_mut(self.slot))
+            && shown.picture == Some(self.id)
+        {
+            match &shown.composed {
+                Some(composed) => shown.shower.show_part(queue, composed, self.part),
+                None => shown.renderer.show_part(queue, self.part),
+            }
         }
         Vec::new()
     }

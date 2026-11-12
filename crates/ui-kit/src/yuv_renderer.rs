@@ -11,6 +11,7 @@
 
 use crate::video_picture::{ChromaLayout, PlaneTextures, YuvImage, texture_axes};
 use egui_wgpu::wgpu;
+use render::WHOLE;
 
 /// What the textures in use were made for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,6 +41,11 @@ pub struct YuvRenderer {
     /// The target stores sRGB itself, so the shader hands it linear values.
     linear_target: bool,
     textures: Option<Textures>,
+    /// The picture's colour settings, turn and layout, kept to write the
+    /// shader's block again when the part shown changes.
+    settings: Option<([[f32; 4]; 3], u16, ChromaLayout)>,
+    /// The part of the picture drawn ([`Self::show_part`]).
+    part: [f32; 4],
 }
 
 /// Five rows of four numbers: see `Picture` in the shader.
@@ -139,6 +145,8 @@ impl YuvRenderer {
             uniforms,
             linear_target: target.is_srgb(),
             textures: None,
+            settings: None,
+            part: WHOLE,
         }
     }
 
@@ -176,8 +184,8 @@ impl YuvRenderer {
                 write_plane(queue, &textures.chroma[1], v, 1);
             }
         }
-        let settings = uniform_bytes(image.to_rgb, image.rotation, image.layout, self.linear_target);
-        queue.write_buffer(&self.uniforms, 0, &settings);
+        self.settings = Some((image.to_rgb, image.rotation, image.layout));
+        self.write_settings(queue);
         true
     }
 
@@ -207,14 +215,27 @@ impl YuvRenderer {
             chroma: vec![planes.chroma.clone()],
             bind_group,
         });
-        let settings = uniform_bytes(
-            planes.to_rgb,
-            planes.rotation,
-            ChromaLayout::Interleaved,
-            self.linear_target,
-        );
-        queue.write_buffer(&self.uniforms, 0, &settings);
+        self.settings = Some((planes.to_rgb, planes.rotation, ChromaLayout::Interleaved));
+        self.write_settings(queue);
         true
+    }
+
+    /// Draws only `part` of the picture from now on (left, top, right and
+    /// bottom of the upright picture, 0 to 1 across and down; [`WHOLE`] for
+    /// all of it), stretched over the viewport: for a zoomed-in viewer,
+    /// which draws what is seen.
+    pub fn show_part(&mut self, queue: &wgpu::Queue, part: [f32; 4]) {
+        if self.part != part {
+            self.part = part;
+            self.write_settings(queue);
+        }
+    }
+
+    fn write_settings(&self, queue: &wgpu::Queue) {
+        if let Some((to_rgb, rotation, layout)) = self.settings {
+            let settings = uniform_bytes(to_rgb, rotation, layout, self.linear_target, self.part);
+            queue.write_buffer(&self.uniforms, 0, &settings);
+        }
     }
 
     /// Whether a picture was taken in and can be drawn.
@@ -330,10 +351,26 @@ fn write_plane(queue: &wgpu::Queue, texture: &wgpu::Texture, bytes: &[u8], bytes
     );
 }
 
-/// The shader's `Picture` block: the conversion, the turn, how the colour
-/// planes are stored and what kind of target is drawn into.
-fn uniform_bytes(to_rgb: [[f32; 4]; 3], rotation: u16, layout: ChromaLayout, linear_target: bool) -> Vec<u8> {
-    let [origin, across, down] = texture_axes(rotation);
+/// The shader's `Picture` block: the conversion, the turn and the part of
+/// the upright picture drawn, how the colour planes are stored and what
+/// kind of target is drawn into.
+fn uniform_bytes(
+    to_rgb: [[f32; 4]; 3],
+    rotation: u16,
+    layout: ChromaLayout,
+    linear_target: bool,
+    part: [f32; 4],
+) -> Vec<u8> {
+    let [origin, right, below] = texture_axes(rotation);
+    let [left, top, end, bottom] = part;
+    // The part's top left corner, and the steps to its other corners, in
+    // the stored picture.
+    let origin = [
+        origin[0] + left * right[0] + top * below[0],
+        origin[1] + left * right[1] + top * below[1],
+    ];
+    let across = [(end - left) * right[0], (end - left) * right[1]];
+    let down = [(bottom - top) * below[0], (bottom - top) * below[1]];
     let flag = |on: bool| if on { 1.0 } else { 0.0 };
     let rows = [
         to_rgb[0],
@@ -361,7 +398,7 @@ mod tests {
             [5.0, 6.0, 7.0, 8.0],
             [9.0, 10.0, 11.0, 12.0],
         ];
-        let bytes = uniform_bytes(to_rgb, 90, ChromaLayout::Interleaved, true);
+        let bytes = uniform_bytes(to_rgb, 90, ChromaLayout::Interleaved, true, WHOLE);
         assert_eq!(bytes.len() as u64, UNIFORM_BYTES);
         let numbers: Vec<f32> = bytes
             .chunks_exact(4)
@@ -375,7 +412,29 @@ mod tests {
         // picture's bottom left; going right goes up the stored picture.
         assert_eq!(numbers[12..16], [0.0, 1.0, 0.0, -1.0]);
         assert_eq!(numbers[16..], [1.0, 0.0, 1.0, 1.0], "interleaved, linear target");
-        let bytes = uniform_bytes(to_rgb, 0, ChromaLayout::Planar, false);
+        let bytes = uniform_bytes(to_rgb, 0, ChromaLayout::Planar, false, WHOLE);
         assert_eq!(bytes[72..], [0u8; 8], "both flags off");
+    }
+
+    #[test]
+    fn a_part_of_the_picture_is_read_from_its_place_in_the_stored_one() {
+        let numbers = |rotation, part| -> Vec<f32> {
+            uniform_bytes([[0.0; 4]; 3], rotation, ChromaLayout::Planar, false, part)
+                .chunks_exact(4)
+                .map(|b| f32::from_ne_bytes([b[0], b[1], b[2], b[3]]))
+                .collect()
+        };
+        // Upright: the right half, top half only.
+        let upright = numbers(0, [0.5, 0.0, 1.0, 0.5]);
+        assert_eq!(
+            upright[12..16],
+            [0.5, 0.0, 0.5, 0.0],
+            "starts half way across, half as wide"
+        );
+        assert_eq!(upright[16..18], [0.0, 0.5], "half as deep");
+        // Turned a quarter: the upright left half is the stored bottom half.
+        let turned = numbers(90, [0.0, 0.0, 0.5, 1.0]);
+        assert_eq!(turned[12..16], [0.0, 1.0, 0.0, -0.5]);
+        assert_eq!(turned[16..18], [1.0, 0.0]);
     }
 }
