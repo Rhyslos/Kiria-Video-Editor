@@ -27,6 +27,7 @@ mod search;
 mod settings;
 mod silence_panel;
 mod slow_pictures;
+mod system_keyboard;
 mod templates_window;
 mod timeline_panel;
 mod versions_window;
@@ -80,7 +81,8 @@ fn main() -> ExitCode {
     // `--cheat-sheet`: the sheet for the shortcuts in these settings, and nothing else.
     if let Some(path) = &options.cheat_sheet {
         let table = ui_kit::ShortcutTable::restored(&settings.shortcuts);
-        let written = cheat_sheet::write(path, &table, settings.keyboard_layout);
+        let layout = settings.keyboard.resolve(&system_keyboard::asked_once());
+        let written = cheat_sheet::write(path, &table, layout);
         if let Err(err) = &written {
             eprintln!("{}", err.report());
         }

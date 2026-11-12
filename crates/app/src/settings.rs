@@ -4,6 +4,12 @@ use diag::{AppError, Explain};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use ui_kit::ThemeName;
+use ui_kit::keyboard::{KeyboardChoice, LayoutId};
+
+/// Reads `keyboard_layout` as older settings wrote it (a bare layout).
+fn older_keyboard<'de, D: serde::Deserializer<'de>>(from: D) -> Result<Option<LayoutId>, D::Error> {
+    LayoutId::deserialize(from).map(Some)
+}
 
 /// Everything in the Settings window.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -33,8 +39,13 @@ pub struct Settings {
     /// The shortcuts that were changed on the keyboard shortcuts page (the
     /// usual ones are not written down).
     pub shortcuts: ui_kit::shortcuts::SavedBindings,
-    /// The keyboard the shortcuts page draws.
-    pub keyboard_layout: ui_kit::keyboard::LayoutId,
+    /// The keyboard the shortcuts page draws and interface text writes keys
+    /// for: the system's (the usual), or one picked on the page.
+    pub keyboard: KeyboardChoice,
+    /// The keyboard as settings kept it before the system was asked: read
+    /// from older files, turned into `keyboard` on loading, never written.
+    #[serde(skip_serializing, deserialize_with = "older_keyboard")]
+    keyboard_layout: Option<LayoutId>,
     /// The selected clip's outline and handles on the picture in the viewer.
     /// Off unless switched on (Q, or "On the picture" in the inspector).
     pub picture_handles: bool,
@@ -54,8 +65,8 @@ impl Settings {
     pub fn load(data_dir: &Path) -> (Settings, Option<AppError>) {
         let path = Settings::path(data_dir);
         match std::fs::read_to_string(&path) {
-            Ok(text) => match ron::from_str(&text) {
-                Ok(settings) => (settings, None),
+            Ok(text) => match ron::from_str::<Settings>(&text) {
+                Ok(settings) => (settings.upgraded(), None),
                 Err(err) => (
                     Settings::default(),
                     Some(
@@ -68,6 +79,20 @@ impl Settings {
             },
             Err(_) => (Settings::default(), None),
         }
+    }
+
+    /// Older settings made current. Before the system was asked, every file
+    /// held a keyboard, the US one unless another was picked: a picked one
+    /// stays picked, and US (most often never picked at all) becomes
+    /// Automatic, which still draws US English on a US system.
+    fn upgraded(mut self) -> Settings {
+        if let Some(older) = self.keyboard_layout.take()
+            && older != LayoutId::Us
+            && self.keyboard == KeyboardChoice::Automatic
+        {
+            self.keyboard = KeyboardChoice::Fixed(older);
+        }
+        self
     }
 
     pub fn save(&self, data_dir: &Path) -> diag::Result<()> {
@@ -226,7 +251,7 @@ mod tests {
         table.clear(undo);
         let settings = Settings {
             shortcuts: table.saved(),
-            keyboard_layout: ui_kit::keyboard::LayoutId::Norwegian,
+            keyboard: KeyboardChoice::Fixed(LayoutId::Norwegian),
             ..Settings::default()
         };
         settings.save(tmp.path()).unwrap();
@@ -264,6 +289,33 @@ mod tests {
         assert_eq!(
             table.shortcut_for(ui_kit::Action::Split),
             Some(ui_kit::Shortcut::key(egui::Key::F9))
+        );
+    }
+
+    #[test]
+    fn the_keyboard_is_automatic_unless_one_was_picked_before() {
+        let tmp = tempfile::tempdir().unwrap();
+        let load = |text: &str| {
+            std::fs::write(Settings::path(tmp.path()), text).unwrap();
+            let (loaded, problem) = Settings::load(tmp.path());
+            assert!(problem.is_none(), "{text}");
+            loaded
+        };
+        assert_eq!(load("()").keyboard, KeyboardChoice::Automatic);
+        // Files from before: a picked keyboard stays picked; US becomes Automatic.
+        let older = load("(edit_at_playhead: true, keyboard_layout: Norwegian)");
+        assert_eq!(older.keyboard, KeyboardChoice::Fixed(LayoutId::Norwegian));
+        assert!(older.edit_at_playhead);
+        assert_eq!(load("(keyboard_layout: Us)").keyboard, KeyboardChoice::Automatic);
+        // Written back, only the new field is there.
+        older.save(tmp.path()).unwrap();
+        let text = std::fs::read_to_string(Settings::path(tmp.path())).unwrap();
+        assert!(text.contains("keyboard: Fixed(Norwegian)"), "{text}");
+        assert!(!text.contains("keyboard_layout"), "{text}");
+        assert_eq!(Settings::load(tmp.path()).0, older);
+        assert_eq!(
+            load("(keyboard: Fixed(Uk))").keyboard,
+            KeyboardChoice::Fixed(LayoutId::Uk)
         );
     }
 

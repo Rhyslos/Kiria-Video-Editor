@@ -370,11 +370,28 @@ impl Layout {
         (!us.is_empty() && self.legend(spot) != us).then_some(us)
     }
 
-    /// A shortcut's keys with what this layout prints on the key, when that
-    /// is not what the shortcut is called: "Ctrl+Slash (the - key)".
+    /// A shortcut's keys as this keyboard prints them: "Ctrl+-" for
+    /// Ctrl+Slash on a Norwegian keyboard, and the usual name ("Ctrl+Slash")
+    /// where it prints what a US keyboard does. A printed "+" is written
+    /// "Plus", so "Alt+Plus" never reads as two keys.
+    pub fn written(&self, keys: crate::Shortcut) -> String {
+        match self
+            .us_mark(Spot::Key(keys.key))
+            .map(|_| self.legend(Spot::Key(keys.key)))
+        {
+            Some("+") => keys.written("Plus"),
+            Some(printed) => keys.written(printed),
+            None => keys.label(),
+        }
+    }
+
+    /// A shortcut's keys as this keyboard prints them and, when that is not
+    /// what the shortcut is called, the name too: "Ctrl+- (Slash on a US
+    /// keyboard)". For the shortcuts page and the cheat sheet, where a
+    /// shortcut is looked up as well as read.
     pub fn describe(&self, keys: crate::Shortcut) -> String {
         match self.us_mark(Spot::Key(keys.key)) {
-            Some(_) => format!("{} (the {} key)", keys.label(), self.legend(Spot::Key(keys.key))),
+            Some(_) => format!("{} ({} on a US keyboard)", self.written(keys), keys.key.name()),
             None => keys.label(),
         }
     }
@@ -478,6 +495,68 @@ impl LayoutId {
             "no" => Some(LayoutId::Norwegian),
             "jp" => Some(LayoutId::Japanese),
             _ => None,
+        }
+    }
+}
+
+/// Which keyboard the page draws and shortcuts are written for: the one
+/// the system reports, or one picked by hand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum KeyboardChoice {
+    /// Whatever the system reports, following switches.
+    #[default]
+    Automatic,
+    /// This one, whatever the system says.
+    Fixed(LayoutId),
+}
+
+impl KeyboardChoice {
+    /// The layout to draw: the picked one, or the system's when the drawing
+    /// knows it, or US English.
+    pub fn resolve(self, system: &SystemKeyboard) -> LayoutId {
+        match self {
+            KeyboardChoice::Fixed(id) => id,
+            KeyboardChoice::Automatic => system.layout.unwrap_or_default(),
+        }
+    }
+}
+
+/// What the system said about its keyboard, as the page shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SystemKeyboard {
+    /// The layout, when the drawing knows it.
+    pub layout: Option<LayoutId>,
+    /// The system's own name for a layout the drawing doesn't know ("ru"),
+    /// to say which one it is.
+    pub unknown: Option<String>,
+}
+
+impl SystemKeyboard {
+    /// From a Windows language identifier.
+    pub fn from_windows_language(language: u16) -> SystemKeyboard {
+        let layout = LayoutId::from_windows_language(language);
+        SystemKeyboard {
+            layout,
+            unknown: layout.is_none().then(|| format!("language {language:04X}")),
+        }
+    }
+
+    /// From an XKB layout name.
+    pub fn from_xkb_name(name: &str) -> SystemKeyboard {
+        let layout = LayoutId::from_xkb_name(name);
+        SystemKeyboard {
+            layout,
+            unknown: layout.is_none().then(|| format!("\"{name}\"")),
+        }
+    }
+
+    /// One line on what the system reports: "Norwegian", or why US English
+    /// is drawn instead.
+    pub fn summary(&self) -> String {
+        match (self.layout, &self.unknown) {
+            (Some(id), _) => id.label().to_owned(),
+            (None, Some(name)) => format!("{name}, not drawn here yet"),
+            (None, None) => "not reported".to_owned(),
         }
     }
 }
@@ -616,8 +695,19 @@ mod tests {
         assert_eq!(no.us_mark(Spot::Key(Key::S)), None);
         assert_eq!(no.legend(Spot::Extra), "<");
         assert_eq!(no.us_mark(Spot::Extra), None, "a US keyboard has no such key");
-        assert_eq!(no.describe(Shortcut::ctrl(Key::Slash)), "Ctrl+Slash (the - key)");
+        assert_eq!(
+            no.describe(Shortcut::ctrl(Key::Slash)),
+            "Ctrl+- (Slash on a US keyboard)"
+        );
         assert_eq!(no.describe(Shortcut::ctrl(Key::S)), "Ctrl+S");
+        assert_eq!(no.written(Shortcut::ctrl(Key::Slash)), "Ctrl+-");
+        assert_eq!(no.written(Shortcut::alt(Key::Minus)), "Alt+Plus", "never Alt++");
+        assert_eq!(
+            no.written(Shortcut::ctrl(Key::Comma)),
+            "Ctrl+Comma",
+            "printed as on US keyboards"
+        );
+        assert_eq!(no.written(Shortcut::ctrl_shift(Key::Z)), "Ctrl+Shift+Z");
 
         let uk = LayoutId::Uk.layout();
         assert_eq!(uk.shape, Shape::Iso);
@@ -676,5 +766,45 @@ mod tests {
         assert_eq!(LayoutId::from_xkb_name("us"), Some(LayoutId::Us));
         assert_eq!(LayoutId::from_xkb_name("ru"), None);
         assert_eq!(LayoutId::from_xkb_name(""), None);
+    }
+
+    #[test]
+    fn automatic_follows_the_system_and_a_fixed_choice_does_not() {
+        let norwegian = SystemKeyboard::from_xkb_name("no");
+        assert_eq!(norwegian.summary(), "Norwegian");
+        assert_eq!(KeyboardChoice::Automatic.resolve(&norwegian), LayoutId::Norwegian);
+        assert_eq!(
+            KeyboardChoice::Fixed(LayoutId::Uk).resolve(&norwegian),
+            LayoutId::Uk
+        );
+
+        // A layout the drawing doesn't know, or none reported: US English.
+        let russian = SystemKeyboard::from_windows_language(0x0419);
+        assert_eq!(russian.layout, None);
+        assert_eq!(russian.summary(), "language 0419, not drawn here yet");
+        assert_eq!(KeyboardChoice::Automatic.resolve(&russian), LayoutId::Us);
+        assert_eq!(
+            SystemKeyboard::from_xkb_name("ru").summary(),
+            "\"ru\", not drawn here yet"
+        );
+        let nothing = SystemKeyboard::default();
+        assert_eq!(nothing.summary(), "not reported");
+        assert_eq!(KeyboardChoice::Automatic.resolve(&nothing), LayoutId::Us);
+        assert_eq!(
+            SystemKeyboard::from_windows_language(0x0411).layout,
+            Some(LayoutId::Japanese)
+        );
+        assert_eq!(KeyboardChoice::default(), KeyboardChoice::Automatic);
+    }
+
+    #[test]
+    fn japanese_and_uk_keyboards_write_their_own_characters() {
+        let jp = LayoutId::Japanese.layout();
+        assert_eq!(jp.written(Shortcut::key(Key::Equals)), "^");
+        assert_eq!(jp.written(Shortcut::key(Key::Backslash)), "]");
+        let uk = LayoutId::Uk.layout();
+        assert_eq!(uk.written(Shortcut::alt(Key::Backslash)), "Alt+#");
+        let us = LayoutId::Us.layout();
+        assert_eq!(us.written(Shortcut::ctrl(Key::Slash)), "Ctrl+Slash");
     }
 }
