@@ -10,7 +10,7 @@ mod drawing;
 pub mod layout;
 mod rebind;
 
-pub use layout::{Layout, LayoutId};
+pub use layout::{KeyboardChoice, Layout, LayoutId, SystemKeyboard};
 pub use rebind::{Rebinding, State};
 
 use crate::Theme;
@@ -149,7 +149,11 @@ impl ShortcutsPage {
             .iter()
             .enumerate()
             .filter(|(_, b)| self.shows(b.action.context()))
-            .filter(|(_, b)| self.searched(&[b.action.label(), &b.label()]))
+            .filter(|(_, b)| {
+                // By the name of the keys, or as the keyboard in use prints them.
+                let printed = b.keys.map(|k| table.written(k)).unwrap_or_default();
+                self.searched(&[b.action.label(), &b.label(), &printed])
+            })
             .map(|(i, _)| i)
             .collect()
     }
@@ -218,13 +222,16 @@ impl ShortcutsPage {
         })
     }
 
-    /// Draws the page. Shortcuts changed here are changed in `table`.
+    /// Draws the page. Shortcuts changed here are changed in `table`; the
+    /// keyboard drawn is `keyboard`'s choice, `system` being what the
+    /// operating system reports.
     pub fn show(
         &mut self,
         ui: &mut Ui,
         theme: &Theme,
         table: &mut ShortcutTable,
-        layout: &mut LayoutId,
+        keyboard: &mut KeyboardChoice,
+        system: &SystemKeyboard,
     ) -> PageResponse {
         let mut response = PageResponse::default();
         self.down = ui.input(|input| input.modifiers);
@@ -236,7 +243,10 @@ impl ShortcutsPage {
             }
         }
 
-        self.top_row(ui, theme, table, layout, &mut response);
+        self.top_row(ui, theme, table, keyboard, system, &mut response);
+        let layout = keyboard.resolve(system);
+        // Keys are written as the keyboard drawn prints them, here and everywhere.
+        table.set_layout(layout);
         ui.add_space(4.0);
         self.chips(ui, theme);
         ui.add_space(4.0);
@@ -291,7 +301,8 @@ impl ShortcutsPage {
         ui: &mut Ui,
         theme: &Theme,
         table: &ShortcutTable,
-        layout: &mut LayoutId,
+        keyboard: &mut KeyboardChoice,
+        system: &SystemKeyboard,
         response: &mut PageResponse,
     ) {
         ui.horizontal(|ui| {
@@ -304,19 +315,39 @@ impl ShortcutsPage {
             );
             ui.add_space(8.0);
             ui.label(RichText::new("Keyboard").color(theme.muted));
-            let before = *layout;
+            let before = *keyboard;
+            let automatic = format!("Automatic: {}", keyboard.resolve(system).label());
             egui::ComboBox::from_id_salt("keyboard-layout")
-                .selected_text(layout.label())
+                .selected_text(match keyboard {
+                    KeyboardChoice::Automatic => automatic.clone(),
+                    KeyboardChoice::Fixed(id) => id.label().to_owned(),
+                })
+                .width(200.0)
                 .show_ui(ui, |ui| {
+                    ui.selectable_value(keyboard, KeyboardChoice::Automatic, "Automatic (from the system)")
+                        .on_hover_text("Follows the keyboard the system uses, switches included.");
+                    ui.separator();
                     for id in LayoutId::ALL {
-                        ui.selectable_value(layout, id, id.label());
+                        ui.selectable_value(keyboard, KeyboardChoice::Fixed(id), id.label());
                     }
                 })
                 .response
                 .on_hover_text(
-                    "The keyboard that is drawn. Shortcuts stay on the same keys whatever is printed on them.",
+                    "The keyboard that is drawn and that menus and tips write keys for. Shortcuts stay on the same keys whatever is printed on them.",
                 );
-            response.changed |= *layout != before;
+            response.changed |= *keyboard != before;
+            // What the system reports, when it is not simply what is drawn.
+            let note = match (*keyboard, system.layout) {
+                (KeyboardChoice::Automatic, Some(_)) => None,
+                (KeyboardChoice::Automatic, None) => Some(format!("System: {}", system.summary())),
+                (KeyboardChoice::Fixed(id), found) if found != Some(id) => {
+                    Some(format!("System: {}", system.summary()))
+                }
+                (KeyboardChoice::Fixed(_), _) => None,
+            };
+            if let Some(note) = note {
+                ui.label(RichText::new(note).color(theme.muted));
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
                     .add_enabled(table.changed(), egui::Button::new("Reset all…"))
@@ -586,7 +617,7 @@ impl ShortcutsPage {
                             if binding.changed() {
                                 let usual = binding
                                     .usual()
-                                    .map_or_else(|| "no shortcut".to_owned(), |k| k.label());
+                                    .map_or_else(|| "no shortcut".to_owned(), |k| layout.written(k));
                                 if ui
                                     .small_button("Reset")
                                     .on_hover_text(format!("Back to the usual: {usual}."))
@@ -658,7 +689,11 @@ fn clash_text(table: &ShortcutTable, layout: &Layout, line: usize, keys: Shortcu
 /// What Swap would do to the command that has the keys.
 fn swap_text(table: &ShortcutTable, line: usize, holder: Action) -> String {
     match table.lines().get(line).and_then(|b| b.keys) {
-        Some(old) => format!("Swap gives \"{}\" {} instead.", holder.label(), old.label()),
+        Some(old) => format!(
+            "Swap gives \"{}\" {} instead.",
+            holder.label(),
+            table.written(old)
+        ),
         None => format!("Swap leaves \"{}\" without a shortcut.", holder.label()),
     }
 }
@@ -879,11 +914,11 @@ mod tests {
             events,
             ..Default::default()
         };
-        let mut layout = LayoutId::Us;
+        let mut keyboard = KeyboardChoice::Fixed(LayoutId::Us);
         let output = ctx.run_ui(input, |ui| {
             egui::CentralPanel::default().show(ui, |ui| {
                 // A frame may be laid out twice; what it asked for adds up.
-                let asked = page.show(ui, &Theme::ASH, table, &mut layout);
+                let asked = page.show(ui, &Theme::ASH, table, &mut keyboard, &SystemKeyboard::default());
                 response.changed |= asked.changed;
                 response.cheat_sheet |= asked.cheat_sheet;
             });
@@ -991,12 +1026,18 @@ mod tests {
                 ..Default::default()
             };
             let mut changed = false;
-            let mut layout = LayoutId::Uk;
+            let mut keyboard = KeyboardChoice::Fixed(LayoutId::Uk);
             let output = self.ctx.run_ui(input, |ui| {
                 egui::CentralPanel::default().show(ui, |ui| {
                     changed |= self
                         .page
-                        .show(ui, &Theme::ASH, &mut self.table, &mut layout)
+                        .show(
+                            ui,
+                            &Theme::ASH,
+                            &mut self.table,
+                            &mut keyboard,
+                            &SystemKeyboard::default(),
+                        )
                         .changed;
                 });
             });
@@ -1038,7 +1079,7 @@ mod tests {
     fn clicking_a_drawn_key_pins_it_or_answers_a_change_under_way() {
         let mut rig = Rig::new();
         let (f9, s) = (rig.find(Key::F9), rig.find(Key::S));
-        assert_eq!(rig.table, ShortcutTable::default(), "pinning changes nothing");
+        assert!(!rig.table.changed(), "pinning changes nothing");
 
         // Not changing anything: a click pins the key, another lets go.
         assert!(!rig.click(f9));
@@ -1100,15 +1141,58 @@ mod tests {
                 let mut page = ShortcutsPage::preview(preview, &table);
                 page.pinned = Some(Key::S);
                 let ctx = egui::Context::default();
-                let mut layout = id;
+                let mut keyboard = KeyboardChoice::Fixed(id);
                 let output = ctx.run_ui(egui::RawInput::default(), |ui| {
                     egui::CentralPanel::default().show(ui, |ui| {
-                        page.show(ui, &Theme::CARBON, &mut table, &mut layout);
+                        page.show(
+                            ui,
+                            &Theme::CARBON,
+                            &mut table,
+                            &mut keyboard,
+                            &SystemKeyboard::default(),
+                        );
                     });
                 });
                 output.drop_without_applying_deltas();
-                assert_eq!(layout, id);
+                assert_eq!(keyboard, KeyboardChoice::Fixed(id));
+                assert_eq!(table.layout(), id);
             }
         }
+    }
+
+    #[test]
+    fn automatic_draws_what_the_system_reports_and_writes_keys_for_it() {
+        let mut table = ShortcutTable::default();
+        let mut page = ShortcutsPage::default();
+        let mut keyboard = KeyboardChoice::Automatic;
+        let mut show = |system: &SystemKeyboard, table: &mut ShortcutTable| {
+            let ctx = egui::Context::default();
+            let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    page.show(ui, &Theme::ASH, table, &mut keyboard, system);
+                });
+            });
+            output.drop_without_applying_deltas();
+        };
+        show(&SystemKeyboard::from_xkb_name("no"), &mut table);
+        assert_eq!(table.layout(), LayoutId::Norwegian);
+        assert_eq!(table.keys_for(Action::KeyboardShortcuts), "Ctrl+-");
+        // A switch on the system follows at the next frame.
+        show(&SystemKeyboard::from_windows_language(0x0411), &mut table);
+        assert_eq!(table.layout(), LayoutId::Japanese);
+        // One the drawing doesn't know: US English.
+        show(&SystemKeyboard::from_xkb_name("ru"), &mut table);
+        assert_eq!(table.layout(), LayoutId::Us);
+    }
+
+    #[test]
+    fn the_list_is_searched_by_what_the_keyboard_prints() {
+        let mut table = ShortcutTable::default();
+        table.set_layout(LayoutId::Norwegian);
+        let page = ShortcutsPage {
+            search: "ctrl+-".into(),
+            ..Default::default()
+        };
+        assert_eq!(page.listed(&table), [line(&table, Action::KeyboardShortcuts)]);
     }
 }

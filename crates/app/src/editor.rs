@@ -91,6 +91,9 @@ pub struct Editor {
     versions: crate::versions_window::VersionsWindow,
     templates: crate::templates_window::TemplatesWindow,
     shortcuts_page: Option<ui_kit::keyboard::ShortcutsPage>,
+    /// The system's keyboard layout, followed for the shortcuts page and
+    /// for writing keys in menus and tips.
+    system_keyboard: crate::system_keyboard::Follower,
     cheat_sheet: crate::cheat_sheet::CheatSheet,
     /// Commands asked for on the command line, run on the first frames.
     startup_actions: Vec<Action>,
@@ -183,7 +186,9 @@ impl Editor {
         let decoding =
             crate::device_decoding::WindowDecoding::new(&graphics, cc.wgpu_render_state.as_ref(), convert);
         // The usual shortcuts, with the ones changed on the shortcuts page.
-        let shortcuts = ShortcutTable::restored(&settings.shortcuts);
+        let mut shortcuts = ShortcutTable::restored(&settings.shortcuts);
+        let system_keyboard = crate::system_keyboard::Follower::start();
+        shortcuts.set_layout(settings.keyboard.resolve(system_keyboard.now()));
         let shortcuts_page =
             shortcuts_page.map(|state| ui_kit::keyboard::ShortcutsPage::preview(state, &shortcuts));
         let startup_actions: Vec<Action> = project
@@ -273,6 +278,7 @@ impl Editor {
             versions: crate::versions_window::VersionsWindow::default(),
             templates: crate::templates_window::TemplatesWindow::default(),
             shortcuts_page,
+            system_keyboard,
             cheat_sheet: crate::cheat_sheet::CheatSheet::default(),
             startup_actions,
             full_screen,
@@ -575,7 +581,7 @@ impl Editor {
         .filter_map(|(action, does)| {
             Some(format!(
                 "{} {does}",
-                self.shortcuts.shortcut_for(*action)?.label()
+                self.shortcuts.written(self.shortcuts.shortcut_for(*action)?)
             ))
         })
         .collect();
@@ -1257,7 +1263,8 @@ impl Editor {
                         ui,
                         &self.theme,
                         &mut self.shortcuts,
-                        &mut self.settings.keyboard_layout,
+                        &mut self.settings.keyboard,
+                        self.system_keyboard.now(),
                     );
                 });
             if !open {
@@ -1271,7 +1278,7 @@ impl Editor {
             }
             if asked.cheat_sheet {
                 self.cheat_sheet
-                    .start(ctx, &self.shortcuts, self.settings.keyboard_layout);
+                    .start(ctx, &self.shortcuts, self.shortcuts.layout());
             }
         }
         if let Some(err) = self.export_page.poll() {
@@ -2487,6 +2494,13 @@ impl eframe::App for Editor {
             for action in std::mem::take(&mut self.startup_actions) {
                 self.run_action(action);
             }
+        }
+        // A keyboard switched on the system: keys are written for it from now
+        // on (the page draws it too). The window repaints twice a second, so
+        // a switch shows within a moment even without input.
+        if self.system_keyboard.poll() {
+            self.shortcuts
+                .set_layout(self.settings.keyboard.resolve(self.system_keyboard.now()));
         }
         // While the shortcuts page waits for new keys, what is pressed is
         // its answer, not a command.

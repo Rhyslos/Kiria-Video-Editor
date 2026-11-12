@@ -32,7 +32,7 @@ const HEIGHT: f32 = 44.0;
 /// they are now, if it has any.
 fn tip(words: &str, shortcuts: &ShortcutTable, action: Action) -> String {
     match shortcuts.shortcut_for(action) {
-        Some(keys) => format!("{words} ({})", keys.label()),
+        Some(keys) => format!("{words} ({})", shortcuts.written(keys)),
         None => words.to_owned(),
     }
 }

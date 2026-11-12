@@ -421,7 +421,7 @@ mod tests {
             page.contains(">&lt;</text>"),
             "the key beside the left Shift, escaped"
         );
-        assert!(page.contains("Ctrl+Slash (the - key)"));
+        assert!(page.contains("Ctrl+- (Slash on a US keyboard)"));
         assert_eq!(escaped("a<b & \"c\">"), "a&lt;b &amp; &quot;c&quot;&gt;");
         // The tall Enter is one six-cornered outline.
         let enter = page.find(">Enter</text>").unwrap();

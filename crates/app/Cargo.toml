@@ -22,6 +22,7 @@ graphics = { path = "../graphics" }
 image = { version = "0.25", default-features = false, features = ["png"] }
 jobs = { path = "../jobs" }
 media = { path = "../media" }
+os = { path = "../os" }
 project = { path = "../project" }
 rfd = "0.18"
 ron = "0.12"

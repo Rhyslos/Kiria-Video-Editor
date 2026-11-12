@@ -216,6 +216,9 @@ const USUAL: &[(Action, Shortcut)] = &[
 pub struct ShortcutTable {
     /// In the order of [`Action::ALL`]; a command's lines stay together.
     lines: Vec<Binding>,
+    /// The keyboard in use, whose printed characters interface text writes
+    /// keys with. It changes nothing about which key does what.
+    layout: crate::keyboard::LayoutId,
 }
 
 impl Default for ShortcutTable {
@@ -238,7 +241,10 @@ impl Default for ShortcutTable {
                 });
             }
         }
-        ShortcutTable { lines }
+        ShortcutTable {
+            lines,
+            layout: crate::keyboard::LayoutId::default(),
+        }
     }
 }
 
@@ -259,23 +265,41 @@ impl ShortcutTable {
         self.bindings().find(|(a, _)| *a == action).map(|(_, s)| s)
     }
 
+    /// The keyboard whose characters keys are written with.
+    pub fn layout(&self) -> crate::keyboard::LayoutId {
+        self.layout
+    }
+
+    /// Writes keys with `layout`'s characters from now on (the keyboard
+    /// in use changed). Which key does what stays as it is.
+    pub fn set_layout(&mut self, layout: crate::keyboard::LayoutId) {
+        self.layout = layout;
+    }
+
+    /// `keys` as interface text writes them: with the characters printed
+    /// on the keyboard in use ("Ctrl+-" for Ctrl+Slash on a Norwegian one).
+    pub fn written(&self, keys: Shortcut) -> String {
+        self.layout.layout().written(keys)
+    }
+
     /// The first shortcut bound to `action` as text ("Ctrl+Z"), or nothing
     /// when it has none: for hints written into sentences and buttons.
     pub fn keys_for(&self, action: Action) -> String {
-        self.shortcut_for(action).map_or_else(String::new, |s| s.label())
+        self.shortcut_for(action)
+            .map_or_else(String::new, |s| self.written(s))
     }
 
     /// The first shortcut bound to `action`, or the command's name when it
     /// has none: for sentences such as "Ctrl+Z undoes it".
     pub fn keys_or_name(&self, action: Action) -> String {
         self.shortcut_for(action)
-            .map_or_else(|| action.label().to_owned(), |s| s.label())
+            .map_or_else(|| action.label().to_owned(), |s| self.written(s))
     }
 
     /// The command's name with its shortcut, if it has one: "Undo (Ctrl+Z)".
     pub fn tip(&self, action: Action) -> String {
         match self.shortcut_for(action) {
-            Some(keys) => format!("{} ({})", action.label(), keys.label()),
+            Some(keys) => format!("{} ({})", action.label(), self.written(keys)),
             None => action.label().to_owned(),
         }
     }
@@ -480,6 +504,23 @@ mod tests {
             "plain T is still a tool"
         );
         assert_eq!(first(Key::S, Modifiers::COMMAND), Some(Action::Save));
+    }
+
+    #[test]
+    fn interface_text_writes_keys_as_the_keyboard_in_use_prints_them() {
+        use crate::keyboard::LayoutId;
+        let mut table = ShortcutTable::default();
+        assert_eq!(table.keys_for(Action::KeyboardShortcuts), "Ctrl+Slash");
+        table.set_layout(LayoutId::Norwegian);
+        assert_eq!(table.keys_for(Action::KeyboardShortcuts), "Ctrl+-");
+        assert_eq!(table.tip(Action::ZoomOut), "Zoom out of the timeline (Plus)");
+        assert_eq!(table.keys_or_name(Action::Undo), "Ctrl+Z", "letters stay");
+        // The key is the same one: only the text differs.
+        assert_eq!(
+            table.actions_for(Key::Slash, Modifiers::COMMAND).next(),
+            Some(Action::KeyboardShortcuts)
+        );
+        assert_eq!(table.layout(), LayoutId::Norwegian);
     }
 
     #[test]

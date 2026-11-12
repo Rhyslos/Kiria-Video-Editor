@@ -383,7 +383,7 @@ Robustness comes from isolating failures, never losing work, and testing against
 
 - **No work is lost.** Autosave every 30 seconds and after each significant edit to a journal file; the project file is written atomically (write new file, then rename). On restart after a crash, the launcher offers recovery.
 - **Failures stay local.** Each decode, effect and model call runs inside a guarded job. A broken file or a crashing effect marks that one clip as failed, with an explanation, and the rest of the project keeps working.
-- **Unsafe code only at the edges.** `unsafe` is limited to the FFmpeg and GPU FFI wrappers, which are small and heavily tested.
+- **Unsafe code only at the edges.** `unsafe` is limited to the FFmpeg and GPU FFI wrappers and the small crate of operating-system calls (`crates/os`), which are small and heavily tested.
 - **Media is referenced, never modified.** Clips are stored by path plus a content fingerprint, so moved files can be relinked automatically.
 - **Versioned project format** with migrations, so old projects always open in new versions.
 - **Hardware fallbacks.** Hardware decode falls back to software; GPU inference falls back to CPU; each fallback is shown, not hidden.
