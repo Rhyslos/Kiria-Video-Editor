@@ -4,7 +4,7 @@ A fast, light, native video editor written in Rust. A hobby project, open source
 
 ## Start here
 
-1. Open [docs/build-plan.md](docs/build-plan.md). Find the first phase whose status is not "Gate passed" and take its first unticked step.
+1. Open [docs/build-plan.md](docs/build-plan.md). Find the first phase whose status is not "Gate passed" and take its first unticked step. A gate marked *waiting for the owner* doesn't hold work back: carry on with the next phase.
 2. Read the `README.md` of every folder you will touch before writing code.
 3. Finish the step (definition of done below), tick it in `docs/build-plan.md`, and update any README or this file that the change makes out of date, all in the same commit.
 

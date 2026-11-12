@@ -349,6 +349,8 @@ Phase 4 is the heart of the app and the longest phase, so it runs as three parts
 
 **Gate 4**
 
+*Waiting for the owner's edit* (12 November 2026): the owner agreed that work moves on to phase 5 while the first line below waits for their 20-minute edit; the other two lines are checked as phase 4's building work finishes.
+
 - [ ] Both of you edit a real 20-minute game recording at 1440p 60 to a finished cut without a stutter, crash or lost change.
 - [ ] Every shortcut and tool behaves the same in Rough cut and Full views.
 - [ ] Performance targets from the project plan are met and recorded in the benchmark history.
