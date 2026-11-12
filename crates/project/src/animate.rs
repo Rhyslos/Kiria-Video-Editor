@@ -96,6 +96,22 @@ pub(crate) fn keyframe(
     }
     let (clip, rate) = picture_clip(p, sequence, clip)?;
     let at = clip.moment(at, rate);
+    if !change_at(clip, rate, at, fields, change) {
+        return Err(match change {
+            KeyframeChange::Add => AppError::new("There is a keyframe here already")
+                .why("The playhead is on a frame that has one.")
+                .fix("Change the value to change that keyframe, or move the playhead."),
+            _ => AppError::new("There is no keyframe here")
+                .why("The playhead is not on a frame that has one.")
+                .fix("Move the playhead onto a keyframe first (the arrows beside the diamond jump to one)."),
+        });
+    }
+    Ok(())
+}
+
+/// Makes `change` to `fields`' keyframes in the timeline frame at `at`
+/// (on the clip). Returns whether anything changed.
+fn change_at(clip: &mut Clip, rate: Rate, at: Time, fields: &[LookField], change: KeyframeChange) -> bool {
     let now = clip.look_at(at);
     let source = clip.source_at(at);
     let near = clip.frame_in_file(at, rate);
@@ -124,19 +140,106 @@ pub(crate) fn keyframe(
             KeyframeChange::Ease(ease) => changed |= clip.keyframes.set_ease(*field, near, ease),
         }
     }
-    if !changed {
-        return Err(match change {
-            KeyframeChange::Add => AppError::new("There is a keyframe here already")
-                .why("The playhead is on a frame that has one.")
-                .fix("Change the value to change that keyframe, or move the playhead."),
-            _ => AppError::new("There is no keyframe here")
-                .why("The playhead is not on a frame that has one.")
-                .fix("Move the playhead onto a keyframe first (the arrows beside the diamond jump to one)."),
-        });
-    }
     // The look stays valid whatever the keyframes did to it.
     clip.look = clip.look.within_limits();
-    Ok(())
+    changed
+}
+
+/// What [`crate::Command::ChangeKeyframes`] does to every keyframe in each
+/// of its frames (the keyframe marks on the timeline).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum KeyframesChange {
+    /// Moves them this far along the timeline (whole frames), staying on
+    /// the clip. They keep their values and eases.
+    Move(Time),
+    /// Takes them away. A number left without keyframes keeps, for the
+    /// whole clip, the value the last one held.
+    Remove,
+    /// How the values go from them to the next keyframes.
+    Ease(Ease),
+}
+
+/// See [`crate::Command::ChangeKeyframes`].
+pub(crate) fn change_keyframes(
+    p: &mut Project,
+    sequence: SequenceId,
+    clip: ClipId,
+    frames: &[Time],
+    change: KeyframesChange,
+) -> diag::Result<()> {
+    let (clip, rate) = picture_clip(p, sequence, clip)?;
+    // One moment per timeline frame, each a frame with a mark.
+    let marked = clip.keyframe_frames(&LookField::ALL, rate);
+    let mut wanted: Vec<i64> = frames.iter().map(|at| rate.frame_at(*at)).collect();
+    wanted.sort_unstable();
+    wanted.dedup();
+    if wanted.is_empty() || wanted.iter().any(|frame| !marked.contains(frame)) {
+        return Err(AppError::new("There is no keyframe there")
+            .why("The clip has no keyframe on one of the frames that were given.")
+            .fix("Pick a keyframe mark along the bottom of the selected clip."));
+    }
+    let starts: Vec<Time> = wanted.iter().map(|frame| rate.frame_start(*frame)).collect();
+    match change {
+        KeyframesChange::Move(by) => move_keyframes(clip, rate, &starts, by),
+        KeyframesChange::Remove | KeyframesChange::Ease(_) => {
+            let change = match change {
+                KeyframesChange::Ease(ease) => KeyframeChange::Ease(ease),
+                _ => KeyframeChange::Remove,
+            };
+            for at in starts {
+                change_at(clip, rate, at, &LookField::ALL, change);
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Moves the keyframes in the timeline frames starting at `starts` by `by`.
+fn move_keyframes(clip: &mut Clip, rate: Rate, starts: &[Time], by: Time) -> diag::Result<()> {
+    if by == Time::ZERO {
+        return Err(AppError::new("The keyframes were not moved").why("They were let go where they were."));
+    }
+    if rate.snap(by) != by {
+        return Err(AppError::new("Keyframes move by whole frames")
+            .why("The distance given ends between two frames.")
+            .fix("Drag the mark again: it moves a frame at a time."));
+    }
+    let (first, end) = (rate.frame_at(clip.start), rate.frame_at(clip.end()));
+    let outside = starts
+        .iter()
+        .map(|at| rate.frame_at(*at + by))
+        .find(|frame| !(first..end).contains(frame));
+    if let Some(frame) = outside {
+        let side = if frame < first { "start" } else { "end" };
+        return Err(AppError::new("Keyframes stay on their clip")
+            .why(format!("That would put them past the clip's {side}."))
+            .fix("Drag them less far, or trim the clip longer first."));
+    }
+    let stretches: Vec<(Time, Time)> = starts.iter().map(|at| clip.frame_in_file(*at, rate)).collect();
+    // The clip plays its file evenly, so every frame moves as far in the file.
+    let in_file = clip.source_at(starts[0] + by) - clip.source_at(starts[0]);
+    clip.keyframes.move_by(&stretches, in_file).map_err(|fields| {
+        let mut names: Vec<&str> = fields.iter().map(|field| field.name()).collect();
+        names.dedup();
+        let (names, has) = match names.as_slice() {
+            [one] => ((*one).to_owned(), "has"),
+            [most @ .., last] => (format!("{} and {last}", most.join(", ")), "have"),
+            [] => (String::new(), "has"),
+        };
+        AppError::new(format!("{} {has} a keyframe there already", capitalised(&names)))
+            .why(
+                "A number has one keyframe a frame, and the frame these were dropped on has one of the same.",
+            )
+            .fix("Drop them on another frame, or remove the one there first (right-click its mark).")
+    })
+}
+
+/// `text` with its first letter a capital.
+fn capitalised(text: &str) -> String {
+    let mut letters = text.chars();
+    letters
+        .next()
+        .map_or_else(String::new, |first| first.to_uppercase().chain(letters).collect())
 }
 
 /// See [`crate::Command::ResetLook`].
@@ -454,6 +557,156 @@ mod tests {
         assert_eq!(right.len(), 2, "one at the cut and its own");
         assert_eq!((left[1].at, right[0].at), (Time::seconds(7), Time::seconds(7)));
         assert!(split.problems().is_empty(), "{:?}", split.problems());
+    }
+
+    /// Moves, removes or eases the marks at `frames` (seconds on the timeline).
+    fn marks(p: &Project, frames: &[i64], change: KeyframesChange) -> diag::Result<Project> {
+        let (sequence, clip) = (p.active_sequence, the_clip(p).id);
+        Command::ChangeKeyframes {
+            sequence,
+            clip,
+            frames: frames.iter().map(|s| Time::seconds(*s)).collect(),
+            change,
+        }
+        .apply(p)
+    }
+
+    fn opacity_keys(p: &Project) -> Vec<(Time, i32)> {
+        the_clip(p)
+            .keyframes
+            .of(LookField::Opacity)
+            .iter()
+            .map(|k| (k.at, k.value))
+            .collect()
+    }
+
+    #[test]
+    fn a_mark_moves_all_its_keyframes_in_the_files_time_and_undo_brings_it_back() {
+        let (p, sequence, clip) = faded_in();
+        // A turn keyframe on the same frame as the fade's start (3 s).
+        let p = Command::Keyframe {
+            sequence,
+            clip,
+            at: Time::seconds(3),
+            fields: vec![LookField::Turn],
+            change: KeyframeChange::Add,
+        }
+        .apply(&p)
+        .unwrap();
+        let moved = marks(&p, &[3], KeyframesChange::Move(Time::seconds(2))).unwrap();
+        assert_eq!(
+            opacity_keys(&moved),
+            [(Time::seconds(8), 0), (Time::seconds(10), ONE)],
+            "the fade's start goes from 6 s to 8 s of the file and keeps its value"
+        );
+        assert_eq!(
+            the_clip(&moved).keyframes.of(LookField::Turn)[0].at,
+            Time::seconds(8)
+        );
+        assert_eq!(
+            the_clip(&moved).keyframe_frames(&LookField::ALL, Rate::FPS_60),
+            [5 * 60, 7 * 60]
+        );
+        assert!(moved.problems().is_empty(), "{:?}", moved.problems());
+        // Undo is the snapshot before: nothing to do but keep it.
+        assert_eq!(opacity_keys(&p)[0].0, Time::seconds(6));
+        // Past the other one: they swap places in time order.
+        let past = marks(&p, &[3], KeyframesChange::Move(Time::seconds(6))).unwrap();
+        assert_eq!(
+            opacity_keys(&past),
+            [(Time::seconds(10), ONE), (Time::seconds(12), 0)]
+        );
+    }
+
+    #[test]
+    fn a_move_onto_a_frame_with_the_same_numbers_keyframe_is_refused() {
+        let (p, sequence, clip) = faded_in();
+        let refused = marks(&p, &[3], KeyframesChange::Move(Time::seconds(4))).unwrap_err();
+        assert!(
+            refused.what().contains("Opacity has a keyframe there"),
+            "{}",
+            refused.what()
+        );
+        // Another number's keyframe there: the two marks become one.
+        let p = Command::Keyframe {
+            sequence,
+            clip,
+            at: Time::seconds(9),
+            fields: vec![LookField::Scale],
+            change: KeyframeChange::Add,
+        }
+        .apply(&p)
+        .unwrap();
+        let joined = marks(&p, &[9], KeyframesChange::Move(Time::seconds(-2))).unwrap();
+        assert_eq!(
+            the_clip(&joined).keyframe_frames(&LookField::ALL, Rate::FPS_60),
+            [3 * 60, 7 * 60]
+        );
+    }
+
+    #[test]
+    fn keyframes_stay_on_their_clip_and_move_by_whole_frames() {
+        let (p, _, _) = faded_in();
+        // The clip shows 2 s to 12 s of the timeline.
+        let early = marks(&p, &[3], KeyframesChange::Move(Time::seconds(-2))).unwrap_err();
+        assert!(early.what().contains("stay on their clip"));
+        assert!(early.why_text().unwrap_or_default().contains("start"));
+        let late = marks(&p, &[7], KeyframesChange::Move(Time::seconds(5))).unwrap_err();
+        assert!(late.why_text().unwrap_or_default().contains("end"));
+        let to_the_first_frame = marks(&p, &[3], KeyframesChange::Move(Time::seconds(-1))).unwrap();
+        assert_eq!(opacity_keys(&to_the_first_frame)[0].0, Time::seconds(5));
+        let last = Rate::FPS_60.frame_start(12 * 60 - 1) - Time::seconds(7);
+        assert!(
+            marks(&p, &[7], KeyframesChange::Move(last)).is_ok(),
+            "onto its last frame"
+        );
+        let half_frame = Rate::FPS_60.frame_start(1) - Time::from_ratio(1, 240).unwrap();
+        assert!(marks(&p, &[3], KeyframesChange::Move(half_frame)).is_err());
+        assert!(marks(&p, &[3], KeyframesChange::Move(Time::ZERO)).is_err());
+        assert!(
+            marks(&p, &[5], KeyframesChange::Remove).is_err(),
+            "no mark at 5 s"
+        );
+        assert!(marks(&p, &[], KeyframesChange::Remove).is_err());
+    }
+
+    #[test]
+    fn several_marks_move_together_at_another_speed() {
+        let (p, sequence, clip) = faded_in();
+        let p = Command::SetSpeed {
+            sequence,
+            clip,
+            speed: Speed::new(1, 2).unwrap(),
+        }
+        .apply(&p)
+        .unwrap();
+        // At half speed the fade runs from 4 s to 12 s of the timeline.
+        assert_eq!(
+            the_clip(&p).keyframe_frames(&LookField::ALL, Rate::FPS_60),
+            [4 * 60, 12 * 60]
+        );
+        let moved = marks(&p, &[4, 12], KeyframesChange::Move(Time::seconds(2))).unwrap();
+        assert_eq!(
+            opacity_keys(&moved),
+            [(Time::seconds(7), 0), (Time::seconds(11), ONE)],
+            "2 s of the timeline is 1 s of the file"
+        );
+    }
+
+    #[test]
+    fn marks_are_removed_and_eased_in_one_step() {
+        let (p, _, _) = faded_in();
+        let eased = marks(&p, &[3, 7], KeyframesChange::Ease(Ease::Hold)).unwrap();
+        let eases: Vec<Ease> = the_clip(&eased)
+            .keyframes
+            .of(LookField::Opacity)
+            .iter()
+            .map(|k| k.ease)
+            .collect();
+        assert_eq!(eases, [Ease::Hold, Ease::Hold]);
+        let removed = marks(&p, &[3, 7], KeyframesChange::Remove).unwrap();
+        assert!(the_clip(&removed).keyframes.is_empty());
+        assert_eq!(the_clip(&removed).look.opacity, ONE, "the last one's value stays");
     }
 
     #[test]

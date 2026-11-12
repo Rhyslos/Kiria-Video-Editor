@@ -120,7 +120,17 @@ pub const MOUSE: &[MouseAction] = &[
     on(
         Context::Timeline,
         "Click a diamond along the selected clip's bottom edge",
-        "Move the playhead to that keyframe",
+        "Move the playhead to that keyframe; with Shift or Ctrl, choose it with others",
+    ),
+    on(
+        Context::Timeline,
+        "Drag a keyframe diamond",
+        "Move its keyframes (and the other chosen ones) a frame at a time, snapping to the playhead and other diamonds (Alt: no snapping)",
+    ),
+    on(
+        Context::Timeline,
+        "Right-click a keyframe diamond",
+        "Go there, remove its keyframes, or choose how they go on: linear, hold or smooth",
     ),
     on(
         Context::Timeline,

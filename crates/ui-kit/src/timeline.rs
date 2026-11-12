@@ -68,6 +68,7 @@ mod track_views;
 
 pub use cache_bar::{CacheBar, CacheRange, CacheState};
 pub use fades::ClipSound;
+pub use keyframes::KeyframeMark;
 pub use loading::{LoadKind, LoadState, Loading};
 pub use rows::{MAX_TRACK, MIN_TRACK, TrackHeights};
 pub use track_views::COMPACT_TRACK;
@@ -101,10 +102,10 @@ pub struct TimelineClip {
     /// Its sound's volume and fades: the waveform is drawn as loud as the
     /// clip is set, and its fades as lines from the corners.
     pub sound: ClipSound,
-    /// Where its look has keyframes, in seconds on the timeline: small
-    /// diamonds along its bottom edge, which move the playhead there when
-    /// clicked. The page fills them in for the selected clip only.
-    pub keyframes: Vec<f64>,
+    /// Where its look has keyframes, one mark per frame: small diamonds
+    /// along its bottom edge, to click, drag and right-click
+    /// ([`keyframes`]). The page fills them in for the selected clip only.
+    pub keyframes: Vec<KeyframeMark>,
 }
 
 /// Small pictures along a clip's file: one every `every` seconds from the
@@ -180,6 +181,9 @@ pub struct TimelineData<'a> {
     pub follow: bool,
     /// What is prepared ahead of time along the timeline, for the strip under the ruler.
     pub cache: CacheBar<'a>,
+    /// The ways a value can go on from a keyframe, offered by a keyframe
+    /// mark's right-click menu (see [`MarksChange::Ease`]).
+    pub keyframe_eases: &'a [&'a str],
 }
 
 /// Something the person did on the timeline.
@@ -253,6 +257,25 @@ pub enum TimelineEvent {
     /// "Split here" from the right-click menu: one clip (with its linked
     /// clips), or every clip there when `None`.
     SplitAt { at: f64, clip: Option<u64> },
+    /// Keyframe marks of `clip` (each the start of a frame, in seconds on
+    /// the timeline) were dragged, or something was picked for them in
+    /// their right-click menu. One undo step for all of them.
+    Keyframes {
+        clip: u64,
+        marks: Vec<f64>,
+        change: MarksChange,
+    },
+}
+
+/// What was done to keyframe marks.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MarksChange {
+    /// Dragged this far, in seconds (whole frames).
+    Move(f64),
+    /// "Remove these keyframes".
+    Remove,
+    /// One of [`TimelineData::keyframe_eases`], by its index.
+    Ease(usize),
 }
 
 /// Where the right-click menu was opened: the time, and the clip under the
@@ -464,6 +487,13 @@ pub struct TimelineView {
     region_drag: Option<(RegionDrag, (f64, f64))>,
     /// Where the right-click menu was opened: time, and the clip under it.
     menu_at: Option<MenuSpot>,
+    /// The keyframe marks the right-click menu was opened on, with their
+    /// clip (the menu is then theirs).
+    mark_menu: Option<(u64, Vec<f64>)>,
+    /// Keyframe marks chosen to act on together (Shift-click).
+    chosen_marks: keyframes::Chosen,
+    /// A keyframe mark being dragged.
+    mark_drag: Option<keyframes::MarkDrag>,
     /// Where the menu of the track names was opened.
     names_menu: Option<headers::MenuSpot>,
     /// A track's name being typed in its header.
@@ -520,6 +550,9 @@ impl Default for TimelineView {
             level_drag: None,
             region_drag: None,
             menu_at: None,
+            mark_menu: None,
+            chosen_marks: Default::default(),
+            mark_drag: None,
             names_menu: None,
             rename: None,
             file_over: None,
@@ -727,13 +760,18 @@ impl Layout {
 /// The right-click menu of a timeline area, for the time and clip that were
 /// clicked (`menu_at`). Call it every frame for the area's response, wherever
 /// the pointer is: a menu that is not shown for a frame closes.
-fn clip_menu(
-    r: &egui::Response,
-    menu_at: Option<MenuSpot>,
-    has_region: bool,
-    events: &mut Vec<TimelineEvent>,
-) {
+fn clip_menu(r: &egui::Response, menu: Menu, events: &mut Vec<TimelineEvent>) {
+    let Menu {
+        at: menu_at,
+        marks,
+        eases,
+        has_region,
+    } = menu;
     r.context_menu(|ui| {
+        if let Some((clip, marks)) = marks {
+            marks_menu(ui, clip, marks, eases, events);
+            return;
+        }
         let Some((at, clip)) = menu_at else { return };
         if ui.button("Add a label here").clicked() {
             events.push(TimelineEvent::AddLabel(at));
@@ -774,7 +812,83 @@ fn clip_menu(
     });
 }
 
+/// What the right-click menu of a timeline area is about.
+#[derive(Clone, Copy)]
+struct Menu<'a> {
+    at: Option<MenuSpot>,
+    /// Keyframe marks it was opened on (with their clip), and the marks
+    /// shown there now: the menu is theirs.
+    marks: Option<(u64, &'a [&'a KeyframeMark])>,
+    eases: &'a [&'a str],
+    has_region: bool,
+}
+
+/// The right-click menu of keyframe marks: go there, remove their
+/// keyframes, or set how they go on to the next.
+fn marks_menu(
+    ui: &mut Ui,
+    clip: u64,
+    marks: &[&KeyframeMark],
+    eases: &[&str],
+    events: &mut Vec<TimelineEvent>,
+) {
+    let times: Vec<f64> = marks.iter().map(|m| m.at).collect();
+    let mut keyed: Vec<&str> = Vec::new();
+    for word in marks.iter().flat_map(|m| m.keyed.iter()) {
+        if !keyed.contains(word) {
+            keyed.push(word);
+        }
+    }
+    let title = match (marks.len(), keyed.is_empty()) {
+        (1, false) => format!("Keyframes: {}", keyed.join(", ")),
+        (1, true) => "Keyframes".to_owned(),
+        (n, _) => format!("{n} keyframe marks"),
+    };
+    ui.label(egui::RichText::new(title).weak().size(12.0));
+    let change = |change| TimelineEvent::Keyframes {
+        clip,
+        marks: times.clone(),
+        change,
+    };
+    if let [one] = marks
+        && ui.button("Go here").clicked()
+    {
+        events.push(TimelineEvent::Seek(one.at));
+        ui.close();
+    }
+    if ui.button("Remove these keyframes").clicked() {
+        events.push(change(MarksChange::Remove));
+        ui.close();
+    }
+    if eases.is_empty() {
+        return;
+    }
+    ui.separator();
+    ui.label(egui::RichText::new("From here on").weak().size(12.0));
+    // Ticked when every mark goes on that way.
+    let shared = marks
+        .first()
+        .and_then(|m| m.ease)
+        .filter(|e| marks.iter().all(|m| m.ease == Some(*e)));
+    for (i, name) in eases.iter().enumerate() {
+        if ui.selectable_label(shared == Some(i), *name).clicked() {
+            events.push(change(MarksChange::Ease(i)));
+            ui.close();
+        }
+    }
+}
+
 impl TimelineView {
+    /// Keyframe marks being dragged: their clip, the marks (seconds on the
+    /// timeline) and how far they have moved so far, for the page to show
+    /// the picture as it would be.
+    pub fn keyframes_being_moved(&self) -> Option<(u64, &[f64], f64)> {
+        self.mark_drag
+            .as_ref()
+            .filter(|d| d.by != 0.0 && !d.refused)
+            .map(|d| (d.clip, d.moving.as_slice(), d.by))
+    }
+
     /// Screen x of time `t`.
     pub fn x_of(&self, left: f32, t: f64) -> f32 {
         left + ((t - self.scroll) * f64::from(self.zoom)) as f32
@@ -1286,7 +1400,14 @@ impl TimelineView {
                         // shown (also while it is dragged).
                         let shift = start - clip.start;
                         let x_of = |t: f64| self.x_of(left, t + shift);
-                        keyframes::draw(&clip_painter, r, &clip.keyframes, x_of, theme.accent);
+                        let chosen = self.chosen_marks.of(clip.id, &clip.keyframes, data.fps);
+                        let look = keyframes::MarksLook {
+                            colour: theme.accent,
+                            chosen: &chosen,
+                            drag: self.mark_drag.as_ref().filter(|d| d.clip == clip.id),
+                            fps: data.fps,
+                        };
+                        keyframes::draw(&clip_painter, r, &clip.keyframes, x_of, look);
                     }
                 }
                 if let Some(m) = merged {
@@ -2190,10 +2311,17 @@ impl TimelineView {
             // pointer: the area is not pointed at, but the file is over it.
             let file_over = r.dnd_hover_payload::<DraggedMedia>().is_some();
             let file_at = ui.input(|i| i.pointer.interact_pos()).filter(|_| file_over);
+            let menu_marks = self.menu_marks(tracks, data.fps);
+            let menu = Menu {
+                at: self.menu_at,
+                marks: menu_marks.as_ref().map(|(clip, marks)| (*clip, marks.as_slice())),
+                eases: data.keyframe_eases,
+                has_region: data.region.is_some(),
+            };
             let Some(p) = r.interact_pointer_pos().or(r.hover_pos()).or(file_at) else {
                 // The pointer is elsewhere, perhaps on the menu itself: an
                 // open menu is still shown, or it would close under it.
-                clip_menu(&r, self.menu_at, data.region.is_some(), events);
+                clip_menu(&r, menu, events);
                 continue;
             };
             // A drag is only noticed a few pixels after the press: what is
@@ -2241,6 +2369,21 @@ impl TimelineView {
                 }
             });
 
+            // A keyframe mark on the clip under the pointer: it comes before
+            // the clip itself.
+            let on_mark = match (hit, rows.at(p.y).and_then(|row| row_rects.get(row))) {
+                (Some(c), Some(row))
+                    if !self.compact && !c.keyframes.is_empty() && self.clip_drag.is_none() =>
+                {
+                    let drawn = Rect::from_min_max(
+                        pos2(self.x_of(left, c.start), row.top() + 3.0),
+                        pos2(self.x_of(left, c.start + c.duration), row.bottom() - 3.0),
+                    );
+                    keyframes::hit(drawn, &c.keyframes, |t| self.x_of(left, t), p).map(|mark| (c, mark))
+                }
+                _ => None,
+            };
+
             // The level line of an audio clip, when its track shows it: it
             // comes before moving the clip, its edges before the line.
             let on_line = match (hit, hit_track, rows.at(p.y).and_then(|row| row_rects.get(row))) {
@@ -2259,7 +2402,14 @@ impl TimelineView {
                 }
                 _ => None,
             };
-            if r.hovered() && self.clip_drag.is_none() && self.level_drag.is_none() && on_line.is_some() {
+            let still = self.clip_drag.is_none() && self.level_drag.is_none() && self.mark_drag.is_none();
+            if r.hovered()
+                && still
+                && let Some((_, mark)) = on_mark
+            {
+                ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+                r.clone().on_hover_text_at_pointer(mark.says());
+            } else if r.hovered() && still && on_line.is_some() {
                 ui.ctx().set_cursor_icon(CursorIcon::ResizeVertical);
                 if let Some((_, _, db)) = on_line {
                     r.clone().on_hover_text_at_pointer(format!(
@@ -2267,7 +2417,7 @@ impl TimelineView {
                         level::words(f64::from(db))
                     ));
                 }
-            } else if r.hovered() && self.clip_drag.is_none() && self.level_drag.is_none() {
+            } else if r.hovered() && still {
                 match (self.tool, zone) {
                     (Tool::Blade, Some(_)) => ui.ctx().set_cursor_icon(CursorIcon::Crosshair),
                     (Tool::Select | Tool::Ripple | Tool::Roll, Some(DragKind::Trim(_))) => {
@@ -2285,6 +2435,31 @@ impl TimelineView {
             }
 
             if r.drag_started_by(egui::PointerButton::Primary)
+                && let Some((c, mark)) = on_mark
+            {
+                // The chosen marks move with the grabbed one; a mark that
+                // isn't chosen is chosen alone.
+                let fps = data.fps;
+                let chosen = self.chosen_marks.of(c.id, &c.keyframes, fps);
+                let others = chosen
+                    .iter()
+                    .copied()
+                    .filter(|at| !keyframes::same(*at, mark.at, fps));
+                let moving: Vec<f64> = match chosen.iter().any(|at| keyframes::same(*at, mark.at, fps)) {
+                    true => std::iter::once(mark.at).chain(others).collect(),
+                    false => {
+                        self.chosen_marks.click(c.id, mark.at, false, fps);
+                        vec![mark.at]
+                    }
+                };
+                self.mark_drag = Some(keyframes::MarkDrag {
+                    clip: c.id,
+                    moving,
+                    from: t,
+                    by: 0.0,
+                    refused: false,
+                });
+            } else if r.drag_started_by(egui::PointerButton::Primary)
                 && let Some((c, drawn, db)) = on_line
             {
                 self.level_drag = Some(level::LevelDrag::new(c.id, drawn, db, p.y));
@@ -2355,6 +2530,28 @@ impl TimelineView {
                     DragKind::Move => CursorIcon::Grabbing,
                     DragKind::Slip | DragKind::Slide => CursorIcon::ResizeColumn,
                     _ => CursorIcon::ResizeHorizontal,
+                });
+            }
+            if r.dragged()
+                && let Some(drag) = self.mark_drag.clone()
+                && let Some(now) = r.interact_pointer_pos()
+                && let Some(c) = tracks.iter().flat_map(|t| &t.clips).find(|c| c.id == drag.clip)
+            {
+                self.follow_mark_drag(ui, drag, c, data, self.time_at(left, now.x));
+            }
+            if r.drag_stopped()
+                && let Some(drag) = self.mark_drag.take()
+                && drag.by.abs() > 0.5 / data.fps.max(1.0)
+            {
+                if !drag.refused {
+                    // The chosen marks go along.
+                    let at = drag.moving.iter().map(|at| at + drag.by).collect();
+                    self.chosen_marks = keyframes::Chosen { clip: drag.clip, at };
+                }
+                events.push(TimelineEvent::Keyframes {
+                    clip: drag.clip,
+                    marks: drag.moving,
+                    change: MarksChange::Move(drag.by),
                 });
             }
             if let Some(drag) = &mut self.level_drag {
@@ -2435,28 +2632,36 @@ impl TimelineView {
             }
             if r.secondary_clicked() {
                 self.menu_at = Some((t, hit.map(|c| (c.id, c.start, c.start + c.duration))));
+                // On a mark, the menu is the chosen marks' when it is one of
+                // them, and that mark's alone otherwise.
+                self.mark_menu = on_mark.map(|(c, mark)| {
+                    let chosen = self.chosen_marks.of(c.id, &c.keyframes, data.fps);
+                    if !chosen.iter().any(|at| keyframes::same(*at, mark.at, data.fps)) {
+                        self.chosen_marks.click(c.id, mark.at, false, data.fps);
+                        return (c.id, vec![mark.at]);
+                    }
+                    (c.id, chosen)
+                });
             }
-            clip_menu(&r, self.menu_at, data.region.is_some(), events);
-            // A keyframe mark on a clip: the playhead goes there.
-            let on_mark = match (hit, rows.at(p.y).and_then(|row| row_rects.get(row))) {
-                (Some(c), Some(row)) if !self.compact && !c.keyframes.is_empty() => {
-                    let drawn = Rect::from_min_max(
-                        pos2(self.x_of(left, c.start), row.top() + 3.0),
-                        pos2(self.x_of(left, c.start + c.duration), row.bottom() - 3.0),
-                    );
-                    keyframes::hit(drawn, &c.keyframes, |t| self.x_of(left, t), p)
-                }
-                _ => None,
+            let menu_marks = self.menu_marks(tracks, data.fps);
+            let menu = Menu {
+                marks: menu_marks.as_ref().map(|(clip, marks)| (*clip, marks.as_slice())),
+                at: self.menu_at,
+                ..menu
             };
-            if on_mark.is_some() && r.hovered() && self.clip_drag.is_none() {
-                ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
-            }
+            clip_menu(&r, menu, events);
+            let add = ui.input(|i| i.modifiers.shift || i.modifiers.command);
             if r.clicked()
-                && let Some(at) = on_mark
+                && let Some((c, mark)) = on_mark
             {
-                events.push(TimelineEvent::Seek(at));
+                // A keyframe mark: the playhead goes there, or (Shift or
+                // Ctrl) the mark is chosen with the others.
+                self.chosen_marks.click(c.id, mark.at, add, data.fps);
+                if !add {
+                    events.push(TimelineEvent::Seek(mark.at));
+                }
             } else if r.clicked() {
-                let add = ui.input(|i| i.modifiers.shift || i.modifiers.command);
+                self.chosen_marks = keyframes::Chosen::default();
                 events.push(match (self.tool, hit) {
                     (Tool::Blade, Some(c)) => TimelineEvent::Blade { clip: c.id, at: t },
                     (_, Some(c)) => TimelineEvent::Select { clip: c.id, add },
@@ -2464,6 +2669,55 @@ impl TimelineView {
                 });
             }
         }
+    }
+
+    /// The marks the right-click menu was opened on, when they are on a
+    /// clip of `tracks` and still there.
+    fn menu_marks<'d>(&self, tracks: &'d [TimelineTrack], fps: f64) -> Option<(u64, Vec<&'d KeyframeMark>)> {
+        let (clip, times) = self.mark_menu.as_ref()?;
+        let c = tracks.iter().flat_map(|t| &t.clips).find(|c| c.id == *clip)?;
+        let marks: Vec<&KeyframeMark> = c
+            .keyframes
+            .iter()
+            .filter(|m| times.iter().any(|at| keyframes::same(*at, m.at, fps)))
+            .collect();
+        (!marks.is_empty()).then_some((*clip, marks))
+    }
+
+    /// A keyframe mark dragged on clip `c` with the pointer at time `now`:
+    /// how far its marks go, and whether they could be let go there.
+    fn follow_mark_drag(
+        &mut self,
+        ui: &Ui,
+        drag: keyframes::MarkDrag,
+        c: &TimelineClip,
+        data: &TimelineData,
+        now: f64,
+    ) {
+        let fps = data.fps;
+        let moving = |at: f64| drag.moving.iter().any(|m| keyframes::same(*m, at, fps));
+        // The playhead and the clip's other marks, unless snapping is off.
+        let targets: Vec<f64> = match self.snapping && !ui.input(|i| i.modifiers.alt) {
+            true => std::iter::once(data.playhead)
+                .chain(c.keyframes.iter().map(|m| m.at).filter(|at| !moving(*at)))
+                .collect(),
+            false => Vec::new(),
+        };
+        let (first, last) = keyframes::frames_of(c.start, c.start + c.duration, fps);
+        let room = keyframes::Room {
+            fps,
+            first,
+            last,
+            targets: &targets,
+            reach: f64::from(keyframes::SNAP_REACH) / f64::from(self.zoom),
+        };
+        let by = keyframes::dragged_by(now - drag.from, &drag.moving, room);
+        let refused = keyframes::clashes(&c.keyframes, &drag.moving, by, fps);
+        ui.ctx().set_cursor_icon(match refused {
+            true => CursorIcon::NotAllowed,
+            false => CursorIcon::ResizeHorizontal,
+        });
+        self.mark_drag = Some(keyframes::MarkDrag { by, refused, ..drag });
     }
 
     /// Whether a click in the ruler moves the edit needle: so set, and the
@@ -3155,6 +3409,7 @@ mod tests {
                                 ranges: &self.cache,
                                 about: "",
                             },
+                            keyframe_eases: &["Linear", "Hold", "Smooth"],
                         };
                         out = self.view.show(ui, &Theme::ASH, &data, size);
                     });
@@ -3181,6 +3436,7 @@ mod tests {
                     ranges: &[],
                     about: "",
                 },
+                keyframe_eases: &["Linear", "Hold", "Smooth"],
             };
             let rect = Rect::from_min_size(Pos2::ZERO, vec2(1000.0, 400.0));
             let share = self.view.shown_split(Layout::body_height(rect), &data);
@@ -3612,23 +3868,41 @@ mod tests {
         (a - b).abs() < 1e-3
     }
 
-    #[test]
-    fn a_click_on_a_keyframe_mark_moves_the_playhead_there() {
+    /// A rig whose video clip (1 s to 5 s, x = 200 to 440) is selected and
+    /// has keyframe marks at `marks`, each keying the numbers given; and
+    /// the height where its marks are taken.
+    fn rig_with_marks(marks: &[(f64, &[&'static str])]) -> (Rig, f32) {
         let primary = egui::PointerButton::Primary;
         let mut rig = Rig::new(1, 1);
         rig.video[0].clips[0].selected = true;
-        rig.video[0].clips[0].keyframes = vec![3.0];
-        // The clip runs from x = 200 (1 s) to 440 (5 s): 3 s is at x = 320.
-        // Somewhere near the bottom edge of the clip, the mark is taken.
-        let mut marked = None;
+        rig.video[0].clips[0].keyframes = marks
+            .iter()
+            .map(|(at, keyed)| KeyframeMark {
+                at: *at,
+                keyed: keyed.to_vec(),
+                ease: None,
+            })
+            .collect();
+        // Somewhere near the bottom edge of the clip, the first mark is taken.
+        let x = x_at(marks[0].0) + 1.0;
         for y in (60..212).rev() {
-            let events = click(&mut rig, pos2(321.0, y as f32), primary);
-            if events == vec![TimelineEvent::Seek(3.0)] {
-                marked = Some(y);
-                break;
+            let events = click(&mut rig, pos2(x, y as f32), primary);
+            if events == vec![TimelineEvent::Seek(marks[0].0)] {
+                return (rig, y as f32);
             }
         }
-        let y = marked.expect("the mark is under the pointer near the clip's bottom edge") as f32;
+        panic!("the mark is under the pointer near the clip's bottom edge");
+    }
+
+    /// The x of time `t` in the rig (60 points a second from x = 140).
+    fn x_at(t: f64) -> f32 {
+        140.0 + t as f32 * 60.0
+    }
+
+    #[test]
+    fn a_click_on_a_keyframe_mark_moves_the_playhead_there() {
+        let primary = egui::PointerButton::Primary;
+        let (mut rig, y) = rig_with_marks(&[(3.0, &["opacity"])]);
         // Higher up in the clip, or beside the mark, a click selects as before.
         let select = vec![TimelineEvent::Select { clip: 0, add: false }];
         assert_eq!(click(&mut rig, pos2(321.0, y - 20.0), primary), select);
@@ -3636,6 +3910,109 @@ mod tests {
         // Without marks, the same place selects too.
         rig.video[0].clips[0].keyframes.clear();
         assert_eq!(click(&mut rig, pos2(321.0, y), primary), select);
+    }
+
+    fn moved_marks(events: &[TimelineEvent]) -> Vec<(Vec<f64>, f64)> {
+        let round = |t: f64| (t * 1e6).round() / 1e6;
+        events
+            .iter()
+            .filter_map(|e| match e {
+                TimelineEvent::Keyframes {
+                    clip: 0,
+                    marks,
+                    change: MarksChange::Move(by),
+                } => Some((marks.clone(), round(*by))),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_dragged_mark_moves_by_whole_frames_and_snaps_to_the_playhead() {
+        let (mut rig, y) = rig_with_marks(&[(3.0, &["opacity"]), (4.0, &["size"])]);
+        // Near the playhead (2 s): it lands on it.
+        let events = drag(&mut rig, pos2(x_at(3.0), y), pos2(x_at(2.0) + 3.0, y));
+        assert_eq!(moved_marks(&events), [(vec![3.0], -1.0)]);
+        assert!(
+            !events.iter().any(|e| matches!(e, TimelineEvent::Move { .. })),
+            "the clip stays: {events:?}"
+        );
+        // With Alt, no snapping: whole frames only (3 points is 3 frames).
+        rig.modifiers = egui::Modifiers::ALT;
+        let events = drag(&mut rig, pos2(x_at(3.0), y), pos2(x_at(2.0) + 3.0, y));
+        assert_eq!(moved_marks(&events), [(vec![3.0], -0.95)]);
+        rig.modifiers = egui::Modifiers::NONE;
+        // Never off the clip: dragged far left it stops on the first frame.
+        let events = drag(&mut rig, pos2(x_at(3.0), y), pos2(150.0, y));
+        assert_eq!(moved_marks(&events), [(vec![3.0], -2.0)]);
+        // Let go where it was taken: nothing.
+        let events = drag(&mut rig, pos2(x_at(3.0), y), pos2(x_at(3.0), y));
+        assert!(moved_marks(&events).is_empty());
+    }
+
+    #[test]
+    fn chosen_marks_move_together_and_a_clash_is_shown_while_dragging() {
+        let primary = egui::PointerButton::Primary;
+        let (mut rig, y) = rig_with_marks(&[(3.0, &["opacity"]), (4.0, &["opacity", "size"])]);
+        // Shift-click chooses the second one too, without moving the playhead.
+        rig.modifiers = egui::Modifiers::SHIFT;
+        let events = click(&mut rig, pos2(x_at(4.0), y), primary);
+        assert!(events.is_empty(), "{events:?}");
+        rig.modifiers = egui::Modifiers::NONE;
+        let events = drag(&mut rig, pos2(x_at(4.0), y), pos2(x_at(4.5), y));
+        assert_eq!(moved_marks(&events), [(vec![4.0, 3.0], 0.5)]);
+        // The first one alone (a click chooses it alone), onto the second:
+        // opacity twice in a frame is shown refused.
+        click(&mut rig, pos2(x_at(3.0), y), primary);
+        rig.move_to(pos2(x_at(3.0), y));
+        rig.button(pos2(x_at(3.0), y), primary, true);
+        rig.move_to(pos2(x_at(3.5), y));
+        rig.move_to(pos2(x_at(4.0), y));
+        assert!(rig.view.mark_drag.as_ref().is_some_and(|d| d.refused));
+        assert!(rig.view.keyframes_being_moved().is_none(), "nothing to show");
+        rig.move_to(pos2(x_at(3.5), y));
+        assert!(rig.view.mark_drag.as_ref().is_some_and(|d| !d.refused));
+        assert_eq!(
+            rig.view
+                .keyframes_being_moved()
+                .map(|(c, m, by)| (c, m.to_vec(), by)),
+            Some((0, vec![3.0], 0.5))
+        );
+        rig.button(pos2(x_at(3.5), y), primary, false);
+    }
+
+    #[test]
+    fn a_marks_menu_removes_eases_and_goes_there() {
+        let (mut rig, y) = rig_with_marks(&[(3.0, &["position", "opacity"])]);
+        let at = pos2(x_at(3.0), y);
+        let mut asked = Vec::new();
+        for down in (0..30).map(|step| 4.0 + step as f32 * 5.0) {
+            rig.frame(vec![key(egui::Key::Escape)]);
+            rig.frame(vec![]);
+            click(&mut rig, at, egui::PointerButton::Secondary);
+            rig.frame(vec![]);
+            assert!(egui::Popup::is_any_open(&rig.ctx), "the menu opened");
+            for event in click(&mut rig, at + vec2(30.0, down), egui::PointerButton::Primary) {
+                if !asked.contains(&event) {
+                    asked.push(event);
+                }
+            }
+        }
+        let change = |change| TimelineEvent::Keyframes {
+            clip: 0,
+            marks: vec![3.0],
+            change,
+        };
+        assert_eq!(
+            asked,
+            [
+                TimelineEvent::Seek(3.0),
+                change(MarksChange::Remove),
+                change(MarksChange::Ease(0)),
+                change(MarksChange::Ease(1)),
+                change(MarksChange::Ease(2)),
+            ]
+        );
     }
 
     #[test]
@@ -4687,6 +5064,7 @@ mod tests {
                     ranges: &[],
                     about: "",
                 },
+                keyframe_eases: &["Linear", "Hold", "Smooth"],
             };
             let rect = Rect::from_min_size(Pos2::ZERO, vec2(1000.0, 400.0));
             let layout = self.view.layout(rect, &data);

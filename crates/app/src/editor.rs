@@ -995,6 +995,18 @@ impl Editor {
                     self.errors.push(&err);
                 }
             }
+            E::Keyframes { clip, marks, change } => {
+                let result = self.with_document(|d| {
+                    let command = d
+                        .project()
+                        .active()
+                        .and_then(|seq| timeline_panel::keyframes_command(seq, clip, &marks, change));
+                    command.map_or(Ok(()), |command| d.apply(command))
+                });
+                if let Err(err) = result {
+                    self.errors.push(&err);
+                }
+            }
             E::EditLabel(id) => {
                 self.label_editor = self
                     .document
@@ -1983,9 +1995,13 @@ impl Editor {
         } else {
             let quality_before = self.settings.preview_quality;
             let needle = (!self.settings.edit_at_playhead).then_some(seq.edit_needle);
-            // A value being dragged in the inspector, or the picture being
-            // dragged in the viewer, is seen at once.
+            // A value being dragged in the inspector, the picture being
+            // dragged in the viewer, or keyframe marks being dragged on the
+            // timeline, are seen at once.
             let being_changed = self.inspector.shown(p);
+            let being_changed =
+                timeline_panel::keyframes_moved(&self.timeline, being_changed.as_ref().unwrap_or(p))
+                    .or(being_changed);
             let playhead = self.viewer.playhead;
             let snapping = self.timeline.snapping;
             let on_picture = self.settings.picture_handles;
@@ -2117,6 +2133,7 @@ impl Editor {
                     ranges: &drawn.cache,
                     about: timeline_panel::CACHE_BAR_ABOUT,
                 },
+                keyframe_eases: &timeline_panel::EASES,
             };
             let status_height = if self.status.is_empty() { 0.0 } else { 24.0 };
             let height = (ui.available_height() - status_height).max(160.0);
@@ -2767,7 +2784,7 @@ where
 }
 
 /// Seconds (as the timeline widget gives them) as exact time, to the microsecond.
-fn seconds(s: f64) -> Time {
+pub(crate) fn seconds(s: f64) -> Time {
     Time::from_ratio((s * 1_000_000.0).round() as i64, 1_000_000).unwrap_or(Time::ZERO)
 }
 

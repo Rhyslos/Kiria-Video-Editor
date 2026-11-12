@@ -172,7 +172,7 @@ impl Ease {
     pub const ALL: [Ease; 3] = [Ease::Linear, Ease::Hold, Ease::Smooth];
 
     /// Its name in the interface.
-    pub fn label(self) -> &'static str {
+    pub const fn label(self) -> &'static str {
         match self {
             Ease::Linear => "Linear",
             Ease::Hold => "Hold",
@@ -285,6 +285,48 @@ impl Keyframes {
             found = true;
         }
         found
+    }
+
+    /// The numbers with a keyframe in `near` (a stretch of the file, end
+    /// excluded), in [`LookField::ALL`] order.
+    pub fn fields_in(&self, near: (Time, Time)) -> impl Iterator<Item = LookField> + '_ {
+        self.0
+            .iter()
+            .filter(move |(_, keys)| keys.iter().any(|k| near.0 <= k.at && k.at < near.1))
+            .map(|(field, _)| *field)
+    }
+
+    /// Moves every keyframe that lies in one of `stretches` (of the file,
+    /// ends excluded) by `by`, keeping its value and ease. A number can't
+    /// have two keyframes in one stretch: when a keyframe that stays lies
+    /// where one of the same number would land (its stretch moved by `by`),
+    /// nothing moves and the numbers in the way come back.
+    pub fn move_by(&mut self, stretches: &[(Time, Time)], by: Time) -> Result<(), Vec<LookField>> {
+        let inside = |at: Time| stretches.iter().any(|s| s.0 <= at && at < s.1);
+        let mut clashes = Vec::new();
+        for (field, keys) in &self.0 {
+            let lands_on_one = stretches.iter().any(|s| {
+                let moves = keys.iter().any(|k| s.0 <= k.at && k.at < s.1);
+                let landing = (s.0 + by, s.1 + by);
+                moves
+                    && keys
+                        .iter()
+                        .any(|k| !inside(k.at) && landing.0 <= k.at && k.at < landing.1)
+            });
+            if lands_on_one {
+                clashes.push(*field);
+            }
+        }
+        if !clashes.is_empty() {
+            return Err(clashes);
+        }
+        for keys in self.0.values_mut() {
+            for key in keys.iter_mut().filter(|k| inside(k.at)) {
+                key.at = key.at + by;
+            }
+            keys.sort_by_key(|k| k.at);
+        }
+        Ok(())
     }
 
     /// Takes every keyframe of `field` away.

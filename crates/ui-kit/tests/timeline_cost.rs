@@ -93,6 +93,7 @@ fn timeline_frame_cost() {
                         ranges: &cache,
                         about: "",
                     },
+                    keyframe_eases: &["Linear", "Hold", "Smooth"],
                 };
                 view.show(ui, &theme, &data, egui::vec2(1920.0, 400.0));
             });
