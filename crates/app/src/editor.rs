@@ -1,6 +1,7 @@
 //! The editor window.
 
 mod keyframe_clipboard;
+mod library_ui;
 mod timelines;
 
 use crate::import::{self, Importer, Read};
@@ -98,6 +99,12 @@ pub struct Editor {
     /// what the drawer's "Find a file" and the search palette ask.
     library: library::Live,
     drawer: crate::media_drawer::MediaDrawer,
+    /// The Library page: its tabs, filters, the file in its panel and its player.
+    library_page: crate::library_page::LibraryPage,
+    /// `--library-tab`: the tab to open once the project is in.
+    library_tab: Option<String>,
+    /// The page shown last frame, to notice it being left.
+    shown_page: Page,
     /// The selected clip's settings, on the right of the Edit page.
     inspector: crate::inspector::Inspector,
     /// The handles on the selected clip's picture in the viewer.
@@ -212,11 +219,15 @@ impl Editor {
             .as_ref()
             .map(|p| p.watch_folders.clone())
             .unwrap_or_default();
-        let start_page = if project.as_ref().is_some_and(|p| p.export_page) {
-            Page::Export
-        } else {
-            Page::default()
+        let start_page = match project.as_ref() {
+            Some(p) if p.export_page => Page::Export,
+            Some(p) => p.page.unwrap_or_default(),
+            None => Page::default(),
         };
+        let library_tab = project.as_ref().and_then(|p| p.library_tab.clone());
+        let library_page = crate::library_page::LibraryPage::selecting(
+            project.as_ref().and_then(|p| p.library_select.clone()),
+        );
         let full_screen = project.as_ref().is_some_and(|p| p.full_screen);
         let select_first_clip = project.as_ref().is_some_and(|p| p.select_first_clip);
         let hold_reading = project.as_ref().and_then(|p| p.hold_reading);
@@ -363,6 +374,9 @@ impl Editor {
                 library::Live::start(move || ctx.request_repaint())
             },
             drawer: crate::media_drawer::MediaDrawer::new(drawer_open, find),
+            library_page,
+            library_tab,
+            shown_page: start_page,
             inspector: crate::inspector::Inspector::default(),
             picture_handles: crate::picture_handles::PictureHandles::default(),
             export_page: crate::export_page::ExportPage::default(),
@@ -387,6 +401,10 @@ impl Editor {
     }
 
     fn run_action(&mut self, action: Action) {
+        // The Library page's player takes the transport's keys and marking.
+        if self.page == Page::Library && self.document.is_some() && self.library_page.command(action) {
+            return;
+        }
         let result = match action {
             Action::Undo => self.with_document(|d| d.undo().map(|_| ())),
             Action::Redo => self.with_document(|d| d.redo().map(|_| ())),
@@ -409,6 +427,7 @@ impl Editor {
                 Ok(())
             }
             Action::ClearRegion => self.set_region(None),
+            Action::MarkIn | Action::MarkOut => self.mark(action == Action::MarkIn),
             Action::RemoveSilence => self.with_document(|_| Ok(())).map(|()| self.silence.open = true),
             Action::SaveFrame => self
                 .with_document(|_| Ok(()))
@@ -769,6 +788,26 @@ impl Editor {
             let sequence = seq.id;
             d.apply(Command::SetRegion { sequence, region })
         })
+    }
+
+    /// Mark in (`start`) or out at the playhead: the region's start or end
+    /// there, its other end kept when it is on the right side, else the
+    /// timeline's start or end.
+    fn mark(&mut self, start: bool) -> diag::Result<()> {
+        let Some(seq) = self.document.as_ref().and_then(|d| d.project().active()) else {
+            return Ok(());
+        };
+        let length = seq.length().as_secs_f64();
+        let at = self.viewer.playhead.as_secs_f64();
+        let (from, to) = seq
+            .region
+            .map_or((0.0, length), |r| (r.start.as_secs_f64(), r.end.as_secs_f64()));
+        let region = if start {
+            (at, if to > at { to } else { length })
+        } else {
+            (if from < at { from } else { 0.0 }, at)
+        };
+        self.set_region(Some(region))
     }
 
     /// Moves the playhead; while playing, playback carries on from there.
@@ -1863,6 +1902,10 @@ impl Editor {
             self.library
                 .ask(crate::media_drawer::ASKER, &self.drawer.query(project));
         }
+        if self.page == Page::Library {
+            self.library
+                .ask(crate::library_page::ASKER, &self.library_page.query(project));
+        }
         if self.show_search {
             self.library.ask(
                 crate::search::ASKER,
@@ -1900,6 +1943,7 @@ impl Editor {
             }
             self.waveforms.forget(*media);
             self.pictures.forget(*media);
+            self.library_page.forget(*media);
         }
         self.status = crate::relink::outcome(&found);
     }
@@ -2062,6 +2106,10 @@ impl Editor {
         }
         if self.page == Page::Edit && self.document.is_some() {
             self.edit_page(ui);
+            return;
+        }
+        if self.page == Page::Library && self.document.is_some() {
+            self.library_page_ui(ui);
             return;
         }
         if self.page == Page::Export
@@ -2826,6 +2874,10 @@ impl Editor {
                     && self.display.settled()
                     && self.proxies.settled()
                     && (!self.drawer.open || self.library.is_current(crate::media_drawer::ASKER))
+                    && (self.page != Page::Library
+                        || self.document.is_none()
+                        || (self.library.is_current(crate::library_page::ASKER)
+                            && self.library_page.settled()))
                     && self.media_folders.settled())
                     || now.duration_since(since) > SCREENSHOT_WAIT;
                 // A scripted pointer has done its part, and rested long
@@ -3007,6 +3059,7 @@ impl eframe::App for Editor {
         }
         self.relinking(&ctx);
         self.library_index(&ctx);
+        self.follow_library_page(&ctx);
         self.frame_grabs(&ctx);
         if let Some(err) = self.viewer.poll(&ctx, self.settings.preview_quality)
             && !self.relink.explains_errors()
@@ -3089,6 +3142,7 @@ impl eframe::App for Editor {
         // An export under way is given up: its worker decodes and draws on
         // the window's graphics device too.
         self.export_page.stop();
+        self.library_page.close();
         self.viewer.close();
         self.display.close();
         if let Some(place) = self.display.window_place() {
@@ -3220,6 +3274,12 @@ pub struct ProjectToOpen {
     pub watch_folders: Vec<PathBuf>,
     /// Start on the Export page.
     pub export_page: bool,
+    /// Start on this page.
+    pub page: Option<Page>,
+    /// Open this tab of the Library page (a type or a list's name).
+    pub library_tab: Option<String>,
+    /// Show the file with this name in the Library page's detail panel.
+    pub library_select: Option<String>,
     /// Start with the viewer full screen.
     pub full_screen: bool,
     /// Select the first clip of the top video track that has one, once

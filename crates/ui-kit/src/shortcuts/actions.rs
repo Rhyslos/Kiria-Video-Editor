@@ -104,6 +104,8 @@ actions! {
     PreviousKeyframe, Viewer, "Back to the selected clip's previous keyframe";
     NextKeyframe, Viewer, "On to the selected clip's next keyframe";
     ToggleLoop, Viewer, "Loop playback inside the region";
+    MarkIn, Viewer, "Mark in: where the region begins (Edit page), or where the part of a file to add begins (Library)";
+    MarkOut, Viewer, "Mark out: where the region ends (Edit page), or where the part of a file to add ends (Library)";
     FullScreenViewer, Viewer, "Viewer full screen, and back";
     PictureHandles, Viewer, "Move, resize, crop and turn the selected clip on the picture: handles on or off";
     SplitView, Viewer, "Split view: the selected clip's own picture beside the timeline's";

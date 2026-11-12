@@ -19,9 +19,11 @@ mod global_labels;
 mod import;
 mod inspector;
 mod label_editor;
+mod library_page;
 mod looping;
 mod media_drawer;
 mod media_folders;
+mod organise;
 mod picture_handles;
 mod proxies;
 mod reading;
@@ -139,6 +141,9 @@ fn main() -> ExitCode {
         find: options.find.clone(),
         watch_folders: options.watch_folders.clone(),
         export_page: options.export_page,
+        page: options.page,
+        library_tab: options.library_tab.clone(),
+        library_select: options.library_select.clone(),
         full_screen: options.full_screen,
         select_first_clip: options.select_first_clip,
         actions: options.actions.clone(),

@@ -34,7 +34,7 @@ The platform (project file, errors, installs, safe updates) comes before any pag
 | 2 | Launcher | Project browser, folders, update panel | Create, find and open projects; manual update works | Gate passed (accepted by the owner; manual gate tests skipped) |
 | 3 | Update safety | Side-by-side installs, rollback, project migrations | A broken update rolls back by itself; old projects open | Gate passed (accepted by the owner; manual gate tests skipped) |
 | 4 | Edit page | Media pipeline, playback, timeline, editing, inspector | Cut a 20-minute game recording smoothly at 1440p 60 | Built; gate waiting for the owner's edit |
-| 5 | Library | Import, index, tabs, lists, labels, prune | 500 clips import, filter and search instantly | In progress (5.1 done) |
+| 5 | Library | Import, index, tabs, lists, labels, prune | 500 clips import, filter and search instantly | In progress (5.1, 5.2 done) |
 | 6 | Export | Encode pipeline, presets, checks, queue | Exports match the timeline frame for frame | Not started |
 | 8 | Audio | Mixer, effects, loudness, clarity check | A noisy three-track recording mixes to −14 LUFS cleanly | Not started |
 | 9 | Effects and extras | Effects drawer, background removal, extra features | Hair edges hold, no flicker; extras pass their tests | Not started |
@@ -367,13 +367,13 @@ Phase 5 turns the simple media list from phase 4 into the full Library page; the
 
 **5.2 Page layout (as in the mockup)**
 
-- [ ] Same top bar and tab position as every page.
-- [ ] Left: labels, smart filters, Import, Prune.
-- [ ] Tab bar: Video, Audio, Images, Effects, then custom lists with "+ New list"; the bar fades and scrolls when full.
-- [ ] Filter row: label chips, group by, sort, thumbnail size, grid / list switch.
-- [ ] Video, Images, Effects: thumbnail grid grouped by label, coloured label edge, "In timeline" and "Needs proxy" badges.
-- [ ] Audio: rows with play button, name, full-width waveform in label colour, format, used-in-timeline mark, duration; grouped by label.
-- [ ] Detail panel (right, same width as the Edit inspector): preview, mark in/out, add to timeline, metadata, labels, lists, notes; for audio a large waveform, loudness and true peak with one-click fixes.
+- [x] Same top bar and tab position as every page. (The page sits between a sidebar `layout::LEFT_PANEL_WIDTH` wide and a detail panel `layout::RIGHT_PANEL_WIDTH` wide, so the tabs stay centred over the same place.)
+- [x] Left: labels, smart filters, Import, Prune. (Labels with how many files of the open tab have each; a click filters, right-click renames, recolours, offers in every project or removes; labels offered in every project that the project hasn't got show dimmed. Smart filters: Not in a timeline, Needs proxy, End missing, Can't be found, With a note. Prune is a disabled button saying it comes with 5.3.)
+- [x] Tab bar: Video, Audio, Images, Effects, then custom lists with "+ New list"; the bar fades and scrolls when full (`ui_kit::tab_strip`; right-click a list to rename or remove it).
+- [x] Filter row: label chips, group by, sort, thumbnail size, grid / list switch. (Also "Find" words; group by label, folder or nothing.)
+- [x] Video, Images, Effects: thumbnail grid grouped by label, coloured label edge, "In timeline" and "Needs proxy" badges. (A file goes under its first label; the pointer across a thumbnail skims the file; only the lines in view are drawn. Effects says it waits for the effects library.)
+- [x] Audio: rows with play button, name, full-width waveform in label colour, format, used-in-timeline mark, duration; grouped by label.
+- [x] Detail panel (right, same width as the Edit inspector): preview, mark in/out, add to timeline, metadata, labels, lists, notes; for audio a large waveform, loudness and true peak with one-click fixes. (A small player of its own: a third viewer worker for the picture, the playback engine on a timeline of the file alone for the sound; I and O mark in and out (on the Edit page they set the region); "Add to timeline" adds the marked part as one undoable step; loudness and true peak are measured on a worker and the fix is the level the file's sound is added at, towards the loudness aimed for in Settings and never pushing peaks over -1 dBTP.)
 
 **5.3 Media management**
 

@@ -15,8 +15,10 @@ pub mod keyframe;
 pub mod layout;
 pub mod master;
 pub mod picture_handles;
+pub mod scrub;
 pub mod shortcuts;
 pub mod splitter;
+pub mod tab_strip;
 pub mod theme;
 pub mod time_text;
 pub mod timeline;
@@ -25,6 +27,7 @@ pub mod top_bar;
 pub mod transport;
 pub mod video_picture;
 pub mod viewer;
+pub mod waveform;
 pub mod yuv_renderer;
 
 pub use dialog::dialog;

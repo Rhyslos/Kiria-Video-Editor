@@ -25,6 +25,15 @@ pub struct Options {
     pub watch_folders: Vec<PathBuf>,
     /// Start on the Export page (`--export-page`, for screenshots).
     pub export_page: bool,
+    /// Start on this page (`--page library`, for screenshots and the
+    /// responsiveness test of a page).
+    pub page: Option<ui_kit::Page>,
+    /// Open this tab of the Library page: a type or a list's name
+    /// (`--library-tab audio`, for screenshots).
+    pub library_tab: Option<String>,
+    /// Show the file with this name in the Library page's detail panel
+    /// (`--library-select voice.mp3`, for screenshots).
+    pub library_select: Option<String>,
     /// Start with the viewer full screen (`--full-screen`, for screenshots).
     pub full_screen: bool,
     /// Select the first clip of the top video track that has one, once the
@@ -107,6 +116,22 @@ impl Options {
                     options.find = Some(words);
                 }
                 "--export-page" => options.export_page = true,
+                "--page" => {
+                    let name = args.next().unwrap_or_default();
+                    let page = ui_kit::Page::ALL
+                        .into_iter()
+                        .find(|p| p.label().eq_ignore_ascii_case(&name))
+                        .ok_or("--page needs library, edit, color, audio or export")?;
+                    options.page = Some(page);
+                }
+                "--library-tab" => {
+                    let name = args.next().ok_or("--library-tab needs a tab's name")?;
+                    options.library_tab = Some(name);
+                }
+                "--library-select" => {
+                    let name = args.next().ok_or("--library-select needs a file name")?;
+                    options.library_select = Some(name);
+                }
                 "--full-screen" => options.full_screen = true,
                 "--select-first-clip" => options.select_first_clip = true,
                 "--cpu-colour" => options.cpu_colour = true,
@@ -224,6 +249,17 @@ mod tests {
         assert!(parse(&["--import"]).is_err());
         assert!(parse(&["p.x", "--cpu-colour"]).unwrap().cpu_colour);
         assert!(parse(&["p.x", "--export-page"]).unwrap().export_page);
+        assert_eq!(
+            parse(&["p.x", "--page", "Library"]).unwrap().page,
+            Some(ui_kit::Page::Library)
+        );
+        assert!(parse(&["p.x", "--page", "nowhere"]).is_err());
+        assert!(parse(&["p.x", "--page"]).is_err());
+        let o = parse(&["p.x", "--library-tab", "audio", "--library-select", "a.wav"]).unwrap();
+        assert_eq!(
+            (o.library_tab.as_deref(), o.library_select.as_deref()),
+            (Some("audio"), Some("a.wav"))
+        );
         assert!(parse(&["p.x", "--select-first-clip"]).unwrap().select_first_clip);
         assert!(!parse(&["p.x"]).unwrap().select_first_clip);
         assert!(!parse(&["p.x"]).unwrap().cpu_colour);
