@@ -307,8 +307,11 @@ impl MediaDrawer {
         } else {
             format!("\n\nNote: {note}")
         };
+        let about_end = media::end_missing_words(media).map_or_else(String::new, |words| {
+            format!("\n\n{words}: it was imported as far as it goes.")
+        });
         let response = response.on_hover_text(format!(
-        "{}\nDouble-click to place it at the end of the timeline; right-click to insert or overwrite at the edit point, or for labels, lists and a note; or drag it onto the timeline.{about_proxy}{about_note}",
+        "{}\nDouble-click to place it at the end of the timeline; right-click to insert or overwrite at the edit point, or for labels, lists and a note; or drag it onto the timeline.{about_end}{about_proxy}{about_note}",
         media.path.display()
     ));
         let painter = ui.painter_at(rect);
@@ -336,13 +339,21 @@ impl MediaDrawer {
         }
         let mut line = egui::text::LayoutJob::default();
         let small = egui::FontId::proportional(11.0);
+        if media.info.stated_length.is_some() && !missing {
+            line.append(
+                "End missing",
+                0.0,
+                egui::TextFormat::simple(small.clone(), ui_kit::status::WARNING),
+            );
+        }
         if let Some(text) = proxy_line {
             let colour = match proxy {
                 Status::Failed(_) => ui_kit::status::ERROR,
                 Status::Ready => theme.accent,
                 _ => theme.muted,
             };
-            line.append(&text, 0.0, egui::TextFormat::simple(small.clone(), colour));
+            let gap = if line.text.is_empty() { 0.0 } else { 8.0 };
+            line.append(&text, gap, egui::TextFormat::simple(small.clone(), colour));
         }
         for (i, label) in labels.iter().enumerate() {
             let gap = if i == 0 && line.text.is_empty() { 0.0 } else { 8.0 };

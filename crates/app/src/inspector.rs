@@ -1656,6 +1656,7 @@ pub(crate) mod tests {
                     variable_frame_rate: false,
                 }),
                 audio: Vec::new(),
+                stated_length: None,
             },
         };
         let project = Project::new("T", SequenceSettings::GAME_CLIP);

@@ -187,6 +187,16 @@ pub enum StreamKind {
     Other,
 }
 
+/// What this build of FFmpeg can do with a stream's codec.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodecSupport {
+    Decodable,
+    /// FFmpeg knows the codec but this build has no decoder for it.
+    NoDecoder,
+    /// FFmpeg doesn't know the codec at all (newer, or not a real one).
+    Unknown,
+}
+
 /// One stream of an open input. Borrowing the input keeps it alive.
 pub struct Stream<'a> {
     s: &'a ff::AVStream,
@@ -221,6 +231,24 @@ impl Stream<'_> {
         };
         // SAFETY: avcodec_get_name returns a static string for any id.
         unsafe { owned(ff::avcodec_get_name(par.codec_id)) }.unwrap_or_default()
+    }
+
+    /// Whether this build of FFmpeg can decode the stream.
+    pub fn codec_support(&self) -> CodecSupport {
+        let Some(par) = self.par() else {
+            return CodecSupport::Unknown;
+        };
+        if par.codec_id == ff::AVCodecID::AV_CODEC_ID_NONE {
+            return CodecSupport::Unknown;
+        }
+        // SAFETY: looks the id up in FFmpeg's static table of decoders; any
+        // id is allowed, and the result is only compared with null.
+        let decoder = unsafe { ff::avcodec_find_decoder(par.codec_id) };
+        if decoder.is_null() {
+            CodecSupport::NoDecoder
+        } else {
+            CodecSupport::Decodable
+        }
     }
 
     pub fn size(&self) -> (u32, u32) {

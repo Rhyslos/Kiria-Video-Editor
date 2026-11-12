@@ -33,6 +33,7 @@ fn project() -> Project {
                 sample_rate: 48_000,
                 name: "Game".into(),
             }],
+            stated_length: None,
         },
     };
     let p = Project::new("T", SequenceSettings::GAME_CLIP);

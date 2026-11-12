@@ -33,6 +33,7 @@ fn file(name: &str, kind: MediaKind, secs: i64) -> MediaRef {
                 rotation: 0,
             }),
             audio: Vec::new(),
+            stated_length: None,
         },
     }
 }

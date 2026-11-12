@@ -38,7 +38,7 @@ Phase 0.6 done: themes, fonts, shared sizes, the top bar, the shortcut table and
 | `src/icon.rs` | The app icon: `logo_mark`'s picture in the top bar and `with_window_icon` for every window |
 | `src/drawer.rs` | The drawer on a page's left edge: `edge_tab` (a tall tab with its label written upward, beside the viewer only: `tab_rect`, and `beside_tab` for what sits right of it, so the timeline below runs the page's whole width), the Media / Effects `tab_switch`, and the open drawer floating over the page (`overlay` at `drawer_rect`, with a shadow and an edge; nothing underneath moves). A click on the page away from it closes it (`clicked_away`), and it steps aside while a file dragged out of it is over the timeline (`shown`, `keep_while_dragging`) so the drop lands. The page fills in the list |
 | `src/dialog.rs` | `dialog`: every window that asks something and waits uses this frame, padding and dimmed backdrop |
-| `src/errors.rs` | `ErrorCenter`: the inline error strip with its fix button, and the Diagnostics window (every error of the session, under facts a program sets with `set_fact`, such as the graphics system in use) |
+| `src/errors.rs` | `ErrorCenter`: the inline error strip with its fix button (and the fix's own word for turning it down, such as "Skip", in place of "Dismiss"), and the Diagnostics window (every error of the session, under facts a program sets with `set_fact`, such as the graphics system in use) |
 | `assets/fonts/` | The font files and their licences |
 | `assets/icon/` | `icon-64.png`, drawn by `cargo xtask icons` from `packaging/icons/icon.svg` |
 

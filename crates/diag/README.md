@@ -36,7 +36,7 @@ std::fs::read(&path).or_explain(|| {
 | File | What it does |
 |---|---|
 | `src/lib.rs` | `start()` and `Diagnostics`: sets everything up in the right order |
-| `src/error.rs` | `AppError` (what, why, fix, one-click `FixAction`, cause), `Explain`, `Result` |
+| `src/error.rs` | `AppError` (what, why, fix, one-click `FixAction`, cause), `Explain`, `Result`. A `FixAction` can name the button that turns it down (`declined_with("Skip")`), shown instead of "Dismiss" |
 | `src/paths.rs` | `AppDirs`: the app's data, logs and crash-reports folders, and its cache folder (proxies; under `~/.cache` on Linux, `cache` in the data folder on Windows) |
 | `src/logging.rs` | Daily log files, 7 days kept; warnings also go to the terminal. `RUST_LOG` changes the level |
 | `src/crash.rs` | Panic hook that writes `crash-<time>.txt`: message, place, version, system, graphics card, last 200 log lines, backtrace |

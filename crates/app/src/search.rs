@@ -233,6 +233,7 @@ mod tests {
                     rotation: 0,
                 }),
                 audio: Vec::new(),
+                stated_length: None,
             },
         };
         let sequence = p.active_sequence;

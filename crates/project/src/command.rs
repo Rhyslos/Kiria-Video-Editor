@@ -1554,6 +1554,7 @@ mod tests {
                         name: (*name).into(),
                     })
                     .collect(),
+                stated_length: None,
             },
         }
     }

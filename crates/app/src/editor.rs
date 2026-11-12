@@ -159,6 +159,9 @@ pub struct Editor {
 /// Room between the viewer and the inspector beside it.
 const INSPECTOR_GAP: f32 = 12.0;
 
+/// How long each frame may spend adding imported files to the project.
+const IMPORT_BUDGET: Duration = Duration::from_millis(2);
+
 const SCREENSHOT_WAIT: Duration = Duration::from_secs(20);
 /// How long a scripted pointer rests before the screenshot, so tooltips are up.
 const POINTER_REST: Duration = Duration::from_millis(1500);
@@ -1251,10 +1254,21 @@ impl Editor {
                 Err(err) => self.errors.push(&err),
             }
         }
-        for read in self.importer.poll(&self.jobs, ctx) {
+        self.importer.poll_dialog(&self.jobs, ctx);
+        // Each file added writes the autosave journal, so only as many as
+        // fit in a few milliseconds go in each frame (at least one).
+        let started = Instant::now();
+        while started.elapsed() < IMPORT_BUDGET {
+            let Some((read, batch)) = self.importer.next_read() else {
+                break;
+            };
+            if self.importer.busy() > 0 {
+                ctx.request_repaint();
+            }
             let result = match read {
                 Read::Ready(media) => {
                     let line = import::summary(&media);
+                    let end_missing = media::end_missing_words(&media);
                     let mut settled = None;
                     self.with_document(|d| {
                         let sequence = d.project().active_sequence;
@@ -1276,15 +1290,38 @@ impl Editor {
                             ),
                             None => format!("Imported {line}"),
                         };
+                        if let Some(words) = end_missing {
+                            self.status = format!("{}. {words}", self.status.trim_end_matches('.'));
+                        }
                     })
                 }
-                Read::Failed(path, err) => {
-                    tracing::info!(path = %path.display(), "import failed: {}", err.report());
-                    Err(err)
+                Read::Failed { path, refused, alone } => {
+                    tracing::info!(path = %path.display(), "import refused: {}", refused.error.report());
+                    match (alone, refused.refusal) {
+                        // The person chooses: what is there, or skip it.
+                        (true, media::Refusal::CutShort) => {
+                            let id = self.importer.set_aside(vec![path]);
+                            Err(refused
+                                .error
+                                .action(import::whats_there_action("Import what's there", id)))
+                        }
+                        (true, _) => Err(refused.error),
+                        (false, _) => Ok(()),
+                    }
                 }
             };
             if let Err(err) = result {
                 self.errors.push(&err);
+            }
+            // Files picked or dropped together: one line for them all, and
+            // one message for those refused.
+            if let Some(batch) = batch.filter(|b| b.files > 1) {
+                self.status = format!("Imported {} of {} files", batch.imported(), batch.files);
+                let whats_there =
+                    (!batch.cut_short.is_empty()).then(|| self.importer.set_aside(batch.cut_short.clone()));
+                if let Some(err) = batch.summary(whats_there) {
+                    self.errors.push(&err);
+                }
             }
         }
     }
@@ -1969,7 +2006,14 @@ impl Editor {
         if let Some(response) = self.errors.show_inline(ui, &self.theme) {
             match response {
                 ErrorResponse::OpenDiagnostics => self.show_diagnostics = true,
-                ErrorResponse::Fix(action) => self.status = format!("No handler for {} yet.", action.command),
+                ErrorResponse::Fix(action) => match import::whats_there_id(&action.command) {
+                    Some(id) => {
+                        if self.importer.whats_there(&self.jobs, ui.ctx(), id) {
+                            self.status = "Importing what is there…".into();
+                        }
+                    }
+                    None => self.status = format!("No handler for {} yet.", action.command),
+                },
             }
             ui.add_space(8.0);
         }
@@ -2087,7 +2131,7 @@ impl Editor {
                 ui.spinner();
                 ui.label(
                     egui::RichText::new(format!(
-                        "Reading {busy} file{}…",
+                        "Checking {busy} file{}…",
                         if busy == 1 { "" } else { "s" }
                     ))
                     .color(self.theme.text_secondary),

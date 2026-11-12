@@ -631,6 +631,7 @@ fn recording() -> MediaRef {
                 sample_rate: 48_000,
                 name: "Game".into(),
             }],
+            stated_length: None,
         },
         ..media()
     }
