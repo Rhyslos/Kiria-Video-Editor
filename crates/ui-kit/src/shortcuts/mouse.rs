@@ -243,6 +243,16 @@ pub const MOUSE: &[MouseAction] = &[
         "That track's volume, or the mix's; double-click for 0 dB",
     ),
     on(
+        Context::Timeline,
+        "Click I or TP under the master meter",
+        "Start the integrated loudness and the highest true peak again",
+    ),
+    on(
+        Context::Timeline,
+        "Right-click the master column",
+        "Choose the loudness to aim for: -14 LUFS for online video, -16, -23, -24 or none",
+    ),
+    on(
         Context::Dragging,
         "Hold Alt while dragging a clip",
         "No snapping for this drag",

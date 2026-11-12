@@ -16,6 +16,7 @@ pub mod compose;
 pub mod export;
 pub mod frame;
 pub mod frames;
+pub mod loudness;
 pub mod meter;
 pub mod mix;
 pub mod playback;

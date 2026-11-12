@@ -127,6 +127,10 @@ pub struct Exported {
     pub length: Duration,
     pub encoder: String,
     pub on_graphics_card: bool,
+    /// The sound's integrated loudness (LUFS) and highest true peak
+    /// (dBTP), measured as it was written (`-inf` for silence).
+    pub loudness: f32,
+    pub true_peak: f32,
 }
 
 /// How an export ended.
@@ -353,6 +357,7 @@ fn run(
         || {},
     );
     let mut mixer = Mixer::new(sample_rate);
+    let mut loudness = crate::loudness::Loudness::new(sample_rate);
     let black = render::reader::black(size);
     let mut picture = Vec::with_capacity(reader.bytes());
     let mut sound = Vec::new();
@@ -397,6 +402,7 @@ fn run(
             let from =
                 rate.frame_start(first).as_secs_f64() + samples_written as f64 / f64::from(sample_rate);
             mixer.mix(project, seq, from, &mut sound);
+            loudness.feed(&sound);
             writer.write_sound(&sound)?;
             samples_written = until;
 
@@ -420,6 +426,8 @@ fn run(
         length: Duration::from_secs_f64(count as f64 / rate.as_f64()),
         encoder,
         on_graphics_card,
+        loudness: loudness.measured().integrated,
+        true_peak: loudness.measured().true_peak_max,
     }))
 }
 
