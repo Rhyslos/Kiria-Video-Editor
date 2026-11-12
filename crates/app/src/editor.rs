@@ -90,6 +90,11 @@ pub struct Editor {
     /// How fast each track's waveforms or pictures are being read, for the time left.
     track_paces: timeline_panel::TrackPaces,
     relink: crate::relink::Relinker,
+    /// Label names and colours offered in every project, and their saving.
+    global_labels: crate::global_labels::Everywhere,
+    /// The project's media in the library index, on a thread of its own:
+    /// what the drawer's "Find a file" and the search palette ask.
+    library: library::Live,
     drawer: crate::media_drawer::MediaDrawer,
     /// The selected clip's settings, on the right of the Edit page.
     inspector: crate::inspector::Inspector,
@@ -197,6 +202,7 @@ impl Editor {
         let start_at = project.as_ref().and_then(|p| p.playhead);
         let play_when_ready = project.as_ref().is_some_and(|p| p.play);
         let drawer_open = project.as_ref().is_some_and(|p| p.media_drawer);
+        let find = project.as_ref().and_then(|p| p.find.clone()).unwrap_or_default();
         let start_page = if project.as_ref().is_some_and(|p| p.export_page) {
             Page::Export
         } else {
@@ -292,6 +298,7 @@ impl Editor {
         viewer.set_proxies(Some(proxies.shelf()));
         viewer.set_key_frame_first(settings.jump_picture.key_frame_first());
         let display = crate::display::ViewerDisplay::new(settings.split_view, &viewer);
+        let global_labels = crate::global_labels::Everywhere::load(&data_dir, &mut errors);
         Editor {
             theme: settings.theme.theme(),
             settings,
@@ -340,10 +347,12 @@ impl Editor {
             full_screen_changed: full_screen,
             select_first_clip,
             save_frame_requested: false,
-            drawer: crate::media_drawer::MediaDrawer {
-                open: drawer_open,
-                ..Default::default()
+            global_labels,
+            library: {
+                let ctx = cc.egui_ctx.clone();
+                library::Live::start(move || ctx.request_repaint())
             },
+            drawer: crate::media_drawer::MediaDrawer::new(drawer_open, find),
             inspector: crate::inspector::Inspector::default(),
             picture_handles: crate::picture_handles::PictureHandles::default(),
             export_page: crate::export_page::ExportPage::default(),
@@ -1655,15 +1664,23 @@ impl Editor {
             return;
         }
         let mut picked = None;
+        let answer = self.library.answer(crate::media_drawer::ASKER);
+        let found = answer.as_ref().map(|a| a.media.as_slice());
         let (drawer, theme, missing) = (&mut self.drawer, &self.theme, &self.relink.missing);
-        let proxies = &self.proxies;
+        let (proxies, global_labels) = (&self.proxies, &self.global_labels.labels);
         let proxy = crate::media_drawer::ProxyInfo {
             status: &|media| proxies.status(media),
             mode: self.settings.proxies,
         };
         if let Some(document) = &self.document {
             picked = ui_kit::drawer::overlay(&ctx, theme, egui::Id::unique("media-drawer"), rect, |ui| {
-                drawer.ui(ui, theme, document.project(), missing, &proxy)
+                let about = crate::media_drawer::About {
+                    found,
+                    missing,
+                    proxy,
+                    global: global_labels,
+                };
+                drawer.ui(ui, theme, document.project(), &about)
             })
             .inner;
         }
@@ -1676,6 +1693,19 @@ impl Editor {
             }
             Some(Picked::DeleteProxy(media)) => {
                 self.proxies.delete(&self.jobs, media);
+                None
+            }
+            Some(Picked::Edit(command)) => {
+                if let Err(err) = self.with_document(|d| d.apply(*command)) {
+                    self.errors.push(&err);
+                }
+                None
+            }
+            Some(Picked::Everywhere(change)) => {
+                match self.global_labels.change(&self.jobs, &self.data_dir, change) {
+                    Ok(line) => self.status = line,
+                    Err(err) => self.errors.push(&err),
+                }
                 None
             }
             None => None,
@@ -1738,6 +1768,32 @@ impl Editor {
                 self.errors.push(&err);
                 false
             }
+        }
+    }
+
+    /// Keeps the library index in step with the project and asks it what
+    /// the drawer and the search palette show. Never waits for it.
+    fn library_index(&mut self) {
+        let Some(document) = self.document.as_ref() else {
+            return;
+        };
+        let project = document.project();
+        self.library.follow(project);
+        if self.drawer.open {
+            self.library
+                .ask(crate::media_drawer::ASKER, &self.drawer.query(project));
+        }
+        if self.show_search {
+            self.library.ask(
+                crate::search::ASKER,
+                &library::Query::text(self.search_text.trim()),
+            );
+        }
+        if let Some(err) = self.library.take_error() {
+            self.errors.push(&err);
+        }
+        if let Some(err) = self.global_labels.poll() {
+            self.errors.push(&err);
         }
     }
 
@@ -2563,12 +2619,32 @@ impl Editor {
         let project = self.document.as_ref().map(Document::project);
         let seq = project.and_then(|p| p.active());
         let fps = seq.map_or(60.0, |s| s.settings.frame_rate.as_f64());
-        let hits = crate::search::results(&self.search_text, &self.shortcuts, seq, |clip| {
-            project
-                .and_then(|p| p.media.get(&clip.media))
-                .and_then(|m| m.path.file_name())
-                .map_or_else(|| "missing".into(), |n| n.to_string_lossy().into_owned())
-        });
+        // The files the index found for these words, once it has answered them.
+        let files: Option<Vec<(project::MediaId, String)>> = self
+            .library
+            .answer(crate::search::ASKER)
+            .filter(|a| a.query.text == self.search_text.trim())
+            .zip(project)
+            .map(|(answer, p)| {
+                answer
+                    .media
+                    .iter()
+                    .filter_map(|id| p.media.get(id))
+                    .map(|m| (m.id, library::file_name(&m.path)))
+                    .collect()
+            });
+        let hits = crate::search::results(
+            &self.search_text,
+            &self.shortcuts,
+            seq,
+            |clip| {
+                project
+                    .and_then(|p| p.media.get(&clip.media))
+                    .and_then(|m| m.path.file_name())
+                    .map_or_else(|| "missing".into(), |n| n.to_string_lossy().into_owned())
+            },
+            files.as_deref(),
+        );
         let mut chosen = None;
         egui::Window::new("Search")
             .open(&mut open)
@@ -2583,7 +2659,7 @@ impl Editor {
                 }
                 ui.label(
                     egui::RichText::new(
-                        "Commands, settings, timeline labels and clips. Enter picks the first.",
+                        "Commands, settings, timeline labels, clips and files (by name, label or note). Enter picks the first.",
                     )
                     .color(self.theme.muted),
                 );
@@ -2609,6 +2685,12 @@ impl Editor {
             Some(Hit::Clip { id, at, .. }) => {
                 self.selected = vec![id];
                 self.seek(at);
+            }
+            Some(Hit::File { name, .. }) => {
+                self.page = Page::Edit;
+                self.drawer.open = true;
+                self.drawer.tab = ui_kit::drawer::DrawerTab::Media;
+                self.drawer.filter = name;
             }
             Some(Hit::Settings) => self.show_settings = true,
             Some(Hit::TimelineSettings) => self.show_timeline_settings = true,
@@ -2655,7 +2737,8 @@ impl Editor {
                 let ready = (self.importer.busy() == 0
                     && self.viewer.settled()
                     && self.display.settled()
-                    && self.proxies.settled())
+                    && self.proxies.settled()
+                    && (!self.drawer.open || self.library.is_current(crate::media_drawer::ASKER)))
                     || now.duration_since(since) > SCREENSHOT_WAIT;
                 // A scripted pointer has done its part, and rested long
                 // enough for a tooltip to come up.
@@ -2835,6 +2918,7 @@ impl eframe::App for Editor {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
         self.relinking(&ctx);
+        self.library_index();
         self.frame_grabs(&ctx);
         if let Some(err) = self.viewer.poll(&ctx, self.settings.preview_quality)
             && !self.relink.explains_errors()
@@ -3042,6 +3126,8 @@ pub struct ProjectToOpen {
     pub play: bool,
     /// Start with the media drawer open.
     pub media_drawer: bool,
+    /// Words to start with in the drawer's "Find a file".
+    pub find: Option<String>,
     /// Start on the Export page.
     pub export_page: bool,
     /// Start with the viewer full screen.

@@ -22,6 +22,9 @@ pub struct Project {
     pub media: OrdMap<MediaId, MediaRef>,
     pub sequences: Vector<Sequence>,
     pub active_sequence: SequenceId,
+    /// Labels, lists and notes on the media (format 13); empty when missing.
+    #[serde(default)]
+    pub library: crate::library::Library,
     /// The next unused id. Ids are never reused.
     next_id: u64,
 }
@@ -476,6 +479,7 @@ impl Project {
             media: OrdMap::new(),
             sequences: Vector::new(),
             active_sequence: SequenceId(0),
+            library: Default::default(),
             next_id: 1,
         };
         let sequence = project.new_sequence("Main sequence", settings);
@@ -570,6 +574,7 @@ impl Project {
                 problems.push(format!("two timelines have the id {}", sequence.id));
             }
         }
+        problems.extend(self.library.problems(|m| self.media.contains_key(&m)));
         if let Some(name) = crate::timelines::in_a_loop(self) {
             problems.push(format!("{name} plays itself through the timelines nested in it"));
         }

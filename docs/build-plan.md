@@ -34,7 +34,7 @@ The platform (project file, errors, installs, safe updates) comes before any pag
 | 2 | Launcher | Project browser, folders, update panel | Create, find and open projects; manual update works | Gate passed (accepted by the owner; manual gate tests skipped) |
 | 3 | Update safety | Side-by-side installs, rollback, project migrations | A broken update rolls back by itself; old projects open | Gate passed (accepted by the owner; manual gate tests skipped) |
 | 4 | Edit page | Media pipeline, playback, timeline, editing, inspector | Cut a 20-minute game recording smoothly at 1440p 60 | Built; gate waiting for the owner's edit |
-| 5 | Library | Import, index, tabs, lists, labels, prune | 500 clips import, filter and search instantly | Not started |
+| 5 | Library | Import, index, tabs, lists, labels, prune | 500 clips import, filter and search instantly | In progress (5.1) |
 | 6 | Export | Encode pipeline, presets, checks, queue | Exports match the timeline frame for frame | Not started |
 | 8 | Audio | Mixer, effects, loudness, clarity check | A noisy three-track recording mixes to −14 LUFS cleanly | Not started |
 | 9 | Effects and extras | Effects drawer, background removal, extra features | Hair edges hold, no flicker; extras pass their tests | Not started |
@@ -361,7 +361,7 @@ Phase 5 turns the simple media list from phase 4 into the full Library page; the
 
 **5.1 Index and search (`library`)**
 
-- [ ] SQLite tables: media, types, labels, custom lists, notes, usage in timelines; full-text search across names, labels and notes.
+- [x] SQLite tables: media, types, labels, custom lists, notes, usage in timelines; full-text search across names, labels and notes. Labels, lists and notes are project data (format 13, undoable commands); the index is built from the project in memory on a worker, so it is never the truth and needs no file. Labels can also be offered in every project (names and colours in `labels.ron` in the app's data folder; using one copies it into the project). The drawer's "Find a file" and the search palette ask it; 10 000 files answer every query in a few milliseconds (`crates/library/tests/index.rs`).
 - [ ] Import checks every file first and explains anything unsupported (codec, damaged, too new) before it reaches a timeline.
 - [ ] Media folders from the launcher are watched; new recordings show up on their own.
 

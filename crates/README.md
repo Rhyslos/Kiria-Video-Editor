@@ -21,7 +21,7 @@ The Cargo workspace members. One engine with no interface, and thin pages on top
 | [audio](audio/) | Real-time mixer, effects, meters, loudness | 4A, 8 |
 | [render](render/) | GPU compositor (layers into a frame, a frame shown), colour, effects | 4C (compositor done), 7, 9 |
 | [engine](engine/) | Playback scheduler and export pipeline | 4A (preview picture, mixing, playback done), 6 |
-| [library](library/) | Media index and search | 5 |
+| [library](library/) | Media index and search: types, labels, lists, notes, use on timelines, full-text search (SQLite, in memory, built from the project) | 5 (5.1 index and search done) |
 | [ml](ml/) | Model inference (background removal) | 9 |
 
 Every crate opts into the shared lint rules in the root `Cargo.toml` (`[lints] workspace = true`).

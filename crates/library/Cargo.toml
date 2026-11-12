@@ -8,6 +8,11 @@ license.workspace = true
 publish = false
 
 [dependencies]
+diag = { path = "../diag" }
+project = { path = "../project" }
+# SQLite is compiled in (with full-text search), so nothing needs installing on the person's machine.
+rusqlite = { version = "0.41", features = ["bundled"] }
+tracing = "0.1"
 
 [lints]
 workspace = true

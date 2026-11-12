@@ -229,6 +229,7 @@ dependencies = [
  "graphics",
  "image",
  "jobs",
+ "library",
  "media",
  "os",
  "pollster",
@@ -2405,6 +2406,12 @@ checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 [[package]]
 name = "library"
 version = "0.1.0"
+dependencies = [
+ "diag",
+ "project",
+ "rusqlite",
+ "tracing",
+]
 
 [[package]]
 name = "libredox"

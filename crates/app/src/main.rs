@@ -15,6 +15,7 @@ mod editor;
 mod export_page;
 mod fake_pointer;
 mod frame_grab;
+mod global_labels;
 mod import;
 mod inspector;
 mod label_editor;
@@ -134,6 +135,7 @@ fn main() -> ExitCode {
         playhead: options.playhead,
         play: options.play,
         media_drawer: options.media_drawer,
+        find: options.find.clone(),
         export_page: options.export_page,
         full_screen: options.full_screen,
         select_first_clip: options.select_first_clip,

@@ -17,6 +17,9 @@ pub struct Options {
     pub play: bool,
     /// Open the media drawer (`--media-drawer`, for screenshots).
     pub media_drawer: bool,
+    /// Open the media drawer with these words in "Find a file" (`--find
+    /// drone`, for screenshots of search).
+    pub find: Option<String>,
     /// Start on the Export page (`--export-page`, for screenshots).
     pub export_page: bool,
     /// Start with the viewer full screen (`--full-screen`, for screenshots).
@@ -91,6 +94,11 @@ impl Options {
                 }
                 "--play" => options.play = true,
                 "--media-drawer" => options.media_drawer = true,
+                "--find" => {
+                    let words = args.next().ok_or("--find needs words to find")?;
+                    options.media_drawer = true;
+                    options.find = Some(words);
+                }
                 "--export-page" => options.export_page = true,
                 "--full-screen" => options.full_screen = true,
                 "--select-first-clip" => options.select_first_clip = true,

@@ -5,8 +5,9 @@
 //! written to the autosave journal and replayed after a crash.
 
 use crate::animate::{KeyframeChange, KeyframesChange};
-use crate::ids::{ClipId, LabelId, LinkId, MediaId, SequenceId, TrackId};
+use crate::ids::{ClipId, LabelId, LinkId, MediaId, MediaLabelId, MediaListId, SequenceId, TrackId};
 use crate::keyframes::LookField;
+use crate::library::MediaLabel;
 use crate::look::Look;
 use crate::model::{
     Clip, FrameBlend, LabelColor, MediaKind, MediaRef, Project, Region, Sequence, SequenceSettings,
@@ -427,6 +428,54 @@ pub enum Command {
         length: Time,
         track: Option<TrackId>,
     },
+    /// Makes a media label (its `id` is ignored and a new one given) and
+    /// puts it on `media` (format 13). Names are 1 to 40 characters and no
+    /// two labels share one, whatever their capitals.
+    AddMediaLabel {
+        label: MediaLabel,
+        media: Vec<MediaId>,
+    },
+    /// Renames a media label and sets its colour.
+    EditMediaLabel {
+        label: MediaLabelId,
+        name: String,
+        color: LabelColor,
+    },
+    /// Removes a media label, from every file that had it too.
+    RemoveMediaLabel {
+        label: MediaLabelId,
+    },
+    /// Puts a media label on files (`on`) or takes it off them.
+    SetMediaLabel {
+        media: Vec<MediaId>,
+        label: MediaLabelId,
+        on: bool,
+    },
+    /// Sets a file's note (trimmed); an empty one removes it.
+    SetMediaNote {
+        media: MediaId,
+        note: String,
+    },
+    /// Makes a custom list called `name` holding `media`. Names follow the
+    /// rules for labels.
+    AddMediaList {
+        name: String,
+        media: Vec<MediaId>,
+    },
+    RenameMediaList {
+        list: MediaListId,
+        name: String,
+    },
+    /// Removes a custom list; its files stay in the project.
+    RemoveMediaList {
+        list: MediaListId,
+    },
+    /// Puts files at the end of a list (`member`) or takes them out.
+    SetListMember {
+        list: MediaListId,
+        media: Vec<MediaId>,
+        member: bool,
+    },
 }
 
 impl Command {
@@ -523,6 +572,21 @@ impl Command {
                 p.media.get_mut(media).ok_or_else(|| missing("media file"))?.path = path.clone();
             }
             Command::Import { sequence, media } => import(&mut p, *sequence, media)?,
+            Command::AddMediaLabel { label, media } => crate::library::add_label(&mut p, label, media)?,
+            Command::EditMediaLabel { label, name, color } => {
+                crate::library::edit_label(&mut p, *label, name, *color)?
+            }
+            Command::RemoveMediaLabel { label } => crate::library::remove_label(&mut p, *label)?,
+            Command::SetMediaLabel { media, label, on } => {
+                crate::library::set_label(&mut p, media, *label, *on)?
+            }
+            Command::SetMediaNote { media, note } => crate::library::set_note(&mut p, *media, note)?,
+            Command::AddMediaList { name, media } => crate::library::add_list(&mut p, name, media)?,
+            Command::RenameMediaList { list, name } => crate::library::rename_list(&mut p, *list, name)?,
+            Command::RemoveMediaList { list } => crate::library::remove_list(&mut p, *list)?,
+            Command::SetListMember { list, media, member } => {
+                crate::library::set_member(&mut p, *list, media, *member)?
+            }
             Command::PlaceMedia { sequence, media } => place_media(&mut p, *sequence, *media, None, None)?,
             Command::InsertMedia { sequence, media, at } => {
                 let length = placed_length(p.media.get(media).ok_or_else(|| missing("media file"))?);

@@ -222,7 +222,30 @@ fn rich_project() -> Project {
         .expect("the first timeline");
     seq.video_tracks.push_back(v2);
     seq.video_tracks.push_back(v3);
-    p
+
+    // The recording is labelled, in a list and has a note (format 13).
+    let p = project::Command::AddMediaLabel {
+        label: project::MediaLabel {
+            id: project::MediaLabelId(0),
+            name: "Gameplay".into(),
+            color: LabelColor::Orange,
+        },
+        media: vec![video],
+    }
+    .apply(&p)
+    .expect("a label");
+    let p = project::Command::AddMediaList {
+        name: "Opening sequence".into(),
+        media: vec![video],
+    }
+    .apply(&p)
+    .expect("a list");
+    project::Command::SetMediaNote {
+        media: video,
+        note: "Clutch round at 4:10".into(),
+    }
+    .apply(&p)
+    .expect("a note")
 }
 
 #[test]
@@ -315,6 +338,38 @@ fn version_11_sample_opens_with_one_timeline_of_file_clips() {
             "format 11 clips all play files"
         );
     }
+}
+
+#[test]
+fn the_labels_for_every_project_sample_opens() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/samples/labels-v1.ron");
+    let text = std::fs::read_to_string(path).expect("the sample is there");
+    let set = project::GlobalLabels::parse(&text).expect("it reads");
+    let names: Vec<&str> = set.labels.iter().map(|l| l.name.as_str()).collect();
+    assert_eq!(names, ["Drone", "Interview"]);
+    assert_eq!(set.labels[0].color, LabelColor::Green);
+    assert_eq!(
+        project::global_labels::FORMAT_VERSION,
+        1,
+        "a new format of labels.ron needs a migration and a sample of its own"
+    );
+}
+
+#[test]
+fn version_12_sample_opens_with_no_labels_lists_or_notes() {
+    let project = file::load(&sample_path(12)).expect("the version 12 sample opens");
+    assert!(project.library.is_empty(), "format 12 had no library");
+    assert_eq!(project.sequences.len(), 2, "and kept its timelines");
+}
+
+#[test]
+fn the_current_sample_has_labels_a_list_and_a_note() {
+    let project = file::load(&sample_path(FORMAT_VERSION)).expect("the sample opens");
+    let media = *project.media.keys().next().expect("a file");
+    let library = &project.library;
+    assert_eq!(library.labels_of(media)[0].name, "Gameplay");
+    assert_eq!(library.lists_of(media)[0].name, "Opening sequence");
+    assert_eq!(library.note(media), "Clutch round at 4:10");
 }
 
 #[test]
