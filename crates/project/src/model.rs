@@ -274,6 +274,29 @@ pub struct Clip {
     /// for sound.
     #[serde(default)]
     pub blend: FrameBlend,
+    /// What it shows and plays (format 12): a part of a file (`media`),
+    /// another timeline of the project, or nothing of its own (an
+    /// adjustment layer). A file when missing.
+    #[serde(default)]
+    pub kind: ClipKind,
+}
+
+/// What a clip shows and plays.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum ClipKind {
+    /// A part of its file, `Clip::media`.
+    #[default]
+    File,
+    /// Another timeline of the project, played as one piece: a nested
+    /// timeline. On a video track it shows that timeline's picture, on an
+    /// audio track it plays that timeline's sound. Its `media` is
+    /// [`MediaId::NONE`], and times "in its file" are times in that timeline.
+    Timeline(SequenceId),
+    /// No picture of its own, only on video tracks: its quick colour, at
+    /// its opacity, applies to everything below it in the picture for as
+    /// long as it lasts. Its place, size, turn and crop mean nothing. Its
+    /// `media` is [`MediaId::NONE`].
+    Adjustment,
 }
 
 /// What a clip shows at a moment between two of its file's frames.
@@ -291,6 +314,29 @@ pub enum FrameBlend {
 impl Clip {
     pub fn end(&self) -> Time {
         self.start + self.duration
+    }
+
+    /// The timeline it plays, when it is a nested timeline.
+    pub fn nested(&self) -> Option<SequenceId> {
+        match self.kind {
+            ClipKind::Timeline(id) => Some(id),
+            ClipKind::File | ClipKind::Adjustment => None,
+        }
+    }
+
+    pub fn is_adjustment(&self) -> bool {
+        self.kind == ClipKind::Adjustment
+    }
+
+    /// Whether it would play from before the start of what it plays. An
+    /// adjustment layer plays nothing, so it can reach as far back as wanted.
+    pub fn starts_before_its_source(&self) -> bool {
+        self.source_in.is_negative() && !self.is_adjustment()
+    }
+
+    /// Whether it plays a part of a media file (and `media` means something).
+    pub fn is_file(&self) -> bool {
+        self.kind == ClipKind::File
     }
 
     /// How much of its file the clip plays.
@@ -349,6 +395,11 @@ impl Clip {
             self.ramp.summary()
         }
     }
+}
+
+/// How many of `sequences` have the id `id`.
+fn sequences_seen(sequences: &Vector<Sequence>, id: SequenceId) -> usize {
+    sequences.iter().filter(|s| s.id == id).count()
 }
 
 /// A named, coloured marker on the timeline.
@@ -515,21 +566,67 @@ impl Project {
                     self.check_clips(sequence, track, &mut problems);
                 }
             }
+            if sequences_seen(&self.sequences, sequence.id) > 1 {
+                problems.push(format!("two timelines have the id {}", sequence.id));
+            }
+        }
+        if let Some(name) = crate::timelines::in_a_loop(self) {
+            problems.push(format!("{name} plays itself through the timelines nested in it"));
         }
         problems
+    }
+
+    /// The timeline with this id.
+    pub fn sequence(&self, id: SequenceId) -> Option<&Sequence> {
+        self.sequences.iter().find(|s| s.id == id)
+    }
+
+    /// How long what a clip plays is: its file's length (`None` for a still
+    /// or a file whose length isn't known), the nested timeline's length,
+    /// or `None` for an adjustment layer, which can be as long as wanted.
+    pub fn source_length(&self, clip: &Clip) -> Option<Time> {
+        match clip.kind {
+            ClipKind::File => self
+                .media
+                .get(&clip.media)
+                .filter(|m| m.kind != MediaKind::Image && m.duration > Time::ZERO)
+                .map(|m| m.duration),
+            ClipKind::Timeline(id) => self.sequence(id).map(Sequence::length),
+            ClipKind::Adjustment => None,
+        }
     }
 
     fn check_clips(&self, sequence: &Sequence, track: &Track, problems: &mut Vec<String>) {
         let mut previous_end: Option<Time> = None;
         for clip in &track.clips {
             let place = format!("{} › {} › {}", sequence.name, track.name, clip.id);
-            if !self.media.contains_key(&clip.media) {
-                problems.push(format!("{place} uses missing media {}", clip.media));
+            match clip.kind {
+                ClipKind::File => {
+                    if !self.media.contains_key(&clip.media) {
+                        problems.push(format!("{place} uses missing media {}", clip.media));
+                    }
+                }
+                ClipKind::Timeline(id) => {
+                    if self.sequence(id).is_none() {
+                        problems.push(format!("{place} plays the missing timeline {id}"));
+                    }
+                    if id == sequence.id {
+                        problems.push(format!("{place} plays the timeline it is on"));
+                    }
+                }
+                ClipKind::Adjustment => {
+                    if track.kind == TrackKind::Audio {
+                        problems.push(format!("{place} is an adjustment layer on an audio track"));
+                    }
+                }
+            }
+            if !clip.is_file() && clip.media != MediaId::NONE {
+                problems.push(format!("{place} plays no file but names {}", clip.media));
             }
             if clip.duration <= Time::ZERO {
                 problems.push(format!("{place} has no length"));
             }
-            if clip.start.is_negative() || clip.source_in.is_negative() {
+            if clip.start.is_negative() || clip.starts_before_its_source() {
                 problems.push(format!("{place} starts before zero"));
             }
             if clip.sound != clip.sound.within_limits() {
@@ -635,6 +732,7 @@ mod tests {
             keyframes: Default::default(),
             ramp: Default::default(),
             blend: Default::default(),
+            kind: Default::default(),
         });
         p
     }

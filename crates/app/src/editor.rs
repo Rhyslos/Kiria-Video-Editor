@@ -1,5 +1,7 @@
 //! The editor window.
 
+mod timelines;
+
 use crate::import::{self, Importer, Read};
 use crate::run_mode::RunMode;
 use crate::settings::Settings;
@@ -72,6 +74,12 @@ pub struct Editor {
     view_keeper: Option<crate::view_state::ViewKeeper>,
     /// Clips picked on the timeline (their linked clips go with them).
     selected: Vec<project::ClipId>,
+    /// The tabs of the project's timelines, above the timeline.
+    tabs: ui_kit::timeline_tabs::TimelineTabs,
+    /// The timeline shown last frame, to notice another one opening.
+    shown_sequence: Option<project::SequenceId>,
+    /// Where the playhead was in each timeline left this session.
+    playheads: std::collections::HashMap<project::SequenceId, Time>,
     /// The timeline was fitted to the project once already.
     fitted: bool,
     waveforms: crate::waveforms::Waveforms,
@@ -236,6 +244,16 @@ impl Editor {
                 &mut timeline,
             )
         });
+        // The timeline that was open last time (the first one when the
+        // layout doesn't say, or it is gone).
+        let mut document = document;
+        if let Some(d) = document.as_mut() {
+            let first = d.project().sequences.front().map(|s| s.id);
+            let kept = timeline.showing.map(project::SequenceId);
+            if let Some(open) = kept.filter(|id| d.project().sequence(*id).is_some()).or(first) {
+                d.open_sequence(open);
+            }
+        }
         let mut importer = Importer::default();
         if !imports.is_empty() {
             importer.read(&jobs, &cc.egui_ctx, imports);
@@ -280,6 +298,9 @@ impl Editor {
             timeline,
             view_keeper,
             selected: Vec::new(),
+            tabs: Default::default(),
+            shown_sequence: None,
+            playheads: Default::default(),
             fitted: false,
             waveforms: crate::waveforms::Waveforms::holding_at(hold_reading),
             pictures: crate::clip_pictures::ClipPictures::holding_at(hold_reading),
@@ -471,6 +492,13 @@ impl Editor {
                 self.settings.save(&self.data_dir)
             }
             Action::ViewerWindow => self.switch_viewer_window(),
+            Action::NewTimeline => self.new_timeline(false),
+            Action::DuplicateTimeline => self.new_timeline(true),
+            Action::NestSelection => self.nest_selection(),
+            Action::AddAdjustmentLayer => {
+                let at = self.viewer.playhead;
+                self.add_adjustment(at, None)
+            }
             Action::AddVideoTrack => self.add_track(project::TrackKind::Video),
             Action::AddAudioTrack => self.add_track(project::TrackKind::Audio),
             Action::ZoomToFit => {
@@ -960,6 +988,27 @@ impl Editor {
                     }
                 } else {
                     self.lay_media(media, at, track);
+                }
+            }
+            E::OpenNested { clip } => self.open_nested(project::ClipId(clip)),
+            E::AddAdjustment { at, track } => {
+                if let Err(err) = self.add_adjustment(seconds(at), track.map(project::TrackId)) {
+                    self.errors.push(&err);
+                }
+            }
+            E::NestSelected => {
+                if let Err(err) = self.nest_selection() {
+                    self.errors.push(&err);
+                }
+            }
+            E::DropTimeline { timeline, at, track } => {
+                let result = self.place_timeline(
+                    project::SequenceId(timeline),
+                    Some(at),
+                    track.map(project::TrackId),
+                );
+                if let Err(err) = result {
+                    self.errors.push(&err);
                 }
             }
             E::AddTrack { audio } => {
@@ -1904,6 +1953,7 @@ impl Editor {
         let mut master_gain = None;
         let mut timeline_events = Vec::new();
         let mut toolbar_click = None;
+        let mut tabs_events = Vec::new();
         let shortcut = self.shortcuts.keys_for(Action::Import);
         let beside = egui::UiBuilder::new()
             .max_rect(ui_kit::drawer::beside_tab(page))
@@ -2118,14 +2168,21 @@ impl Editor {
                 tip(Action::ZoomToFit),
                 tip(Action::RoughCut),
             ];
-            toolbar_click = ui_kit::timeline::toolbar(
-                ui,
-                &self.theme,
-                &self.timeline,
-                [
-                    &tips[0], &tips[1], &tips[2], &tips[3], &tips[4], &tips[5], &tips[6], &tips[7], &tips[8],
-                ],
-            );
+            let new_tip = self.shortcuts.tip(Action::NewTimeline);
+            let shown_tabs = timelines::tabs(p);
+            ui.horizontal(|ui| {
+                toolbar_click = ui_kit::timeline::toolbar(
+                    ui,
+                    &self.theme,
+                    &self.timeline,
+                    [
+                        &tips[0], &tips[1], &tips[2], &tips[3], &tips[4], &tips[5], &tips[6], &tips[7],
+                        &tips[8],
+                    ],
+                );
+                ui.add_space(16.0);
+                tabs_events = self.tabs.show(ui, &self.theme, &shown_tabs, &new_tip);
+            });
             timeline_panel::keep_existing(&mut self.selected, seq);
             let (jobs, waveforms, pictures, ctx) = (
                 &self.jobs,
@@ -2215,6 +2272,9 @@ impl Editor {
         }
         for event in timeline_events {
             self.timeline_event(event);
+        }
+        for event in tabs_events {
+            self.tabs_event(event);
         }
         if let Some(click) = toolbar_click {
             self.run_action(match click {
@@ -2639,6 +2699,7 @@ impl eframe::App for Editor {
             }
         }
         self.imports(&ctx);
+        self.follow_open_timeline();
         if self.select_first_clip
             && self.importer.busy() == 0
             && let Some(clip) = self

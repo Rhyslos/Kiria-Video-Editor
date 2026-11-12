@@ -92,6 +92,7 @@ pub(crate) fn lay(
         keyframes: Default::default(),
         ramp: Default::default(),
         blend: Default::default(),
+        kind: Default::default(),
     };
 
     if let Some(v) = video {
@@ -765,6 +766,7 @@ mod tests {
                 keyframes: Default::default(),
                 ramp: Default::default(),
                 blend: Default::default(),
+                kind: Default::default(),
             },
         }
         .apply(&p)

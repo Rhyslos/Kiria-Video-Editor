@@ -29,6 +29,7 @@ fn tracks(count: usize, clips_each: usize, clip_len: f64) -> Vec<TimelineTrack> 
                     sound: Default::default(),
                     keyframes: Default::default(),
                     speed_curve: None,
+                    shows: Default::default(),
                 })
                 .collect(),
             muted: false,

@@ -109,6 +109,22 @@ pub struct TimelineClip {
     pub keyframes: Vec<KeyframeMark>,
     /// Its speed, when that changes along it (a ramp): drawn as a line.
     pub speed_curve: Option<SpeedCurve>,
+    /// What it plays: a file, another timeline (a double-click opens it),
+    /// or nothing of its own (an adjustment layer). Each is drawn its way.
+    pub shows: ClipShows,
+}
+
+/// What a clip plays, as the timeline draws it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ClipShows {
+    /// A part of a file.
+    #[default]
+    File,
+    /// Another timeline: a small stack of two frames on it, and a
+    /// double-click (or "Open its timeline" in its menu) opens that timeline.
+    Timeline,
+    /// An adjustment layer: light stripes across it.
+    Adjustment,
 }
 
 /// Small pictures along a clip's file: one every `every` seconds from the
@@ -322,6 +338,21 @@ pub enum TimelineEvent {
     /// "Split here" from the right-click menu: one clip (with its linked
     /// clips), or every clip there when `None`.
     SplitAt { at: f64, clip: Option<u64> },
+    /// A clip playing another timeline was double-clicked (or "Open its
+    /// timeline" chosen on it): open that timeline.
+    OpenNested { clip: u64 },
+    /// "Add an adjustment layer here" from the right-click menu, at `at`
+    /// on the video track under the pointer.
+    AddAdjustment { at: f64, track: Option<u64> },
+    /// "Nest the selected clips" from the right-click menu.
+    NestSelected,
+    /// A timeline dragged from the timeline tabs was dropped at `at`, its
+    /// picture on the video track `track` (none over the audio area).
+    DropTimeline {
+        timeline: u64,
+        at: f64,
+        track: Option<u64>,
+    },
     /// Keyframe marks of `clip` (each the start of a frame, in seconds on
     /// the timeline) were dragged, or something was picked for them in
     /// their right-click menu. One undo step for all of them.
@@ -359,6 +390,11 @@ enum RegionDrag {
 /// A file being dragged from a list (the media drawer) onto the timeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DraggedMedia(pub u64);
+
+/// A timeline being dragged from the timeline tabs onto the timeline, to
+/// be placed in it as one piece.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DraggedTimeline(pub u64);
 
 /// One end of a clip.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -552,6 +588,8 @@ pub struct TimelineView {
     region_drag: Option<(RegionDrag, (f64, f64))>,
     /// Where the right-click menu was opened: time, and the clip under it.
     menu_at: Option<MenuSpot>,
+    /// The video track the right-click menu was opened on.
+    menu_track: Option<u64>,
     /// The keyframe marks the right-click menu was opened on, with their
     /// clip (the menu is then theirs).
     mark_menu: Option<(u64, Vec<f64>)>,
@@ -590,6 +628,9 @@ pub struct TimelineView {
     list_scroll: f32,
     /// What a click or a drag in the ruler moves.
     pub click_moves: ClickMoves,
+    /// Which of the project's timelines it shows, by id: the page sets it,
+    /// and keeps it with the layout so the project opens on it again.
+    pub showing: Option<u64>,
     /// The playhead's handle is pointed at or dragged: it is drawn lit.
     playhead_lit: bool,
 }
@@ -615,6 +656,7 @@ impl Default for TimelineView {
             level_drag: None,
             region_drag: None,
             menu_at: None,
+            menu_track: None,
             mark_menu: None,
             chosen_marks: Default::default(),
             mark_drag: None,
@@ -631,6 +673,7 @@ impl Default for TimelineView {
             divider: true,
             list_scroll: 0.0,
             click_moves: ClickMoves::Playhead,
+            showing: None,
             playhead_lit: false,
         }
     }
@@ -831,6 +874,9 @@ fn clip_menu(r: &egui::Response, menu: Menu, events: &mut Vec<TimelineEvent>) {
         marks,
         eases,
         has_region,
+        video_track,
+        on_nested,
+        selection,
     } = menu;
     r.context_menu(|ui| {
         if let Some((clip, marks)) = marks {
@@ -843,6 +889,10 @@ fn clip_menu(r: &egui::Response, menu: Menu, events: &mut Vec<TimelineEvent>) {
             ui.close();
         }
         if let Some((id, start, end)) = clip {
+            if on_nested && ui.button("Open its timeline").clicked() {
+                events.push(TimelineEvent::OpenNested { clip: id });
+                ui.close();
+            }
             if ui.button("Split this clip here").clicked() {
                 events.push(TimelineEvent::SplitAt { at, clip: Some(id) });
                 ui.close();
@@ -870,6 +920,17 @@ fn clip_menu(r: &egui::Response, menu: Menu, events: &mut Vec<TimelineEvent>) {
             events.push(TimelineEvent::SplitAt { at, clip: None });
             ui.close();
         }
+        if video_track.is_some() && ui.button("Add an adjustment layer here").clicked() {
+            events.push(TimelineEvent::AddAdjustment {
+                at,
+                track: video_track,
+            });
+            ui.close();
+        }
+        if selection && ui.button("Nest the selected clips").clicked() {
+            events.push(TimelineEvent::NestSelected);
+            ui.close();
+        }
         if has_region && ui.button("Clear the region").clicked() {
             events.push(TimelineEvent::SetRegion(None));
             ui.close();
@@ -886,6 +947,12 @@ struct Menu<'a> {
     marks: Option<(u64, &'a [&'a KeyframeMark])>,
     eases: &'a [&'a str],
     has_region: bool,
+    /// The video track the menu was opened on (none over the audio area).
+    video_track: Option<u64>,
+    /// The clip it was opened on plays another timeline.
+    on_nested: bool,
+    /// Some clip is selected.
+    selection: bool,
 }
 
 /// The right-click menu of keyframe marks: go there, remove their
@@ -2377,14 +2444,29 @@ impl TimelineView {
             let r = ui.interact(time_area, id.with(("area", from_bottom)), Sense::click_and_drag());
             // While a file is dragged here from a list, the list has the
             // pointer: the area is not pointed at, but the file is over it.
-            let file_over = r.dnd_hover_payload::<DraggedMedia>().is_some();
+            let file_over = r.dnd_hover_payload::<DraggedMedia>().is_some()
+                || r.dnd_hover_payload::<DraggedTimeline>().is_some();
             let file_at = ui.input(|i| i.pointer.interact_pos()).filter(|_| file_over);
             let menu_marks = self.menu_marks(tracks, data.fps);
+            let on_nested = self.menu_at.and_then(|(_, clip)| clip).is_some_and(|(id, ..)| {
+                tracks
+                    .iter()
+                    .flat_map(|t| &t.clips)
+                    .any(|c| c.id == id && c.shows == ClipShows::Timeline)
+            });
             let menu = Menu {
                 at: self.menu_at,
                 marks: menu_marks.as_ref().map(|(clip, marks)| (*clip, marks.as_slice())),
                 eases: data.keyframe_eases,
                 has_region: data.region.is_some(),
+                video_track: self.menu_track.filter(|_| from_bottom),
+                on_nested,
+                selection: data
+                    .video
+                    .iter()
+                    .chain(data.audio)
+                    .flat_map(|t| &t.clips)
+                    .any(|c| c.selected),
             };
             let Some(p) = r.interact_pointer_pos().or(r.hover_pos()).or(file_at) else {
                 // The pointer is elsewhere, perhaps on the menu itself: an
@@ -2407,6 +2489,17 @@ impl TimelineView {
             // A file dragged over the timeline: show where it would land.
             if file_over {
                 self.file_over = Some((t.max(0.0), drop_row));
+            }
+            // Taking a payload of the other type would lose it: ask for
+            // the one that is there.
+            let timeline_over = r.dnd_hover_payload::<DraggedTimeline>().is_some();
+            if timeline_over && let Some(dragged) = r.dnd_release_payload::<DraggedTimeline>() {
+                events.push(TimelineEvent::DropTimeline {
+                    timeline: dragged.0,
+                    at: t.max(0.0),
+                    track: drop_row.and_then(|row| tracks.get(row)).map(|t| t.id),
+                });
+                continue;
             }
             if let Some(dragged) = r.dnd_release_payload::<DraggedMedia>() {
                 let insert = ui.input(|i| i.modifiers.command);
@@ -2643,6 +2736,12 @@ impl TimelineView {
                 }
             }
             if r.double_clicked()
+                && on_line.is_none()
+                && let Some(c) = hit.filter(|c| c.shows == ClipShows::Timeline)
+            {
+                events.push(TimelineEvent::OpenNested { clip: c.id });
+            }
+            if r.double_clicked()
                 && let Some((c, _, db)) = on_line
                 && db != 0.0
             {
@@ -2700,6 +2799,7 @@ impl TimelineView {
             }
             if r.secondary_clicked() {
                 self.menu_at = Some((t, hit.map(|c| (c.id, c.start, c.start + c.duration))));
+                self.menu_track = hit_track.map(|track| track.id).filter(|_| from_bottom);
                 // On a mark, the menu is the chosen marks' when it is one of
                 // them, and that mark's alone otherwise.
                 self.mark_menu = on_mark.map(|(c, mark)| {
@@ -2715,6 +2815,7 @@ impl TimelineView {
             let menu = Menu {
                 marks: menu_marks.as_ref().map(|(clip, marks)| (*clip, marks.as_slice())),
                 at: self.menu_at,
+                video_track: self.menu_track.filter(|_| from_bottom),
                 ..menu
             };
             clip_menu(&r, menu, events);
@@ -3204,6 +3305,7 @@ fn draw_clip_marks(p: &egui::Painter, theme: &Theme, r: Rect, clip: &TimelineCli
             egui::StrokeKind::Inside,
         );
     }
+    draw_what_it_shows(p, theme, r, clip.shows);
     if clip.selected {
         p.rect_stroke(r, 4.0, Stroke::new(2.0, theme.accent), egui::StrokeKind::Inside);
     }
@@ -3225,6 +3327,39 @@ fn draw_clip_marks(p: &egui::Painter, theme: &Theme, r: Rect, clip: &TimelineCli
             inside.rect_filled(pill, 3.0, Color32::from_black_alpha(150));
         }
         inside.galley(pos, galley, theme.text);
+    }
+}
+
+/// The mark of a clip that plays no file: light stripes across an
+/// adjustment layer, and a small stack of two frames in the top right
+/// corner of a nested timeline.
+fn draw_what_it_shows(p: &egui::Painter, theme: &Theme, r: Rect, shows: ClipShows) {
+    match shows {
+        ClipShows::File => {}
+        ClipShows::Adjustment => {
+            let inside = p.with_clip_rect(r.shrink(1.0).intersect(p.clip_rect()));
+            let stroke = Stroke::new(1.0, theme.text_secondary.gamma_multiply(0.25));
+            let step = 10.0;
+            let mut x = r.left() - r.height();
+            while x < r.right() {
+                inside.line_segment([pos2(x, r.bottom()), pos2(x + r.height(), r.top())], stroke);
+                x += step;
+            }
+        }
+        ClipShows::Timeline => {
+            // In the top right corner of the part in view.
+            let seen = r.intersect(p.clip_rect());
+            if seen.width() < 40.0 || seen.height() < 14.0 {
+                return;
+            }
+            let stroke = Stroke::new(1.2, theme.text_secondary);
+            let corner = pos2(seen.right() - 18.0, seen.top() + 6.0);
+            let back = Rect::from_min_size(corner + vec2(3.0, 0.0), vec2(10.0, 7.0));
+            let front = Rect::from_min_size(corner + vec2(0.0, 3.0), vec2(10.0, 7.0));
+            p.rect_stroke(back, 1.0, stroke, egui::StrokeKind::Inside);
+            p.rect_filled(front, 1.0, theme.raised);
+            p.rect_stroke(front, 1.0, stroke, egui::StrokeKind::Inside);
+        }
     }
 }
 
@@ -3392,6 +3527,7 @@ mod tests {
             sound: ClipSound::default(),
             keyframes: Vec::new(),
             speed_curve: None,
+            shows: ClipShows::File,
         }
     }
 
@@ -4740,6 +4876,56 @@ mod tests {
         rig.move_to(at);
         rig.move_to(at);
         rig.button(at, primary, false)
+    }
+
+    #[test]
+    fn a_dropped_timeline_lands_where_a_file_would() {
+        let mut rig = Rig::new(2, 2);
+        let primary = egui::PointerButton::Primary;
+        let (tabs, at) = (pos2(60.0, 395.0), pos2(500.0, 130.0));
+        rig.move_to(tabs);
+        rig.button(tabs, primary, true);
+        egui::DragAndDrop::set_payload(&rig.ctx, DraggedTimeline(3));
+        rig.move_to(at);
+        assert_eq!(rig.view.file_over.map(|(t, _)| t), Some(6.0), "marked while over");
+        rig.move_to(at);
+        assert_eq!(
+            rig.button(at, primary, false),
+            vec![TimelineEvent::DropTimeline {
+                timeline: 3,
+                at: 6.0,
+                track: Some(1),
+            }]
+        );
+        // A file still drops as a file afterwards.
+        assert!(matches!(
+            drop_file(&mut rig, at).as_slice(),
+            [TimelineEvent::DropMedia { media: 7, .. }]
+        ));
+    }
+
+    #[test]
+    fn a_double_click_on_a_nested_timelines_clip_opens_it() {
+        let mut rig = Rig::new(2, 2);
+        // The clip on V1 runs from 1 s to 5 s: x = 300 is in it.
+        let on_clip = pos2(300.0, 190.0);
+        let double = |rig: &mut Rig| {
+            let primary = egui::PointerButton::Primary;
+            rig.move_to(on_clip);
+            let mut events = Vec::new();
+            for _ in 0..2 {
+                events.extend(rig.button(on_clip, primary, true));
+                events.extend(rig.button(on_clip, primary, false));
+            }
+            events
+        };
+        let opened = |events: &[TimelineEvent]| events.contains(&TimelineEvent::OpenNested { clip: 0 });
+        assert!(!opened(&double(&mut rig)), "a file's clip opens nothing");
+        // A fresh timeline, so these clicks are not taken as a third and fourth.
+        let mut rig = Rig::new(2, 2);
+        rig.video[0].clips[0].shows = ClipShows::Timeline;
+        let events = double(&mut rig);
+        assert!(opened(&events), "{events:?}");
     }
 
     #[test]

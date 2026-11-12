@@ -14,8 +14,9 @@ struct Layer {
     from_origin_across: vec4<f32>,
     // Where going down the rectangle leads in the stored picture (xy); how
     // the pixels are stored (z): 0 brightness plus a two-channel colour
-    // plane, 1 brightness plus two colour planes, 2 RGBA; 1 when the frame
-    // is in linear light (w).
+    // plane, 1 brightness plus two colour planes, 2 RGBA, 3 a picture this
+    // compositor made (working values, premultiplied); 1 when the frame is
+    // in linear light (w).
     from_down_kind_linear: vec4<f32>,
     // Where the rectangle's top left corner goes in the frame (xy) and where
     // its top edge leads (zw), in clip space.
@@ -77,10 +78,42 @@ fn picture(a: vec4<f32>, b: vec4<f32>, c: vec4<f32>) -> vec4<f32> {
     return vec4<f32>(clamp(a.rgb, vec3<f32>(0.0), vec3<f32>(1.0)), a.a);
 }
 
+// A picture this compositor made, drawn again (a nested timeline's, or what
+// is below an adjustment layer): its working values are unpremultiplied,
+// coloured in linear light, and premultiplied by its alpha and the layer's
+// opacity again.
+fn made(s: vec4<f32>) -> vec4<f32> {
+    let linear = it.from_down_kind_linear.w > 0.5;
+    let coloured = it.to_down_opacity.w > 0.5;
+    let alpha = s.a;
+    var rgb = s.rgb / max(alpha, 0.00001);
+    if !linear && coloured {
+        rgb = pow(clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0)), vec3<f32>(2.4));
+    }
+    if coloured {
+        rgb = quick_colour(rgb);
+    }
+    if !linear && coloured {
+        rgb = pow(min(rgb, vec3<f32>(1.0)), vec3<f32>(1.0 / 2.4));
+    }
+    let a = alpha * it.to_down_opacity.z;
+    return vec4<f32>(rgb * a, a);
+}
+
+// Quick colour on linear light.
+fn quick_colour(light: vec3<f32>) -> vec3<f32> {
+    var rgb = light * it.gains_saturation.rgb;
+    // Contrast turns around middle grey, which stays where it is.
+    rgb = 0.18 * pow(max(rgb, vec3<f32>(0.0)) / 0.18, vec3<f32>(it.weights_contrast.a));
+    let grey = dot(rgb, it.weights_contrast.rgb);
+    return max(mix(vec3<f32>(grey), rgb, it.gains_saturation.a), vec3<f32>(0.0));
+}
+
 @fragment
 fn layer(in: Corner) -> @location(0) vec4<f32> {
+    let first_sample = textureSample(first, smooth_sampler, in.at);
     var shown = picture(
-        textureSample(first, smooth_sampler, in.at),
+        first_sample,
         textureSample(second, smooth_sampler, in.at),
         textureSample(third, smooth_sampler, in.at),
     );
@@ -91,6 +124,9 @@ fn layer(in: Corner) -> @location(0) vec4<f32> {
         textureSample(next_second, smooth_sampler, in.at),
         textureSample(next_third, smooth_sampler, in.at),
     );
+    if it.from_down_kind_linear.z > 2.5 {
+        return made(first_sample);
+    }
     var rgb = shown.rgb;
     var alpha = shown.a;
     let linear = it.from_down_kind_linear.w > 0.5;
@@ -106,11 +142,7 @@ fn layer(in: Corner) -> @location(0) vec4<f32> {
         alpha = mix(alpha, next.a, it.blend.x);
     }
     if coloured {
-        rgb = rgb * it.gains_saturation.rgb;
-        // Contrast turns around middle grey, which stays where it is.
-        rgb = 0.18 * pow(rgb / 0.18, vec3<f32>(it.weights_contrast.a));
-        let grey = dot(rgb, it.weights_contrast.rgb);
-        rgb = max(mix(vec3<f32>(grey), rgb, it.gains_saturation.a), vec3<f32>(0.0));
+        rgb = quick_colour(rgb);
     }
     if !linear && (coloured || blending) {
         rgb = pow(min(rgb, vec3<f32>(1.0)), vec3<f32>(1.0 / 2.4));

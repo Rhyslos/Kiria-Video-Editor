@@ -1,6 +1,6 @@
 //! What is on the timeline at a moment.
 
-use project::{Clip, MediaRef, Project, Sequence, Time};
+use project::{Clip, ClipKind, MediaRef, Project, Sequence, Time};
 
 /// The picture showing at a time: which file, which stream, and where in it.
 #[derive(Debug, Clone, PartialEq)]
@@ -11,22 +11,41 @@ pub struct Showing<'a> {
     pub source_time: Time,
 }
 
+/// How many timelines deep nested timelines are followed.
+pub const DEEPEST: usize = 16;
+
 /// The top visible video clip at `at`: higher tracks cover lower ones;
-/// hidden tracks are skipped. `None` in a gap.
+/// hidden tracks are skipped. A nested timeline stands for the top clip it
+/// shows then; an adjustment layer shows nothing of its own. `None` in a gap.
 pub fn video_at<'a>(project: &'a Project, sequence: &'a Sequence, at: Time) -> Option<Showing<'a>> {
+    video_within(project, sequence, at, 0)
+}
+
+fn video_within<'a>(
+    project: &'a Project,
+    sequence: &'a Sequence,
+    at: Time,
+    depth: usize,
+) -> Option<Showing<'a>> {
+    if depth > DEEPEST {
+        return None;
+    }
     sequence
         .video_tracks
         .iter()
         .rev()
         .filter(|t| !t.hidden)
-        .find_map(|track| track.clips.iter().find(|c| c.start <= at && at < c.end()))
-        .and_then(|clip| {
-            let media = project.media.get(&clip.media)?;
-            Some(Showing {
-                media,
+        .filter_map(|track| track.clips.iter().find(|c| c.start <= at && at < c.end()))
+        .find_map(|clip| match clip.kind {
+            ClipKind::File => Some(Showing {
+                media: project.media.get(&clip.media)?,
                 clip,
                 source_time: clip.source_at(at),
-            })
+            }),
+            ClipKind::Timeline(id) => {
+                video_within(project, project.sequence(id)?, clip.source_at(at), depth + 1)
+            }
+            ClipKind::Adjustment => None,
         })
 }
 

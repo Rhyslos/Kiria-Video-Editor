@@ -20,6 +20,7 @@ pub mod splitter;
 pub mod theme;
 pub mod time_text;
 pub mod timeline;
+pub mod timeline_tabs;
 pub mod top_bar;
 pub mod transport;
 pub mod video_picture;
@@ -32,9 +33,9 @@ pub use layout::Page;
 pub use shortcuts::{Action, Context, Shortcut, ShortcutTable};
 pub use theme::{Theme, ThemeName, status};
 pub use timeline::{
-    ClickMoves, ClipEdge, ClipPictures, ClipSound, ClipWaveform, DraggedMedia, KeyframeMark, SourceMap,
-    SpeedCurve, TimelineClip, TimelineData, TimelineEvent, TimelineMarker, TimelineTrack, TimelineView, Tool,
-    ViewStep,
+    ClickMoves, ClipEdge, ClipPictures, ClipShows, ClipSound, ClipWaveform, DraggedMedia, DraggedTimeline,
+    KeyframeMark, SourceMap, SpeedCurve, TimelineClip, TimelineData, TimelineEvent, TimelineMarker,
+    TimelineTrack, TimelineView, Tool, ViewStep,
 };
 pub use top_bar::{TitleBar, TopBar, TopBarClicks, logo_mark, with_keys};
 pub use transport::TransportClick;

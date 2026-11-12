@@ -194,6 +194,12 @@ impl Document {
         self.record(JournalEntry::Do(Box::new(command)))
     }
 
+    /// Opens another timeline of the project: not an edit, so it works on a
+    /// read-only project too, and nothing is written (see [`History::open`]).
+    pub fn open_sequence(&mut self, sequence: crate::ids::SequenceId) -> bool {
+        self.history.open(sequence)
+    }
+
     /// Undoes the last change. Returns false when there was nothing to undo.
     pub fn undo(&mut self) -> diag::Result<bool> {
         self.refuse_if_read_only()?;

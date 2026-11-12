@@ -36,9 +36,12 @@ impl History {
     }
 
     /// Steps back one change. Returns false when there is nothing to undo.
+    /// The timeline that is open stays open when it was there before the
+    /// change (see [`History::open`]).
     pub fn undo(&mut self) -> bool {
         match self.undo.pop() {
             Some(previous) => {
+                let previous = self.keeping_open(previous);
                 self.redo.push(std::mem::replace(&mut self.current, previous));
                 true
             }
@@ -50,11 +53,34 @@ impl History {
     pub fn redo(&mut self) -> bool {
         match self.redo.pop() {
             Some(next) => {
+                let next = self.keeping_open(next);
                 self.undo.push(std::mem::replace(&mut self.current, next));
                 true
             }
             None => false,
         }
+    }
+
+    /// Opens another timeline of the project. Which timeline is open is not
+    /// an edit: it makes no undo step and is not written to the journal
+    /// (the editor keeps it with the timeline's layout), and undo and redo
+    /// leave it open while it exists in the state they go back or on to.
+    /// Returns false, changing nothing, when the project has no such timeline.
+    pub fn open(&mut self, sequence: crate::ids::SequenceId) -> bool {
+        if self.current.sequence(sequence).is_none() {
+            return false;
+        }
+        self.current.active_sequence = sequence;
+        true
+    }
+
+    /// `snapshot` with the timeline open now still open, when it has it.
+    fn keeping_open(&self, mut snapshot: Project) -> Project {
+        let open = self.current.active_sequence;
+        if snapshot.sequence(open).is_some() {
+            snapshot.active_sequence = open;
+        }
+        snapshot
     }
 
     pub fn can_undo(&self) -> bool {

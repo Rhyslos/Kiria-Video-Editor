@@ -56,6 +56,20 @@ pub enum Pixels<'a> {
     },
     /// Red, green, blue and alpha in display values.
     Rgba(&'a wgpu::TextureView),
+    /// A picture this compositor put together (a [`Frame`]'s view): its
+    /// working values, premultiplied by its alpha. How a nested timeline's
+    /// picture, and what is below an adjustment layer, are drawn again.
+    Made(&'a wgpu::TextureView),
+}
+
+/// What a frame holds before its layers are drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Background {
+    /// Black: the timeline's own picture.
+    Black,
+    /// Nothing: a picture to be drawn over another (a nested timeline's),
+    /// see-through where no layer covers it.
+    Clear,
 }
 
 /// One layer to draw: its pixels and where they go.
@@ -167,6 +181,21 @@ impl Compositor {
         frame: &mut Frame,
         layers: &[Drawn<'_>],
     ) {
+        self.draw_over(device, queue, encoder, frame, layers, Background::Black);
+    }
+
+    /// Like [`Compositor::draw`], over `background`. A frame is drawn into
+    /// once per submission: its layers' numbers are written when the queue
+    /// is submitted, so a second draw into it before then would change the first.
+    pub fn draw_over(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        frame: &mut Frame,
+        layers: &[Drawn<'_>],
+        background: Background,
+    ) {
         let size = (frame.texture.width(), frame.texture.height());
         while frame.uniforms.len() < layers.len() {
             frame.uniforms.push(uniform_buffer(device, LAYER_BYTES));
@@ -210,7 +239,10 @@ impl Compositor {
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    load: wgpu::LoadOp::Clear(match background {
+                        Background::Black => wgpu::Color::BLACK,
+                        Background::Clear => wgpu::Color::TRANSPARENT,
+                    }),
                     store: wgpu::StoreOp::Store,
                 },
             })],
@@ -349,7 +381,7 @@ fn views(pixels: Pixels<'_>) -> (&wgpu::TextureView, &wgpu::TextureView, &wgpu::
     match pixels {
         Pixels::TwoPlanes { luma, chroma } => (luma, chroma, chroma),
         Pixels::ThreePlanes { luma, u, v } => (luma, u, v),
-        Pixels::Rgba(rgba) => (rgba, rgba, rgba),
+        Pixels::Rgba(rgba) | Pixels::Made(rgba) => (rgba, rgba, rgba),
     }
 }
 
@@ -382,6 +414,7 @@ fn layer_bytes(layer: &Drawn<'_>, frame: (u32, u32), working: Working) -> Vec<u8
         Pixels::TwoPlanes { .. } => 0.0,
         Pixels::ThreePlanes { .. } => 1.0,
         Pixels::Rgba(_) => 2.0,
+        Pixels::Made(_) => 3.0,
     };
     let rows = [
         layer.to_rgb[0],

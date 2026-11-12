@@ -1,6 +1,6 @@
 //! How the timeline of a project was laid out when it was last open: each
-//! track's height, the divider between video and audio, and which audio
-//! tracks show their level lines.
+//! track's height, the divider between video and audio, which audio
+//! tracks show their level lines, and which of its timelines was open.
 //!
 //! This is view state, not an edit. It lives in its own small file beside
 //! the project (`<file>.view`), never in the project file, so making a track
@@ -35,6 +35,10 @@ pub struct ProjectView {
     /// Audio tracks whose clips show their level line (none when the file
     /// doesn't say).
     pub level_lines: Vec<u64>,
+    /// The timeline that was open, by id (the project's own when the file
+    /// doesn't say, or that timeline is gone). Which timeline is open is
+    /// not an edit, so it is kept here and not in the project.
+    pub open_timeline: Option<u64>,
 }
 
 impl Default for ProjectView {
@@ -44,6 +48,7 @@ impl Default for ProjectView {
             video_share: None,
             video_fits_tracks: true,
             level_lines: Vec::new(),
+            open_timeline: None,
         }
     }
 }
@@ -56,6 +61,7 @@ impl ProjectView {
             video_share: Some(timeline.split),
             video_fits_tracks: timeline.fit_video,
             level_lines: timeline.level_lines(),
+            open_timeline: timeline.showing,
         }
     }
 
@@ -67,6 +73,7 @@ impl ProjectView {
         }
         timeline.fit_video = self.video_fits_tracks;
         timeline.set_level_lines(self.level_lines.iter().copied());
+        timeline.showing = self.open_timeline;
     }
 
     /// Reads the view kept for a project; the usual layout when there is
@@ -93,10 +100,10 @@ impl ProjectView {
 }
 
 /// What of the view is kept, cheaply compared every frame: the heights'
-/// revision, the divider, whether the video area fits its tracks, and the
-/// tracks with level lines.
+/// revision, the divider, whether the video area fits its tracks, the
+/// tracks with level lines, and the timeline shown.
 #[derive(Debug, Clone, PartialEq)]
-struct Looks(u64, f32, bool, Vec<u64>);
+struct Looks(u64, f32, bool, Vec<u64>, Option<u64>);
 
 impl Looks {
     fn of(timeline: &TimelineView) -> Looks {
@@ -105,6 +112,7 @@ impl Looks {
             timeline.split,
             timeline.fit_video,
             timeline.level_lines(),
+            timeline.showing,
         )
     }
 }
@@ -203,6 +211,7 @@ mod tests {
         timeline.split = 0.3;
         timeline.fit_video = false;
         timeline.set_level_line(12, true);
+        timeline.showing = Some(42);
         timeline
     }
 
@@ -227,6 +236,7 @@ mod tests {
             reopened.level_line(12) && !reopened.level_line(7),
             "level lines where they were"
         );
+        assert_eq!(reopened.showing, Some(42), "the timeline that was open");
         assert_eq!(keeper.kept, ProjectView::of(&reopened));
     }
 

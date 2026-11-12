@@ -8,7 +8,7 @@ use project::{ClipId, LabelColor, Project, Sequence};
 use std::collections::HashMap;
 use std::time::Instant;
 use ui_kit::timeline::{CacheRange, CacheState, LoadKind, LoadState, Loading, cache_bar};
-use ui_kit::{TimelineClip, TimelineMarker, TimelineTrack};
+use ui_kit::{ClipShows, TimelineClip, TimelineMarker, TimelineTrack};
 
 /// What the widget needs for one frame.
 pub struct Drawn {
@@ -183,8 +183,13 @@ pub fn drawn(
             .clips
             .iter()
             .map(|c| {
-                let media = project.media.get(&c.media);
-                let is_missing = media.is_none_or(|m| missing.contains(&m.id));
+                let media = project.media.get(&c.media).filter(|_| c.is_file());
+                let nested = c.nested().map(|id| project.sequence(id));
+                let is_missing = match c.kind {
+                    project::ClipKind::File => media.is_none_or(|m| missing.contains(&m.id)),
+                    project::ClipKind::Timeline(_) => nested.is_some_and(|s| s.is_none()),
+                    project::ClipKind::Adjustment => false,
+                };
                 let (source_in, speed) = (c.source_in.as_secs_f64(), c.speed.as_f64());
                 let length = c.duration.as_secs_f64();
                 // What there is to draw inside the clip, how much of its
@@ -219,9 +224,13 @@ pub fn drawn(
                     project::TrackKind::Video => 0.0,
                 };
                 cache.extend(unready(c.start.as_secs_f64(), length, shown, state));
-                let name = media
-                    .and_then(|m| m.path.file_name())
-                    .map_or_else(|| "missing".into(), |n| n.to_string_lossy().into_owned());
+                let name = match (c.kind, nested.flatten()) {
+                    (project::ClipKind::Adjustment, _) => project::timelines::ADJUSTMENT_NAME.to_owned(),
+                    (project::ClipKind::Timeline(_), Some(seq)) => seq.name.clone(),
+                    _ => media
+                        .and_then(|m| m.path.file_name())
+                        .map_or_else(|| "missing".into(), |n| n.to_string_lossy().into_owned()),
+                };
                 let name = if c.ramp.is_empty() && c.speed == project::Speed::NORMAL {
                     name
                 } else {
@@ -232,7 +241,17 @@ pub fn drawn(
                     id: c.id.0,
                     start: c.start.as_secs_f64(),
                     duration: length,
-                    info: media.map_or_else(String::new, import::summary),
+                    info: match (c.kind, nested.flatten()) {
+                        (project::ClipKind::Adjustment, _) => {
+                            "An adjustment layer: its colour and opacity change everything below it".into()
+                        }
+                        (project::ClipKind::Timeline(_), Some(seq)) => format!(
+                            "The timeline {} · {} · double-click to open it",
+                            seq.name,
+                            import::settings_text(&seq.settings)
+                        ),
+                        _ => media.map_or_else(String::new, import::summary),
+                    },
                     name,
                     selected: selected.contains(&c.id) || c.link.is_some_and(|l| links.contains(&l)),
                     missing: is_missing,
@@ -257,6 +276,11 @@ pub fn drawn(
                         _ => Vec::new(),
                     },
                     speed_curve,
+                    shows: match c.kind {
+                        project::ClipKind::File => ClipShows::File,
+                        project::ClipKind::Timeline(_) => ClipShows::Timeline,
+                        project::ClipKind::Adjustment => ClipShows::Adjustment,
+                    },
                 }
             })
             .collect();
@@ -770,6 +794,7 @@ mod tests {
             sound: Default::default(),
             keyframes: Default::default(),
             speed_curve: None,
+            shows: Default::default(),
         }
     }
 

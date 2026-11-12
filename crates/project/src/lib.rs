@@ -34,6 +34,7 @@ pub mod side_files;
 pub mod sound;
 pub mod templates;
 pub mod time;
+pub mod timelines;
 pub mod tracks;
 pub mod versions;
 
@@ -45,8 +46,8 @@ pub use keyframes::{Ease, Keyframe, Keyframes, LookField};
 pub use look::Look;
 pub use model::FrameBlend;
 pub use model::{
-    AudioStream, Clip, Fingerprint, LabelColor, MediaInfo, MediaKind, MediaRef, Project, Region, Sequence,
-    SequenceSettings, TimelineLabel, Track, TrackKind, VideoStream,
+    AudioStream, Clip, ClipKind, Fingerprint, LabelColor, MediaInfo, MediaKind, MediaRef, Project, Region,
+    Sequence, SequenceSettings, TimelineLabel, Track, TrackKind, VideoStream,
 };
 pub use ramp::{Ramp, SpeedKey};
 pub use side_files::SideFile;

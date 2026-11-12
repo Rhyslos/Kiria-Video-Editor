@@ -9,7 +9,7 @@ use crate::command::{
     Edge, insert_clip, missing, sequence_mut, sequence_ref, split, tracks_mut, with_linked,
 };
 use crate::ids::{ClipId, SequenceId, TrackId};
-use crate::model::{Clip, MediaKind, Project, Region, Sequence};
+use crate::model::{Clip, Project, Region, Sequence};
 use crate::ramp::Ramp;
 use crate::time::Rate;
 use crate::time::{Speed, Time};
@@ -97,12 +97,7 @@ pub(crate) fn set_ramp(p: &mut Project, sequence: SequenceId, clip: ClipId, ramp
     let rate = seq.settings.frame_rate;
     let reference = find(seq, clip)?;
     let group = with_linked(seq, clip)?;
-    let file_end = |c: &Clip| {
-        p.media
-            .get(&c.media)
-            .filter(|m| m.kind != MediaKind::Image && m.duration > Time::ZERO)
-            .map(|m| m.duration)
-    };
+    let file_end = |c: &Clip| p.source_length(c);
     let new_end = ramped(&reference, ramp.clone(), rate, file_end(&reference)).end();
     let shift = new_end - reference.end();
     let after = reference.end();
@@ -435,13 +430,11 @@ fn fits(p: &Project, c: &Clip) -> diag::Result<()> {
     if c.start.is_negative() {
         return refuse("A clip would start before the timeline.");
     }
-    if c.source_in.is_negative() {
+    if c.starts_before_its_source() {
         return refuse("A clip's file has nothing earlier to show.");
     }
-    if let Some(media) = p.media.get(&c.media)
-        && media.kind != MediaKind::Image
-        && media.duration > Time::ZERO
-        && c.source_in + c.source_len() > media.duration
+    if let Some(length) = p.source_length(c)
+        && c.source_in + c.source_len() > length
     {
         return refuse("A clip's file ends before that.");
     }

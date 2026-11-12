@@ -7,7 +7,7 @@
 
 use media::AudioDecoder;
 use media::audio::CHANNELS;
-use project::{Clip, ClipId, MediaId, Project, Sequence, Sound};
+use project::{Clip, ClipId, MediaId, MediaRef, Project, Sequence, SequenceId, Sound};
 use std::f64::consts::FRAC_PI_2;
 
 /// How far a decoder may be from where it is needed before it seeks (seconds).
@@ -28,6 +28,12 @@ pub struct Mixer {
     carries: Vec<Carry>,
     /// The file's samples a ramped clip reads, kept between calls.
     ramp_read: Vec<f32>,
+    /// Mixers of nested timelines by timeline and the rate they mix at (a
+    /// nested clip at another speed mixes its timeline faster or slower,
+    /// tape-style), most recent first.
+    nested: Vec<((SequenceId, u32), Mixer)>,
+    /// How many timelines deep this mixer is: 0 for the timeline played.
+    depth: usize,
 }
 
 /// Where a ramped clip's reading stopped: its decoder's next sample (in
@@ -56,6 +62,8 @@ impl Mixer {
             failed: Vec::new(),
             carries: Vec::new(),
             ramp_read: Vec::new(),
+            nested: Vec::new(),
+            depth: 0,
         }
     }
 
@@ -85,9 +93,6 @@ impl Mixer {
                 if a >= b {
                     continue;
                 }
-                let Some(media) = project.media.get(&clip.media) else {
-                    continue;
-                };
                 let first = ((a - start) * rate).round() as usize;
                 let count = (((b - start) * rate).round() as usize)
                     .min(frames)
@@ -98,25 +103,12 @@ impl Mixer {
                 let mut scratch = std::mem::take(&mut self.scratch);
                 scratch.resize(count * CHANNELS, 0.0);
                 let from = start + first as f64 / rate;
-                let got = if clip.ramp.is_empty() {
-                    // At half speed the file is read at twice the rate, so
-                    // each second of the timeline plays half a second of it
-                    // (lower, like tape).
-                    let speed = clip.speed.as_f64();
-                    let source = clip.source_in.as_secs_f64() + (a - cs) * speed;
-                    let read_rate = ((rate / speed).round() as u32).max(1);
-                    let key = (media.id, clip.stream, read_rate);
-                    match self.decoder(key, &media.path) {
-                        Some(decoder) => {
-                            if (decoder.position() - source).abs() > SEEK_SLACK {
-                                decoder.seek(source);
-                            }
-                            decoder.read(&mut scratch)
-                        }
-                        None => 0,
-                    }
+                let got = if let Some(inner) = clip.nested() {
+                    self.nested_sound(project, clip, inner, a, b, &mut scratch)
+                } else if let Some(media) = project.media.get(&clip.media) {
+                    self.file_sound(clip, media, a, from, &mut scratch)
                 } else {
-                    self.ramped(clip, &media.path, from, &mut scratch)
+                    0
                 };
                 if let Some(shape) = Shape::of(clip) {
                     // Seconds into the clip of the first sample read.
@@ -137,6 +129,77 @@ impl Mixer {
                 *s *= master;
             }
         }
+    }
+
+    /// Fills `out` with a file clip's sound from `a` seconds on the
+    /// timeline (`from` is the same moment brought to a whole sample).
+    /// Returns the sample frames written.
+    fn file_sound(&mut self, clip: &Clip, media: &MediaRef, a: f64, from: f64, out: &mut [f32]) -> usize {
+        let rate = f64::from(self.rate);
+        let cs = clip.start.as_secs_f64();
+        if clip.ramp.is_empty() {
+            // At half speed the file is read at twice the rate, so
+            // each second of the timeline plays half a second of it
+            // (lower, like tape).
+            let speed = clip.speed.as_f64();
+            let source = clip.source_in.as_secs_f64() + (a - cs) * speed;
+            let read_rate = ((rate / speed).round() as u32).max(1);
+            let key = (media.id, clip.stream, read_rate);
+            match self.decoder(key, &media.path) {
+                Some(decoder) => {
+                    if (decoder.position() - source).abs() > SEEK_SLACK {
+                        decoder.seek(source);
+                    }
+                    decoder.read(out)
+                }
+                None => 0,
+            }
+        } else {
+            self.ramped(clip, &media.path, from, out)
+        }
+    }
+
+    /// Fills `out` with a nested timeline's sound for its clip from `a` to
+    /// `b` seconds on this timeline: that timeline mixed from where the clip
+    /// is in it, by a mixer of its own, at a rate that makes it play at the
+    /// clip's speed there (tape-style, as a file's sound does; a ramp is
+    /// followed at the speed it has over each stretch mixed). Returns the
+    /// sample frames written.
+    fn nested_sound(
+        &mut self,
+        project: &Project,
+        clip: &Clip,
+        id: SequenceId,
+        a: f64,
+        b: f64,
+        out: &mut [f32],
+    ) -> usize {
+        let Some(inner) = project.sequence(id) else {
+            return 0;
+        };
+        if self.depth >= crate::timeline::DEEPEST {
+            return 0;
+        }
+        let source = clip.source_at_f64(a);
+        let speed = if clip.ramp.is_empty() || b <= a {
+            clip.speed.as_f64()
+        } else {
+            (clip.source_at_f64(b) - source) / (b - a)
+        };
+        let read_rate = ((f64::from(self.rate) / speed.max(0.0001)).round() as u32).clamp(1, 1_000_000);
+        let key = (id, read_rate);
+        let mut mixer = match self.nested.iter().position(|(k, _)| *k == key) {
+            Some(i) => self.nested.remove(i).1,
+            None => {
+                let mut mixer = Mixer::new(read_rate);
+                mixer.depth = self.depth + 1;
+                mixer
+            }
+        };
+        mixer.mix(project, inner, source, out);
+        self.nested.insert(0, (key, mixer));
+        self.nested.truncate(OPEN_DECODERS);
+        out.len() / CHANNELS
     }
 
     /// Fills `out` with a ramped clip's sound from `from` seconds on the
@@ -668,5 +731,48 @@ mod tests {
         );
         assert!(before > 20.0, "a tone: {before}");
         assert!((before / after - 2.0).abs() < 0.1, "{before} then {after}");
+    }
+
+    #[test]
+    fn a_nested_timeline_sounds_as_its_clips_did() {
+        let p = project();
+        let seq = p.active_sequence;
+        let picture = p.active().unwrap().video_tracks[0].clips[0].id;
+        let mut direct = vec![0.0f32; 4_800 * CHANNELS];
+        Mixer::new(48_000).mix(&p, p.active().unwrap(), 0.5, &mut direct);
+        let nested = Command::NestClips {
+            sequence: seq,
+            clips: vec![picture],
+            name: "Inner".into(),
+        }
+        .apply(&p)
+        .unwrap();
+        let outer = nested.active().unwrap();
+        assert!(
+            outer
+                .audio_tracks
+                .iter()
+                .all(|t| t.clips.iter().all(|c| c.nested().is_some()))
+        );
+        let mut heard = vec![0.0f32; 4_800 * CHANNELS];
+        Mixer::new(48_000).mix(&nested, outer, 0.5, &mut heard);
+        assert!(loudness(&direct) > 0.001);
+        let most = direct
+            .iter()
+            .zip(&heard)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(most < 1e-4, "the same samples, differing by up to {most}");
+        // At half speed the nested timeline plays half as far in the same time.
+        let slow = Command::SetSpeed {
+            sequence: seq,
+            clip: outer.video_tracks[0].clips[0].id,
+            speed: project::Speed::new(1, 2).unwrap(),
+        }
+        .apply(&nested)
+        .unwrap();
+        let mut slowed = vec![0.0f32; 4_800 * CHANNELS];
+        Mixer::new(48_000).mix(&slow, slow.active().unwrap(), 1.0, &mut slowed);
+        assert!(loudness(&slowed) > 0.001, "still heard");
     }
 }

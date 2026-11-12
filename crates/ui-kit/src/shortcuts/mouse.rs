@@ -77,6 +77,26 @@ pub const MOUSE: &[MouseAction] = &[
     ),
     on(
         Context::Timeline,
+        "Click a timeline tab above the timeline",
+        "Open that timeline; double-click its tab to rename it, right-click for duplicate, settings, place in the open timeline and remove",
+    ),
+    on(
+        Context::Timeline,
+        "Drag a timeline tab onto the timeline",
+        "Place that timeline there as one clip, a nested timeline, its picture on the track under the pointer",
+    ),
+    on(
+        Context::Timeline,
+        "Double-click a nested timeline's clip",
+        "Open the timeline it plays",
+    ),
+    on(
+        Context::Timeline,
+        "Right-click a video track",
+        "Add an adjustment layer there, or nest the selected clips, among the rest of the menu",
+    ),
+    on(
+        Context::Timeline,
         "Wheel",
         "Scroll the tracks under the pointer (all of them with the divider off); pan over the ruler and the scroll bar",
     ),

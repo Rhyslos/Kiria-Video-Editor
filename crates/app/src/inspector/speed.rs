@@ -362,6 +362,7 @@ mod tests {
             keyframes: Default::default(),
             ramp: Default::default(),
             blend: Default::default(),
+            kind: Default::default(),
         }
     }
 
