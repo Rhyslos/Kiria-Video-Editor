@@ -207,8 +207,13 @@ const USUAL: &[(Action, Shortcut)] = &[
     (Action::RemoveSilence, Shortcut::ctrl_shift(Key::R)),
     (Action::FullScreenViewer, Shortcut::key(Key::F)),
     (Action::PictureHandles, Shortcut::key(Key::Q)),
-    // Zooming the picture: Fit only. Ctrl with = and - zooms the whole
-    // interface (egui's own), and = and - are the timeline's.
+    // Zooming the picture: Ctrl with the timeline's zoom keys (= and +,
+    // -), Ctrl+0 for 100 %, Shift+Z to fit. The toolkit's own zoom of the
+    // whole interface on these keys is off (`crate::setup`).
+    (Action::ViewerZoomIn, Shortcut::ctrl(Key::Equals)),
+    (Action::ViewerZoomIn, Shortcut::ctrl_shift(Key::Equals)),
+    (Action::ViewerZoomOut, Shortcut::ctrl(Key::Minus)),
+    (Action::ViewerZoom100, Shortcut::ctrl(Key::Num0)),
     (Action::ViewerZoomFit, Shortcut::shift(Key::Z)),
     (Action::Versions, Shortcut::ctrl_shift(Key::V)),
     (Action::Templates, Shortcut::ctrl(Key::T)),
@@ -543,6 +548,23 @@ mod tests {
                 assert_ne!(a, b, "{} is on {action:?} and {other:?}", a.label());
             }
         }
+    }
+
+    #[test]
+    fn ctrl_zooms_the_picture_and_the_plain_keys_the_timeline() {
+        let table = ShortcutTable::default();
+        let first = |key, modifiers| table.actions_for(key, modifiers).collect::<Vec<_>>();
+        assert_eq!(first(Key::Equals, Modifiers::NONE), [Action::ZoomIn]);
+        assert_eq!(first(Key::Minus, Modifiers::NONE), [Action::ZoomOut]);
+        assert_eq!(first(Key::Equals, Modifiers::COMMAND), [Action::ViewerZoomIn]);
+        assert_eq!(
+            first(Key::Equals, Modifiers::COMMAND | Modifiers::SHIFT),
+            [Action::ViewerZoomIn]
+        );
+        assert_eq!(first(Key::Minus, Modifiers::COMMAND), [Action::ViewerZoomOut]);
+        assert_eq!(first(Key::Num0, Modifiers::COMMAND), [Action::ViewerZoom100]);
+        assert_eq!(first(Key::Z, Modifiers::SHIFT), [Action::ViewerZoomFit]);
+        assert_no_key_twice(&table);
     }
 
     #[test]

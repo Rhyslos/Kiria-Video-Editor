@@ -46,4 +46,18 @@ pub use viewer::PreviewQuality;
 pub fn setup(ctx: &egui::Context, theme: ThemeName) {
     fonts::install(ctx);
     theme.theme().apply(ctx);
+    // Ctrl with =, - and 0 belong to the shortcut table (they zoom the
+    // viewer's picture), not to the toolkit's zoom of the whole interface.
+    ctx.options_mut(|options| options.zoom_with_keyboard = false);
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_keys_that_zoom_the_interface_are_left_to_the_shortcut_table() {
+        let ctx = egui::Context::default();
+        assert!(ctx.options(|o| o.zoom_with_keyboard), "on until set up");
+        super::setup(&ctx, super::ThemeName::default());
+        assert!(!ctx.options(|o| o.zoom_with_keyboard));
+    }
 }

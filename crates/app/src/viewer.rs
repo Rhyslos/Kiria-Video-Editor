@@ -227,10 +227,10 @@ impl Viewer {
         self.ctx.request_repaint();
     }
 
-    /// The zoom in words, for the menu: "Fit" or "200 %".
+    /// The zoom in words, for the menu: "Fit · 47 %" or "200 %".
     fn zoom_readout(&self) -> String {
         match self.zoom_place {
-            Some((room, timeline, ppp)) => self.zoom.readout(room, timeline, ppp, false),
+            Some((room, timeline, ppp)) => self.zoom.readout(room, timeline, ppp, true),
             None => "Fit".to_owned(),
         }
     }
