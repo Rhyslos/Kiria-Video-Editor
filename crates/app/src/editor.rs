@@ -2438,6 +2438,9 @@ impl Editor {
                     .on_hover_text("Merge the red edit needle into the playhead.");
                 click_moves_row(ui, &mut self.settings.click_moves, self.settings.edit_at_playhead);
                 ui.add_space(8.0);
+                ui.heading("Audio");
+                ui_kit::master::target_row(ui, &mut self.settings.loudness_target);
+                ui.add_space(8.0);
                 ui.heading("Resources");
                 let machine = jobs::Machine::detect();
                 limit_row(

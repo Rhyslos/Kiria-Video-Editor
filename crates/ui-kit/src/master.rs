@@ -7,7 +7,7 @@
 //! line at each channel's true peak (the level between samples too; red
 //! over [`TRUE_PEAK_CEILING`]), and the short-term loudness (LUFS) with a
 //! line at the loudness aimed for ([`LoudnessTarget`], chosen in the
-//! column's right-click menu). Under it: the volume, the momentary (M),
+//! column's right-click menu or in Settings with [`target_row`]). Under it: the volume, the momentary (M),
 //! short-term (S) and integrated (I) loudness and the highest true peak
 //! (TP). I and TP count from when playback started; a click on them starts
 //! them again, and they stay readable after playback stops.
@@ -74,6 +74,28 @@ impl LoudnessTarget {
         }
     }
 }
+
+/// The row that chooses the loudness to aim for, as Settings shows it:
+/// the same choices, in the same order, as the column's right-click menu.
+/// True when another was chosen.
+pub fn target_row(ui: &mut Ui, target: &mut LoudnessTarget) -> bool {
+    let before = *target;
+    ui.horizontal(|ui| {
+        egui::ComboBox::from_label("Loudness to aim for")
+            .selected_text(target.label())
+            .show_ui(ui, |ui| {
+                for choice in LoudnessTarget::ALL {
+                    ui.selectable_value(target, choice, choice.label());
+                }
+            });
+    })
+    .response
+    .on_hover_text(TARGET_TIP);
+    *target != before
+}
+
+/// What the loudness to aim for does, wherever it is chosen.
+pub const TARGET_TIP: &str = "A line across the master column's loudness lane; I turns green within 1 LU of it. Also in the column's right-click menu.";
 
 /// How an integrated loudness stands against a target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -425,6 +447,23 @@ fn held_tip(target: LoudnessTarget) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_settings_row_offers_every_target_and_keeps_the_one_chosen() {
+        let ctx = egui::Context::default();
+        for start in LoudnessTarget::ALL {
+            let mut target = start;
+            let mut changed = true;
+            let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                changed = target_row(ui, &mut target)
+            });
+            output.drop_without_applying_deltas();
+            assert_eq!((target, changed), (start, false));
+        }
+        let labels: std::collections::HashSet<_> = LoudnessTarget::ALL.iter().map(|t| t.label()).collect();
+        assert_eq!(labels.len(), 5, "each choice reads differently");
+        assert_eq!(LoudnessTarget::default().lufs(), Some(-14.0));
+    }
 
     #[test]
     fn scale_round_trips_and_text() {
