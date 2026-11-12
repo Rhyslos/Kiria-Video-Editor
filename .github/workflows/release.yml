@@ -28,6 +28,15 @@ on:
         required: false
         default: false
 
+# One release of a branch at a time. Two pushes to main close together used
+# to publish two betas side by side, and the check that installed copies find
+# "this release" then failed for the older one, because they rightly went to
+# the newer. A run that is under way finishes; of those waiting behind it
+# only the newest is kept.
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   CARGO_TERM_COLOR: always
   # Read by packaging/release-env.sh, which sets APP_VERSION, RELEASE_TAG and,

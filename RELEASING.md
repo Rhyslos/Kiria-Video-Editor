@@ -13,7 +13,7 @@ A test build has the version an automatic beta of it would have (`<next patch>-b
 Twice now a release went out that installed copies could not update to, so the workflow proves it every time (`packaging/windows/update-drill.ps1`), on pull requests too:
 
 - **Before publishing** it installs the previous release on a clean Windows machine and lets it update to the new build by itself: find it, download it, check the signature, install it, start the editor, replace the launcher, and then say "up to date" instead of offering the update again. The previous release reads the list of releases from the runner (the files about to be published) through the `<NAME>_UPDATE_FEED` variable. If any step fails, nothing is published.
-- **After publishing** it does the same once more with the previous release asking GitHub itself, as everybody's copy does. A release that installed copies can't find or fetch turns the run red within minutes.
+- **After publishing** it does the same once more with the previous release asking GitHub itself, as everybody's copy does. A release that installed copies can't find or fetch turns the run red within minutes. If a newer release was published meanwhile, installed copies go straight to that one, and the check says so instead of failing. Releases of one branch run one at a time (the workflow's `concurrency` group), so two pushes to `main` close together publish one after the other; of several waiting, only the newest runs.
 - It also installs the new build on its own and runs one step, so every release can be the starting point of the next drill.
 
 Each step is the launcher's own `--update-step <report file>`: what a normal start does about updates, without a window. The deliberately broken rollback-test build skips the drill.

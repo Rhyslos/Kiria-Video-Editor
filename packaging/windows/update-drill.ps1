@@ -166,6 +166,18 @@ try {
     }
 
     $step = Invoke-Step $dir "Start 1 ($from finds and downloads $Version)"
+    # Asking GitHub itself, a release newer than this one may be out already
+    # (another run published meanwhile). Installed copies then go straight to
+    # that one, as they should, and its own run checks it.
+    if ($Published -and $step.check -match '^downloaded (.+)$') {
+        $found = $Matches[1]
+        $foundKey = Get-VersionKey $found
+        if ($foundKey -and $foundKey -gt $mine) {
+            Write-Host "::notice::$found was published meanwhile and is newer than $Version`: installed copies update to that one. Nothing more to check here."
+            Uninstall-Copy $dir
+            return
+        }
+    }
     Assert-Fact $step "in_use" $from "Start 1"
     Assert-Fact $step "check" "downloaded $Version" "Start 1"
     Assert-Fact $step "editor" "started" "Start 1"
