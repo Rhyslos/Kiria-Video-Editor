@@ -21,6 +21,7 @@ pub mod mix;
 pub mod playback;
 pub mod preview;
 pub mod silence;
+pub mod source;
 pub mod thumbnail;
 pub mod timeline;
 

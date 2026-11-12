@@ -49,6 +49,7 @@ pub struct Options {
     /// screenshots of menus, `--double-click` the left button twice, and
     /// `--scroll 400` turns the wheel 400 points down there (to see the
     /// bottom of a panel).
+    /// `--click` once (the Display menu, opened).
     pub pointer: Option<crate::fake_pointer::FakePointer>,
     /// Show the question about video decoding that stopped the app (`--decoding-warning`, for screenshots).
     pub decoding_warning: bool,
@@ -124,10 +125,11 @@ impl Options {
                     Some(pointer) if pointer.drag_to.is_some() => pointer.release = true,
                     _ => return Err("--release needs --drag-to before it".into()),
                 },
-                "--right-click" | "--double-click" => match &mut options.pointer {
+                "--right-click" | "--double-click" | "--click" => match &mut options.pointer {
                     Some(pointer) if pointer.drag_to.is_none() && arg == "--right-click" => {
                         pointer.right_click = true;
                     }
+                    Some(pointer) if pointer.drag_to.is_none() && arg == "--click" => pointer.click = true,
                     Some(pointer) if pointer.drag_to.is_none() => pointer.double_click = true,
                     _ => return Err(format!("{arg} needs --pointer before it, and no --drag-to")),
                 },
@@ -220,6 +222,10 @@ mod tests {
         assert!(parse(&["p.x", "--right-click"]).is_err(), "where?");
         let o = parse(&["p.x", "--pointer", "40,300", "--double-click"]).unwrap();
         assert!(o.pointer.unwrap().double_click);
+        let o = parse(&["p.x", "--pointer", "900,610", "--click"]).unwrap();
+        let pointer = o.pointer.unwrap();
+        assert!(pointer.click && !pointer.double_click);
+        assert!(parse(&["p.x", "--click"]).is_err(), "where?");
         let both = [
             "p.x",
             "--pointer",

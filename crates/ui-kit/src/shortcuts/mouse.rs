@@ -51,6 +51,11 @@ pub const MOUSE: &[MouseAction] = &[
         "Fit it: as large as fits the frame, centred (handles on)",
     ),
     on(
+        Context::Viewer,
+        "Double-click the picture in the viewer's own window",
+        "Fill that screen with it, or give the screen back",
+    ),
+    on(
         Context::Timeline,
         "Wheel",
         "Scroll the tracks under the pointer; pan over the ruler and the scroll bar",

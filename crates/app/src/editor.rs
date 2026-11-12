@@ -61,6 +61,8 @@ pub struct Editor {
     importer: Importer,
     import_requested: bool,
     viewer: Viewer,
+    /// Split view's Source and the viewer's own window (the Display menu).
+    display: crate::display::ViewerDisplay,
     playback: Option<engine::Playback>,
     timeline: ui_kit::TimelineView,
     /// Keeps the timeline's layout (track heights, the divider between
@@ -227,6 +229,16 @@ impl Editor {
         if !imports.is_empty() {
             importer.read(&jobs, &cc.egui_ctx, imports);
         }
+        let viewer = Viewer::new(
+            &cc.egui_ctx,
+            start_at,
+            convert,
+            decoding,
+            cc.wgpu_render_state
+                .as_ref()
+                .map(|state| (state.device.clone(), state.queue.clone())),
+        );
+        let display = crate::display::ViewerDisplay::new(settings.split_view, &viewer);
         Editor {
             theme: settings.theme.theme(),
             settings,
@@ -243,15 +255,8 @@ impl Editor {
             thumbnail_due: Thumbnail::IfMissing,
             importer,
             import_requested: false,
-            viewer: Viewer::new(
-                &cc.egui_ctx,
-                start_at,
-                convert,
-                decoding,
-                cc.wgpu_render_state
-                    .as_ref()
-                    .map(|state| (state.device.clone(), state.queue.clone())),
-            ),
+            viewer,
+            display,
             playback: None,
             timeline,
             view_keeper,
@@ -391,10 +396,28 @@ impl Editor {
                 .into();
                 self.settings.save(&self.data_dir)
             }
+            // With the viewer in its own window, that window fills its screen.
+            Action::FullScreenViewer if self.display.window_open() => {
+                self.display.switch_window_full_screen();
+                Ok(())
+            }
             Action::FullScreenViewer => {
                 self.set_full_screen(!self.full_screen);
                 Ok(())
             }
+            Action::SplitView => {
+                let on = !self.display.split();
+                self.display.set_split(on, &self.viewer);
+                self.settings.split_view = on;
+                self.status = if on {
+                    "Split view: the selected clip's own picture (Source) beside the timeline's (Program)"
+                } else {
+                    "Split view off"
+                }
+                .into();
+                self.settings.save(&self.data_dir)
+            }
+            Action::ViewerWindow => self.switch_viewer_window(),
             Action::AddVideoTrack => self.add_track(project::TrackKind::Video),
             Action::AddAudioTrack => self.add_track(project::TrackKind::Audio),
             Action::ZoomToFit => {
@@ -1351,7 +1374,7 @@ impl Editor {
         // Full screen is for watching: no handles on the picture. A change
         // still being made when it was entered stays on show.
         let being_changed = self.inspector.shown(p);
-        let click = self.viewer.ui(
+        let command = self.viewer.ui(
             ui,
             &self.theme,
             being_changed.as_ref().unwrap_or(p),
@@ -1359,16 +1382,33 @@ impl Editor {
             None,
             height,
             &self.shortcuts,
+            self.display.state(true),
+            crate::viewer::Stage::default(),
             |_, _, _| {},
         );
-        if let Some(click) = click {
-            self.run_action(match click {
-                ui_kit::TransportClick::FrameBack => Action::PreviousFrame,
-                ui_kit::TransportClick::FrameForward => Action::NextFrame,
-                ui_kit::TransportClick::PlayPause => Action::PlayPause,
-                ui_kit::TransportClick::Stop => Action::Stop,
-            });
+        if let Some(command) = command {
+            self.run_action(command);
         }
+    }
+
+    /// The viewer into its own window (for another screen), or back.
+    /// Where the window was is kept in settings.
+    fn switch_viewer_window(&mut self) -> diag::Result<()> {
+        if self.display.window_open() {
+            self.settings.viewer_window = self.display.close_window().or(self.settings.viewer_window);
+            self.status = "The viewer is back in the window".into();
+        } else {
+            if self.full_screen {
+                self.set_full_screen(false);
+            }
+            self.display
+                .open_window(self.settings.viewer_window, self.theme, &self.shortcuts);
+            self.status = format!(
+                "The viewer is in its own window: drag it to another screen; {} or a double-click fills that screen",
+                self.shortcuts.keys_or_name(Action::FullScreenViewer)
+            );
+        }
+        self.settings.save(&self.data_dir)
     }
 
     /// The tab on the left edge and the media drawer it opens.
@@ -1676,7 +1716,7 @@ impl Editor {
     /// and a plain list of what is on the timeline.
     fn edit_page(&mut self, ui: &mut egui::Ui) {
         self.drawer_panels(ui);
-        let mut transport_click = None;
+        let mut viewer_command = None;
         let mut picture_change = None;
         let mut master_gain = None;
         let mut timeline_events = Vec::new();
@@ -1813,7 +1853,21 @@ impl Editor {
                     .max_rect(viewer_rect)
                     .layout(egui::Layout::top_down(egui::Align::Min)),
             );
-            transport_click = self.viewer.ui(
+            // Split view: the selected clip raw, beside the timeline's picture.
+            let (display_state, split, away) = (
+                self.display.state(false),
+                self.display.split(),
+                self.display.away(),
+            );
+            let (display, playing) = (&mut self.display, self.playback.is_some());
+            let mut source = |ui: &mut egui::Ui, size: egui::Vec2| {
+                display.source_ui(ui, theme, size, p, selected, playhead, quality_before, playing);
+            };
+            let stage = crate::viewer::Stage {
+                source: split.then_some(&mut source as &mut crate::viewer::DrawSource),
+                away,
+            };
+            viewer_command = self.viewer.ui(
                 &mut left,
                 theme,
                 being_changed.as_ref().unwrap_or(p),
@@ -1821,6 +1875,8 @@ impl Editor {
                 needle,
                 viewer_height,
                 &self.shortcuts,
+                display_state,
+                stage,
                 // The selected clip's picture can be taken hold of.
                 // Only when handles on the picture are switched on.
                 |ui, frame, response| {
@@ -1971,13 +2027,8 @@ impl Editor {
                 ui_kit::timeline::ToolbarClick::RoughCut => Action::RoughCut,
             });
         }
-        if let Some(click) = transport_click {
-            self.run_action(match click {
-                ui_kit::TransportClick::FrameBack => Action::PreviousFrame,
-                ui_kit::TransportClick::FrameForward => Action::NextFrame,
-                ui_kit::TransportClick::PlayPause => Action::PlayPause,
-                ui_kit::TransportClick::Stop => Action::Stop,
-            });
+        if let Some(command) = viewer_command {
+            self.run_action(command);
         }
         // The picture was let go of in the viewer: one undo step.
         if let Some(command) = picture_change
@@ -2204,6 +2255,20 @@ impl Editor {
         }
     }
 
+    /// The viewer's own window, while it is open: declared every frame (or
+    /// it closes), handed the picture, and what was done there run here.
+    fn viewer_window(&mut self, ctx: &egui::Context) {
+        let news = self
+            .display
+            .show_window(ctx, &mut self.viewer, self.theme, &self.shortcuts);
+        for action in news.actions {
+            self.run_action(action);
+        }
+        if news.closed && self.display.window_open() {
+            self.run_action(Action::ViewerWindow);
+        }
+    }
+
     /// Automated runs: smoke test, screenshot, responsiveness test.
     fn automation(&mut self, ctx: &egui::Context, ui_time: Duration) {
         let now = Instant::now();
@@ -2225,7 +2290,7 @@ impl Editor {
                 // viewer's picture back. Not for ever, so a file that can't
                 // be shown still gets its screenshot.
                 let since = *self.probe.started.get_or_insert(now);
-                let ready = (self.importer.busy() == 0 && self.viewer.settled())
+                let ready = (self.importer.busy() == 0 && self.viewer.settled() && self.display.settled())
                     || now.duration_since(since) > SCREENSHOT_WAIT;
                 // A scripted pointer has done its part, and rested long
                 // enough for a tooltip to come up.
@@ -2372,6 +2437,11 @@ impl eframe::App for Editor {
         {
             self.errors.push(&err);
         }
+        if let Some(err) = self.display.poll(&ctx, self.settings.preview_quality)
+            && !self.relink.explains_errors()
+        {
+            self.errors.push(&err);
+        }
         if let Some(slow) = self.viewer.slow_pictures() {
             self.errors.set_fact(crate::slow_pictures::FACT, slow);
         }
@@ -2402,6 +2472,7 @@ impl eframe::App for Editor {
                 .show(ui, |ui| self.page(ui));
         }
 
+        self.viewer_window(&ctx);
         self.settings_window(&ctx);
         self.timeline_settings_window(&ctx);
         self.search_window(&ctx);
@@ -2440,6 +2511,13 @@ impl eframe::App for Editor {
         // the window's graphics device too.
         self.export_page.stop();
         self.viewer.close();
+        self.display.close();
+        if let Some(place) = self.display.window_place() {
+            self.settings.viewer_window = Some(place);
+            if let Err(err) = self.settings.save(&self.data_dir) {
+                tracing::warn!("{}", err.report());
+            }
+        }
         if !engine::playback::wait_until_quiet(AUDIO_ENDS_WITHIN) {
             tracing::warn!("the sound did not stop before the window closed");
         }

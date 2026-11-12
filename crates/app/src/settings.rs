@@ -28,6 +28,11 @@ pub struct Settings {
     /// The selected clip's outline and handles on the picture in the viewer.
     /// Off unless switched on (Q, or "On the picture" in the inspector).
     pub picture_handles: bool,
+    /// The Edit page's viewer shows the selected clip's own picture (Source)
+    /// beside the timeline's (Program).
+    pub split_view: bool,
+    /// Where the viewer's own window was last, so it opens there again.
+    pub viewer_window: Option<crate::viewer_window::WindowPlace>,
 }
 
 impl Settings {
@@ -117,6 +122,29 @@ mod tests {
             ui_kit::ShortcutTable::default(),
             "settings from before shortcuts could be changed"
         );
+    }
+
+    #[test]
+    fn split_view_and_the_viewers_window_are_remembered() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(!Settings::default().split_view, "off until turned on");
+        let settings = Settings {
+            split_view: true,
+            viewer_window: Some(crate::viewer_window::WindowPlace {
+                x: 1930.0,
+                y: 20.0,
+                width: 1280.0,
+                height: 720.0,
+            }),
+            ..Settings::default()
+        };
+        settings.save(tmp.path()).unwrap();
+        assert_eq!(Settings::load(tmp.path()).0, settings);
+        // Settings from before either was kept still load.
+        std::fs::write(Settings::path(tmp.path()), "(rough_cut: true)").unwrap();
+        let (loaded, problem) = Settings::load(tmp.path());
+        assert!(problem.is_none());
+        assert!(!loaded.split_view && loaded.viewer_window.is_none());
     }
 
     #[test]

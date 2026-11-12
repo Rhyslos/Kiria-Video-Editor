@@ -32,12 +32,15 @@ impl engine::DeviceWatch for Watch {
 }
 
 /// What the viewer needs to show video decoded on the window's device.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct WindowDecoding {
     device: Arc<WindowDevice>,
     guard: Arc<DecodeGuard>,
     /// The window's renderer, which the pictures' images are handed to.
     renderer: wgpu::Device,
+    /// The worker keeps this part of the frames the card has room for (1
+    /// for the viewer's; more when a second worker shares the card).
+    share: u64,
 }
 
 impl WindowDecoding {
@@ -64,6 +67,7 @@ impl WindowDecoding {
                 device,
                 guard: decoding.guard.clone(),
                 renderer,
+                share: 1,
             }),
             Err(err) => {
                 tracing::warn!("video is not decoded on the window's device: {}", err.report());
@@ -77,7 +81,18 @@ impl WindowDecoding {
         OnDevice {
             device: self.device.clone(),
             watch: Arc::new(Watch(self.guard.clone())),
-            frames_kept: engine::frames::budget_on_card(self.device.card_memory()),
+            frames_kept: engine::frames::budget_on_card(self.device.card_memory()) / self.share.max(1),
+        }
+    }
+
+    /// The same device for a second worker beside the viewer's (the split
+    /// viewer's Source), which keeps only a `parts`th of the frames the
+    /// card has room for: the two together keep little more than the
+    /// viewer's worker alone would.
+    pub fn sharing(&self, parts: u64) -> WindowDecoding {
+        WindowDecoding {
+            share: parts.max(1),
+            ..self.clone()
         }
     }
 
