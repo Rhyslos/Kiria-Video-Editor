@@ -4,7 +4,12 @@
 //! numbers they are for.
 //!
 //! A click on a mark moves the playhead there; Shift-click (or Ctrl-click)
-//! adds it to the marks chosen, or takes it out. Dragging a mark moves it
+//! adds it to the marks chosen, or takes it out. A drag that starts in the
+//! strip the marks lie along (the clip's bottom edge), away from a mark,
+//! draws a box: the marks inside it are chosen (with Shift or Ctrl, added
+//! to those chosen already). Higher up the clip a drag still moves the
+//! clip, so the strip is only taken on a clip with marks, the selected
+//! one. Chosen marks are what Copy copies. Dragging a mark moves it
 //! (with the other chosen marks) a whole frame at a time, snapping to the
 //! playhead and the clip's other marks unless snapping is off or Alt is
 //! held, and never off the clip. Dropped where a number would get a second
@@ -56,7 +61,7 @@ impl KeyframeMark {
             keyed => format!("Keyframes: {}", keyed.join(", ")),
         };
         format!(
-            "{keyed}\nClick: go here. Drag: move (Alt: no snapping). Shift-click: choose several. Right-click: more"
+            "{keyed}\nClick: go here. Drag: move (Alt: no snapping). Shift-click: choose several, or drag a box along the clip's bottom edge. Right-click: more"
         )
     }
 
@@ -101,6 +106,67 @@ impl Chosen {
             self.at.push(at);
         }
     }
+}
+
+/// A box being dragged along a clip's marks to choose them.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct MarkBox {
+    pub clip: u64,
+    /// Where it was pressed and where the pointer is now, in seconds on
+    /// the timeline.
+    pub from: f64,
+    pub to: f64,
+    /// The marks chosen before it began, which it adds to (Shift or Ctrl
+    /// held when it began); empty when it chooses afresh.
+    pub kept: Vec<f64>,
+}
+
+impl MarkBox {
+    /// The marks chosen with the box where it is now: those it holds, and
+    /// those kept.
+    pub fn chosen(&self, marks: &[KeyframeMark], fps: f64) -> Chosen {
+        let (low, high) = (self.from.min(self.to), self.from.max(self.to));
+        let slack = 0.25 / fps.max(1.0);
+        let mut at: Vec<f64> = self.kept.clone();
+        for mark in marks {
+            let inside = low - slack <= mark.at && mark.at <= high + slack;
+            if inside && !at.iter().any(|c| same(*c, mark.at, fps)) {
+                at.push(mark.at);
+            }
+        }
+        at.sort_by(f64::total_cmp);
+        Chosen { clip: self.clip, at }
+    }
+}
+
+/// Whether `pointer` is in the strip along the bottom of a clip drawn in
+/// `clip` where its marks lie, where a drag draws a box to choose them.
+pub(super) fn in_strip(clip: Rect, pointer: Pos2) -> bool {
+    clip.height() >= 2.0 * ABOVE_BOTTOM && strip(clip).contains(pointer)
+}
+
+/// The strip along the bottom of a clip drawn in `clip` that its marks lie in.
+fn strip(clip: Rect) -> Rect {
+    let centre = clip.bottom() - ABOVE_BOTTOM;
+    Rect::from_x_y_ranges(clip.x_range(), (centre - REACH.1)..=clip.bottom())
+}
+
+/// Draws the box of `chosen_box` on a clip drawn in `clip`: across the
+/// strip of marks, from where it was pressed to the pointer.
+pub(super) fn draw_box(
+    painter: &Painter,
+    clip: Rect,
+    chosen_box: &MarkBox,
+    x_of: impl Fn(f64) -> f32,
+    colour: Color32,
+) {
+    let band = strip(clip);
+    let (a, b) = (x_of(chosen_box.from), x_of(chosen_box.to));
+    let shape = Rect::from_x_y_ranges(a.min(b)..=a.max(b).max(a.min(b) + 1.0), band.y_range());
+    // Dark under the light edge, so it reads over the clip's pictures.
+    painter.rect_filled(shape, 2.0, Color32::from_black_alpha(110));
+    painter.rect_filled(shape, 2.0, colour.gamma_multiply(0.15));
+    painter.rect_stroke(shape, 2.0, Stroke::new(1.5, colour), egui::StrokeKind::Inside);
 }
 
 /// A mark (with the other chosen marks) being dragged.
@@ -384,6 +450,36 @@ mod tests {
             "both move: 2 s is free by then"
         );
         assert!(marks[1].says().contains("position, opacity"));
+    }
+
+    #[test]
+    fn a_box_chooses_the_marks_it_holds_and_adds_to_those_kept() {
+        let all = marks(&[1.0, 2.0, 3.0, 4.0]);
+        let fps = 10.0;
+        let mut b = MarkBox {
+            clip: 7,
+            from: 3.5,
+            to: 1.5,
+            kept: Vec::new(),
+        };
+        assert_eq!(
+            b.chosen(&all, fps),
+            Chosen {
+                clip: 7,
+                at: vec![2.0, 3.0]
+            }
+        );
+        b.to = 2.0;
+        assert_eq!(b.chosen(&all, fps).at, [2.0, 3.0], "a mark on its edge is in");
+        b.kept = vec![4.0, 3.0];
+        assert_eq!(b.chosen(&all, fps).at, [2.0, 3.0, 4.0], "each once");
+        let clip = Rect::from_min_max(pos2(100.0, 50.0), pos2(400.0, 100.0));
+        assert!(in_strip(clip, pos2(200.0, 95.0)));
+        assert!(in_strip(clip, pos2(200.0, 84.0)));
+        assert!(!in_strip(clip, pos2(200.0, 70.0)), "higher up moves the clip");
+        assert!(!in_strip(clip, pos2(450.0, 95.0)));
+        let thin = Rect::from_min_max(pos2(100.0, 50.0), pos2(400.0, 58.0));
+        assert!(!in_strip(thin, pos2(200.0, 55.0)), "no marks on a thin clip");
     }
 
     #[test]

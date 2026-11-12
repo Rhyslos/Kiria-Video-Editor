@@ -28,6 +28,10 @@ pub struct Options {
     pub select_first_clip: bool,
     /// Commands to run once open, by name (`--action KeyboardShortcuts`, repeatable, for screenshots).
     pub actions: Vec<String>,
+    /// Commands to run once the scripted pointer has done its part
+    /// (`--then Copy`, repeatable, in order: for screenshots of what a
+    /// command does to what a drag chose).
+    pub then_actions: Vec<String>,
     /// Open the keyboard shortcuts page in a state: `filter`, `rebinding` or
     /// `clash` (`--shortcuts-page clash`, for screenshots).
     pub shortcuts_page: Option<ui_kit::keyboard::Preview>,
@@ -96,6 +100,10 @@ impl Options {
                 "--action" => {
                     let name = args.next().ok_or("--action needs a command name")?;
                     options.actions.push(name);
+                }
+                "--then" => {
+                    let name = args.next().ok_or("--then needs a command name")?;
+                    options.then_actions.push(name);
                 }
                 "--cheat-sheet" => {
                     let path = args.next().ok_or("--cheat-sheet needs a file name")?;

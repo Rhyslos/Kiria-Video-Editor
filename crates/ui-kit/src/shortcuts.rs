@@ -175,6 +175,8 @@ const USUAL: &[(Action, Shortcut)] = &[
     (Action::Redo, Shortcut::ctrl_shift(Key::Z)),
     (Action::Redo, Shortcut::ctrl(Key::Y)),
     (Action::Save, Shortcut::ctrl(Key::S)),
+    (Action::Copy, Shortcut::ctrl(Key::C)),
+    (Action::Paste, Shortcut::ctrl(Key::V)),
     (Action::Search, Shortcut::ctrl(Key::K)),
     (Action::OpenSettings, Shortcut::ctrl(Key::Comma)),
     (Action::Import, Shortcut::ctrl(Key::I)),
@@ -339,6 +341,12 @@ impl ShortcutTable {
                         modifiers,
                         ..
                     } => Some((physical_key.unwrap_or(*key), *modifiers)),
+                    // The window turns the clipboard's own keys into these;
+                    // outside a text field they are the keys again. In a
+                    // text field they copy and paste its text.
+                    Event::Copy if !typing => Some((Key::C, Modifiers::COMMAND)),
+                    Event::Cut if !typing => Some((Key::X, Modifiers::COMMAND)),
+                    Event::Paste(_) | Event::PasteImage(_) if !typing => Some((Key::V, Modifiers::COMMAND)),
                     _ => None,
                 })
                 .filter(|(_, modifiers)| !typing || modifiers.command)
@@ -459,6 +467,37 @@ mod tests {
             table.actions_for(Key::I, Modifiers::COMMAND).next(),
             Some(Action::Import)
         );
+    }
+
+    #[test]
+    fn the_windows_copy_and_paste_are_the_keys_outside_a_text_field() {
+        let table = ShortcutTable::default();
+        // Two frames: the first gives a text field the keys (`typing`),
+        // the second brings the events.
+        let pressed = |events: Vec<Event>, typing: bool| {
+            let ctx = egui::Context::default();
+            let mut got = Vec::new();
+            for events in [Vec::new(), events] {
+                let input = egui::RawInput {
+                    events,
+                    ..Default::default()
+                };
+                let output = ctx.run_ui(input, |ui| {
+                    if typing {
+                        let mut text = String::new();
+                        ui.text_edit_singleline(&mut text).request_focus();
+                    }
+                    got = table.pressed(ui.ctx());
+                });
+                output.drop_without_applying_deltas();
+            }
+            got
+        };
+        assert_eq!(
+            pressed(vec![Event::Copy, Event::Paste("x".into())], false),
+            [Action::Copy, Action::Paste]
+        );
+        assert!(pressed(vec![Event::Copy, Event::Paste("x".into())], true).is_empty());
     }
 
     #[test]

@@ -93,6 +93,8 @@ actions! {
     Versions, Anywhere, "Saved versions: keep this version, or go back to one…";
     Templates, Anywhere, "Templates: drop in an intro or outro…";
     SaveTemplate, Anywhere, "Save as a template: the region, or the whole timeline…";
+    Copy, Anywhere, "Copy: the chosen keyframe marks on the timeline";
+    Paste, Anywhere, "Paste: copied keyframes at the playhead, on the selected clip";
     PlayPause, Viewer, "Play / pause";
     Stop, Viewer, "Stop playing here";
     PreviousFrame, Viewer, "Back one frame";

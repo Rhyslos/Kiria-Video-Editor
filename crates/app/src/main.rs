@@ -138,6 +138,7 @@ fn main() -> ExitCode {
         full_screen: options.full_screen,
         select_first_clip: options.select_first_clip,
         actions: options.actions.clone(),
+        then_actions: options.then_actions.clone(),
         cpu_colour: options.cpu_colour,
         hold_reading: options.hold_reading,
         hold_proxy: options.hold_proxy,
