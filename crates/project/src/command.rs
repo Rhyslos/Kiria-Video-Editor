@@ -118,6 +118,18 @@ pub enum Command {
         frames: Vec<Time>,
         change: KeyframesChange,
     },
+    /// Pastes copied keyframe marks onto picture clip `clip`: the first on
+    /// the frame at `at` on the timeline (the playhead, brought onto the
+    /// clip), the others as far after it as they were copied. One step for
+    /// all of them. A pasted number's keyframe replaces one already in its
+    /// frame. Marks that would land off the clip are left out; refused
+    /// when none fits. See [`crate::clipboard`].
+    PasteKeyframes {
+        sequence: SequenceId,
+        clip: ClipId,
+        at: Time,
+        keyframes: crate::clipboard::CopiedKeyframes,
+    },
     /// Puts `fields` of `clip`'s look back as they come and takes their
     /// keyframes away: a section's Reset.
     ResetLook {
@@ -482,6 +494,12 @@ impl Command {
                 frames,
                 change,
             } => crate::animate::change_keyframes(&mut p, *sequence, *clip, frames, *change)?,
+            Command::PasteKeyframes {
+                sequence,
+                clip,
+                at,
+                keyframes,
+            } => crate::clipboard::paste_keyframes(&mut p, *sequence, *clip, *at, keyframes)?,
             Command::ResetLook {
                 sequence,
                 clip,

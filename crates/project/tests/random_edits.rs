@@ -112,6 +112,16 @@ enum Action {
         change: u8,
         by: i64,
     },
+    /// Copies a picture clip's keyframe mark (and with `both` its next one
+    /// too) and pastes them on another picture clip (or the same) `at`
+    /// frames into it: often refused, past the clip's end.
+    Paste {
+        from: usize,
+        to: usize,
+        mark: usize,
+        both: bool,
+        at: i64,
+    },
     /// Gives a clip a slow-motion ramp starting `at` seconds into it (back
     /// to full speed afterwards with `back`), or with `clear` takes it away.
     Ramp {
@@ -199,6 +209,8 @@ fn action() -> impl Strategy<Value = Action> {
             .prop_map(|(pick, at, value, keyed)| Action::Animate { pick, at, value, keyed }),
         3 => (any::<usize>(), any::<usize>(), any::<bool>(), 0u8..4, -600i64..600)
             .prop_map(|(pick, mark, both, change, by)| Action::Marks { pick, mark, both, change, by }),
+        2 => (any::<usize>(), any::<usize>(), any::<usize>(), any::<bool>(), -30i64..900)
+            .prop_map(|(from, to, mark, both, at)| Action::Paste { from, to, mark, both, at }),
         3 => (any::<usize>(), 0i64..20, any::<bool>(), prop::bool::weighted(0.2))
             .prop_map(|(pick, at, back, clear)| Action::Ramp { pick, at, back, clear }),
         1 => (any::<usize>(), 0u8..4).prop_map(|(pick, which)| Action::Speed { pick, which }),
@@ -378,6 +390,31 @@ fn command_for(action: &Action, p: &Project, media: MediaId, recording: MediaId)
                     1 => project::animate::KeyframesChange::Ease(project::Ease::Smooth),
                     _ => project::animate::KeyframesChange::Move(rate.frame_start(by)),
                 },
+            }
+        }
+        Action::Paste {
+            from,
+            to,
+            mark,
+            both,
+            at,
+        } => {
+            let rate = seq.settings.frame_rate;
+            let pictures: Vec<&Clip> = seq.video_tracks.iter().flat_map(|t| t.clips.iter()).collect();
+            let source = pictures.get(from % pictures.len().max(1))?;
+            let target = pictures.get(to % pictures.len().max(1))?;
+            let marks = source.keyframe_frames(&project::LookField::ALL, rate);
+            let frames: Vec<Time> = marks
+                .iter()
+                .skip(mark % marks.len().max(1))
+                .take(if both { 2 } else { 1 })
+                .map(|frame| rate.frame_start(*frame))
+                .collect();
+            Command::PasteKeyframes {
+                sequence,
+                clip: target.id,
+                at: target.start + rate.frame_start(at),
+                keyframes: project::CopiedKeyframes::copy(source, rate, &frames).ok()?,
             }
         }
         Action::SplitAll { at } => Command::Split {

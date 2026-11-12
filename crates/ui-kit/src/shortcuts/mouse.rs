@@ -169,6 +169,11 @@ pub const MOUSE: &[MouseAction] = &[
     ),
     on(
         Context::Timeline,
+        "Drag along the selected clip's bottom edge, beside its diamonds",
+        "Draw a box: choose the diamonds inside it (with Shift or Ctrl, add them to those chosen), to copy, move or remove together",
+    ),
+    on(
+        Context::Timeline,
         "Right-click a keyframe diamond",
         "Go there, remove its keyframes, or choose how they go on: linear, hold or smooth",
     ),

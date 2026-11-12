@@ -1,5 +1,6 @@
 //! The editor window.
 
+mod keyframe_clipboard;
 mod timelines;
 
 use crate::import::{self, Importer, Read};
@@ -109,6 +110,13 @@ pub struct Editor {
     cheat_sheet: crate::cheat_sheet::CheatSheet,
     /// Commands asked for on the command line, run on the first frames.
     startup_actions: Vec<Action>,
+    /// Commands asked for on the command line, run once the scripted
+    /// pointer has done its part (`--then`).
+    actions_after_pointer: Vec<Action>,
+    /// Keyframe marks copied (Copy), to paste on a picture clip.
+    copied_keyframes: Option<project::CopiedKeyframes>,
+    /// Text for the system clipboard, put there on the next frame.
+    clipboard_text: Option<String>,
     /// The viewer fills the screen (F; Escape returns).
     full_screen: bool,
     /// Tell the window about a full-screen change on the next frame.
@@ -210,20 +218,22 @@ impl Editor {
         shortcuts.set_layout(settings.keyboard.resolve(system_keyboard.now()));
         let shortcuts_page =
             shortcuts_page.map(|state| ui_kit::keyboard::ShortcutsPage::preview(state, &shortcuts));
-        let startup_actions: Vec<Action> = project
+        let named = |names: &[String]| -> Vec<Action> {
+            names
+                .iter()
+                .filter_map(|name| {
+                    let found = Action::from_name(name);
+                    if found.is_none() {
+                        tracing::warn!("--action {name}: no such command");
+                    }
+                    found
+                })
+                .collect()
+        };
+        let startup_actions = project.as_ref().map(|p| named(&p.actions)).unwrap_or_default();
+        let actions_after_pointer = project
             .as_ref()
-            .map(|p| {
-                p.actions
-                    .iter()
-                    .filter_map(|name| {
-                        let found = Action::from_name(name);
-                        if found.is_none() {
-                            tracing::warn!("--action {name}: no such command");
-                        }
-                        found
-                    })
-                    .collect()
-            })
+            .map(|p| named(&p.then_actions))
             .unwrap_or_default();
         let document = project.and_then(|p| match open_or_create(&p.path, p.recovery) {
             Ok(doc) => {
@@ -323,6 +333,9 @@ impl Editor {
             system_keyboard,
             cheat_sheet: crate::cheat_sheet::CheatSheet::default(),
             startup_actions,
+            actions_after_pointer,
+            copied_keyframes: None,
+            clipboard_text: None,
             full_screen,
             full_screen_changed: full_screen,
             select_first_clip,
@@ -621,6 +634,8 @@ impl Editor {
                 self.jump_to_keyframe(action == Action::NextKeyframe);
                 Ok(())
             }
+            Action::Copy => self.copy_keyframes(),
+            Action::Paste => self.paste_keyframes(),
         };
         if let Err(err) = result {
             self.errors.push(&err);
@@ -2756,6 +2771,16 @@ impl eframe::App for Editor {
                 self.run_action(action);
             }
         }
+        if !self.actions_after_pointer.is_empty()
+            && self.pointer.is_none_or(|p| self.frames >= p.settled_at())
+        {
+            for action in std::mem::take(&mut self.actions_after_pointer) {
+                self.run_action(action);
+            }
+        }
+        if let Some(text) = self.clipboard_text.take() {
+            ctx.copy_text(text);
+        }
         self.imports(&ctx);
         self.follow_open_timeline();
         if self.select_first_clip
@@ -3010,6 +3035,8 @@ pub struct ProjectToOpen {
     pub select_first_clip: bool,
     /// Commands to run once open, by name.
     pub actions: Vec<String>,
+    /// Commands to run once the scripted pointer has done its part, by name.
+    pub then_actions: Vec<String>,
     /// Convert the viewer's colour on the CPU even when the GPU could.
     pub cpu_colour: bool,
     /// Stop background reading at this share, for screenshots of it in progress.

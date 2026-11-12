@@ -597,6 +597,8 @@ pub struct TimelineView {
     chosen_marks: keyframes::Chosen,
     /// A keyframe mark being dragged.
     mark_drag: Option<keyframes::MarkDrag>,
+    /// A box being dragged along a clip's marks to choose them.
+    mark_box: Option<keyframes::MarkBox>,
     /// Where the menu of the track names was opened.
     names_menu: Option<headers::MenuSpot>,
     /// A track's name being typed in its header.
@@ -660,6 +662,7 @@ impl Default for TimelineView {
             mark_menu: None,
             chosen_marks: Default::default(),
             mark_drag: None,
+            mark_box: None,
             names_menu: None,
             rename: None,
             file_over: None,
@@ -1019,6 +1022,19 @@ impl TimelineView {
             .as_ref()
             .filter(|d| d.by != 0.0 && !d.refused)
             .map(|d| (d.clip, d.moving.as_slice(), d.by))
+    }
+
+    /// The keyframe marks chosen (clicked, Shift-clicked or boxed): their
+    /// clip and their frames' starts, in seconds on the timeline. What Copy
+    /// copies. `None` when none are.
+    pub fn chosen_keyframes(&self) -> Option<(u64, &[f64])> {
+        Some((self.chosen_marks.clip, self.chosen_marks.at.as_slice())).filter(|(_, at)| !at.is_empty())
+    }
+
+    /// Chooses the marks of `clip` at `at` (seconds on the timeline), as a
+    /// page does after pasting keyframes there.
+    pub fn choose_keyframes(&mut self, clip: u64, at: Vec<f64>) {
+        self.chosen_marks = keyframes::Chosen { clip, at };
     }
 
     /// Screen x of time `t`.
@@ -1542,6 +1558,10 @@ impl TimelineView {
                             drag: self.mark_drag.as_ref().filter(|d| d.clip == clip.id),
                             fps: data.fps,
                         };
+                        // A box being dragged goes under the marks it chooses.
+                        if let Some(chosen_box) = self.mark_box.as_ref().filter(|b| b.clip == clip.id) {
+                            keyframes::draw_box(&clip_painter, r, chosen_box, x_of, theme.accent);
+                        }
                         keyframes::draw(&clip_painter, r, &clip.keyframes, x_of, look);
                     }
                 }
@@ -2563,13 +2583,36 @@ impl TimelineView {
                 }
                 _ => None,
             };
-            let still = self.clip_drag.is_none() && self.level_drag.is_none() && self.mark_drag.is_none();
+            // The strip along the bottom of a clip with marks, away from
+            // them: a drag there draws a box that chooses marks.
+            let on_strip = match (hit, rows.at(p.y).and_then(|row| row_rects.get(row))) {
+                (Some(c), Some(row))
+                    if on_mark.is_none()
+                        && !self.compact
+                        && !c.keyframes.is_empty()
+                        && zone == Some(DragKind::Move)
+                        && self.clip_drag.is_none() =>
+                {
+                    let drawn = Rect::from_min_max(
+                        pos2(self.x_of(left, c.start), row.top() + 3.0),
+                        pos2(self.x_of(left, c.start + c.duration), row.bottom() - 3.0),
+                    );
+                    keyframes::in_strip(drawn, p).then_some(c)
+                }
+                _ => None,
+            };
+            let still = self.clip_drag.is_none()
+                && self.level_drag.is_none()
+                && self.mark_drag.is_none()
+                && self.mark_box.is_none();
             if r.hovered()
                 && still
                 && let Some((_, mark)) = on_mark
             {
                 ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
                 r.clone().on_hover_text_at_pointer(mark.says());
+            } else if r.hovered() && still && on_strip.is_some() {
+                ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
             } else if r.hovered() && still && on_line.is_some() {
                 ui.ctx().set_cursor_icon(CursorIcon::ResizeVertical);
                 if let Some((_, _, db)) = on_line {
@@ -2619,6 +2662,20 @@ impl TimelineView {
                     from: t,
                     by: 0.0,
                     refused: false,
+                });
+            } else if r.drag_started_by(egui::PointerButton::Primary)
+                && let Some(c) = on_strip
+            {
+                let add = ui.input(|i| i.modifiers.shift || i.modifiers.command);
+                let kept = match add {
+                    true => self.chosen_marks.of(c.id, &c.keyframes, data.fps),
+                    false => Vec::new(),
+                };
+                self.mark_box = Some(keyframes::MarkBox {
+                    clip: c.id,
+                    from: t,
+                    to: t,
+                    kept,
                 });
             } else if r.drag_started_by(egui::PointerButton::Primary)
                 && let Some((c, drawn, db)) = on_line
@@ -2699,6 +2756,26 @@ impl TimelineView {
                 && let Some(c) = tracks.iter().flat_map(|t| &t.clips).find(|c| c.id == drag.clip)
             {
                 self.follow_mark_drag(ui, drag, c, data, self.time_at(left, now.x));
+            }
+            let box_to = r
+                .interact_pointer_pos()
+                .filter(|_| r.dragged())
+                .map(|now| self.time_at(left, now.x));
+            if let Some(chosen_box) = &mut self.mark_box {
+                if let Some(to) = box_to {
+                    chosen_box.to = to;
+                    ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
+                }
+                if let Some(c) = tracks
+                    .iter()
+                    .flat_map(|t| &t.clips)
+                    .find(|c| c.id == chosen_box.clip)
+                {
+                    self.chosen_marks = chosen_box.chosen(&c.keyframes, data.fps);
+                }
+                if r.drag_stopped() {
+                    self.mark_box = None;
+                }
             }
             if r.drag_stopped()
                 && let Some(drag) = self.mark_drag.take()
@@ -4153,6 +4230,33 @@ mod tests {
         // Let go where it was taken: nothing.
         let events = drag(&mut rig, pos2(x_at(3.0), y), pos2(x_at(3.0), y));
         assert!(moved_marks(&events).is_empty());
+    }
+
+    #[test]
+    fn a_box_dragged_along_the_marks_chooses_them_and_the_clip_stays() {
+        let marks: &[(f64, &[&'static str])] = &[(2.0, &["opacity"]), (3.0, &["size"]), (4.5, &["turn"])];
+        let (mut rig, y) = rig_with_marks(marks);
+        // From empty space between the first two marks to past the second.
+        let events = drag(&mut rig, pos2(x_at(2.5), y), pos2(x_at(3.5), y));
+        assert!(events.is_empty(), "nothing moves or is selected: {events:?}");
+        assert_eq!(rig.view.chosen_keyframes(), Some((0, &[3.0][..])));
+        // With Shift it adds to them; dragged leftwards too.
+        rig.modifiers = egui::Modifiers::SHIFT;
+        drag(&mut rig, pos2(x_at(4.8), y), pos2(x_at(4.2), y));
+        rig.modifiers = egui::Modifiers::NONE;
+        assert_eq!(rig.view.chosen_keyframes(), Some((0, &[3.0, 4.5][..])));
+        // Without, it chooses afresh.
+        drag(&mut rig, pos2(x_at(1.5), y), pos2(x_at(2.2), y));
+        assert_eq!(rig.view.chosen_keyframes(), Some((0, &[2.0][..])));
+        // Higher up the clip a drag moves the clip as before.
+        let events = drag(&mut rig, pos2(x_at(2.5), y - 25.0), pos2(x_at(3.5), y - 25.0));
+        assert!(
+            events.iter().any(|e| matches!(e, TimelineEvent::Move { .. })),
+            "{events:?}"
+        );
+        // A click elsewhere chooses nothing.
+        click(&mut rig, pos2(x_at(2.5), y - 25.0), egui::PointerButton::Primary);
+        assert_eq!(rig.view.chosen_keyframes(), None);
     }
 
     #[test]

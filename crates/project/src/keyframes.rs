@@ -257,6 +257,15 @@ impl Keyframes {
         keys.insert(index, Keyframe { at, value, ease });
     }
 
+    /// Puts `key` in for `field`, in place of any keyframes of `field` in
+    /// `near` (a stretch of the file, end excluded): a pasted keyframe.
+    pub fn put(&mut self, field: LookField, near: (Time, Time), key: Keyframe) {
+        let keys = self.0.entry(field).or_default();
+        keys.retain(|k| !(near.0 <= k.at && k.at < near.1) && k.at != key.at);
+        let index = keys.partition_point(|k| k.at < key.at);
+        keys.insert(index, key);
+    }
+
     /// Removes `field`'s keyframes in `near` (end excluded). Returns the
     /// value the last one removed held, when any was.
     pub fn remove(&mut self, field: LookField, near: (Time, Time)) -> Option<i32> {
