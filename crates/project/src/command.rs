@@ -4,7 +4,7 @@
 //! explained error and no change. Commands are plain data, so they can be
 //! written to the autosave journal and replayed after a crash.
 
-use crate::animate::KeyframeChange;
+use crate::animate::{KeyframeChange, KeyframesChange};
 use crate::ids::{ClipId, LabelId, LinkId, MediaId, SequenceId, TrackId};
 use crate::keyframes::LookField;
 use crate::look::Look;
@@ -85,6 +85,19 @@ pub enum Command {
         at: Time,
         fields: Vec<LookField>,
         change: KeyframeChange,
+    },
+    /// Moves, removes or sets the ease of every keyframe in each of the
+    /// timeline frames `frames` (the frames of the keyframe marks on the
+    /// timeline: a mark is all the keyframes of one frame, whatever numbers
+    /// they are for). One step for all of them. A move goes by whole frames,
+    /// stays on the clip, and is refused when a number would get a second
+    /// keyframe in a frame; keyframes of other numbers already there are
+    /// joined (their marks become one).
+    ChangeKeyframes {
+        sequence: SequenceId,
+        clip: ClipId,
+        frames: Vec<Time>,
+        change: KeyframesChange,
     },
     /// Puts `fields` of `clip`'s look back as they come and takes their
     /// keyframes away: a section's Reset.
@@ -369,6 +382,12 @@ impl Command {
                 fields,
                 change,
             } => crate::animate::keyframe(&mut p, *sequence, *clip, *at, fields, *change)?,
+            Command::ChangeKeyframes {
+                sequence,
+                clip,
+                frames,
+                change,
+            } => crate::animate::change_keyframes(&mut p, *sequence, *clip, frames, *change)?,
             Command::ResetLook {
                 sequence,
                 clip,

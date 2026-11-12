@@ -103,6 +103,15 @@ enum Action {
         value: i32,
         keyed: bool,
     },
+    /// Moves (by `by` frames), removes or eases the keyframes of a picture
+    /// clip's keyframe mark, and with `both` its next mark too.
+    Marks {
+        pick: usize,
+        mark: usize,
+        both: bool,
+        change: u8,
+        by: i64,
+    },
     Undo,
     Redo,
 }
@@ -134,6 +143,8 @@ fn action() -> impl Strategy<Value = Action> {
         2 => (t.clone(), t.clone(), t).prop_map(|(a, b, at)| Action::Template { a, b, at }),
         3 => (any::<usize>(), 0i64..120, 0i32..=1_000_000, any::<bool>())
             .prop_map(|(pick, at, value, keyed)| Action::Animate { pick, at, value, keyed }),
+        3 => (any::<usize>(), any::<usize>(), any::<bool>(), 0u8..4, -600i64..600)
+            .prop_map(|(pick, mark, both, change, by)| Action::Marks { pick, mark, both, change, by }),
         2 => Just(Action::Undo),
         1 => Just(Action::Redo),
     ]
@@ -230,6 +241,37 @@ fn command_for(action: &Action, p: &Project, media: MediaId, recording: MediaId)
                         ..clip.look_at(at)
                     },
                 }
+            }
+        }
+        Action::Marks {
+            pick,
+            mark,
+            both,
+            change,
+            by,
+        } => {
+            let rate = seq.settings.frame_rate;
+            let pictures: Vec<&Clip> = seq.video_tracks.iter().flat_map(|t| t.clips.iter()).collect();
+            let clip = pictures.get(pick % pictures.len().max(1))?;
+            let marks = clip.keyframe_frames(&project::LookField::ALL, rate);
+            let first = mark % marks.len().max(1);
+            let taken = if both { 2 } else { 1 };
+            let frames: Vec<Time> = marks
+                .iter()
+                .skip(first)
+                .take(taken)
+                .map(|frame| rate.frame_start(*frame))
+                .collect();
+            Command::ChangeKeyframes {
+                sequence,
+                clip: clip.id,
+                frames,
+                // Mostly moves: they are what can go wrong.
+                change: match change {
+                    0 => project::animate::KeyframesChange::Remove,
+                    1 => project::animate::KeyframesChange::Ease(project::Ease::Smooth),
+                    _ => project::animate::KeyframesChange::Move(rate.frame_start(by)),
+                },
             }
         }
         Action::SplitAll { at } => Command::Split {

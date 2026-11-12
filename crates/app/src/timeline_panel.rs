@@ -329,16 +329,99 @@ pub fn label_colour(c: LabelColor) -> egui::Color32 {
     }
 }
 
-/// Clicking a clip: alone, or added to (or taken out of) the selection.
-/// Where a clip's look has keyframes, in seconds on the timeline: the
-/// start of each timeline frame that holds one, inside the clip.
-pub fn keyframe_marks(clip: &project::Clip, rate: project::Rate) -> Vec<f64> {
-    clip.keyframe_frames(&project::LookField::ALL, rate)
+/// Where a clip's look has keyframes: a mark at the start of each
+/// timeline frame that holds one, inside the clip, saying which numbers are
+/// keyed there and how they go on to the next.
+pub fn keyframe_marks(clip: &project::Clip, rate: project::Rate) -> Vec<ui_kit::KeyframeMark> {
+    use project::{Ease, LookField};
+    clip.keyframe_frames(&LookField::ALL, rate)
         .into_iter()
-        .map(|frame| rate.frame_start(frame).as_secs_f64())
+        .map(|frame| {
+            let at = rate.frame_start(frame);
+            let near = clip.frame_in_file(at, rate);
+            let fields: Vec<LookField> = clip.keyframes.fields_in(near).collect();
+            // In the order the inspector shows them, each group once.
+            let keyed = LookField::GROUPS
+                .iter()
+                .filter(|group| group.iter().any(|field| fields.contains(field)))
+                .filter_map(|group| group.first().map(|field| field.name()))
+                .collect();
+            let mut eases = fields
+                .iter()
+                .flat_map(|field| clip.keyframes.of(*field))
+                .filter(|key| near.0 <= key.at && key.at < near.1)
+                .map(|key| key.ease);
+            let first = eases.next();
+            let ease = first
+                .filter(|ease| eases.all(|other| other == *ease))
+                .and_then(|ease| Ease::ALL.iter().position(|e| *e == ease));
+            ui_kit::KeyframeMark {
+                at: at.as_secs_f64(),
+                keyed,
+                ease,
+            }
+        })
         .collect()
 }
 
+/// The ways a value goes on from a keyframe, as keyframe marks' menus
+/// offer them (in `Ease::ALL` order).
+pub const EASES: [&str; 3] = [
+    project::Ease::ALL[0].label(),
+    project::Ease::ALL[1].label(),
+    project::Ease::ALL[2].label(),
+];
+
+/// The undo step for keyframe marks of `clip` (frame starts, in seconds on
+/// the timeline) that were dragged or picked something for in their menu.
+/// `None` for a drag of less than a frame or an ease that doesn't exist.
+pub fn keyframes_command(
+    seq: &Sequence,
+    clip: u64,
+    marks: &[f64],
+    change: ui_kit::timeline::MarksChange,
+) -> Option<project::Command> {
+    use project::animate::KeyframesChange;
+    use ui_kit::timeline::MarksChange;
+    let rate = seq.settings.frame_rate;
+    let time = |seconds: f64| {
+        let step = rate.snap(crate::editor::seconds(seconds.abs()));
+        if seconds < 0.0 {
+            project::Time::ZERO - step
+        } else {
+            step
+        }
+    };
+    let change = match change {
+        MarksChange::Move(by) => {
+            KeyframesChange::Move(Some(time(by)).filter(|by| *by != project::Time::ZERO)?)
+        }
+        MarksChange::Remove => KeyframesChange::Remove,
+        MarksChange::Ease(i) => KeyframesChange::Ease(*project::Ease::ALL.get(i)?),
+    };
+    Some(project::Command::ChangeKeyframes {
+        sequence: seq.id,
+        clip: ClipId(clip),
+        frames: marks.iter().map(|at| time(*at)).collect(),
+        change,
+    })
+}
+
+/// `project` with the keyframe marks being dragged on `timeline` where
+/// they are now, for the viewer to show; `None` when none are dragged (or
+/// they can't go there).
+pub fn keyframes_moved(timeline: &ui_kit::TimelineView, project: &Project) -> Option<Project> {
+    let (clip, marks, by) = timeline.keyframes_being_moved()?;
+    let command = keyframes_command(
+        project.active()?,
+        clip,
+        marks,
+        ui_kit::timeline::MarksChange::Move(by),
+    )?;
+    command.apply(project).ok()
+}
+
+/// Clicking a clip: alone, or added to (or taken out of) the selection.
 pub fn select(selected: &mut Vec<ClipId>, clip: ClipId, add: bool) {
     if !add {
         selected.clear();
@@ -557,8 +640,66 @@ mod tests {
         }
         let clip = &keyed.active().unwrap().video_tracks[0].clips[0];
         let marks = keyframe_marks(clip, project::Rate::FPS_60);
+        let at: Vec<f64> = marks.iter().map(|m| m.at).collect();
         // The one asked for at 30 s went on the clip's last frame (10 s long).
-        assert_eq!(marks, vec![1.0, 3.0, 599.0 / 60.0]);
+        assert_eq!(at, vec![1.0, 3.0, 599.0 / 60.0]);
+        assert_eq!(marks[0].keyed, ["opacity"]);
+        assert_eq!(marks[1].keyed, ["size"]);
+        assert_eq!(marks[1].ease, Some(0), "linear");
+    }
+
+    #[test]
+    fn a_mark_says_every_number_keyed_on_its_frame_once() {
+        let project = crate::inspector::tests::project_with_a_clip();
+        let sequence = project.active_sequence;
+        let clip = project.active().unwrap().video_tracks[0].clips[0].id;
+        let mut keyed = project::Command::Keyframe {
+            sequence,
+            clip,
+            at: project::Time::seconds(2),
+            fields: vec![
+                project::LookField::Opacity,
+                project::LookField::X,
+                project::LookField::Y,
+            ],
+            change: project::animate::KeyframeChange::Add,
+        }
+        .apply(&project)
+        .unwrap();
+        keyed = project::Command::Keyframe {
+            sequence,
+            clip,
+            at: project::Time::seconds(2),
+            fields: vec![project::LookField::Opacity],
+            change: project::animate::KeyframeChange::Ease(project::Ease::Hold),
+        }
+        .apply(&keyed)
+        .unwrap();
+        let clip = &keyed.active().unwrap().video_tracks[0].clips[0];
+        let marks = keyframe_marks(clip, project::Rate::FPS_60);
+        assert_eq!(marks[0].keyed, ["position", "opacity"]);
+        assert_eq!(marks[0].ease, None, "position goes on evenly, opacity holds");
+    }
+
+    #[test]
+    fn a_drag_of_marks_is_one_step_in_whole_frames() {
+        use ui_kit::timeline::MarksChange;
+        let project = crate::inspector::tests::project_with_a_clip();
+        let seq = project.active().unwrap();
+        let clip = seq.video_tracks[0].clips[0].id;
+        let rate = seq.settings.frame_rate;
+        let frame = rate.frame_start(1).as_secs_f64();
+        let command = keyframes_command(seq, clip.0, &[1.0], MarksChange::Move(-3.1 * frame)).unwrap();
+        let project::Command::ChangeKeyframes { frames, change, .. } = command else {
+            panic!("{command:?}");
+        };
+        assert_eq!(frames, [project::Time::seconds(1)]);
+        assert_eq!(
+            change,
+            project::animate::KeyframesChange::Move(project::Time::ZERO - rate.frame_start(3))
+        );
+        assert!(keyframes_command(seq, clip.0, &[1.0], MarksChange::Move(0.2 * frame)).is_none());
+        assert!(keyframes_command(seq, clip.0, &[1.0], MarksChange::Ease(9)).is_none());
     }
 
     use super::*;
