@@ -91,6 +91,7 @@ fn rich_project() -> Project {
         speed: Default::default(),
         look: Default::default(),
         sound: Default::default(),
+        keyframes: Default::default(),
     };
     // The picture in a corner, cut a little, slightly see-through and warmer.
     let look = project::Look {
@@ -105,8 +106,31 @@ fn rich_project() -> Project {
         temperature: 150_000,
         ..project::Look::PLAIN
     };
+    // It fades in over its first second and slides right, then holds
+    // its place until a jump (keyframes, format 10).
+    let mut keyframes = project::Keyframes::default();
+    let from = Rate::NTSC_60.frame_start(90);
+    let none = (Time::ZERO, Time::ZERO);
+    keyframes.set(project::LookField::Opacity, from, none, 0);
+    keyframes.set(
+        project::LookField::Opacity,
+        from + Time::seconds(1),
+        none,
+        900_000,
+    );
+    keyframes.set(project::LookField::X, from, none, 320_000);
+    keyframes.set(project::LookField::X, from + Time::seconds(2), none, 360_000);
+    keyframes.set(project::LookField::Y, from, none, 280_000);
+    keyframes.set(project::LookField::Y, from + Time::seconds(2), none, 280_000);
+    let hold = (from, from + Time::from_ratio(1, 120).expect("half a frame"));
+    keyframes.set_ease(project::LookField::X, hold, project::Ease::Smooth);
+    keyframes.set(project::LookField::Scale, from + Time::seconds(5), none, 300_000);
+    keyframes.set(project::LookField::Scale, from + Time::seconds(6), none, 450_000);
+    let at_five = (from + Time::seconds(5), from + Time::seconds(6));
+    keyframes.set_ease(project::LookField::Scale, at_five, project::Ease::Hold);
     seq.video_tracks[0].clips.push_back(Clip {
         look,
+        keyframes,
         ..clip(v_clip, 0)
     });
     // The game sound a little quieter, a little to the left, fading in and out.
@@ -176,6 +200,26 @@ fn version_8_sample_opens_with_plain_sound() {
 }
 
 #[test]
+fn version_9_sample_opens_without_keyframes() {
+    let project = file::load(&sample_path(9)).expect("the version 9 sample opens");
+    let seq = project.active().expect("an open timeline");
+    let picture = &seq.video_tracks[0].clips[0];
+    assert_eq!(picture.look.opacity, 900_000, "format 9 kept the look");
+    assert_eq!(
+        seq.audio_tracks[0].clips[0].sound.gain_mdb, -3_000,
+        "and the sound"
+    );
+    for clip in seq.tracks().flat_map(|t| t.clips.iter()) {
+        assert!(clip.keyframes.is_empty(), "format 9 had no keyframes");
+        assert_eq!(
+            clip.look_at(clip.start),
+            clip.look,
+            "so a clip looks the same all along"
+        );
+    }
+}
+
+#[test]
 fn current_format_sample_matches_the_model() {
     let path = sample_path(FORMAT_VERSION);
     if std::env::var_os("WRITE_SAMPLES").is_some() {
@@ -219,8 +263,8 @@ fn template_version_1_sample_opens() {
     );
 }
 
-/// The version 1 sample was written before clips had a `look` or a
-/// `sound`. Apart from
+/// The version 1 sample was written before clips had a `look`, a `sound`
+/// or `keyframes`. Apart from
 /// that, it is the template the model gives today.
 #[test]
 fn the_stored_template_matches_the_model_but_for_what_came_later() {
@@ -232,6 +276,7 @@ fn the_stored_template_matches_the_model_but_for_what_came_later() {
     for clip in tracks.flat_map(|t| t.clips.iter_mut()) {
         clip.look = project::Look::PLAIN;
         clip.sound = project::Sound::PLAIN;
+        clip.keyframes = project::Keyframes::default();
     }
     assert_eq!(read_template(1), expected);
 }

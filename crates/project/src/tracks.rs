@@ -181,6 +181,7 @@ mod tests {
                 speed: Default::default(),
                 look: Default::default(),
                 sound: Default::default(),
+                keyframes: Default::default(),
             },
         }
         .apply(p)

@@ -99,6 +99,8 @@ actions! {
     NextFrame, Viewer, "Forward one frame";
     GoToStart, Viewer, "Go to the start";
     GoToEnd, Viewer, "Go to the end";
+    PreviousKeyframe, Viewer, "Back to the selected clip's previous keyframe";
+    NextKeyframe, Viewer, "On to the selected clip's next keyframe";
     ToggleLoop, Viewer, "Loop playback inside the region";
     FullScreenViewer, Viewer, "Viewer full screen, and back";
     PictureHandles, Viewer, "Move and resize the selected clip on the picture: handles on or off";

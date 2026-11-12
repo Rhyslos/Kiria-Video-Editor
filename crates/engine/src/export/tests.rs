@@ -1,5 +1,6 @@
 use super::*;
 use crate::compose::Composing;
+use project::look::ONE;
 use project::{Command, Region, SequenceSettings};
 
 fn fixture(name: &str) -> PathBuf {
@@ -202,6 +203,110 @@ fn an_exported_fade_and_pan_are_in_the_file() {
     let was = (mixed.iter().step_by(2).map(|v| v * v).sum::<f32>() / (mixed.len() / 2) as f32).sqrt();
     let is = side(0, 0.75, 0.95);
     assert!((is / was - 1.0).abs() < 0.25, "mixed {was}, exported {is}");
+}
+
+/// The luma plane of the exported picture at `seconds`, with its width.
+fn luma_at(path: &Path, seconds: f64) -> (Vec<u8>, usize) {
+    let made = media::describe(path).unwrap();
+    let video = made.info.video.expect("a picture stream");
+    let mut decoder = media::VideoDecoder::open(path, video.index, 0, Decoding::Software).unwrap();
+    let media::Decoded::Yuv(frame) = decoder.picture_at(seconds, video.width, video.height).unwrap() else {
+        panic!("planes expected");
+    };
+    let (width, luma_bytes) = (frame.width as usize, (frame.width * frame.height) as usize);
+    let planes = frame.into_planes();
+    (planes.as_ref()[..luma_bytes].to_vec(), width)
+}
+
+/// How bright the left and the right third of a picture are, on average.
+fn thirds(luma: &[u8], width: usize) -> (f64, f64) {
+    let mean = |from: usize, to: usize| {
+        let (mut sum, mut count) = (0u64, 0u64);
+        for row in luma.chunks(width) {
+            for value in &row[from..to] {
+                sum += u64::from(*value);
+                count += 1;
+            }
+        }
+        sum as f64 / count.max(1) as f64
+    };
+    (mean(0, width / 3), mean(width * 2 / 3, width))
+}
+
+#[test]
+fn an_animated_place_and_opacity_change_across_the_exported_frames() {
+    let Some(devices) = devices() else {
+        eprintln!("no graphics device here: exporting isn't checked");
+        return;
+    };
+    // A quarter-size picture going from the left to the right over the
+    // first second, from faint to fully opaque.
+    let (mut project, seq) = recording();
+    let clip = project.active().unwrap().video_tracks[0].clips[0].id;
+    let keyed = vec![
+        project::LookField::X,
+        project::LookField::Y,
+        project::LookField::Opacity,
+    ];
+    for at in [Time::ZERO, Time::seconds(1)] {
+        project = Command::Keyframe {
+            sequence: seq,
+            clip,
+            at,
+            fields: keyed.clone(),
+            change: project::animate::KeyframeChange::Add,
+        }
+        .apply(&project)
+        .unwrap();
+    }
+    for (at, x, opacity) in [(Time::ZERO, -300_000, 200_000), (Time::seconds(1), 300_000, ONE)] {
+        project = Command::SetLookAt {
+            sequence: seq,
+            clip,
+            at,
+            look: project::Look {
+                x,
+                scale: 250_000,
+                opacity,
+                ..project::Look::PLAIN
+            },
+        }
+        .apply(&project)
+        .unwrap();
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("moving.mp4");
+    let settings = ExportSettings {
+        path: path.clone(),
+        range: Some((Time::ZERO, Time::seconds(1))),
+        quality: Quality::Small,
+        software: true,
+    };
+    let export = Export::start(project, seq, settings, devices, || {});
+    let Outcome::Done(_) = wait(&export) else {
+        panic!("the export did not finish well");
+    };
+    let (early, width) = luma_at(&path, 0.05);
+    let (late, _) = luma_at(&path, 0.95);
+    let (early_left, early_right) = thirds(&early, width);
+    let (late_left, late_right) = thirds(&late, width);
+    assert!(
+        early_left > early_right + 2.0,
+        "on the left first: {early_left} against {early_right}"
+    );
+    assert!(
+        late_right > late_left + 2.0,
+        "on the right at the end: {late_right} against {late_left}"
+    );
+    // Fainter at the start than at the end: the brightest part of the
+    // picture is much darker while it is barely opaque.
+    let brightest = |luma: &[u8]| luma.iter().copied().max().unwrap_or(0);
+    assert!(
+        u32::from(brightest(&early)) + 40 < u32::from(brightest(&late)),
+        "faint {} then opaque {}",
+        brightest(&early),
+        brightest(&late)
+    );
 }
 
 #[test]

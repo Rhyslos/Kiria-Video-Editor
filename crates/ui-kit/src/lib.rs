@@ -11,6 +11,7 @@ pub mod fonts;
 pub mod icon;
 pub mod inspector;
 pub mod keyboard;
+pub mod keyframe;
 pub mod layout;
 pub mod master;
 pub mod picture_handles;

@@ -52,6 +52,16 @@ pub const MOUSE: &[MouseAction] = &[
     ),
     on(
         Context::Viewer,
+        "Click the diamond beside a value in the inspector",
+        "Add a keyframe for it at the playhead, or remove the one there; the arrows beside it move the playhead to its previous or next keyframe",
+    ),
+    on(
+        Context::Viewer,
+        "Right-click a filled diamond in the inspector",
+        "Choose how the value goes on to the next keyframe: linear, hold or smooth",
+    ),
+    on(
+        Context::Viewer,
         "Double-click the picture in the viewer's own window",
         "Fill that screen with it, or give the screen back",
     ),
@@ -107,6 +117,11 @@ pub const MOUSE: &[MouseAction] = &[
         "Select it; with Shift or Ctrl, add it to the selection",
     ),
     on(Context::Timeline, "Click an empty place", "Select nothing"),
+    on(
+        Context::Timeline,
+        "Click a diamond along the selected clip's bottom edge",
+        "Move the playhead to that keyframe",
+    ),
     on(
         Context::Timeline,
         "Drag a clip, or its edge",

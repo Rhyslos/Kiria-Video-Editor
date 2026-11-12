@@ -210,6 +210,7 @@ impl Template {
                     if clip.look.check().is_err() {
                         problems.push(format!("{place} has a look out of range"));
                     }
+                    problems.extend(clip.keyframes.problems(&place));
                     previous_end = clip.end();
                 }
             }
@@ -247,6 +248,8 @@ fn cut_to(clip: &Clip, range: Region) -> Option<Clip> {
         source_in: clip.source_at(start),
         duration: end - start,
         sound: sound.fitted(end - start),
+        // Only the keyframes of the part kept, with its ends held.
+        keyframes: clip.keyframes.cut_to(clip.source_at(start), clip.source_at(end)),
         ..clip.clone()
     })
 }
@@ -704,6 +707,7 @@ mod tests {
             speed,
             look: Look::PLAIN,
             sound: Default::default(),
+            keyframes: Default::default(),
         };
         for (track, clip) in [
             (v1, clip(video, 0, 0, 0, 10, Some(title_link), Speed::NORMAL)),
