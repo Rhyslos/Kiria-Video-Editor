@@ -126,6 +126,8 @@ actions! {
     ShorterTracks, Timeline, "Shorter tracks (the area under the pointer, or all)";
     UsualTrackHeights, Timeline, "Tracks back to their usual height";
     RoughCut, Timeline, "Timeline view: rough cut or full";
+    CompactTracks, Timeline, "Compact tracks: every track a thin strip, to see many at a glance";
+    TrackDivider, Timeline, "Divider between video and audio tracks, or one list that scrolls together";
     AddVideoTrack, Timeline, "Add a video track (on top)";
     AddAudioTrack, Timeline, "Add an audio track (at the bottom)";
 }

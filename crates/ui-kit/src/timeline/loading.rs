@@ -133,10 +133,13 @@ pub(super) fn draw_on_clip(p: &Painter, theme: &Theme, clip: Rect, loading: &Loa
     let inside = p.with_clip_rect(clip.shrink(1.0));
     let failed = loading.state == LoadState::Failed;
     if !failed {
-        let bar = Rect::from_min_max(
-            pos2(seen.left() + 2.0, clip.bottom() - 5.0),
-            pos2(seen.right() - 2.0, clip.bottom() - 2.0),
-        );
+        // In a short clip (compact tracks) a thin line along its bottom
+        // edge, under the name.
+        let (top, bottom) = match clip.height() < 24.0 {
+            true => (clip.bottom() - 3.0, clip.bottom() - 1.0),
+            false => (clip.bottom() - 5.0, clip.bottom() - 2.0),
+        };
+        let bar = Rect::from_min_max(pos2(seen.left() + 2.0, top), pos2(seen.right() - 2.0, bottom));
         inside.rect_filled(bar, 1.5, Color32::from_black_alpha(110));
         let done = bar.left() + bar.width() * loading.done();
         if done > bar.left() {

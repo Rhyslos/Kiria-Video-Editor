@@ -396,6 +396,28 @@ impl Editor {
                 .into();
                 self.settings.save(&self.data_dir)
             }
+            Action::CompactTracks => {
+                self.settings.compact_tracks = !self.settings.compact_tracks;
+                self.timeline.compact = self.settings.compact_tracks;
+                self.status = if self.settings.compact_tracks {
+                    "Compact tracks: every track a thin strip. The heights you gave them come back when you turn it off"
+                } else {
+                    "Tracks at their own heights again"
+                }
+                .into();
+                self.settings.save(&self.data_dir)
+            }
+            Action::TrackDivider => {
+                self.settings.one_track_list = !self.settings.one_track_list;
+                self.timeline.divider = !self.settings.one_track_list;
+                self.status = if self.settings.one_track_list {
+                    "No divider: video and audio tracks are one list that scrolls together"
+                } else {
+                    "The divider between video and audio tracks is back where it was"
+                }
+                .into();
+                self.settings.save(&self.data_dir)
+            }
             // With the viewer in its own window, that window fills its screen.
             Action::FullScreenViewer if self.display.window_open() => {
                 self.display.switch_window_full_screen();
@@ -429,6 +451,12 @@ impl Editor {
             | Action::TallerTracks
             | Action::ShorterTracks
             | Action::UsualTrackHeights => {
+                if self.settings.compact_tracks && action != Action::ZoomIn && action != Action::ZoomOut {
+                    self.status = format!(
+                        "Compact tracks are all one height: turn them off ({}) to change track heights",
+                        self.shortcuts.keys_or_name(Action::CompactTracks)
+                    );
+                }
                 self.timeline.step(match action {
                     Action::ZoomIn => ui_kit::ViewStep::ZoomIn,
                     Action::ZoomOut => ui_kit::ViewStep::ZoomOut,
@@ -1395,12 +1423,22 @@ impl Editor {
             None,
             height,
             &self.shortcuts,
-            self.display.state(true),
+            self.display_state(true),
             crate::viewer::Stage::default(),
             |_, _, _| {},
         );
         if let Some(command) = command {
             self.run_action(command);
+        }
+    }
+
+    /// What the Display menu shows as on: the viewer's ways of showing the
+    /// picture and the timeline's ways of looking at its tracks.
+    fn display_state(&self, full_screen: bool) -> ui_kit::viewer::Display {
+        ui_kit::viewer::Display {
+            compact_tracks: self.settings.compact_tracks,
+            track_divider: !self.settings.one_track_list,
+            ..self.display.state(full_screen)
         }
     }
 
@@ -1881,6 +1919,7 @@ impl Editor {
             let playhead = self.viewer.playhead;
             let snapping = self.timeline.snapping;
             let on_picture = self.settings.picture_handles;
+            let display_state = self.display_state(false);
             let (handles, inspector) = (&mut self.picture_handles, &mut self.inspector);
             let (theme, selected) = (&self.theme, &self.selected);
             let mut left = ui.new_child(
@@ -1889,11 +1928,7 @@ impl Editor {
                     .layout(egui::Layout::top_down(egui::Align::Min)),
             );
             // Split view: the selected clip raw, beside the timeline's picture.
-            let (display_state, split, away) = (
-                self.display.state(false),
-                self.display.split(),
-                self.display.away(),
-            );
+            let (split, away) = (self.display.split(), self.display.away());
             let display = &mut self.display;
             let mut source = |ui: &mut egui::Ui, size: egui::Vec2| {
                 display.source_ui(ui, theme, size, p, selected, playhead, quality_before);
@@ -1982,6 +2017,8 @@ impl Editor {
             // Sound being set in the inspector shows on its clips at once.
             timeline_panel::show_sounds(&mut drawn, self.inspector.sounds_being_set());
             self.timeline.rough_cut = self.settings.rough_cut;
+            self.timeline.compact = self.settings.compact_tracks;
+            self.timeline.divider = !self.settings.one_track_list;
             if self.settings.rough_cut {
                 timeline_panel::fold_sound(&mut drawn);
             }
