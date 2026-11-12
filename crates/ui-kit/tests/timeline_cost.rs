@@ -26,6 +26,7 @@ fn tracks(count: usize, clips_each: usize, clip_len: f64) -> Vec<TimelineTrack> 
                     waveform: None,
                     pictures: None,
                     loading: None,
+                    sound: Default::default(),
                 })
                 .collect(),
             muted: false,

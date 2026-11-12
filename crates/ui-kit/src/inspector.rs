@@ -139,6 +139,60 @@ pub fn pair(
 /// A row: `label`, then a slider across the rest of the row with its
 /// number after it. Double-click puts it back to its usual value.
 pub fn slider(ui: &mut Ui, theme: &Theme, label: &str, value: &mut f64, how: Number) -> Touched {
+    slider_row(ui, theme, label, value, how, None)
+}
+
+/// How a number is written in words of its own ("L 20", "Off",
+/// "0.50 s · 30 frames") and how typed text is read back. Text that
+/// `read` can't make sense of leaves the number as it was.
+#[derive(Clone, Copy)]
+pub struct Words<'a> {
+    pub write: &'a dyn Fn(f64) -> String,
+    pub read: &'a dyn Fn(&str) -> Option<f64>,
+}
+
+impl std::fmt::Debug for Words<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Words")
+    }
+}
+
+/// [`slider`], with the number written in `words`.
+pub fn slider_in_words(
+    ui: &mut Ui,
+    theme: &Theme,
+    label: &str,
+    value: &mut f64,
+    how: Number,
+    words: Words,
+) -> Touched {
+    slider_row(ui, theme, label, value, how, Some(words))
+}
+
+/// [`number`], with the number written in `words`.
+pub fn number_in_words(
+    ui: &mut Ui,
+    theme: &Theme,
+    label: &str,
+    value: &mut f64,
+    how: Number,
+    words: Words,
+) -> Touched {
+    row(ui, theme, label, |ui| {
+        let before = *value;
+        let response = ui.add(worded(value_drag(value, how), Some(words)));
+        touched(&response, value, before, how)
+    })
+}
+
+fn slider_row(
+    ui: &mut Ui,
+    theme: &Theme,
+    label: &str,
+    value: &mut f64,
+    how: Number,
+    words: Option<Words>,
+) -> Touched {
     row(ui, theme, label, |ui| {
         // The number has a fixed place at the end of the row; the slider
         // takes what is left, so rows line up whatever the numbers say.
@@ -151,16 +205,27 @@ pub fn slider(ui: &mut Ui, theme: &Theme, label: &str, value: &mut f64, how: Num
                 .clamping(egui::SliderClamping::Always),
         );
         let on_slider = touched(&slider, value, before, how);
-        let typed = ui.add_sized(
-            [VALUE_WIDTH, 20.0],
-            egui::DragValue::new(value)
-                .range(how.range.0..=how.range.1)
-                .speed(how.per_point)
-                .fixed_decimals(how.decimals)
-                .suffix(how.suffix),
-        );
+        let typed = ui.add_sized([VALUE_WIDTH, 20.0], worded(value_drag(value, how), words));
         on_slider.and(touched(&typed, value, before, how))
     })
+}
+
+/// The number to drag sideways or type, as `how` says.
+fn value_drag(value: &mut f64, how: Number) -> egui::DragValue<'_> {
+    egui::DragValue::new(value)
+        .range(how.range.0..=how.range.1)
+        .speed(how.per_point)
+        .fixed_decimals(how.decimals)
+        .suffix(how.suffix)
+}
+
+fn worded<'a>(drag: egui::DragValue<'a>, words: Option<Words<'a>>) -> egui::DragValue<'a> {
+    match words {
+        Some(words) => drag
+            .custom_formatter(move |value, _| (words.write)(value))
+            .custom_parser(move |text| (words.read)(text)),
+        None => drag,
+    }
 }
 
 fn row(ui: &mut Ui, theme: &Theme, label: &str, values: impl FnOnce(&mut Ui) -> Touched) -> Touched {
@@ -174,13 +239,7 @@ fn row(ui: &mut Ui, theme: &Theme, label: &str, values: impl FnOnce(&mut Ui) -> 
 
 fn drag(ui: &mut Ui, value: &mut f64, how: Number) -> Touched {
     let before = *value;
-    let response = ui.add(
-        egui::DragValue::new(value)
-            .range(how.range.0..=how.range.1)
-            .speed(how.per_point)
-            .fixed_decimals(how.decimals)
-            .suffix(how.suffix),
-    );
+    let response = ui.add(value_drag(value, how));
     touched(&response, value, before, how)
 }
 

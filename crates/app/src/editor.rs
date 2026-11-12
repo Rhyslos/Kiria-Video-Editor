@@ -1520,12 +1520,12 @@ impl Editor {
             self.run_action(Action::PictureHandles);
         }
         for command in commands {
-            let speed = matches!(command, Command::SetSpeed { .. });
+            let speed = matches!(command, Command::SetSpeed { .. } | Command::SetSound { .. });
             if let Err(err) = self.with_document(|d| d.apply(command)) {
                 self.errors.push(&err);
             }
             if speed {
-                // The sound follows the clip's new length.
+                // The sound follows the clip's new length or sound.
                 self.play_on_with_new_mix();
             }
         }
@@ -1888,6 +1888,8 @@ impl Editor {
                 |m, stream| waveforms.get(jobs, &ctx, m, stream),
                 |m, stream| pictures.get(jobs, &ctx, m, stream),
             );
+            // Sound being set in the inspector shows on its clips at once.
+            timeline_panel::show_sounds(&mut drawn, self.inspector.sounds_being_set());
             self.timeline.rough_cut = self.settings.rough_cut;
             if self.settings.rough_cut {
                 timeline_panel::fold_sound(&mut drawn);

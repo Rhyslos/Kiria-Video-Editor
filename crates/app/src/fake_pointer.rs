@@ -25,6 +25,8 @@ pub struct FakePointer {
     pub right_click: bool,
     /// Click the left button twice at `at` (when nothing is dragged).
     pub double_click: bool,
+    /// Points the wheel turns, down, with the pointer resting there.
+    pub scroll: f32,
 }
 
 impl FakePointer {
@@ -42,6 +44,7 @@ impl FakePointer {
             release: false,
             right_click: false,
             double_click: false,
+            scroll: 0.0,
         }
     }
 
@@ -65,6 +68,13 @@ impl FakePointer {
             (f, Some(to)) if self.release && f == PRESSES + DRAG_FRAMES + 2 => {
                 vec![button(to, PointerButton::Primary, false)]
             }
+            (PRESSES, None) if self.scroll != 0.0 => vec![Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, -self.scroll),
+                phase: egui::TouchPhase::Move,
+                source: egui::MouseWheelSource::Unknown,
+                modifiers: egui::Modifiers::NONE,
+            }],
             (PRESSES, None) if self.right_click => vec![button(self.at, PointerButton::Secondary, true)],
             (f, None) if self.right_click && f == PRESSES + 1 => {
                 vec![button(self.at, PointerButton::Secondary, false)]
@@ -101,6 +111,8 @@ impl FakePointer {
             Some(_) => PRESSES + DRAG_FRAMES + 2,
             None if self.right_click => PRESSES + 3,
             None if self.double_click => PRESSES + 5,
+            // Scrolling glides for a while.
+            None if self.scroll != 0.0 => PRESSES + 30,
             None => APPEARS + 2,
         }
     }
@@ -117,6 +129,24 @@ mod tests {
         assert_eq!(FakePointer::parse_pos(" 12.5 , 7 "), Some(pos2(12.5, 7.0)));
         assert_eq!(FakePointer::parse_pos("640"), None);
         assert_eq!(FakePointer::parse_pos("here,there"), None);
+    }
+
+    #[test]
+    fn the_wheel_turns_once_where_the_pointer_rests() {
+        let pointer = FakePointer {
+            scroll: 400.0,
+            ..FakePointer::resting(pos2(10.0, 20.0))
+        };
+        let wheel: Vec<u64> = (0..60)
+            .filter(|frame| {
+                pointer
+                    .events(*frame)
+                    .iter()
+                    .any(|e| matches!(e, Event::MouseWheel { delta, .. } if delta.y == -400.0))
+            })
+            .collect();
+        assert_eq!(wheel, [PRESSES]);
+        assert!(pointer.settled_at() > PRESSES);
     }
 
     #[test]

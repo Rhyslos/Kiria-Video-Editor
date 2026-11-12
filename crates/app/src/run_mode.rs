@@ -46,7 +46,9 @@ pub struct Options {
     /// screenshots of what pointing and dragging show). `--release` after
     /// `--drag-to` lets go at the end, so the drag is carried out;
     /// `--right-click` after `--pointer` clicks the right button there, for
-    /// screenshots of menus, and `--double-click` the left button twice.
+    /// screenshots of menus, `--double-click` the left button twice, and
+    /// `--scroll 400` turns the wheel 400 points down there (to see the
+    /// bottom of a panel).
     pub pointer: Option<crate::fake_pointer::FakePointer>,
     /// Show the question about video decoding that stopped the app (`--decoding-warning`, for screenshots).
     pub decoding_warning: bool,
@@ -129,6 +131,16 @@ impl Options {
                     Some(pointer) if pointer.drag_to.is_none() => pointer.double_click = true,
                     _ => return Err(format!("{arg} needs --pointer before it, and no --drag-to")),
                 },
+                "--scroll" => {
+                    let points: f32 = args
+                        .next()
+                        .and_then(|s| s.parse().ok())
+                        .ok_or("--scroll needs a number of points")?;
+                    match &mut options.pointer {
+                        Some(pointer) if pointer.drag_to.is_none() => pointer.scroll = points,
+                        _ => return Err("--scroll needs --pointer before it, and no --drag-to".into()),
+                    }
+                }
                 "--hold-reading" => {
                     let share = args
                         .next()
@@ -185,6 +197,9 @@ mod tests {
             Some(0.4)
         );
         assert!(parse(&["p.x", "--hold-reading", "soon"]).is_err());
+        let o = parse(&["p.x", "--pointer", "1200,400", "--scroll", "400"]).unwrap();
+        assert_eq!(o.pointer.map(|p| p.scroll), Some(400.0));
+        assert!(parse(&["p.x", "--scroll", "400"]).is_err());
         let o = parse(&["p.x", "--pointer", "640,420", "--drag-to", "640,480"]).unwrap();
         let pointer = o.pointer.unwrap();
         assert_eq!(
