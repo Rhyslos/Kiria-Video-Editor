@@ -398,17 +398,38 @@ impl ProxyBuilds {
         }
     }
 
+    /// Where the proxies of `project`'s video files are (or would be).
+    pub fn project_proxies(&self, project: &Project) -> Vec<PathBuf> {
+        project
+            .media
+            .values()
+            .filter_map(|m| video_stream(m).map(|stream| self.shelf.file_for(&m.fingerprint, stream)))
+            .collect()
+    }
+
+    /// The cache is being cleared (Settings › Cache): the build under way
+    /// stops, and the project's files are not built again by themselves
+    /// this session, as after "Delete proxy" (a build asked for by hand
+    /// still is).
+    pub fn cleared(&mut self) {
+        if let Some(build) = &self.build {
+            build.handle.cancel();
+        }
+        self.asked.clear();
+        for file in self.files.values_mut() {
+            if !matches!(file.state, State::Looking(_) | State::Deleting(_)) {
+                file.state = State::Declined;
+            }
+        }
+    }
+
     /// Drops the proxies used longest ago, other than the project's, to
     /// stay inside the budget.
     fn start_trim(&mut self, jobs: &JobSystem, project: &Project) {
         if self.trim.is_some() {
             return;
         }
-        let keep: Vec<PathBuf> = project
-            .media
-            .values()
-            .filter_map(|m| video_stream(m).map(|stream| self.shelf.file_for(&m.fingerprint, stream)))
-            .collect();
+        let keep = self.project_proxies(project);
         let (shelf, budget) = (Arc::clone(&self.shelf), self.budget);
         self.trim = Some(jobs.submit(
             PoolKind::Analysis,

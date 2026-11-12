@@ -121,6 +121,11 @@ pub struct Editor {
     play_when_ready: bool,
     show_timeline_settings: bool,
     show_settings: bool,
+    /// Settings › Cache: what the cache takes, and clearing it.
+    cache_cleanup: crate::cache_cleanup::CacheCleanup,
+    /// The Settings window was open last frame (the cache is measured
+    /// when it opens).
+    settings_were_open: bool,
     show_diagnostics: bool,
     show_search: bool,
     search_text: String,
@@ -332,6 +337,8 @@ impl Editor {
             play_when_ready,
             show_timeline_settings: false,
             show_settings: false,
+            cache_cleanup: Default::default(),
+            settings_were_open: false,
             show_diagnostics: false,
             show_search: false,
             search_text: String::new(),
@@ -2378,6 +2385,11 @@ impl Editor {
     }
 
     fn settings_window(&mut self, ctx: &egui::Context) {
+        if self.show_settings && !self.settings_were_open {
+            self.measure_cache();
+        }
+        self.settings_were_open = self.show_settings;
+        let has_project = self.document.is_some();
         let mut open = self.show_settings;
         let before = self.settings.clone();
         egui::Window::new("Settings")
@@ -2452,6 +2464,9 @@ impl Editor {
                 });
                 ui.label(egui::RichText::new(self.settings.jump_picture.explained()).color(self.theme.muted));
                 ui.add_space(8.0);
+                ui.heading("Cache");
+                self.cache_cleanup.rows(ui, &self.theme, has_project);
+                ui.add_space(8.0);
                 ui.heading("Graphics");
                 if let Some(err) = self.graphics.settings_row(ui, &self.theme) {
                     self.errors.push(&err);
@@ -2470,6 +2485,14 @@ impl Editor {
                 });
             });
         self.show_settings = open;
+        let project_proxies = self.project_proxies();
+        let shelf = self.proxies.shelf();
+        if let Some(crate::cache_cleanup::Asked::Clearing(_)) =
+            self.cache_cleanup
+                .question(ctx, &self.theme, &self.jobs, &shelf, project_proxies)
+        {
+            self.proxies.cleared();
+        }
         if self.settings != before {
             if self.settings.theme != before.theme {
                 self.theme = self.settings.theme.theme();
@@ -2483,6 +2506,20 @@ impl Editor {
                 self.errors.push(&err);
             }
         }
+    }
+
+    /// Where the open project's proxies are (none without a project).
+    fn project_proxies(&self) -> Vec<std::path::PathBuf> {
+        self.document
+            .as_ref()
+            .map(|d| self.proxies.project_proxies(d.project()))
+            .unwrap_or_default()
+    }
+
+    /// Measures the cache on a worker, for Settings › Cache.
+    fn measure_cache(&mut self) {
+        let (project, shelf) = (self.project_proxies(), self.proxies.shelf());
+        self.cache_cleanup.measure(&self.jobs, &shelf, project);
     }
 
     fn search_window(&mut self, ctx: &egui::Context) {
@@ -2738,6 +2775,16 @@ impl eframe::App for Editor {
         let project = self.document.as_ref().map(Document::project);
         if let Some(err) = self.proxies.poll(&self.jobs, &ctx, project, now) {
             self.errors.push(&err);
+        }
+        let (problem, measure_again) = self.cache_cleanup.poll();
+        if let Some(err) = problem {
+            self.errors.push(&err);
+        }
+        if measure_again {
+            self.measure_cache();
+        }
+        if self.cache_cleanup.busy() {
+            ctx.request_repaint_after(Duration::from_millis(100));
         }
         self.relinking(&ctx);
         self.frame_grabs(&ctx);

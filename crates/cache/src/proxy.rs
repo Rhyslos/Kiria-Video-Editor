@@ -105,6 +105,14 @@ pub struct Shelf {
     retiring: Mutex<HashSet<PathBuf>>,
 }
 
+/// What some proxies take on disk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Usage {
+    pub bytes: u64,
+    /// How many proxies.
+    pub files: usize,
+}
+
 /// How a file was judged for a proxy ([`judge`]).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Judgement {
@@ -232,25 +240,75 @@ impl Shelf {
         }
         self.retiring().insert(path.clone());
         self.changed();
-        let mut tries = 0;
-        loop {
-            match std::fs::remove_file(&path) {
-                Ok(()) => break,
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => break,
-                Err(err) if tries < DELETE_TRIES => {
-                    tracing::debug!(file = %path.display(), "a proxy is still in use: {err}");
-                    tries += 1;
-                    std::thread::sleep(DELETE_RETRY);
+        let removed = remove_waiting(&path).map_err(|err| {
+            AppError::new("The proxy can't be deleted")
+                .why(format!("Removing {} failed: {err}.", path.display()))
+                .fix("It is not used any more. Close other programs that may have it open, then try again.")
+        });
+        self.retiring().remove(&path);
+        removed.map(|()| true)
+    }
+
+    /// What the proxies take on disk: those at `only` (a project's, from
+    /// [`Shelf::file_for`]), or all of them. Reads the folder: run it on a
+    /// worker.
+    pub fn usage(&self, only: Option<&[PathBuf]>) -> Usage {
+        self.listed()
+            .into_iter()
+            .filter(|(path, _, _)| only.is_none_or(|only| only.contains(path)))
+            .fold(Usage::default(), |sum, (_, bytes, _)| Usage {
+                bytes: sum.bytes + bytes,
+                files: sum.files + 1,
+            })
+    }
+
+    /// Deletes the proxies at `only` (a project's), or every proxy and the
+    /// files of builds a program left behind. Only proxy files in the
+    /// cache folder are ever removed. Each is no longer offered at once,
+    /// and may take a moment to go while a preview worker lets go of it:
+    /// run this on a worker. Returns what was removed; an error when some
+    /// proxy could not be (the others are gone).
+    pub fn clear(&self, only: Option<&[PathBuf]>) -> diag::Result<Usage> {
+        if only.is_none() {
+            self.remove_left_behind();
+        }
+        let going: Vec<(PathBuf, u64)> = self
+            .listed()
+            .into_iter()
+            .filter(|(path, _, _)| only.is_none_or(|only| only.contains(path)))
+            .map(|(path, bytes, _)| (path, bytes))
+            .collect();
+        if going.is_empty() {
+            return Ok(Usage::default());
+        }
+        self.retiring().extend(going.iter().map(|(path, _)| path.clone()));
+        self.changed();
+        let mut cleared = Usage::default();
+        let mut failed = None;
+        for (path, bytes) in &going {
+            match remove_waiting(path) {
+                Ok(()) => {
+                    cleared.bytes += bytes;
+                    cleared.files += 1;
                 }
                 Err(err) => {
-                    return Err(AppError::new("The proxy can't be deleted")
-                        .why(format!("Removing {} failed: {err}.", path.display()))
-                        .fix("It is not used any more. Close other programs that may have it open, then try again."));
+                    tracing::warn!(file = %path.display(), "a proxy could not be cleared: {err}");
+                    failed.get_or_insert((path.clone(), err));
                 }
             }
+            self.retiring().remove(path);
         }
-        self.retiring().remove(&path);
-        Ok(true)
+        match failed {
+            None => Ok(cleared),
+            Some((path, err)) => Err(AppError::new("Some of the cache could not be cleared")
+                .why(format!(
+                    "{} of {} proxies were removed; removing {} failed: {err}.",
+                    cleared.files,
+                    going.len(),
+                    path.display()
+                ))
+                .fix("Close other programs that may have it open, then clear again.")),
+        }
     }
 
     /// The proxies there are, with their size and last use, oldest first.
@@ -328,6 +386,25 @@ impl Shelf {
             if stale && path.extension().is_some_and(|e| e == BUILDING) {
                 let _ = std::fs::remove_file(&path);
             }
+        }
+    }
+}
+
+/// Removes the file at `path`, waiting a while for whoever still has it
+/// open to let go (an open file can't be removed on every system). A file
+/// that is gone already counts as removed.
+fn remove_waiting(path: &Path) -> std::io::Result<()> {
+    let mut tries = 0;
+    loop {
+        match std::fs::remove_file(path) {
+            Ok(()) => return Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(err) if tries < DELETE_TRIES => {
+                tracing::debug!(file = %path.display(), "a proxy is still in use: {err}");
+                tries += 1;
+                std::thread::sleep(DELETE_RETRY);
+            }
+            Err(err) => return Err(err),
         }
     }
 }
@@ -456,5 +533,66 @@ mod tests {
         let judged = judge(&fixture("game-3-audio.mkv"), 0, 3.0, Decoding::Software).unwrap();
         assert!(judged.longest_gap > 0.0);
         assert!(!judged.needs_proxy, "{judged:?}");
+    }
+
+    #[test]
+    fn a_projects_proxies_or_all_are_measured_and_cleared_and_nothing_else() {
+        let dir = tempfile::tempdir().unwrap();
+        let shelf = Shelf::new(dir.path(), ProxyMode::Auto);
+        let print = |n: u64| Fingerprint {
+            size: n,
+            sample_hash: format!("{n:x}"),
+        };
+        let ours = shelf.file_for(&print(1), 0);
+        let theirs = shelf.file_for(&print(2), 0);
+        std::fs::write(&ours, vec![0u8; 1000]).unwrap();
+        std::fs::write(&theirs, vec![0u8; 4000]).unwrap();
+        // Not proxies: never measured, never removed.
+        let other = dir.path().join("notes.txt");
+        std::fs::write(&other, "keep").unwrap();
+        let building = dir.path().join("3-c-0.mp4.77.building");
+        std::fs::write(&building, "half").unwrap();
+        let project = [ours.clone()];
+        assert_eq!(
+            shelf.usage(Some(&project)),
+            Usage {
+                bytes: 1000,
+                files: 1
+            }
+        );
+        assert_eq!(
+            shelf.usage(None),
+            Usage {
+                bytes: 5000,
+                files: 2
+            }
+        );
+        let generation = shelf.generation();
+        assert_eq!(
+            shelf.clear(Some(&project)).unwrap(),
+            Usage {
+                bytes: 1000,
+                files: 1
+            }
+        );
+        assert!(shelf.generation() > generation, "workers look again");
+        assert!(!ours.exists() && theirs.exists());
+        assert_eq!(shelf.ready(&print(1), 0), None);
+        assert_eq!(
+            shelf.clear(Some(&project)).unwrap(),
+            Usage::default(),
+            "nothing left of ours"
+        );
+        assert_eq!(
+            shelf.clear(None).unwrap(),
+            Usage {
+                bytes: 4000,
+                files: 1
+            }
+        );
+        assert!(!theirs.exists());
+        assert!(other.exists(), "only proxies go");
+        assert!(building.exists(), "a build under way is left alone");
+        assert_eq!(shelf.usage(None), Usage::default());
     }
 }
