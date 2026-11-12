@@ -18,11 +18,6 @@ use ui_kit::{PreviewQuality, ShortcutTable, Slot, Theme};
 /// The picture slot the Source draws from, beside the viewer's own.
 const SOURCE_SLOT: Slot = Slot(1);
 
-/// While playing, the Source follows the playhead at most this often: it
-/// is there to compare, and a second worker decoding every frame beside
-/// the viewer's would take the processor the viewer needs to keep up.
-const FOLLOW_WHILE_PLAYING: std::time::Duration = std::time::Duration::from_millis(250);
-
 /// What the Source half says when there is no clip to show.
 pub const SELECT_A_CLIP: &str = "Select a clip to see its own picture here";
 
@@ -34,8 +29,9 @@ pub struct ViewerDisplay {
     alone: Option<(MediaRef, Project)>,
     /// The viewer's own window, while it is open.
     window: Option<ViewerWindow>,
-    /// The file and moment in it the Source last asked for, and when.
-    asked: Option<(project::MediaId, Time, std::time::Instant)>,
+    /// Seconds per frame while playing, handed to the Source's viewer as
+    /// to the Program's, so it keeps up the same way.
+    playing: Option<f64>,
 }
 
 impl ViewerDisplay {
@@ -55,12 +51,25 @@ impl ViewerDisplay {
     pub fn set_split(&mut self, on: bool, viewer: &Viewer) {
         match (on, self.source.take()) {
             (true, Some(source)) => self.source = Some(source),
-            (true, None) => self.source = Some(viewer.second(SOURCE_SLOT)),
+            (true, None) => {
+                let mut source = viewer.second(SOURCE_SLOT);
+                source.set_playing(self.playing);
+                self.source = Some(source);
+            }
             (false, Some(mut source)) => {
                 source.close();
                 self.alone = None;
             }
             (false, None) => {}
+        }
+    }
+
+    /// Playback started (`Some(seconds per frame)`) or stopped (`None`):
+    /// the Source follows the playhead frame by frame, as the Program does.
+    pub fn set_playing(&mut self, frame_interval: Option<f64>) {
+        self.playing = frame_interval;
+        if let Some(source) = &mut self.source {
+            source.set_playing(frame_interval);
         }
     }
 
@@ -85,7 +94,6 @@ impl ViewerDisplay {
 
     /// Draws the Source in `size`: the clip `selected` picks, raw, at the
     /// playhead's place in it; or a quiet line when nothing is selected.
-    /// While `playing`, it follows a few times a second.
     #[allow(clippy::too_many_arguments)]
     pub fn source_ui(
         &mut self,
@@ -96,7 +104,6 @@ impl ViewerDisplay {
         selected: &[ClipId],
         playhead: Time,
         quality: PreviewQuality,
-        playing: bool,
     ) {
         let shot = project.active().map_or(Source::NothingSelected, |seq| {
             source(project, seq, selected, playhead)
@@ -111,18 +118,6 @@ impl ViewerDisplay {
         let Some((_, alone)) = &self.alone else {
             ui_kit::viewer::empty(ui, theme, size, SELECT_A_CLIP);
             return;
-        };
-        let now = std::time::Instant::now();
-        let at = match self.asked {
-            Some((file, before, when))
-                if playing && file == media.id && now.duration_since(when) < FOLLOW_WHILE_PLAYING =>
-            {
-                before
-            }
-            _ => {
-                self.asked = Some((media.id, at, now));
-                at
-            }
         };
         let caption = caption(media);
         viewer.source_ui(ui, theme, size, alone, at, quality, &caption);
