@@ -117,6 +117,9 @@ pub struct Editor {
 }
 
 /// The longest a screenshot waits for imports and the viewer's picture.
+/// Room between the viewer and the inspector beside it.
+const INSPECTOR_GAP: f32 = 12.0;
+
 const SCREENSHOT_WAIT: Duration = Duration::from_secs(20);
 /// How long a scripted pointer rests before the screenshot, so tooltips are up.
 const POINTER_REST: Duration = Duration::from_millis(1500);
@@ -1398,6 +1401,9 @@ impl Editor {
     /// The right-hand panel of the Edit page: the selected clip's settings.
     /// A finished change is applied as one undo step.
     fn inspector_panel(&mut self, ui: &mut egui::Ui) {
+        if !crate::inspector::shows_a_clip(self.document.as_ref().map(|d| d.project()), &self.selected) {
+            self.timeline_details(ui);
+        }
         let Some(document) = &self.document else { return };
         let commands = egui::ScrollArea::vertical()
             .auto_shrink([false, false])
@@ -1416,6 +1422,50 @@ impl Editor {
                 self.play_on_with_new_mix();
             }
         }
+    }
+
+    /// The inspector with no clip selected: what the timeline is, and its
+    /// settings a click away.
+    fn timeline_details(&mut self, ui: &mut egui::Ui) {
+        let Some(seq) = self.document.as_ref().and_then(|d| d.project().active()) else {
+            return;
+        };
+        let rows = crate::inspector::timeline_rows(seq);
+        let summary = rows.first().map(|(_, value)| value.clone()).unwrap_or_default();
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(&seq.name)
+                    .family(ui_kit::fonts::semibold())
+                    .size(15.0),
+            )
+            .truncate(),
+        );
+        ui.label(
+            egui::RichText::new("The timeline")
+                .color(self.theme.muted)
+                .size(12.0),
+        );
+        ui.add_space(6.0);
+        let theme = self.theme;
+        let mut open_settings = false;
+        ui_kit::inspector::section(ui, &theme, "Timeline", &summary, false, |ui| {
+            for (label, value) in &rows {
+                ui.horizontal(|ui| {
+                    ui_kit::inspector::label_cell(ui, &theme, label, 86.0);
+                    ui.label(egui::RichText::new(value).color(theme.text));
+                });
+            }
+            ui.add_space(4.0);
+            open_settings = ui.button("Timeline settings…").clicked();
+        });
+        if open_settings {
+            self.show_timeline_settings = true;
+        }
+        ui_kit::inspector::note(
+            ui,
+            &theme,
+            "Select a clip to place, crop and colour its picture, or change its speed.",
+        );
     }
 
     fn top_bar(&mut self, ui: &mut egui::Ui) {
@@ -1578,6 +1628,39 @@ impl Editor {
             }
         });
         ui.add_space(12.0);
+        // The inspector sits beside the viewer, as high as it is; the
+        // timeline below runs the whole width of the page.
+        let shared_height = ui.available_height();
+        let (least_viewer, least_timeline) = (ui_kit::splitter::MIN_VIEWER, ui_kit::splitter::MIN_TIMELINE);
+        let viewer_height =
+            self.settings
+                .viewer_split
+                .top_height(shared_height, least_viewer, least_timeline);
+        let top = ui.available_rect_before_wrap();
+        let top = egui::Rect::from_min_size(top.min, egui::vec2(top.width(), viewer_height));
+        let inspector_rect = egui::Rect::from_min_max(
+            egui::pos2(top.right() - layout::RIGHT_PANEL_WIDTH, top.top()),
+            top.right_bottom(),
+        );
+        let viewer_rect = egui::Rect::from_min_max(
+            top.min,
+            egui::pos2(inspector_rect.left() - INSPECTOR_GAP, top.bottom()),
+        );
+        if self.document.is_some() {
+            let mut panel = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(inspector_rect)
+                    .layout(egui::Layout::top_down(egui::Align::Min)),
+            );
+            egui::Frame::new()
+                .fill(self.theme.panel)
+                .corner_radius(6)
+                .inner_margin(egui::Margin::symmetric(12, 10))
+                .show(&mut panel, |ui| {
+                    ui.set_min_size(inspector_rect.size() - egui::vec2(24.0, 20.0));
+                    self.inspector_panel(ui);
+                });
+        }
         let Some(document) = &self.document else { return };
         let p = document.project();
         let Some(seq) = p.active() else { return };
@@ -1585,6 +1668,12 @@ impl Editor {
         // A removed track's height is forgotten.
         self.timeline.heights.keep_only(&timeline_panel::track_ids(seq));
         if seq.length() == project::Time::ZERO {
+            let mut left = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(viewer_rect)
+                    .layout(egui::Layout::top_down(egui::Align::Min)),
+            );
+            let ui = &mut left;
             ui.add_space(40.0);
             ui.vertical_centered(|ui| {
                 ui.label(egui::RichText::new("Nothing here yet").family(ui_kit::fonts::semibold()).size(18.0));
@@ -1603,19 +1692,15 @@ impl Editor {
         } else {
             let quality_before = self.settings.preview_quality;
             let needle = (!self.settings.edit_at_playhead).then_some(seq.edit_needle);
-            // The viewer and everything under it share this height; the
-            // handle between them moves the boundary.
-            let shared_height = ui.available_height();
-            let (least_viewer, least_timeline) =
-                (ui_kit::splitter::MIN_VIEWER, ui_kit::splitter::MIN_TIMELINE);
-            let viewer_height =
-                self.settings
-                    .viewer_split
-                    .top_height(shared_height, least_viewer, least_timeline);
             // A value being dragged in the inspector is seen at once.
             let being_changed = self.inspector.shown(p);
+            let mut left = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(viewer_rect)
+                    .layout(egui::Layout::top_down(egui::Align::Min)),
+            );
             transport_click = self.viewer.ui(
-                ui,
+                &mut left,
                 &self.theme,
                 being_changed.as_ref().unwrap_or(p),
                 &mut self.settings.preview_quality,
@@ -1623,6 +1708,9 @@ impl Editor {
                 viewer_height,
                 &self.shortcuts,
             );
+            // The viewer and the inspector take their height of the page;
+            // the handle and the timeline follow, across its whole width.
+            ui.allocate_rect(top, egui::Sense::hover());
             if self.settings.preview_quality != quality_before
                 && let Err(err) = self.settings.save(&self.data_dir)
             {
@@ -2163,17 +2251,6 @@ impl eframe::App for Editor {
                 .exact_size(layout::TOP_BAR_HEIGHT)
                 .frame(egui::Frame::new().fill(self.theme.panel))
                 .show(ui, |ui| self.top_bar(ui));
-            if self.page == Page::Edit && self.document.is_some() {
-                egui::Panel::right("inspector")
-                    .exact_size(layout::RIGHT_PANEL_WIDTH)
-                    .resizable(false)
-                    .frame(
-                        egui::Frame::new()
-                            .fill(self.theme.panel)
-                            .inner_margin(egui::Margin::symmetric(12, 10)),
-                    )
-                    .show(ui, |ui| self.inspector_panel(ui));
-            }
             egui::CentralPanel::default()
                 .frame(
                     egui::Frame::new()
