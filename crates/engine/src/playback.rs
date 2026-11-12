@@ -190,6 +190,12 @@ impl Playback {
         self.reading.levels()
     }
 
+    /// Starts the integrated loudness and the highest true peak again
+    /// (the master column's reset), from the next mixed block.
+    pub fn reset_loudness(&self) {
+        self.reading.reset();
+    }
+
     /// Whether sound is coming out (false: silent, or not ready yet).
     pub fn has_sound(&self) -> bool {
         self.clock.source.load(Ordering::Acquire) == SOUND

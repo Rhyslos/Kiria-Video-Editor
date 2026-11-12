@@ -58,6 +58,8 @@ pub struct Settings {
     pub proxies: cache::proxy::ProxyMode,
     /// What a jump in a file without a proxy shows first.
     pub jump_picture: JumpPicture,
+    /// The loudness the master column aims at (its right-click menu).
+    pub loudness_target: ui_kit::master::LoudnessTarget,
 }
 
 /// What the viewer shows when the playhead jumps in a file that has no

@@ -120,6 +120,17 @@ fn a_stretch_of_the_timeline_becomes_a_file_that_matches_it() {
     let (was, is) = (loudness(&mixed), loudness(&heard));
     assert!(was > 0.001, "the recording has sound there ({was})");
     assert!((is / was - 1.0).abs() < 0.25, "mixed {was}, exported {is}");
+    // And it was measured as it was written.
+    assert!(
+        done.loudness.is_finite() && done.loudness < 0.0,
+        "{}",
+        done.loudness
+    );
+    assert!(
+        done.true_peak.is_finite() && done.true_peak < 1.0,
+        "{}",
+        done.true_peak
+    );
 
     // Its pictures are the timeline's: not black.
     let mut decoder = media::VideoDecoder::open(&path, video.index, 0, Decoding::Software).unwrap();

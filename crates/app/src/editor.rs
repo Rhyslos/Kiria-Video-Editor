@@ -1977,7 +1977,7 @@ impl Editor {
         let page = ui.available_rect_before_wrap();
         let mut viewer_command = None;
         let mut picture_change = None;
-        let mut master_gain = None;
+        let mut master = ui_kit::master::MasterResponse::default();
         let mut timeline_events = Vec::new();
         let mut toolbar_click = None;
         let mut tabs_events = Vec::new();
@@ -2268,8 +2268,11 @@ impl Editor {
                 let l = p.levels();
                 ui_kit::master::MeterLevels {
                     peak_db: l.peak_db,
+                    true_peak_db: l.true_peak_db,
+                    true_peak_max: l.true_peak_max,
                     momentary: l.momentary,
                     short_term: l.short_term,
+                    integrated: l.integrated,
                 }
             });
             let gain = seq.master_gain_db;
@@ -2277,17 +2280,27 @@ impl Editor {
                 timeline_events = self.timeline.show(ui, &self.theme, &data, size);
                 ui.add_space(8.0);
                 let (rect, _) = ui.allocate_exact_size(egui::vec2(layout::MASTER_WIDTH, height), egui::Sense::hover());
-                master_gain = self.master.show(
-                    ui,
-                    &self.theme,
-                    rect,
+                let mix = ui_kit::master::Mix {
                     levels,
-                    gain,
-                    "The whole mix: drag to change its volume, double-click for 0 dB. M and S are its loudness over 0.4 s and 3 s (LUFS).",
-                );
+                    gain_db: gain,
+                    target: self.settings.loudness_target,
+                    tip: "The whole mix: drag to change its volume, double-click for 0 dB. The lines on the channels are their true peaks; the third lane is the loudness over 3 s, with the loudness aimed for across it (right-click to choose). M and S are the loudness over 0.4 s and 3 s, I since playback started, TP the highest true peak.",
+                };
+                master = self.master.show(ui, &self.theme, rect, mix);
             });
         }
-        if let Some(gain_db) = master_gain {
+        if master.reset
+            && let Some(playback) = &self.playback
+        {
+            playback.reset_loudness();
+        }
+        if let Some(target) = master.target {
+            self.settings.loudness_target = target;
+            if let Err(err) = self.settings.save(&self.data_dir) {
+                self.errors.push(&err);
+            }
+        }
+        if let Some(gain_db) = master.gain_db {
             let result = self.with_document(|d| {
                 let sequence = d.project().active_sequence;
                 d.apply(Command::SetMasterGain { sequence, gain_db })

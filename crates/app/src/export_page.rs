@@ -477,11 +477,33 @@ fn progress_text(progress: &Progress, frames_a_second: f64) -> String {
 fn done_text(done: &Exported) -> String {
     let took = done.took.as_secs_f64().max(0.001);
     format!(
-        "Saved {} of video in {}, {:.1}× as fast as it plays, {}.",
+        "Saved {} of video in {}, {:.1}× as fast as it plays, {}. {}",
         seconds_text(done.length),
         seconds_text(done.took),
         done.length.as_secs_f64() / took,
-        encoder_text(&done.encoder)
+        encoder_text(&done.encoder),
+        sound_text(done.loudness, done.true_peak)
+    )
+}
+
+/// What the exported sound measured: its integrated loudness and highest
+/// true peak, with a word when the peak is over the usual ceiling.
+fn sound_text(loudness: f32, true_peak: f32) -> String {
+    if !loudness.is_finite() {
+        return "The sound is silent.".to_owned();
+    }
+    let over = if true_peak > ui_kit::master::TRUE_PEAK_CEILING {
+        format!(
+            " (over {:.0} dBTP: it may distort when played or encoded again)",
+            ui_kit::master::TRUE_PEAK_CEILING
+        )
+    } else {
+        String::new()
+    };
+    format!(
+        "Loudness {} LUFS integrated, true peak {} dBTP{over}.",
+        ui_kit::master::db_text(loudness),
+        ui_kit::master::db_text(true_peak)
     )
 }
 
@@ -556,11 +578,18 @@ mod tests {
             length: Duration::from_secs(60),
             encoder: "libx264".to_owned(),
             on_graphics_card: false,
+            loudness: -14.04,
+            true_peak: -1.52,
         };
         assert_eq!(
             done_text(&done),
-            "Saved 1 min 0 s of video in 20 s, 3.0× as fast as it plays, encoded on the processor."
+            "Saved 1 min 0 s of video in 20 s, 3.0× as fast as it plays, encoded on the processor. Loudness -14.0 LUFS integrated, true peak -1.5 dBTP."
         );
+        assert_eq!(
+            sound_text(f32::NEG_INFINITY, f32::NEG_INFINITY),
+            "The sound is silent."
+        );
+        assert!(sound_text(-9.0, 0.4).contains("over -1 dBTP"));
     }
 
     #[test]
