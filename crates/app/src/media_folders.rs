@@ -56,6 +56,11 @@ impl MediaFolders {
         }));
     }
 
+    /// Folders watched besides the launcher's (`--watch-folder`).
+    pub fn extra(&self) -> &[PathBuf] {
+        &self.extra
+    }
+
     /// New files not in `project` and not dismissed, newest first.
     pub fn new_files(&mut self, project: &Project) -> Vec<Found> {
         let Some(watcher) = &self.watcher else {

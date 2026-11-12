@@ -1960,27 +1960,46 @@ impl Editor {
         let Some(document) = self.document.as_mut() else {
             return;
         };
+        self.relink.know(crate::relink::Known {
+            project_file: document.path().to_path_buf(),
+            index_file: self.data_dir.join(project_index::INDEX_FILE_NAME),
+            extra: self.media_folders.extra().to_vec(),
+        });
         self.relink.watch(&self.jobs, ctx, document.project());
         if self.relink.searching().is_some() {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
-        let Some(found) = self.relink.poll(&self.jobs, document.project()) else {
+        let read_only = document.is_read_only();
+        let found = match self.relink.automatic(&self.jobs, document.project(), read_only) {
+            Some(found) => Some(found),
+            None => self.relink.poll(&self.jobs, document.project()),
+        };
+        let Some(mut found) = found else {
             return;
         };
-        for (media, path) in &found.files {
-            let command = Command::Relink {
-                media: *media,
-                path: path.clone(),
+        // Only files still missing: one may have been found by hand meanwhile.
+        found
+            .files
+            .retain(|(media, _)| self.relink.missing.contains(media));
+        let undo = self.shortcuts.keys_or_name(Action::Undo);
+        let says = crate::relink::outcome(document.project(), &found, &undo);
+        if !found.files.is_empty() {
+            let command = Command::RelinkFiles {
+                files: found.files.clone(),
             };
             if let Err(err) = document.apply(command) {
                 self.errors.push(&err);
                 return;
             }
-            self.waveforms.forget(*media);
-            self.pictures.forget(*media);
-            self.library_page.forget(*media);
+            for (media, _) in &found.files {
+                self.waveforms.forget(*media);
+                self.pictures.forget(*media);
+                self.library_page.forget(*media);
+            }
         }
-        self.status = crate::relink::outcome(&found);
+        if let Some(says) = says {
+            self.status = says;
+        }
     }
 
     fn usage_text(&self) -> String {
@@ -2234,12 +2253,9 @@ impl Editor {
                 let text = crate::relink::summary(document.project(), &self.relink.missing);
                 ui.label(egui::RichText::new(text).color(self.theme.text_secondary));
                 match self.relink.searching() {
-                    Some(folder) => {
+                    Some(words) => {
                         ui.spinner();
-                        ui.label(
-                            egui::RichText::new(format!("Looking in {}…", folder.display()))
-                                .color(self.theme.muted),
-                        );
+                        ui.label(egui::RichText::new(words).color(self.theme.muted));
                     }
                     None => {
                         if ui
@@ -2927,7 +2943,8 @@ impl Editor {
                         || self.document.is_none()
                         || (self.library.is_current(crate::library_page::ASKER)
                             && self.library_page.settled()))
-                    && self.media_folders.settled())
+                    && self.media_folders.settled()
+                    && self.relink.settled())
                     || now.duration_since(since) > SCREENSHOT_WAIT;
                 // A scripted pointer has done its part, and rested long
                 // enough for a tooltip to come up.

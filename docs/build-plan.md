@@ -378,7 +378,7 @@ Phase 5 turns the simple media list from phase 4 into the full Library page; the
 **5.3 Media management**
 
 - [x] Prune: list unused media first, remove it from the project in one undoable step, never delete files from disk. (Done: `Action::Prune`, from the search palette, the media drawer's ⋯ menu and the Library page's Prune button, opens a list of the files no timeline uses (clips in nested timelines, and in timelines placed nowhere, count as use), each ticked with its size; untick to keep. `Command::RemoveMedia` takes them out with their labels, list places and notes in one undo step; nothing on disk is touched.)
-- [ ] Relink: by fingerprint, automatically when files moved inside a known folder.
+- [x] Relink: by fingerprint, automatically when files moved inside a known folder. (Done: when a project opens with files missing, a worker looks for them by fingerprint in the project's own folder and the launcher's project, media and other folders, eight folders deep, 100 000 entries and 20 seconds at most, hashing only files of a missing file's size; what it finds is relinked as one undo step (`Command::RelinkFiles`) and the status line names the files. The rest stay in the banner for "Find them…", which now also relinks in one step.)
 - [ ] Package project: copy the project plus only the media it uses into one folder (with progress and size shown first) that opens on the other person's machine.
 
 **Gate 5**

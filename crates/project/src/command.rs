@@ -171,6 +171,13 @@ pub enum Command {
         media: MediaId,
         path: PathBuf,
     },
+    /// Points several media files at where they are now, as one step: what
+    /// finding moved files does, by itself when a project opens or in a
+    /// folder the person picks. Refused, with nothing changed, for no files
+    /// or a file the project doesn't have.
+    RelinkFiles {
+        files: Vec<(MediaId, PathBuf)>,
+    },
     /// Adds a media file and places it at the end of the timeline as one step:
     /// its picture on the first video track and each sound stream on its own
     /// audio track (made when missing, named after the stream), all linked.
@@ -583,6 +590,16 @@ impl Command {
             Command::RemoveMedia { media } => crate::prune::remove_media(&mut p, media)?,
             Command::Relink { media, path } => {
                 p.media.get_mut(media).ok_or_else(|| missing("media file"))?.path = path.clone();
+            }
+            Command::RelinkFiles { files } => {
+                if files.is_empty() {
+                    return Err(AppError::new("No files to relink")
+                        .why("None of the missing files were found.")
+                        .fix("Look for them in another folder."));
+                }
+                for (media, path) in files {
+                    p.media.get_mut(media).ok_or_else(|| missing("media file"))?.path = path.clone();
+                }
             }
             Command::Import { sequence, media } => import(&mut p, *sequence, media)?,
             Command::AddMediaLabel { label, media } => crate::library::add_label(&mut p, label, media)?,
@@ -1912,6 +1929,33 @@ mod tests {
             path: moved,
         };
         assert!(unknown.apply(&p).is_err());
+    }
+
+    #[test]
+    fn several_files_are_relinked_in_one_step_or_none_are() {
+        let (p, _) = imported();
+        let p = Command::AddMedia {
+            media: MediaRef {
+                path: "/old/b.mkv".into(),
+                ..p.media.values().next().unwrap().clone()
+            },
+        }
+        .apply(&p)
+        .unwrap();
+        let ids: Vec<MediaId> = p.media.keys().copied().collect();
+        let files: Vec<(MediaId, PathBuf)> = ids
+            .iter()
+            .enumerate()
+            .map(|(i, id)| (*id, PathBuf::from(format!("/new/{i}.mkv"))))
+            .collect();
+        let after = Command::RelinkFiles { files: files.clone() }.apply(&p).unwrap();
+        for (id, path) in &files {
+            assert_eq!(&after.media[id].path, path);
+        }
+        let mut with_unknown = files;
+        with_unknown.push((MediaId(999_999), "/new/x.mkv".into()));
+        assert!(Command::RelinkFiles { files: with_unknown }.apply(&p).is_err());
+        assert!(Command::RelinkFiles { files: vec![] }.apply(&p).is_err());
     }
 
     fn video_and_game(p: &Project, i: usize) -> (Clip, Clip) {
