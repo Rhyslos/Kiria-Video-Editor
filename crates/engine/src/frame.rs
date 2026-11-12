@@ -3,7 +3,7 @@
 //! card, so it can be tested anywhere and read by the viewer, by export and
 //! by anything else that needs the picture.
 
-use project::{Clip, ClipId, Look, MediaId, MediaRef, Project, Sequence, Time};
+use project::{Clip, ClipId, FrameBlend, Look, MediaId, MediaRef, Project, Rate, Sequence, Time};
 use render::{Area, Colour, Part, Placement};
 
 /// What to draw for one moment of a timeline.
@@ -46,6 +46,39 @@ pub struct Layer {
     pub opacity: f32,
     /// Its quick colour.
     pub colour: Colour,
+    /// With frame blending on and the moment between two recorded frames:
+    /// the next frame to mix in, and how much of it.
+    pub blend: Option<Blend>,
+}
+
+/// The second picture of a blended layer: the recorded frame after the one
+/// on screen at the layer's moment, and its share of the mix.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Blend {
+    /// When the next frame starts in the file.
+    pub next: Time,
+    /// How far the moment is from the frame on screen towards the next
+    /// one: above 0 and below 1.
+    pub weight: f32,
+}
+
+/// Where `at` (in a file recorded at `rate`) lies between two recorded
+/// frames: `None` exactly on one (a clip slowed to a speed that suits its
+/// frame rate, such as 120 fps at half speed on 60 fps, always is).
+pub fn blend_at(at: Time, rate: Rate) -> Option<Blend> {
+    let frame = rate.frame_at(at);
+    let past = at - rate.frame_start(frame);
+    if past <= Time::ZERO {
+        return None;
+    }
+    // past / frame length = past * rate, exactly, then as a share.
+    let share = i128::from(past.num()) * i128::from(rate.num());
+    let whole = i128::from(past.den()) * i128::from(rate.den());
+    let weight = (share as f64 / whole as f64) as f32;
+    (weight > 0.0 && weight < 1.0).then_some(Blend {
+        next: rate.frame_start(frame + 1),
+        weight,
+    })
 }
 
 impl Layer {
@@ -97,15 +130,20 @@ fn layer(clip: &Clip, media: &MediaRef, frame: (u32, u32), at: Time) -> Option<L
     // Its look at this moment: keyframes give the numbers that change.
     let look = clip.look_at(at);
     let part = shown_part(&look);
+    let source_time = clip.source_at(at);
     Some(Layer {
         clip: clip.id,
         media: clip.media,
         stream: clip.stream,
-        source_time: clip.source_at(at),
+        source_time,
         area: shown_area(&look, video.display_size(), frame),
         part,
         opacity: fraction(look.opacity),
         colour: colour(&look),
+        blend: match clip.blend {
+            FrameBlend::Blend => blend_at(source_time, video.frame_rate),
+            FrameBlend::Off => None,
+        },
     })
 }
 
@@ -426,5 +464,53 @@ mod tests {
         let frame = describe(&project, sequence, Time::seconds(3));
         assert_eq!(frame.layers.len(), 1);
         assert_eq!(frame.layers[0].clip, sequence.video_tracks[0].clips[0].id);
+    }
+
+    #[test]
+    fn blending_mixes_in_the_next_frame_only_between_recorded_frames() {
+        let project = import(
+            &Project::new("T", SequenceSettings::GAME_CLIP),
+            media("a.mkv", (1920, 1080), 0),
+        );
+        let sequence = project.active().unwrap();
+        let clip = sequence.video_tracks[0].clips[0].id;
+        let slow = Command::SetSpeed {
+            sequence: sequence.id,
+            clip,
+            speed: project::Speed::new(1, 4).unwrap(),
+        }
+        .apply(&project)
+        .unwrap();
+        let blended = Command::SetFrameBlend {
+            sequence: sequence.id,
+            clip,
+            blend: FrameBlend::Blend,
+        }
+        .apply(&slow)
+        .unwrap();
+        let at = |p: &Project, frame: i64| {
+            let sequence = p.active().unwrap();
+            describe(p, sequence, Rate::FPS_60.frame_start(frame)).layers[0].clone()
+        };
+        // A 60 fps file at a quarter speed on 60 fps: 4 timeline frames a recorded one.
+        assert_eq!(at(&blended, 8).blend, None, "on a recorded frame");
+        let between = at(&blended, 9).blend.unwrap();
+        assert_eq!(between.next, Rate::FPS_60.frame_start(3));
+        assert!((between.weight - 0.25).abs() < 1e-6);
+        assert!((at(&blended, 11).blend.unwrap().weight - 0.75).abs() < 1e-6);
+        assert_eq!(at(&slow, 9).blend, None, "off unless asked for");
+    }
+
+    #[test]
+    fn a_high_frame_rate_file_slowed_to_suit_it_needs_no_blending() {
+        for (fps, num, den) in [(120, 1, 2), (144, 5, 12)] {
+            let rate = Rate::whole(fps);
+            assert!((0..1000).all(|frame| {
+                let at = Rate::FPS_60.frame_start(frame);
+                let speed = project::Speed::new(num, den).unwrap();
+                blend_at(speed.scale(at), rate).is_none()
+            }));
+        }
+        assert!(blend_at(Time::from_ratio(1, 240).unwrap(), Rate::FPS_120).is_some());
     }
 }

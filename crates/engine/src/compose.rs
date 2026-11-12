@@ -88,56 +88,35 @@ impl Composer {
         }
     }
 
-    /// Draws `layers` (bottom first, each with its decoded picture) into a
-    /// frame of `size` pixels. An empty list is a black frame.
-    pub fn compose(&mut self, size: (u32, u32), layers: Vec<(Layer, Decoded)>) -> Result<Composed, Refused> {
+    /// Draws `layers` (bottom first, each with its decoded picture, and
+    /// with frame blending the next recorded frame too) into a frame of
+    /// `size` pixels. An empty list is a black frame.
+    pub fn compose(
+        &mut self,
+        size: (u32, u32),
+        layers: Vec<(Layer, Decoded, Option<Decoded>)>,
+    ) -> Result<Composed, Refused> {
         let (device, queue) = (&self.composing.device.clone(), &self.composing.queue.clone());
-        let wrap = self.composing.wrap.clone();
-        // Every layer's pixels as textures on the device.
+        // Every layer's pixels as textures on the device: two slots a
+        // layer, the second for the frame blended in.
         let mut on_device = false;
         let mut placed = Vec::with_capacity(layers.len());
         self.uploads
-            .resize_with(self.uploads.len().max(layers.len()), || None);
-        for (index, (layer, decoded)) in layers.into_iter().enumerate() {
-            let (views, to_rgb, rotation) = match decoded {
-                Decoded::Gpu(frame) => {
-                    let (luma, chroma) = wrap.as_ref().and_then(|wrap| wrap(&frame)).ok_or(Refused)?;
-                    on_device = true;
-                    let view = |texture: &wgpu::Texture| {
-                        texture.create_view(&wgpu::TextureViewDescriptor::default())
-                    };
-                    (
-                        Views::Two(view(&luma), view(&chroma)),
-                        frame.colour.rgb_rows(),
-                        frame.rotation,
-                    )
-                }
-                Decoded::Yuv(frame) => {
-                    let shape = Shape::Planes {
-                        luma: (frame.width, frame.height),
-                        layout: frame.layout,
-                    };
-                    let (to_rgb, rotation) = (frame.colour.rgb_rows(), frame.rotation);
-                    let upload = Upload::of(&mut self.uploads[index], device, shape);
-                    upload.write(queue, frame.into_planes().as_ref());
-                    (upload.views(), to_rgb, rotation)
-                }
-                Decoded::Rgba(frame) => {
-                    let upload = Upload::of(
-                        &mut self.uploads[index],
-                        device,
-                        Shape::Rgba(frame.width, frame.height),
-                    );
-                    upload.write(queue, &frame.rgba);
-                    // Converted and turned upright already.
-                    (upload.views(), [[0.0; 4]; 3], 0)
-                }
-            };
-            placed.push((layer, views, to_rgb, rotation));
+            .resize_with(self.uploads.len().max(layers.len() * 2), || None);
+        for (index, (layer, decoded, next)) in layers.into_iter().enumerate() {
+            let (views, to_rgb, rotation) = self.textures(decoded, index * 2, &mut on_device)?;
+            // The next frame counts only when it is stored as this one is.
+            let next = match next {
+                Some(next) => Some(self.textures(next, index * 2 + 1, &mut on_device)?),
+                None => None,
+            }
+            .filter(|(_, next_rgb, next_rotation)| *next_rgb == to_rgb && *next_rotation == rotation)
+            .map(|(views, ..)| views);
+            placed.push((layer, views, next, to_rgb, rotation));
         }
         let drawn: Vec<Drawn<'_>> = placed
             .iter()
-            .map(|(layer, views, to_rgb, rotation)| Drawn {
+            .map(|(layer, views, next, to_rgb, rotation)| Drawn {
                 pixels: views.pixels(),
                 to_rgb: *to_rgb,
                 rotation: *rotation,
@@ -145,6 +124,10 @@ impl Composer {
                 part: layer.part,
                 opacity: layer.opacity,
                 colour: layer.colour,
+                blend: next
+                    .as_ref()
+                    .zip(layer.blend)
+                    .map(|(next, blend)| (next.pixels(), blend.weight)),
             })
             .collect();
 
@@ -165,6 +148,52 @@ impl Composer {
         queue.submit([encoder.finish()]);
         self.frames.push(frame.clone());
         Ok(Composed { frame, on_device })
+    }
+
+    /// One decoded picture as textures on the device, written into upload
+    /// slot `slot` when it is in memory: the textures, the rows that turn
+    /// its samples into RGB, and its turn.
+    fn textures(
+        &mut self,
+        decoded: Decoded,
+        slot: usize,
+        on_device: &mut bool,
+    ) -> Result<(Views, [[f32; 4]; 3], u16), Refused> {
+        let (device, queue) = (&self.composing.device, &self.composing.queue);
+        Ok(match decoded {
+            Decoded::Gpu(frame) => {
+                let wrap = self.composing.wrap.as_ref();
+                let (luma, chroma) = wrap.and_then(|wrap| wrap(&frame)).ok_or(Refused)?;
+                *on_device = true;
+                let view =
+                    |texture: &wgpu::Texture| texture.create_view(&wgpu::TextureViewDescriptor::default());
+                (
+                    Views::Two(view(&luma), view(&chroma)),
+                    frame.colour.rgb_rows(),
+                    frame.rotation,
+                )
+            }
+            Decoded::Yuv(frame) => {
+                let shape = Shape::Planes {
+                    luma: (frame.width, frame.height),
+                    layout: frame.layout,
+                };
+                let (to_rgb, rotation) = (frame.colour.rgb_rows(), frame.rotation);
+                let upload = Upload::of(&mut self.uploads[slot], device, shape);
+                upload.write(queue, frame.into_planes().as_ref());
+                (upload.views(), to_rgb, rotation)
+            }
+            Decoded::Rgba(frame) => {
+                let upload = Upload::of(
+                    &mut self.uploads[slot],
+                    device,
+                    Shape::Rgba(frame.width, frame.height),
+                );
+                upload.write(queue, &frame.rgba);
+                // Converted and turned upright already.
+                (upload.views(), [[0.0; 4]; 3], 0)
+            }
+        })
     }
 
     /// A frame of `size` that nobody shows any more, or a new one. Frames of

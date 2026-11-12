@@ -182,6 +182,8 @@ mod tests {
                 look: Default::default(),
                 sound: Default::default(),
                 keyframes: Default::default(),
+                ramp: Default::default(),
+                blend: Default::default(),
             },
         }
         .apply(p)

@@ -250,6 +250,8 @@ fn cut_to(clip: &Clip, range: Region) -> Option<Clip> {
         sound: sound.fitted(end - start),
         // Only the keyframes of the part kept, with its ends held.
         keyframes: clip.keyframes.cut_to(clip.source_at(start), clip.source_at(end)),
+        // The ramp keeps its place on the picture.
+        ramp: clip.ramp.shifted(clip.start - start),
         ..clip.clone()
     })
 }
@@ -708,6 +710,8 @@ mod tests {
             look: Look::PLAIN,
             sound: Default::default(),
             keyframes: Default::default(),
+            ramp: Default::default(),
+            blend: Default::default(),
         };
         for (track, clip) in [
             (v1, clip(video, 0, 0, 0, 10, Some(title_link), Speed::NORMAL)),

@@ -215,10 +215,17 @@ fn move_keyframes(clip: &mut Clip, rate: Rate, starts: &[Time], by: Time) -> dia
             .why(format!("That would put them past the clip's {side}."))
             .fix("Drag them less far, or trim the clip longer first."));
     }
-    let stretches: Vec<(Time, Time)> = starts.iter().map(|at| clip.frame_in_file(*at, rate)).collect();
-    // The clip plays its file evenly, so every frame moves as far in the file.
-    let in_file = clip.source_at(starts[0] + by) - clip.source_at(starts[0]);
-    clip.keyframes.move_by(&stretches, in_file).map_err(|fields| {
+    // Each frame's keyframes move as far in the file as the clip plays
+    // between that frame and the one it is dropped on (the same for every
+    // frame at one speed; not with a ramp).
+    let moves: Vec<((Time, Time), Time)> = starts
+        .iter()
+        .map(|at| {
+            let in_file = clip.source_at(*at + by) - clip.source_at(*at);
+            (clip.frame_in_file(*at, rate), in_file)
+        })
+        .collect();
+    clip.keyframes.move_by(&moves).map_err(|fields| {
         let mut names: Vec<&str> = fields.iter().map(|field| field.name()).collect();
         names.dedup();
         let (names, has) = match names.as_slice() {
@@ -310,6 +317,8 @@ mod tests {
                 look: Look::PLAIN,
                 sound: Default::default(),
                 keyframes: Default::default(),
+                ramp: Default::default(),
+                blend: Default::default(),
             },
         }
         .apply(&p)

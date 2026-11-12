@@ -161,6 +161,7 @@ impl ClipPictures {
                         aspect: first.width as f32 / first.height.max(1) as f32,
                         source_in: 0.0,
                         speed: 1.0,
+                        map: None,
                     };
                     *state = State::Ready {
                         pictures,

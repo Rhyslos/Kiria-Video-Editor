@@ -29,6 +29,9 @@ struct Layer {
     // How much red, green and blue count towards brightness (rgb), and the
     // power values are raised to around middle grey (a).
     weights_contrast: vec4<f32>,
+    // The share of the second picture mixed in, in linear light (x): 0
+    // shows the first alone (frame blending; yzw unused).
+    blend: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> it: Layer;
@@ -39,6 +42,10 @@ struct Layer {
 // plane: the same texture in both. RGBA: unused.
 @group(0) @binding(3) var second: texture_2d<f32>;
 @group(0) @binding(4) var third: texture_2d<f32>;
+// The second picture, stored as the first: the next recorded frame.
+@group(0) @binding(5) var next_first: texture_2d<f32>;
+@group(0) @binding(6) var next_second: texture_2d<f32>;
+@group(0) @binding(7) var next_third: texture_2d<f32>;
 
 struct Corner {
     @builtin(position) position: vec4<f32>,
@@ -57,26 +64,46 @@ fn place(@builtin(vertex_index) index: u32) -> Corner {
     return out;
 }
 
-@fragment
-fn layer(in: Corner) -> @location(0) vec4<f32> {
-    let a = textureSample(first, smooth_sampler, in.at);
-    let b = textureSample(second, smooth_sampler, in.at);
-    let c = textureSample(third, smooth_sampler, in.at);
+// One picture's colour and alpha at `at`, in video values: the planes
+// converted to RGB, or RGBA as it is.
+fn picture(a: vec4<f32>, b: vec4<f32>, c: vec4<f32>) -> vec4<f32> {
     let kind = it.from_down_kind_linear.z;
-    var rgb = a.rgb;
-    var alpha = a.a;
     if kind < 1.5 {
         let uv = mix(b.rg, vec2<f32>(b.r, c.r), kind);
         let yuv = vec4<f32>(a.r, uv, 1.0);
-        rgb = vec3<f32>(dot(it.red, yuv), dot(it.green, yuv), dot(it.blue, yuv));
-        alpha = 1.0;
+        let rgb = vec3<f32>(dot(it.red, yuv), dot(it.green, yuv), dot(it.blue, yuv));
+        return vec4<f32>(clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0)), 1.0);
     }
-    rgb = clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0));
+    return vec4<f32>(clamp(a.rgb, vec3<f32>(0.0), vec3<f32>(1.0)), a.a);
+}
+
+@fragment
+fn layer(in: Corner) -> @location(0) vec4<f32> {
+    var shown = picture(
+        textureSample(first, smooth_sampler, in.at),
+        textureSample(second, smooth_sampler, in.at),
+        textureSample(third, smooth_sampler, in.at),
+    );
+    // Sampled whether used or not: texture sampling must not depend on a
+    // value that differs between pixels.
+    let next = picture(
+        textureSample(next_first, smooth_sampler, in.at),
+        textureSample(next_second, smooth_sampler, in.at),
+        textureSample(next_third, smooth_sampler, in.at),
+    );
+    var rgb = shown.rgb;
+    var alpha = shown.a;
     let linear = it.from_down_kind_linear.w > 0.5;
     let coloured = it.to_down_opacity.w > 0.5;
-    if linear || coloured {
+    let blending = it.blend.x > 0.0;
+    if linear || coloured || blending {
         // The reference display's curve (BT.1886): video values to light.
         rgb = pow(rgb, vec3<f32>(2.4));
+    }
+    if blending {
+        // Two recorded frames mixed as light mixes.
+        rgb = mix(rgb, pow(next.rgb, vec3<f32>(2.4)), it.blend.x);
+        alpha = mix(alpha, next.a, it.blend.x);
     }
     if coloured {
         rgb = rgb * it.gains_saturation.rgb;
@@ -84,9 +111,9 @@ fn layer(in: Corner) -> @location(0) vec4<f32> {
         rgb = 0.18 * pow(rgb / 0.18, vec3<f32>(it.weights_contrast.a));
         let grey = dot(rgb, it.weights_contrast.rgb);
         rgb = max(mix(vec3<f32>(grey), rgb, it.gains_saturation.a), vec3<f32>(0.0));
-        if !linear {
-            rgb = pow(min(rgb, vec3<f32>(1.0)), vec3<f32>(1.0 / 2.4));
-        }
+    }
+    if !linear && (coloured || blending) {
+        rgb = pow(min(rgb, vec3<f32>(1.0)), vec3<f32>(1.0 / 2.4));
     }
     alpha = alpha * it.to_down_opacity.z;
     return vec4<f32>(rgb * alpha, alpha);

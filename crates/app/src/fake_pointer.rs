@@ -5,7 +5,9 @@
 //! lets go at the end of the drag, so what the drag did can be seen;
 //! `--right-click` clicks the right button where the pointer was put, for
 //! screenshots of menus, `--double-click` the left button twice and
-//! `--click` once (a button, or a menu that opens on a click).
+//! `--click` once (a button, or a menu that opens on a click; with
+//! `--scroll`, once the scrolling has settled, so a button scrolled into
+//! view can be clicked).
 
 use egui::{Event, PointerButton, Pos2};
 
@@ -14,6 +16,8 @@ use egui::{Event, PointerButton, Pos2};
 const APPEARS: u64 = 3;
 const PRESSES: u64 = 6;
 const DRAG_FRAMES: u64 = 6;
+/// How many frames scrolling glides for.
+const GLIDES: u64 = 30;
 
 /// Where the pointer is put, and where it then drags to with the left button held.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -91,10 +95,19 @@ impl FakePointer {
                     (f - PRESSES).is_multiple_of(2),
                 )]
             }
-            (f, None) if self.click && (PRESSES..PRESSES + 2).contains(&f) => {
-                vec![button(self.at, PointerButton::Primary, f == PRESSES)]
+            (f, None) if self.click && (self.clicks_at()..self.clicks_at() + 2).contains(&f) => {
+                vec![button(self.at, PointerButton::Primary, f == self.clicks_at())]
             }
             _ => Vec::new(),
+        }
+    }
+
+    /// The frame a click presses on: after the scrolling, when there is any.
+    fn clicks_at(&self) -> u64 {
+        if self.scroll != 0.0 {
+            PRESSES + GLIDES
+        } else {
+            PRESSES
         }
     }
 
@@ -118,8 +131,9 @@ impl FakePointer {
             Some(_) => PRESSES + DRAG_FRAMES + 2,
             None if self.right_click => PRESSES + 3,
             None if self.double_click => PRESSES + 5,
-            // Scrolling glides for a while.
-            None if self.scroll != 0.0 => PRESSES + 30,
+            // Scrolling glides for a while, then the click.
+            None if self.scroll != 0.0 && self.click => PRESSES + GLIDES + 3,
+            None if self.scroll != 0.0 => PRESSES + GLIDES,
             None if self.click => PRESSES + 3,
             None => APPEARS + 2,
         }
@@ -297,5 +311,23 @@ mod tests {
             ]
         );
         assert!((pointer.settled_at()..500).all(|frame| pointer.events(frame).is_empty()));
+    }
+
+    #[test]
+    fn a_click_after_scrolling_waits_for_the_scroll_to_settle() {
+        let pointer = FakePointer {
+            scroll: 300.0,
+            click: true,
+            ..FakePointer::resting(Pos2::new(5.0, 6.0))
+        };
+        assert!(matches!(pointer.events(PRESSES)[..], [Event::MouseWheel { .. }]));
+        assert!(pointer.events(PRESSES + 1).is_empty());
+        let press = pointer.events(PRESSES + GLIDES);
+        assert!(matches!(press[..], [Event::PointerButton { pressed: true, .. }]));
+        assert!(matches!(
+            pointer.events(PRESSES + GLIDES + 1)[..],
+            [Event::PointerButton { pressed: false, .. }]
+        ));
+        assert_eq!(pointer.settled_at(), PRESSES + GLIDES + 3);
     }
 }

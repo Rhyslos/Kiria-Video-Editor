@@ -4,6 +4,7 @@
 //! - [`ids`]: one id type per kind of thing.
 //! - [`look`]: how a clip's picture is placed, cut and coloured.
 //! - [`keyframes`]: how a clip's look changes over time.
+//! - [`ramp`]: how a clip's speed changes over time (speed ramps).
 //! - [`sound`]: how loud a clip is, its pan and its fades.
 //! - [`model`]: projects, timelines, tracks, clips, media, labels, the region.
 //! - [`file`]: the versioned project file, atomic saves and migrations.
@@ -28,6 +29,7 @@ pub mod keyframes;
 mod layers;
 pub mod look;
 pub mod model;
+pub mod ramp;
 pub mod side_files;
 pub mod sound;
 pub mod templates;
@@ -41,10 +43,12 @@ pub use history::History;
 pub use ids::{ClipId, LabelId, LinkId, MediaId, SequenceId, TrackId};
 pub use keyframes::{Ease, Keyframe, Keyframes, LookField};
 pub use look::Look;
+pub use model::FrameBlend;
 pub use model::{
     AudioStream, Clip, Fingerprint, LabelColor, MediaInfo, MediaKind, MediaRef, Project, Region, Sequence,
     SequenceSettings, TimelineLabel, Track, TrackKind, VideoStream,
 };
+pub use ramp::{Ramp, SpeedKey};
 pub use side_files::SideFile;
 pub use sound::Sound;
 pub use templates::Template;

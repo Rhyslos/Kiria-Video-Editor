@@ -91,6 +91,34 @@ impl TrackProgress {
 }
 
 /// The share of a clip whose waveform can be drawn: the clip shows
+/// Points along a ramped clip: where in its file it is (for its pictures
+/// and waveform) and how fast it plays (the line drawn on it). Nothing for
+/// a clip at one speed. A few dozen points, worked out with floats: a
+/// drawing, not an edit.
+fn ramp_drawing(c: &project::Clip) -> (Option<ui_kit::SourceMap>, Option<ui_kit::SpeedCurve>) {
+    if c.ramp.is_empty() {
+        return (None, None);
+    }
+    const POINTS: usize = 64;
+    let length = c.duration.as_secs_f64();
+    let start = c.start.as_secs_f64();
+    let shares = (0..=POINTS).map(|i| i as f64 / POINTS as f64);
+    let map: Vec<(f64, f64)> = shares
+        .clone()
+        .map(|share| {
+            let into = share * length;
+            (into, c.source_at_f64(start + into))
+        })
+        .collect();
+    let curve: Vec<(f32, f32)> = shares
+        .map(|share| (share as f32, c.ramp.speed_at_f64(share * length) as f32))
+        .collect();
+    (
+        Some(ui_kit::SourceMap(map.into())),
+        Some(ui_kit::SpeedCurve(curve.into())),
+    )
+}
+
 /// `source_len` seconds of its file from `source_in`, and `read_secs` of the
 /// file's sound have been read.
 fn share_read(read_secs: f64, source_in: f64, source_len: f64) -> f64 {
@@ -165,7 +193,7 @@ pub fn drawn(
                 match (t.kind, media) {
                     (project::TrackKind::Audio, Some(m)) => {
                         let look = waveform(m, c.stream);
-                        ready = share_read(look.read_secs, source_in, length * speed);
+                        ready = share_read(look.read_secs, source_in, c.source_len().as_secs_f64());
                         // A clip whose own part of the file has been read is done.
                         state = look.state.filter(|s| ready < 1.0 || *s == LoadState::Failed);
                         peaks = look.peaks;
@@ -194,11 +222,12 @@ pub fn drawn(
                 let name = media
                     .and_then(|m| m.path.file_name())
                     .map_or_else(|| "missing".into(), |n| n.to_string_lossy().into_owned());
-                let name = if c.speed == project::Speed::NORMAL {
+                let name = if c.ramp.is_empty() && c.speed == project::Speed::NORMAL {
                     name
                 } else {
-                    format!("{name} · {}", c.speed.percent())
+                    format!("{name} · {}", c.speed_summary())
                 };
+                let (map, speed_curve) = ramp_drawing(c);
                 TimelineClip {
                     id: c.id.0,
                     start: c.start.as_secs_f64(),
@@ -213,10 +242,12 @@ pub fn drawn(
                         per_second: p.per_second as f32,
                         source_in,
                         speed,
+                        map: map.clone(),
                     }),
                     pictures: strip.map(|p| ui_kit::ClipPictures {
                         source_in,
                         speed,
+                        map,
                         ..p
                     }),
                     loading: state.map(|state| Loading { what, state }),
@@ -225,6 +256,7 @@ pub fn drawn(
                         (project::TrackKind::Video, true) => keyframe_marks(c, rate),
                         _ => Vec::new(),
                     },
+                    speed_curve,
                 }
             })
             .collect();
@@ -731,11 +763,13 @@ mod tests {
                 per_second: 1.0,
                 source_in: 0.0,
                 speed: 1.0,
+                map: None,
             }),
             pictures: None,
             loading: None,
             sound: Default::default(),
             keyframes: Default::default(),
+            speed_curve: None,
         }
     }
 

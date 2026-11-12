@@ -7,6 +7,7 @@
 use crate::ids::{ClipId, LabelId, LinkId, MediaId, SequenceId, TrackId};
 use crate::keyframes::Keyframes;
 use crate::look::Look;
+use crate::ramp::Ramp;
 use crate::sound::Sound;
 use crate::time::{Rate, Speed, Time};
 use diag::AppError;
@@ -263,6 +264,28 @@ pub struct Clip {
     /// nothing for sound.
     #[serde(default)]
     pub keyframes: Keyframes,
+    /// How its speed changes over time (format 11): speed keyframes on
+    /// the timeline from its start. Empty: it plays at `speed` throughout,
+    /// and `speed` means nothing while it isn't.
+    #[serde(default)]
+    pub ramp: Ramp,
+    /// What it shows between two recorded frames when it is slowed down
+    /// further than its file has frames for (format 11). Means nothing
+    /// for sound.
+    #[serde(default)]
+    pub blend: FrameBlend,
+}
+
+/// What a clip shows at a moment between two of its file's frames.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum FrameBlend {
+    /// The frame on screen then, as it was recorded: slowed down past
+    /// the file's frame rate, frames repeat.
+    #[default]
+    Off,
+    /// The two frames around the moment mixed by how near each is, in
+    /// linear light, so slow motion moves on every frame.
+    Blend,
 }
 
 impl Clip {
@@ -272,12 +295,59 @@ impl Clip {
 
     /// How much of its file the clip plays.
     pub fn source_len(&self) -> Time {
-        self.speed.scale(self.duration)
+        self.source_offset(self.duration)
     }
 
     /// Where in its file the clip is at timeline time `t`.
     pub fn source_at(&self, t: Time) -> Time {
-        self.source_in + self.speed.scale(t - self.start)
+        self.source_in + self.source_offset(t - self.start)
+    }
+
+    /// How much of its file it plays from its start to `by` after it on
+    /// the timeline (negative before it): its speed, or its ramp added up.
+    pub fn source_offset(&self, by: Time) -> Time {
+        if self.ramp.is_empty() {
+            self.speed.scale(by)
+        } else {
+            self.ramp.source_offset(by)
+        }
+    }
+
+    /// [`Clip::source_at`] in seconds, for drawing and for sound.
+    pub fn source_at_f64(&self, t: f64) -> f64 {
+        let by = t - self.start.as_secs_f64();
+        let offset = if self.ramp.is_empty() {
+            by * self.speed.as_f64()
+        } else {
+            self.ramp.source_offset_f64(by)
+        };
+        self.source_in.as_secs_f64() + offset
+    }
+
+    /// The speed it plays at, at `t` on the timeline.
+    pub fn speed_at(&self, t: Time) -> Speed {
+        self.ramp.speed_at(t - self.start).unwrap_or(self.speed)
+    }
+
+    /// The same clip with its start edge `by` later on the timeline
+    /// (earlier when negative), its picture staying where it is: it starts
+    /// further into its file and its ramp keeps its place. Its start and
+    /// length are left to the caller.
+    pub fn start_cut_by(&self, by: Time) -> Clip {
+        Clip {
+            source_in: self.source_in + self.source_offset(by),
+            ramp: self.ramp.shifted(Time::ZERO - by),
+            ..self.clone()
+        }
+    }
+
+    /// "50%", "Ramp 100→25%": how fast it plays, in a few words.
+    pub fn speed_summary(&self) -> String {
+        if self.ramp.is_empty() {
+            self.speed.percent()
+        } else {
+            self.ramp.summary()
+        }
     }
 }
 
@@ -469,6 +539,7 @@ impl Project {
                 problems.push(format!("{place} has fades longer than itself"));
             }
             problems.extend(clip.keyframes.problems(&place));
+            problems.extend(clip.ramp.problems(&place));
             if track.kind == TrackKind::Audio && !clip.keyframes.is_empty() {
                 problems.push(format!("{place} is sound but has picture keyframes"));
             }
@@ -562,6 +633,8 @@ mod tests {
             look: Default::default(),
             sound: Default::default(),
             keyframes: Default::default(),
+            ramp: Default::default(),
+            blend: Default::default(),
         });
         p
     }

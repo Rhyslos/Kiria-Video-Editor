@@ -9,8 +9,8 @@
 
 use crate::geometry::{Area, Colour, Part, WEIGHTS};
 
-/// Nine rows of four numbers: see `Layer` in the shader.
-const LAYER_BYTES: u64 = 9 * 4 * 4;
+/// Ten rows of four numbers: see `Layer` in the shader.
+const LAYER_BYTES: u64 = 10 * 4 * 4;
 /// One row of four: see `Show` in the shader.
 const SHOW_BYTES: u64 = 4 * 4;
 
@@ -74,6 +74,11 @@ pub struct Drawn<'a> {
     pub opacity: f32,
     /// Quick colour; [`Colour::NEUTRAL`] leaves the pixels untouched.
     pub colour: Colour,
+    /// A second picture mixed into the first, in linear light, and its
+    /// share (0 to 1): the next recorded frame, for frame blending. It
+    /// must be stored the same way as `pixels` (the same kind of planes,
+    /// colour and turn), or it is left out.
+    pub blend: Option<(Pixels<'a>, f32)>,
 }
 
 /// The pipelines that draw layers into frames of one working format.
@@ -99,6 +104,9 @@ impl Compositor {
                 texture_entry(2),
                 texture_entry(3),
                 texture_entry(4),
+                texture_entry(5),
+                texture_entry(6),
+                texture_entry(7),
             ],
         });
         let pipeline = pipeline(
@@ -169,11 +177,10 @@ impl Compositor {
             .zip(&frame.uniforms)
             .map(|(layer, uniforms)| {
                 queue.write_buffer(uniforms, 0, &layer_bytes(layer, size, self.working));
-                let (first, second, third) = match layer.pixels {
-                    Pixels::TwoPlanes { luma, chroma } => (luma, chroma, chroma),
-                    Pixels::ThreePlanes { luma, u, v } => (luma, u, v),
-                    Pixels::Rgba(rgba) => (rgba, rgba, rgba),
-                };
+                let (first, second, third) = views(layer.pixels);
+                // Without a picture to blend, the first one stands in (unused).
+                let (next_first, next_second, next_third) =
+                    blended(layer).map_or((first, second, third), |(next, _)| views(next));
                 device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("layer"),
                     layout: &self.layout,
@@ -189,6 +196,9 @@ impl Compositor {
                         texture_binding(2, first),
                         texture_binding(3, second),
                         texture_binding(4, third),
+                        texture_binding(5, next_first),
+                        texture_binding(6, next_second),
+                        texture_binding(7, next_third),
                     ],
                 })
             })
@@ -334,6 +344,23 @@ pub fn texture_axes(rotation: u16) -> [[f32; 2]; 3] {
     }
 }
 
+/// The textures a picture's pixels are sampled from, in binding order.
+fn views(pixels: Pixels<'_>) -> (&wgpu::TextureView, &wgpu::TextureView, &wgpu::TextureView) {
+    match pixels {
+        Pixels::TwoPlanes { luma, chroma } => (luma, chroma, chroma),
+        Pixels::ThreePlanes { luma, u, v } => (luma, u, v),
+        Pixels::Rgba(rgba) => (rgba, rgba, rgba),
+    }
+}
+
+/// The layer's second picture and its share, when it has one stored the
+/// same way as the first and a share that changes anything.
+fn blended<'a>(layer: &Drawn<'a>) -> Option<(Pixels<'a>, f32)> {
+    let (next, share) = layer.blend?;
+    let same_kind = std::mem::discriminant(&next) == std::mem::discriminant(&layer.pixels);
+    (same_kind && share > 0.0).then_some((next, share.min(1.0)))
+}
+
 /// The shader's `Layer` block for a layer in a frame of `frame` pixels.
 fn layer_bytes(layer: &Drawn<'_>, frame: (u32, u32), working: Working) -> Vec<u8> {
     // The shown part of the upright picture, then turned into the stored one.
@@ -376,6 +403,7 @@ fn layer_bytes(layer: &Drawn<'_>, frame: (u32, u32), working: Working) -> Vec<u8
             layer.colour.saturation,
         ],
         [WEIGHTS[0], WEIGHTS[1], WEIGHTS[2], layer.colour.contrast],
+        [blended(layer).map_or(0.0, |(_, share)| share), 0.0, 0.0, 0.0],
     ];
     bytes(rows.as_flattened())
 }

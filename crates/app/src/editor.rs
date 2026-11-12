@@ -1705,7 +1705,10 @@ impl Editor {
             self.run_action(Action::PictureHandles);
         }
         for command in commands {
-            let speed = matches!(command, Command::SetSpeed { .. } | Command::SetSound { .. });
+            let speed = matches!(
+                command,
+                Command::SetSpeed { .. } | Command::SetRamp { .. } | Command::SetSound { .. }
+            );
             if let Err(err) = self.with_document(|d| d.apply(command)) {
                 self.errors.push(&err);
             }

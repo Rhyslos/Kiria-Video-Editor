@@ -409,3 +409,173 @@ fn progress_says_how_far_and_how_long_still() {
         PathBuf::from("/videos/My cut.exporting.mp4")
     );
 }
+
+/// A 128×32, 120 fps recording, two seconds long, whose every frame shows
+/// its own number in binary: eight bars 16 pixels wide, the first the
+/// lowest bit, white for 1 and black for 0.
+fn counted() -> (Project, SequenceId) {
+    let settings = SequenceSettings {
+        width: 128,
+        height: 32,
+        frame_rate: project::Rate::FPS_60,
+        sample_rate: 48_000,
+    };
+    let project = Project::new("T", settings);
+    let seq = project.active_sequence;
+    let media = media::describe(&fixture("counted-120.mkv")).unwrap();
+    (
+        Command::Import { sequence: seq, media }.apply(&project).unwrap(),
+        seq,
+    )
+}
+
+/// How bright each of the eight bars is in the middle of the picture.
+fn bars(luma: &[u8], width: usize) -> [u8; 8] {
+    let row = &luma[width * 16..width * 17];
+    std::array::from_fn(|bar| row[bar * 16 + 8])
+}
+
+/// The frame number the bars say, when every bar is clearly black or white.
+fn number(bars: [u8; 8]) -> Option<u32> {
+    bars.iter().enumerate().try_fold(0, |n, (bit, luma)| match luma {
+        0..=50 => Some(n),
+        200.. => Some(n | 1 << bit),
+        _ => None,
+    })
+}
+
+/// Every frame of the exported `path` (`count` of them at 60 fps), as bars.
+fn exported_bars(path: &Path, count: u64) -> Vec<[u8; 8]> {
+    let made = media::describe(path).unwrap();
+    let video = made.info.video.expect("a picture stream");
+    let mut decoder = media::VideoDecoder::open(path, video.index, 0, Decoding::Software).unwrap();
+    (0..count)
+        .map(|frame| {
+            let at = (frame as f64 + 0.5) / 60.0;
+            let media::Decoded::Yuv(picture) = decoder.picture_at(at, video.width, video.height).unwrap()
+            else {
+                panic!("planes expected");
+            };
+            let width = picture.width as usize;
+            let luma = picture.into_planes();
+            bars(luma.as_ref(), width)
+        })
+        .collect()
+}
+
+fn export_of(
+    project: Project,
+    seq: SequenceId,
+    devices: Devices,
+    frames: i64,
+    name: &str,
+) -> (PathBuf, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(name);
+    let settings = ExportSettings {
+        path: path.clone(),
+        range: Some((Time::ZERO, project::Rate::FPS_60.frame_start(frames))),
+        quality: Quality::Small,
+        software: true,
+    };
+    let export = Export::start(project, seq, settings, devices, || {});
+    let Outcome::Done(done) = wait(&export) else {
+        panic!("the export did not finish well");
+    };
+    assert_eq!(done.frames, frames as u64);
+    (path, dir)
+}
+
+#[test]
+fn a_speed_ramp_exports_exactly_the_recorded_frames_it_reaches() {
+    let Some(devices) = devices() else {
+        eprintln!("no graphics device here: exporting isn't checked");
+        return;
+    };
+    let (project, seq) = counted();
+    let clip = project.active().unwrap().video_tracks[0].clips[0].id;
+    // Full speed for half a second (two recorded frames a timeline frame),
+    // easing to half speed by one second (then one recorded frame a
+    // timeline frame: clean slow motion from 120 fps on 60 fps).
+    let ramp = project::Ramp::new([
+        project::SpeedKey {
+            at: Time::from_ratio(1, 2).unwrap(),
+            speed: project::Speed::NORMAL,
+            ease: project::Ease::Smooth,
+        },
+        project::SpeedKey {
+            at: Time::seconds(1),
+            speed: project::Speed::new(1, 2).unwrap(),
+            ease: project::Ease::Linear,
+        },
+    ]);
+    let project = Command::SetRamp {
+        sequence: seq,
+        clip,
+        ramp,
+    }
+    .apply(&project)
+    .unwrap();
+    let ramped = project.active().unwrap().video_tracks[0].clips[0].clone();
+    let frames = 120;
+    let (path, _dir) = export_of(project, seq, devices, frames, "ramp.mp4");
+    let shown = exported_bars(&path, frames as u64);
+    let rate = project::Rate::FPS_60;
+    for (frame, bars) in shown.iter().enumerate() {
+        let source = ramped.source_at(rate.frame_start(frame as i64)).as_secs_f64();
+        // The last recorded frame due by then. The file keeps times to the
+        // millisecond, and the decoder counts a frame stored up to half a
+        // millisecond late as due (its timestamps' own slack).
+        let stored = |k: u32| (f64::from(k) * 1000.0 / 120.0).round() / 1000.0;
+        let expected = (0..240)
+            .take_while(|k| stored(*k) <= source + 0.0005 + 1e-9)
+            .last()
+            .unwrap_or(0);
+        assert_eq!(number(*bars), Some(expected), "timeline frame {frame}: {bars:?}");
+    }
+    // Every other recorded frame at first, then every one.
+    assert_eq!(number(shown[10]), Some(20));
+    let slow: Vec<u32> = shown[70..76].iter().filter_map(|b| number(*b)).collect();
+    assert!(slow.windows(2).all(|pair| pair[1] == pair[0] + 1), "{slow:?}");
+}
+
+#[test]
+fn frame_blending_mixes_the_recorded_frames_around_each_moment() {
+    let Some(devices) = devices() else {
+        eprintln!("no graphics device here: exporting isn't checked");
+        return;
+    };
+    let (project, seq) = counted();
+    let clip = project.active().unwrap().video_tracks[0].clips[0].id;
+    // A quarter speed: two timeline frames a recorded one, the second
+    // half way to the next recorded frame.
+    let slow = Command::SetSpeed {
+        sequence: seq,
+        clip,
+        speed: project::Speed::new(1, 4).unwrap(),
+    }
+    .apply(&project)
+    .unwrap();
+    let blended = Command::SetFrameBlend {
+        sequence: seq,
+        clip,
+        blend: project::FrameBlend::Blend,
+    }
+    .apply(&slow)
+    .unwrap();
+    let (path, _dir) = export_of(blended, seq, devices, 8, "blended.mp4");
+    let shown = exported_bars(&path, 8);
+    for (frame, bars) in shown.iter().enumerate() {
+        if frame % 2 == 0 {
+            assert_eq!(
+                number(*bars),
+                Some(frame as u32 / 2),
+                "on a recorded frame: {bars:?}"
+            );
+        } else {
+            // The lowest bit differs between two neighbouring frames: half
+            // of white's light, about 0.75 of the way up in video values.
+            assert!((140..=215).contains(&bars[0]), "frame {frame} blended: {bars:?}");
+        }
+    }
+}

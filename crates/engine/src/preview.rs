@@ -524,7 +524,11 @@ impl Worker {
             let mut got = self.decoded(r.at, &target, waiting, role)?;
             if let Some(decoded) = got.frame.take() {
                 out.converted_on_cpu |= matches!(decoded, Decoded::Rgba(_));
-                pictures.push((index, decoded));
+                let next = match layer.blend {
+                    Some(blend) => self.next_frame(&target, blend, &decoded, waiting)?,
+                    None => None,
+                };
+                pictures.push((index, decoded, next));
             }
             // The corner and Diagnostics describe the top layer; any
             // layer's problem is told.
@@ -549,7 +553,7 @@ impl Worker {
         }
         let layers = pictures
             .into_iter()
-            .map(|(index, decoded)| (description.layers[index].clone(), decoded))
+            .map(|(index, decoded, next)| (description.layers[index].clone(), decoded, next))
             .collect();
         let composing = self.composing.clone()?;
         let composer = self.composer.get_or_insert_with(|| Composer::new(composing));
@@ -559,6 +563,32 @@ impl Worker {
         }
         out.took = started.elapsed();
         Some(out)
+    }
+
+    /// For frame blending: the recorded frame after `shown` (the one on
+    /// screen at `target`'s moment), from the frames kept or decoded on
+    /// from it, which is one more frame for the decoder. Nothing when the
+    /// file has no later frame. `None` only when the worker is closing.
+    fn next_frame(
+        &mut self,
+        target: &Target<'_>,
+        blend: frame::Blend,
+        shown: &Decoded,
+        waiting: &mut Waiting<'_>,
+    ) -> Option<Option<Decoded>> {
+        let next = Target {
+            moment: blend.next.as_secs_f64(),
+            ..*target
+        };
+        let file = File {
+            path: target.path,
+            stream: target.key.1,
+            rotation: target.rotation,
+        };
+        let got = self.decoded_below(Picture::black(Time::ZERO), &next, &file, waiting)?;
+        // The same frame again (the end of the file, or a file whose frames
+        // are not where its rate says): nothing to blend.
+        Some(got.frame.filter(|frame| frame.time() > shown.time()))
     }
 
     /// The picture of one file at one moment: kept, or decoded. `None` when
@@ -1014,6 +1044,7 @@ fn decode(
 }
 
 /// One file's picture at one moment, as a layer needs it.
+#[derive(Clone, Copy)]
 struct Target<'a> {
     key: (MediaId, u32),
     path: &'a Path,

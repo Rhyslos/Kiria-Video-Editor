@@ -22,14 +22,14 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
 /// The format this build writes.
-pub const FORMAT_VERSION: u32 = 10;
+pub const FORMAT_VERSION: u32 = 11;
 
 /// Turns the text of a version `n` file into the text of a version `n + 1` file.
 pub type Migration = fn(&str) -> diag::Result<String>;
 
 /// `MIGRATIONS[i]` upgrades version `i + 1` to `i + 2`.
 pub const MIGRATIONS: &[Migration] = &[
-    v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8, v8_to_v9, v9_to_v10,
+    v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8, v8_to_v9, v9_to_v10, v10_to_v11,
 ];
 
 /// Format 2 adds `info` (the file's streams) to each media entry. The field
@@ -89,6 +89,13 @@ fn v8_to_v9(text: &str) -> diag::Result<String> {
 /// along, as it did.
 fn v9_to_v10(text: &str) -> diag::Result<String> {
     set_format_version(text, 9, 10)
+}
+
+/// Format 11 adds `ramp` (speed keyframes) and `blend` (frame blending) to
+/// each clip. They default to no ramp and no blending, so every older clip
+/// plays at its one speed and shows its recorded frames, as it did.
+fn v10_to_v11(text: &str) -> diag::Result<String> {
+    set_format_version(text, 10, 11)
 }
 
 /// Rewrites the `format_version` number at the top of the file.

@@ -191,7 +191,7 @@ impl Time {
 
     /// Builds a reduced time from a wide fraction. Values too large for a
     /// project (millions of years) are clamped rather than wrapped.
-    fn from_i128(num: i128, den: i128) -> Time {
+    pub(crate) fn from_i128(num: i128, den: i128) -> Time {
         debug_assert!(den != 0);
         let (mut num, mut den) = if den < 0 { (-num, -den) } else { (num, den) };
         let g = gcd(num.unsigned_abs(), den.unsigned_abs()) as i128;

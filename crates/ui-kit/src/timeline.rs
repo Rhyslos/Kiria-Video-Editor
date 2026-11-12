@@ -64,6 +64,7 @@ mod keyframes;
 pub mod level;
 mod loading;
 mod rows;
+mod speed;
 mod track_views;
 
 pub use cache_bar::{CacheBar, CacheRange, CacheState};
@@ -106,6 +107,8 @@ pub struct TimelineClip {
     /// along its bottom edge, to click, drag and right-click
     /// ([`keyframes`]). The page fills them in for the selected clip only.
     pub keyframes: Vec<KeyframeMark>,
+    /// Its speed, when that changes along it (a ramp): drawn as a line.
+    pub speed_curve: Option<SpeedCurve>,
 }
 
 /// Small pictures along a clip's file: one every `every` seconds from the
@@ -120,6 +123,16 @@ pub struct ClipPictures {
     pub source_in: f64,
     /// How fast the clip plays its file.
     pub speed: f64,
+    /// Where in its file it is along it, when its speed changes over time
+    /// (`source_in` and `speed` then mean nothing).
+    pub map: Option<SourceMap>,
+}
+
+impl ClipPictures {
+    /// Seconds into the file at `from_start` seconds into the clip.
+    fn file_at(&self, from_start: f64) -> f64 {
+        file_at(self.source_in, self.speed, self.map.as_ref(), from_start)
+    }
 }
 
 /// A clip's loudness: peaks of its whole file, and where in the file the clip starts.
@@ -131,7 +144,59 @@ pub struct ClipWaveform {
     pub source_in: f64,
     /// How fast the clip plays its file.
     pub speed: f64,
+    /// Where in its file it is along it, when its speed changes over time
+    /// (`source_in` and `speed` then mean nothing).
+    pub map: Option<SourceMap>,
 }
+
+impl ClipWaveform {
+    /// Seconds into the file at `from_start` seconds into the clip.
+    fn file_at(&self, from_start: f64) -> f64 {
+        file_at(self.source_in, self.speed, self.map.as_ref(), from_start)
+    }
+}
+
+/// Where in its file a clip whose speed changes over time is, along it:
+/// points of (seconds from the clip's start, seconds into its file), in
+/// order, with the file going evenly between two and on at the end
+/// points' pace beyond them. The page makes it from the clip's ramp.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SourceMap(pub std::sync::Arc<[(f64, f64)]>);
+
+impl SourceMap {
+    /// Seconds into the file at `from_start` seconds into the clip.
+    pub fn at(&self, from_start: f64) -> f64 {
+        let points = &self.0;
+        let (Some(first), Some(last)) = (points.first(), points.last()) else {
+            return from_start;
+        };
+        let next = points.partition_point(|(t, _)| *t <= from_start);
+        let pair = match next {
+            0 => points.get(..2),
+            n if n >= points.len() => points.get(points.len().saturating_sub(2)..),
+            n => points.get(n - 1..=n),
+        };
+        match pair {
+            Some([(t0, s0), (t1, s1)]) if t1 > t0 => s0 + (from_start - t0) * (s1 - s0) / (t1 - t0),
+            _ => first.1 + (from_start - first.0).max(0.0).min(last.0 - first.0),
+        }
+    }
+}
+
+/// Seconds into a file at `from_start` seconds into its clip.
+fn file_at(source_in: f64, speed: f64, map: Option<&SourceMap>, from_start: f64) -> f64 {
+    match map {
+        Some(map) => map.at(from_start),
+        None => source_in + from_start * speed,
+    }
+}
+
+/// How a clip's speed changes along it, drawn as a thin line over its
+/// lower part: points of (share of the clip's length, 0 to 1; speed, 1 is
+/// normal), in order. Normal speed is the middle of the band; a quarter
+/// and four times as fast are its bottom and top.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpeedCurve(pub std::sync::Arc<[(f32, f32)]>);
 
 /// One track as the timeline shows it.
 #[derive(Debug, Clone, PartialEq)]
@@ -1375,6 +1440,9 @@ impl TimelineView {
                     if full {
                         fades::draw(&clip_painter, wave_r, &clip.sound, self.zoom);
                     }
+                    if full && let Some(curve) = &clip.speed_curve {
+                        speed::draw(&clip_painter, r, curve, theme.accent);
+                    }
                     if level_line {
                         let db = dragged_db.unwrap_or_else(|| level::db_of_gain(clip.sound.gain));
                         let hovered = self.level_drag.is_none()
@@ -1827,7 +1895,7 @@ impl TimelineView {
         let mut x = area.left() + first * tile;
         let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
         while x < visible.right() {
-            let t = pics.source_in + f64::from(x + tile / 2.0 - left) / f64::from(self.zoom) * pics.speed;
+            let t = pics.file_at(f64::from(x + tile / 2.0 - left) / f64::from(self.zoom));
             let i = ((t / pics.every).round().max(0.0) as usize).min(pics.textures.len() - 1);
             let rect = Rect::from_min_size(pos2(x, area.top()), vec2(tile, area.height()));
             painter.image(pics.textures[i], rect, uv, Color32::from_white_alpha(230));
@@ -1866,12 +1934,12 @@ impl TimelineView {
         };
         let mut mesh = egui::Mesh::default();
         let (mid, half) = (clip_area.center().y, clip_area.height() / 2.0);
-        let per_px = f64::from(w.per_second) / f64::from(self.zoom) * w.speed;
         let mut x = clip_area.left().floor();
         while x < clip_area.right() {
-            let t = w.source_in + f64::from(x - left) / f64::from(self.zoom) * w.speed;
+            let t = w.file_at(f64::from(x - left) / f64::from(self.zoom));
+            let t_next = w.file_at(f64::from(x + 1.0 - left) / f64::from(self.zoom));
             let a = (t * f64::from(w.per_second)).max(0.0) as usize;
-            let b = ((t * f64::from(w.per_second) + per_px).ceil() as usize)
+            let b = ((t_next * f64::from(w.per_second)).ceil() as usize)
                 .max(a + 1)
                 .min(w.peaks.len());
             if a >= w.peaks.len() {
@@ -3323,6 +3391,7 @@ mod tests {
             loading: None,
             sound: ClipSound::default(),
             keyframes: Vec::new(),
+            speed_curve: None,
         }
     }
 
