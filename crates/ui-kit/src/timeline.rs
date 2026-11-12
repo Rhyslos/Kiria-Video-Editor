@@ -274,6 +274,20 @@ pub enum ClipEdge {
     End,
 }
 
+/// What a click or a drag in the ruler moves. The other one is moved by
+/// dragging its own handle: the playhead's at the top of the ruler, the
+/// edit needle's red one at its bottom. A way of working the page keeps in
+/// its settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum ClickMoves {
+    /// The playhead (as it always was).
+    #[default]
+    Playhead,
+    /// The edit needle, when there is one (not with the needle merged into
+    /// the playhead: then a click moves the playhead).
+    EditNeedle,
+}
+
 /// What a click or drag on a clip does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Tool {
@@ -474,6 +488,10 @@ pub struct TimelineView {
     pub divider: bool,
     /// How far the one list (the divider off) is scrolled down, in points.
     list_scroll: f32,
+    /// What a click or a drag in the ruler moves.
+    pub click_moves: ClickMoves,
+    /// The playhead's handle is pointed at or dragged: it is drawn lit.
+    playhead_lit: bool,
 }
 
 impl Default for TimelineView {
@@ -509,6 +527,8 @@ impl Default for TimelineView {
             compact: false,
             divider: true,
             list_scroll: 0.0,
+            click_moves: ClickMoves::Playhead,
+            playhead_lit: false,
         }
     }
 }
@@ -1442,17 +1462,14 @@ impl TimelineView {
             [pos2(ph, rect.top()), pos2(ph, layout.scrollbar.top())],
             Stroke::new(1.5, theme.text),
         );
-        over.add(Shape::convex_polygon(
-            vec![
-                pos2(ph - 6.0, rect.top()),
-                pos2(ph + 6.0, rect.top()),
-                pos2(ph + 6.0, rect.top() + 8.0),
-                pos2(ph, rect.top() + 14.0),
-                pos2(ph - 6.0, rect.top() + 8.0),
-            ],
-            theme.text,
-            Stroke::NONE,
-        ));
+        draw_playhead_handle(
+            &over,
+            theme,
+            ph,
+            &layout,
+            self.needle_moves(data),
+            self.playhead_lit,
+        );
         if let Some(needle) = self.needle_drag.or(data.needle) {
             let nx = self.x_of(left, needle);
             over.line_segment(
@@ -1929,6 +1946,33 @@ impl TimelineView {
             Sense::click_and_drag(),
         );
 
+        // The playhead's handle at the top of the ruler: dragging it moves
+        // the playhead whatever a click in the ruler moves. Not with Shift
+        // held, so a region can be begun at the playhead.
+        let ph = self.x_of(left, data.playhead);
+        let handle_id = id.with("playhead");
+        let shift = ui.input(|i| i.modifiers.shift);
+        self.playhead_lit = false;
+        if !shift || ui.ctx().is_being_dragged(handle_id) {
+            let r = ui
+                .interact(playhead_grab(ph, layout), handle_id, Sense::click_and_drag())
+                .on_hover_cursor(CursorIcon::ResizeHorizontal);
+            self.playhead_lit = r.hovered() || r.dragged();
+            if self.needle_moves(data) && !r.dragged() {
+                r.clone().on_hover_text("Drag to move the playhead");
+            }
+            if r.dragged_by(egui::PointerButton::Primary)
+                && let Some(p) = r.interact_pointer_pos()
+            {
+                events.push(TimelineEvent::Seek(
+                    self.time_at(left, p.x).clamp(0.0, data.length.max(0.0)),
+                ));
+            }
+            if r.dragged() || r.drag_stopped() || r.clicked() {
+                return;
+            }
+        }
+
         // The edit needle's handle, dragged along the ruler.
         if let Some(needle) = data.needle {
             let nx = self.x_of(left, needle);
@@ -2041,6 +2085,22 @@ impl TimelineView {
                 && b - a > 1e-6
             {
                 events.push(TimelineEvent::SetRegion(Some((a, b))));
+            }
+        } else if self.needle_moves(data) {
+            // A click puts the edit needle there; a drag takes it along and
+            // puts it where it is let go, as dragging its handle does.
+            if let Some(p) = ruler.interact_pointer_pos() {
+                let t = self.time_at(left, p.x).clamp(0.0, data.length.max(0.0));
+                if ruler.clicked() {
+                    events.push(TimelineEvent::MoveNeedle(t));
+                } else if ruler.dragged_by(egui::PointerButton::Primary) {
+                    self.needle_drag = Some(t);
+                }
+            }
+            if ruler.drag_stopped()
+                && let Some(t) = self.needle_drag.take()
+            {
+                events.push(TimelineEvent::MoveNeedle(t));
             }
         } else if (ruler.clicked() || ruler.dragged_by(egui::PointerButton::Primary))
             && let Some(p) = ruler.interact_pointer_pos()
@@ -2374,6 +2434,12 @@ impl TimelineView {
                 });
             }
         }
+    }
+
+    /// Whether a click in the ruler moves the edit needle: so set, and the
+    /// timeline has a needle of its own.
+    fn needle_moves(&self, data: &TimelineData) -> bool {
+        self.click_moves == ClickMoves::EditNeedle && data.needle.is_some()
     }
 
     /// The divider between the video and the audio area: drag it to share
@@ -2807,6 +2873,43 @@ fn draw_clip_marks(p: &egui::Painter, theme: &Theme, r: Rect, clip: &TimelineCli
             inside.rect_filled(pill, 3.0, Color32::from_black_alpha(150));
         }
         inside.galley(pos, galley, theme.text);
+    }
+}
+
+/// Where the playhead's handle can be taken hold of: its head at the top
+/// of the ruler, a little wider than it is drawn.
+fn playhead_grab(x: f32, layout: &Layout) -> Rect {
+    Rect::from_min_max(
+        pos2(x - 8.0, layout.ruler.top()),
+        pos2(x + 8.0, layout.ruler.top() + 18.0),
+    )
+}
+
+/// The playhead's head at the top of the ruler. When a click in the ruler
+/// moves the edit needle (`grab`), the head is the way to move the
+/// playhead: drawn larger, with grip lines; lit while pointed at or dragged.
+fn draw_playhead_handle(p: &egui::Painter, theme: &Theme, x: f32, layout: &Layout, grab: bool, lit: bool) {
+    let top = layout.ruler.top();
+    let (half, side, tip) = if grab { (7.0, 11.0, 18.0) } else { (6.0, 8.0, 14.0) };
+    let colour = if lit { theme.accent } else { theme.text };
+    p.add(Shape::convex_polygon(
+        vec![
+            pos2(x - half, top),
+            pos2(x + half, top),
+            pos2(x + half, top + side),
+            pos2(x, top + tip),
+            pos2(x - half, top + side),
+        ],
+        colour,
+        Stroke::NONE,
+    ));
+    if grab {
+        for dx in [-2.5, 0.0, 2.5] {
+            p.line_segment(
+                [pos2(x + dx, top + 3.0), pos2(x + dx, top + 9.0)],
+                Stroke::new(1.0, theme.panel),
+            );
+        }
     }
 }
 
@@ -4670,5 +4773,111 @@ mod tests {
         rig.frame(Vec::new());
         assert_eq!(rig.view.split, 0.4);
         assert!(rig.rows_of(Half::Audio)[0].top() > rig.rows_of(Half::Video)[0].bottom());
+    }
+
+    /// Presses at `grab`, drags a second (60 points) to the right in two
+    /// steps and lets go: every event on the way.
+    fn drag_along(rig: &mut Rig, grab: Pos2) -> Vec<TimelineEvent> {
+        let primary = egui::PointerButton::Primary;
+        let mut events = rig.move_to(grab);
+        events.extend(rig.button(grab, primary, true));
+        events.extend(rig.move_to(grab + vec2(30.0, 0.0)));
+        events.extend(rig.move_to(grab + vec2(60.0, 0.0)));
+        events.extend(rig.button(grab + vec2(60.0, 0.0), primary, false));
+        events
+    }
+
+    fn seeks(events: &[TimelineEvent]) -> Vec<f64> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                TimelineEvent::Seek(t) => Some((t * 1000.0).round() / 1000.0),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn needle_moves(events: &[TimelineEvent]) -> Vec<f64> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                TimelineEvent::MoveNeedle(t) => Some((t * 1000.0).round() / 1000.0),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn set_to_the_edit_needle_a_click_or_drag_in_the_ruler_moves_the_needle() {
+        let primary = egui::PointerButton::Primary;
+        let mut rig = Rig::new(1, 1);
+        rig.view.click_moves = ClickMoves::EditNeedle;
+        rig.needle = Some(5.0);
+        // A click at x = 500: six seconds.
+        let events = click(&mut rig, pos2(500.0, 10.0), primary);
+        assert_eq!(needle_moves(&events), [6.0]);
+        assert!(seeks(&events).is_empty(), "the playhead stays: {events:?}");
+        // In the labels row too.
+        let events = click(&mut rig, pos2(500.0, 36.0), primary);
+        assert_eq!(needle_moves(&events), [6.0]);
+        // A drag takes the needle along and puts it down once, where it is let go.
+        let events = drag_along(&mut rig, pos2(500.0, 10.0));
+        assert_eq!(needle_moves(&events), [7.0], "{events:?}");
+        assert!(seeks(&events).is_empty());
+        // The needle's own handle still drags it.
+        let events = drag_along(&mut rig, pos2(441.0, 20.0));
+        assert_eq!(needle_moves(&events).len(), 1);
+        // Shift+drag still marks a region.
+        rig.modifiers = egui::Modifiers::SHIFT;
+        let events = drag_along(&mut rig, pos2(500.0, 10.0));
+        rig.modifiers = egui::Modifiers::NONE;
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, TimelineEvent::SetRegion(Some(_)))),
+            "{events:?}"
+        );
+        assert!(needle_moves(&events).is_empty());
+        // Clips and empty track space are as before.
+        let events = click(&mut rig, pos2(300.0, 190.0), primary);
+        assert_eq!(events, [TimelineEvent::Select { clip: 0, add: false }]);
+        let events = click(&mut rig, pos2(700.0, 190.0), primary);
+        assert_eq!(events, [TimelineEvent::ClearSelection]);
+    }
+
+    #[test]
+    fn the_playhead_is_dragged_by_its_handle_whatever_a_click_moves() {
+        // The playhead at 2 s is at x = 260; its handle is at the top of the ruler.
+        for moves in [ClickMoves::Playhead, ClickMoves::EditNeedle] {
+            let mut rig = Rig::new(1, 1);
+            rig.needle = Some(5.0);
+            rig.view.click_moves = moves;
+            let events = drag_along(&mut rig, pos2(260.0, 6.0));
+            assert_eq!(seeks(&events).last(), Some(&3.0), "{moves:?}: {events:?}");
+            assert!(needle_moves(&events).is_empty(), "{moves:?}");
+            // A click on the handle moves nothing.
+            let events = click(&mut rig, pos2(260.0, 6.0), egui::PointerButton::Primary);
+            assert!(events.is_empty(), "{moves:?}: {events:?}");
+        }
+        // With Shift a region can still be begun at the playhead.
+        let mut rig = Rig::new(1, 1);
+        rig.modifiers = egui::Modifiers::SHIFT;
+        let events = drag_along(&mut rig, pos2(260.0, 6.0));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, TimelineEvent::SetRegion(Some(_)))),
+            "{events:?}"
+        );
+    }
+
+    #[test]
+    fn with_no_needle_of_its_own_a_click_moves_the_playhead() {
+        // "Edit at the playhead" merges the needle into it: the page passes none.
+        let mut rig = Rig::new(1, 1);
+        rig.view.click_moves = ClickMoves::EditNeedle;
+        let events = click(&mut rig, pos2(500.0, 10.0), egui::PointerButton::Primary);
+        assert_eq!(seeks(&events), [6.0]);
+        assert!(needle_moves(&events).is_empty());
     }
 }

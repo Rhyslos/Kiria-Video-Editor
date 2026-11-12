@@ -31,8 +31,8 @@ pub use layout::Page;
 pub use shortcuts::{Action, Context, Shortcut, ShortcutTable};
 pub use theme::{Theme, ThemeName, status};
 pub use timeline::{
-    ClipEdge, ClipPictures, ClipSound, ClipWaveform, DraggedMedia, TimelineClip, TimelineData, TimelineEvent,
-    TimelineMarker, TimelineTrack, TimelineView, Tool, ViewStep,
+    ClickMoves, ClipEdge, ClipPictures, ClipSound, ClipWaveform, DraggedMedia, TimelineClip, TimelineData,
+    TimelineEvent, TimelineMarker, TimelineTrack, TimelineView, Tool, ViewStep,
 };
 pub use top_bar::{TitleBar, TopBar, TopBarClicks, logo_mark, with_keys};
 pub use transport::TransportClick;

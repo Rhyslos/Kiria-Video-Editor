@@ -418,6 +418,16 @@ impl Editor {
                 .into();
                 self.settings.save(&self.data_dir)
             }
+            Action::ClickMovesNeedle => {
+                self.settings.click_moves = match self.settings.click_moves {
+                    ui_kit::ClickMoves::Playhead => ui_kit::ClickMoves::EditNeedle,
+                    ui_kit::ClickMoves::EditNeedle => ui_kit::ClickMoves::Playhead,
+                };
+                self.timeline.click_moves = self.settings.click_moves;
+                self.status =
+                    click_moves_says(self.settings.click_moves, self.settings.edit_at_playhead).into();
+                self.settings.save(&self.data_dir)
+            }
             // With the viewer in its own window, that window fills its screen.
             Action::FullScreenViewer if self.display.window_open() => {
                 self.display.switch_window_full_screen();
@@ -1438,6 +1448,7 @@ impl Editor {
         ui_kit::viewer::Display {
             compact_tracks: self.settings.compact_tracks,
             track_divider: !self.settings.one_track_list,
+            click_moves_needle: self.settings.click_moves == ui_kit::ClickMoves::EditNeedle,
             ..self.display.state(full_screen)
         }
     }
@@ -2019,6 +2030,7 @@ impl Editor {
             self.timeline.rough_cut = self.settings.rough_cut;
             self.timeline.compact = self.settings.compact_tracks;
             self.timeline.divider = !self.settings.one_track_list;
+            self.timeline.click_moves = self.settings.click_moves;
             if self.settings.rough_cut {
                 timeline_panel::fold_sound(&mut drawn);
             }
@@ -2201,6 +2213,7 @@ impl Editor {
                 ui.heading("Editing");
                 ui.checkbox(&mut self.settings.edit_at_playhead, "Edit at the playhead")
                     .on_hover_text("Merge the red edit needle into the playhead.");
+                click_moves_row(ui, &mut self.settings.click_moves, self.settings.edit_at_playhead);
                 ui.add_space(8.0);
                 ui.heading("Resources");
                 let machine = jobs::Machine::detect();
@@ -2640,6 +2653,37 @@ enum Thumbnail {
     Now,
 }
 
+/// The Settings row for what a click in the timeline's ruler moves. With
+/// the needle merged into the playhead there is only the playhead to move.
+fn click_moves_row(ui: &mut egui::Ui, moves: &mut ui_kit::ClickMoves, edit_at_playhead: bool) {
+    ui.horizontal(|ui| {
+        ui.label("Clicking the timeline moves");
+        ui.add_enabled_ui(!edit_at_playhead, |ui| {
+            ui.radio_value(moves, ui_kit::ClickMoves::Playhead, "the playhead");
+            ui.radio_value(moves, ui_kit::ClickMoves::EditNeedle, "the edit needle");
+        })
+        .response
+        .on_hover_text(if edit_at_playhead {
+            "With Edit at the playhead there is no separate needle: a click moves the playhead"
+        } else {
+            "A click or drag in the timeline's ruler moves this one; the other is moved by dragging its handle"
+        });
+    });
+}
+
+/// What the status line says when the choice of what a click moves changes.
+fn click_moves_says(moves: ui_kit::ClickMoves, edit_at_playhead: bool) -> &'static str {
+    match (moves, edit_at_playhead) {
+        (ui_kit::ClickMoves::EditNeedle, false) => {
+            "A click in the timeline's ruler now moves the edit needle; drag the playhead by its handle at the top of the ruler"
+        }
+        (ui_kit::ClickMoves::EditNeedle, true) => {
+            "A click will move the edit needle once Edit at the playhead is off; until then it moves the playhead"
+        }
+        (ui_kit::ClickMoves::Playhead, _) => "A click in the timeline's ruler moves the playhead",
+    }
+}
+
 fn limit_row<T>(ui: &mut egui::Ui, label: &str, limit: &mut Limit<T>, min: T, max: T)
 where
     T: egui::emath::Numeric + Copy,
@@ -2707,4 +2751,24 @@ fn save_png(image: &egui::ColorImage, path: &Path) -> Result<(), String> {
     let bytes: Vec<u8> = image.pixels.iter().flat_map(|c| c.to_array()).collect();
     image::save_buffer(path, &bytes, w as u32, h as u32, image::ExtendedColorType::Rgba8)
         .map_err(|e| format!("The screenshot could not be saved: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_status_line_says_what_a_click_moves_now() {
+        use ui_kit::ClickMoves::{EditNeedle, Playhead};
+        assert!(click_moves_says(EditNeedle, false).contains("edit needle"));
+        assert!(
+            click_moves_says(EditNeedle, false).contains("handle"),
+            "and how to move the playhead"
+        );
+        assert!(
+            click_moves_says(EditNeedle, true).contains("Edit at the playhead"),
+            "with no needle of its own, why nothing seems to change"
+        );
+        assert!(click_moves_says(Playhead, false).contains("playhead"));
+    }
 }

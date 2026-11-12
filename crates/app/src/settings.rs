@@ -24,6 +24,9 @@ pub struct Settings {
     /// No divider between the timeline's video and audio tracks: one list
     /// that scrolls together (the Display menu's divider line, off).
     pub one_track_list: bool,
+    /// What a click or drag in the timeline's ruler moves: the playhead
+    /// (as always) or the edit needle, the playhead then moved by its handle.
+    pub click_moves: ui_kit::ClickMoves,
     /// How the height is shared between the viewer and the timeline (the
     /// handle between them), on every page that has both.
     pub viewer_split: ui_kit::splitter::Split,
@@ -96,6 +99,24 @@ mod tests {
         let settings = Settings {
             compact_tracks: true,
             one_track_list: true,
+            ..Settings::default()
+        };
+        settings.save(tmp.path()).unwrap();
+        assert_eq!(Settings::load(tmp.path()).0, settings);
+    }
+
+    #[test]
+    fn a_click_moves_the_playhead_until_set_otherwise() {
+        assert_eq!(Settings::default().click_moves, ui_kit::ClickMoves::Playhead);
+        let old: Settings = ron::from_str("(rough_cut: true)").unwrap();
+        assert_eq!(
+            old.click_moves,
+            ui_kit::ClickMoves::Playhead,
+            "settings from before the choice"
+        );
+        let tmp = tempfile::tempdir().unwrap();
+        let settings = Settings {
+            click_moves: ui_kit::ClickMoves::EditNeedle,
             ..Settings::default()
         };
         settings.save(tmp.path()).unwrap();

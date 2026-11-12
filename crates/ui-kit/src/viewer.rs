@@ -175,6 +175,8 @@ pub struct Display {
     pub compact_tracks: bool,
     /// The timeline has its divider between video and audio tracks.
     pub track_divider: bool,
+    /// A click in the timeline's ruler moves the edit needle.
+    pub click_moves_needle: bool,
 }
 
 /// The Display menu's lines: the command each runs, its words, and whether
@@ -193,13 +195,18 @@ pub fn display_lines(display: Display) -> [(Action, &'static str, bool); 3] {
 
 /// The Display menu's lines under its Timeline heading: how the timeline's
 /// tracks are looked at.
-pub fn timeline_lines(display: Display) -> [(Action, &'static str, bool); 2] {
+pub fn timeline_lines(display: Display) -> [(Action, &'static str, bool); 3] {
     [
         (Action::CompactTracks, "Compact tracks", display.compact_tracks),
         (
             Action::TrackDivider,
             "Divider between video and audio",
             display.track_divider,
+        ),
+        (
+            Action::ClickMovesNeedle,
+            "Clicking the timeline moves the edit needle",
+            display.click_moves_needle,
         ),
     ]
 }
@@ -230,7 +237,7 @@ pub fn display_menu(ui: &mut Ui, display: Display, shortcuts: &ShortcutTable) ->
         }
     })
     .response
-    .on_hover_text("How the picture is shown (split, in its own window, full screen) and how the timeline's tracks are looked at");
+    .on_hover_text("How the picture is shown (split, in its own window, full screen), how the timeline's tracks are looked at and what a click on it moves");
     picked
 }
 
@@ -267,11 +274,16 @@ mod tests {
         let timeline = timeline_lines(Display {
             compact_tracks: true,
             track_divider: false,
+            click_moves_needle: true,
             ..Display::default()
         });
         assert_eq!(
             timeline.map(|(a, _, on)| (a, on)),
-            [(Action::CompactTracks, true), (Action::TrackDivider, false)]
+            [
+                (Action::CompactTracks, true),
+                (Action::TrackDivider, false),
+                (Action::ClickMovesNeedle, true)
+            ]
         );
         // Each line's words are in its command's name, so the menu, search
         // and the shortcuts page say the same thing.

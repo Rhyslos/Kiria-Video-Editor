@@ -128,6 +128,7 @@ actions! {
     RoughCut, Timeline, "Timeline view: rough cut or full";
     CompactTracks, Timeline, "Compact tracks: every track a thin strip, to see many at a glance";
     TrackDivider, Timeline, "Divider between video and audio tracks, or one list that scrolls together";
+    ClickMovesNeedle, Timeline, "Clicking the timeline moves the edit needle (the playhead by its handle), or the playhead";
     AddVideoTrack, Timeline, "Add a video track (on top)";
     AddAudioTrack, Timeline, "Add an audio track (at the bottom)";
 }

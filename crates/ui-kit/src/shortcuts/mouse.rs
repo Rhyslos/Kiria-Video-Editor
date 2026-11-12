@@ -83,7 +83,12 @@ pub const MOUSE: &[MouseAction] = &[
     on(
         Context::Timeline,
         "Click or drag in the ruler",
-        "Move the playhead",
+        "Move the playhead; or the edit needle, when the Display menu says clicking the timeline moves it",
+    ),
+    on(
+        Context::Timeline,
+        "Drag the playhead's handle at the top of the ruler",
+        "Move the playhead, whatever a click moves",
     ),
     on(Context::Timeline, "Shift+drag in the ruler", "Mark a region"),
     on(
