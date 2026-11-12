@@ -56,6 +56,47 @@ pub struct Settings {
     pub viewer_window: Option<crate::viewer_window::WindowPlace>,
     /// Proxies Off, On or Auto (the usual): the same for every project.
     pub proxies: cache::proxy::ProxyMode,
+    /// What a jump in a file without a proxy shows first.
+    pub jump_picture: JumpPicture,
+}
+
+/// What the viewer shows when the playhead jumps in a file that has no
+/// proxy, while the exact frame is decoded (Settings › Proxies). Proxy
+/// frames shown first are not affected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum JumpPicture {
+    /// The key frame before the moment at once, then the exact frame (the usual).
+    #[default]
+    KeyFrameFirst,
+    /// Nothing new until the exact frame is there.
+    ExactOnly,
+}
+
+impl JumpPicture {
+    pub const ALL: [JumpPicture; 2] = [JumpPicture::KeyFrameFirst, JumpPicture::ExactOnly];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            JumpPicture::KeyFrameFirst => "Show the nearest key frame first",
+            JumpPicture::ExactOnly => "Wait for the exact frame",
+        }
+    }
+
+    pub fn explained(self) -> &'static str {
+        match self {
+            JumpPicture::KeyFrameFirst => {
+                "The key frame before the moment shows at once (up to a few seconds early), then the exact frame replaces it."
+            }
+            JumpPicture::ExactOnly => {
+                "The picture stays as it is until the exact frame is decoded: never a wrong frame, but a jump can take a moment."
+            }
+        }
+    }
+
+    /// Whether the preview worker shows a key frame first.
+    pub fn key_frame_first(self) -> bool {
+        self == JumpPicture::KeyFrameFirst
+    }
 }
 
 impl Settings {
@@ -130,6 +171,27 @@ mod tests {
             ron::from_str::<Settings>(&text).unwrap().proxies,
             cache::proxy::ProxyMode::On
         );
+    }
+
+    #[test]
+    fn a_jump_shows_the_key_frame_first_until_set_otherwise_and_is_kept() {
+        assert_eq!(Settings::default().jump_picture, JumpPicture::KeyFrameFirst);
+        assert!(Settings::default().jump_picture.key_frame_first());
+        let older: Settings = ron::from_str("(edit_at_playhead: true)").unwrap();
+        assert_eq!(
+            older.jump_picture,
+            JumpPicture::KeyFrameFirst,
+            "as before the choice"
+        );
+        let tmp = tempfile::tempdir().unwrap();
+        let settings = Settings {
+            jump_picture: JumpPicture::ExactOnly,
+            ..Settings::default()
+        };
+        settings.save(tmp.path()).unwrap();
+        let loaded = Settings::load(tmp.path()).0;
+        assert_eq!(loaded, settings);
+        assert!(!loaded.jump_picture.key_frame_first());
     }
 
     #[test]

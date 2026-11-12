@@ -275,6 +275,7 @@ impl Editor {
         );
         // Before the split view's Source is made: it takes the shelf from here.
         viewer.set_proxies(Some(proxies.shelf()));
+        viewer.set_key_frame_first(settings.jump_picture.key_frame_first());
         let display = crate::display::ViewerDisplay::new(settings.split_view, &viewer);
         Editor {
             theme: settings.theme.theme(),
@@ -2437,6 +2438,15 @@ impl Editor {
                     }
                 });
                 ui.label(egui::RichText::new(self.settings.proxies.explained()).color(self.theme.muted));
+                ui.add_space(4.0);
+                ui.label("When jumping in a file without a proxy");
+                ui.horizontal(|ui| {
+                    for choice in crate::settings::JumpPicture::ALL {
+                        ui.radio_value(&mut self.settings.jump_picture, choice, choice.label())
+                            .on_hover_text(choice.explained());
+                    }
+                });
+                ui.label(egui::RichText::new(self.settings.jump_picture.explained()).color(self.theme.muted));
                 ui.add_space(8.0);
                 ui.heading("Graphics");
                 if let Some(err) = self.graphics.settings_row(ui, &self.theme) {
@@ -2462,6 +2472,9 @@ impl Editor {
                 self.theme.apply(ctx);
             }
             self.proxies.set_mode(self.settings.proxies);
+            let key_frame_first = self.settings.jump_picture.key_frame_first();
+            self.viewer.set_key_frame_first(key_frame_first);
+            self.display.set_key_frame_first(key_frame_first);
             if let Err(err) = self.settings.save(&self.data_dir) {
                 self.errors.push(&err);
             }

@@ -150,6 +150,9 @@ pub struct Viewer {
     frame_interval: Option<f64>,
     /// Where proxies are, handed to the worker (again when it is restarted).
     proxies: Option<Arc<cache::proxy::Shelf>>,
+    /// A jump in a file without a proxy shows the key frame before it first
+    /// (handed to the worker, again when it is restarted).
+    key_frame_first: bool,
 }
 
 impl Viewer {
@@ -188,6 +191,7 @@ impl Viewer {
             play_scale: 1,
             frame_interval: None,
             proxies: None,
+            key_frame_first: true,
         }
     }
 
@@ -198,6 +202,15 @@ impl Viewer {
         self.requested = None;
     }
 
+    /// Whether a jump in a file without a proxy shows the key frame before
+    /// the moment first, then the exact frame (Settings › Proxies).
+    pub fn set_key_frame_first(&mut self, on: bool) {
+        if self.key_frame_first != on {
+            self.key_frame_first = on;
+            self.preview.set_key_frame_first(on);
+        }
+    }
+
     /// A second viewer beside this one, with a worker of its own on the
     /// same devices, drawing from `slot`: the split view's Source. Its
     /// worker keeps a quarter of the frames this one's may keep on the card.
@@ -206,6 +219,7 @@ impl Viewer {
         let mut viewer = Viewer::new(&self.ctx, None, self.convert, decoding, self.renderer.clone());
         viewer.slot = slot;
         viewer.set_proxies(self.proxies.clone());
+        viewer.set_key_frame_first(self.key_frame_first);
         viewer
     }
 
@@ -424,6 +438,7 @@ impl Viewer {
         }
         self.preview = start_preview(&self.ctx, self.convert, None, self.renderer.as_ref());
         self.preview.set_proxies(self.proxies.clone());
+        self.preview.set_key_frame_first(self.key_frame_first);
         self.preview.set_playing(self.frame_interval.is_some());
         self.requested = None;
         self.ctx.request_repaint();

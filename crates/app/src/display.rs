@@ -73,6 +73,14 @@ impl ViewerDisplay {
         }
     }
 
+    /// Settings › Proxies' choice for jumps in a file without a proxy,
+    /// for the Source as for the Program.
+    pub fn set_key_frame_first(&mut self, on: bool) {
+        if let Some(source) = &mut self.source {
+            source.set_key_frame_first(on);
+        }
+    }
+
     /// What the Display menu shows as on.
     pub fn state(&self, full_screen: bool) -> ui_kit::viewer::Display {
         ui_kit::viewer::Display {
