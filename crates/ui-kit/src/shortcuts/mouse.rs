@@ -105,7 +105,12 @@ pub const MOUSE: &[MouseAction] = &[
     on(
         Context::Timeline,
         "Drag a clip up or down",
-        "Move it to another track of its kind",
+        "Move it to another track of its kind; its sound finds a free track",
+    ),
+    on(
+        Context::Timeline,
+        "Drag a clip above the top video track, or under the bottom audio track",
+        "Make a new track there for it",
     ),
     on(
         Context::Timeline,
@@ -130,7 +135,7 @@ pub const MOUSE: &[MouseAction] = &[
     on(
         Context::Timeline,
         "Drag a file from the media drawer onto a track",
-        "Place it there: its picture on the video track under the pointer",
+        "Lay it there: its picture on the video track under the pointer, its sound where there is room",
     ),
     on(
         Context::Timeline,
@@ -140,7 +145,7 @@ pub const MOUSE: &[MouseAction] = &[
     on(
         Context::Timeline,
         "Drag the line between video and audio",
-        "Share the timeline's height between them",
+        "Share the timeline's height between them; the video area still grows for a track that is added",
     ),
     on(
         Context::Timeline,
