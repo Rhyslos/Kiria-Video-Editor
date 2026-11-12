@@ -13,3 +13,4 @@ Name each note after its system, for example `playback.md`, and give it these se
 - [caching.md](caching.md): showing a frame within 50 ms while scrubbing and jumping (4A).
 - [timeline.md](timeline.md): the timeline widget (4B): painter with culling, measured.
 - [rendering.md](rendering.md): putting the timeline's picture together from its layers on the GPU (4C on). Measured: a worker composes into a floating-point frame in linear light.
+- [highlights.md](highlights.md): finding highlights in long game recordings (5.4): sound loudness and onsets per stream, cuts and sudden motion in the picture, scored against picked moments. Preliminary; waiting for the owner's recordings.

@@ -7,3 +7,4 @@ Throwaway prototypes for comparing approaches to a big system (see `docs/researc
 | [decoding](decoding/) | [decoding.md](../docs/research/decoding.md) |
 | [caching](caching/) | [caching.md](../docs/research/caching.md) |
 | [rendering](rendering/) | [rendering.md](../docs/research/rendering.md) |
+| [highlights](highlights/) | [highlights.md](../docs/research/highlights.md) |
