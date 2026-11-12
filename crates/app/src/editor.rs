@@ -1412,31 +1412,38 @@ impl Editor {
         self.settings.save(&self.data_dir)
     }
 
-    /// The tab on the left edge and the media drawer it opens.
-    fn drawer_panels(&mut self, ui: &mut egui::Ui) {
-        egui::Panel::left("edge-tab")
-            .exact_size(layout::EDGE_TAB_WIDTH)
-            .resizable(false)
-            .frame(egui::Frame::new())
-            .show(ui, |ui| {
-                if ui_kit::drawer::edge_tab(ui, &self.theme, "Media", self.drawer.open).clicked() {
-                    self.drawer.open = !self.drawer.open;
-                }
-            });
+    /// The tab on the left edge, beside the toolbar and the viewer (`tab`),
+    /// and the media drawer it opens, floating over the page (`page`) so
+    /// nothing underneath moves. A click on the page away from it closes it;
+    /// it steps aside while a file dragged out of it is over the timeline,
+    /// so the whole timeline can take the drop.
+    fn media_drawer(&mut self, ui: &mut egui::Ui, page: egui::Rect, tab: egui::Rect) {
+        let mut edge = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(tab)
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+        if ui_kit::drawer::edge_tab(&mut edge, &self.theme, "Media", self.drawer.open).clicked() {
+            self.drawer.open = !self.drawer.open;
+        }
+        let ctx = ui.ctx().clone();
+        if self.drawer.open && ui_kit::drawer::clicked_away(&ctx, tab) {
+            self.drawer.open = false;
+        }
+        let rect = ui_kit::drawer::drawer_rect(page);
+        let dragging_out = egui::DragAndDrop::has_payload_of_type::<ui_kit::DraggedMedia>(&ctx);
+        let keep = ui_kit::drawer::keep_while_dragging(rect, tab);
+        if !ui_kit::drawer::shown(self.drawer.open, dragging_out, ctx.pointer_latest_pos(), keep) {
+            return;
+        }
         let mut picked = None;
-        let mut open = self.drawer.open;
-        egui::Panel::left("media-drawer")
-            .exact_size(layout::DRAWER_WIDTH)
-            .resizable(false)
-            .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(8, 4)))
-            .show_collapsible(ui, &mut open, |ui| {
-                if let Some(document) = &self.document {
-                    picked = self
-                        .drawer
-                        .ui(ui, &self.theme, document.project(), &self.relink.missing);
-                }
-            });
-        self.drawer.open = open;
+        let (drawer, theme, missing) = (&mut self.drawer, &self.theme, &self.relink.missing);
+        if let Some(document) = &self.document {
+            picked = ui_kit::drawer::overlay(&ctx, theme, egui::Id::unique("media-drawer"), rect, |ui| {
+                drawer.ui(ui, theme, document.project(), missing)
+            })
+            .inner;
+        }
         if let Some((media, placement)) = picked {
             use crate::media_drawer::Placement;
             let at = self.edit_point();
@@ -1716,14 +1723,19 @@ impl Editor {
     /// The Edit page until the viewer and the timeline widget arrive: import,
     /// and a plain list of what is on the timeline.
     fn edit_page(&mut self, ui: &mut egui::Ui) {
-        self.drawer_panels(ui);
+        // The toolbar and the viewer sit beside the media drawer's tab; the
+        // timeline below runs from the page's left edge to its right.
+        let page = ui.available_rect_before_wrap();
         let mut viewer_command = None;
         let mut picture_change = None;
         let mut master_gain = None;
         let mut timeline_events = Vec::new();
         let mut toolbar_click = None;
         let shortcut = self.shortcuts.keys_for(Action::Import);
-        ui.horizontal(|ui| {
+        let beside = egui::UiBuilder::new()
+            .max_rect(ui_kit::drawer::beside_tab(page))
+            .layout(egui::Layout::top_down(egui::Align::Min));
+        ui.scope_builder(beside, |ui| ui.horizontal(|ui| {
             let button = ui_kit::accent_button(ui, &self.theme, "Import media…").on_hover_text(&shortcut);
             if button.clicked() {
                 self.run_action(Action::Import);
@@ -1775,7 +1787,7 @@ impl Editor {
                     .color(self.theme.text_secondary),
                 );
             }
-        });
+        }));
         ui.add_space(12.0);
         // The inspector sits beside the viewer, as high as it is; the
         // timeline below runs the whole width of the page.
@@ -1785,7 +1797,7 @@ impl Editor {
             self.settings
                 .viewer_split
                 .top_height(shared_height, least_viewer, least_timeline);
-        let top = ui.available_rect_before_wrap();
+        let top = ui_kit::drawer::beside_tab(ui.available_rect_before_wrap());
         let top = egui::Rect::from_min_size(top.min, egui::vec2(top.width(), viewer_height));
         let inspector_rect = egui::Rect::from_min_max(
             egui::pos2(top.right() - layout::RIGHT_PANEL_WIDTH, top.top()),
@@ -1810,6 +1822,11 @@ impl Editor {
                     self.inspector_panel(ui);
                 });
         }
+        self.media_drawer(
+            ui,
+            page,
+            ui_kit::drawer::tab_rect(page, top.bottom() - page.top()),
+        );
         let Some(document) = &self.document else { return };
         let p = document.project();
         let Some(seq) = p.active() else { return };
