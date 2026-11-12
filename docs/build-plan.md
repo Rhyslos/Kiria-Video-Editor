@@ -4,7 +4,7 @@
 
 ## How to use this plan
 
-Version 1.0 is built in ten phases plus a release phase, strictly in order; each phase ends at a gate that must pass before the next one starts. The [project plan](project-plan.md) says *what* the app is; this doc says *how* and *in what order* to build it. The agreed look is in the [mockups](https://claude.ai/artifact/BoWqShTxNag7Q1yD8BoKLr).
+Version 1.0 is built in ten phases plus a release phase, in the order they appear here (after phase 6: Audio, then Effects, then Color, then the release, as the owner decided in November 2026; the phases keep their numbers); each phase ends at a gate that must pass before the next one starts. The [project plan](project-plan.md) says *what* the app is; this doc says *how* and *in what order* to build it. The agreed look is in the [mockups](https://claude.ai/artifact/BoWqShTxNag7Q1yD8BoKLr).
 
 **Resuming work (people or Claude):**
 
@@ -20,7 +20,7 @@ Version 1.0 is built in ten phases plus a release phase, strictly in order; each
 flowchart LR
     P0[0 Foundations] --> P1[1 Installer] --> P2[2 Launcher] --> P3[3 Safe updates]
     P3 --> P4[4 Edit page] --> P5[5 Library] --> P6[6 Export]
-    P6 --> P7[7 Color] --> P8[8 Audio] --> P9[9 Effects] --> P10[10 Release 1.0]
+    P6 --> P8[8 Audio] --> P9[9 Effects] --> P7[7 Color] --> P10[10 Release 1.0]
 ```
 
 Every arrow is a gate: the phase before it is tested on both machines before the next one starts.
@@ -33,12 +33,12 @@ The platform (project file, errors, installs, safe updates) comes before any pag
 | 1 | Installer and updates | Signed builds, installers, GitHub releases | A tagged build installs on a clean Windows and Linux machine | Gate passed |
 | 2 | Launcher | Project browser, folders, update panel | Create, find and open projects; manual update works | Gate passed (accepted by the owner; manual gate tests skipped) |
 | 3 | Update safety | Side-by-side installs, rollback, project migrations | A broken update rolls back by itself; old projects open | Gate passed (accepted by the owner; manual gate tests skipped) |
-| 4 | Edit page | Media pipeline, playback, timeline, editing, inspector | Cut a 20-minute game recording smoothly at 1440p 60 | Not started |
+| 4 | Edit page | Media pipeline, playback, timeline, editing, inspector | Cut a 20-minute game recording smoothly at 1440p 60 | Built; gate waiting for the owner's edit |
 | 5 | Library | Import, index, tabs, lists, labels, prune | 500 clips import, filter and search instantly | Not started |
 | 6 | Export | Encode pipeline, presets, checks, queue | Exports match the timeline frame for frame | Not started |
-| 7 | Color | Float pipeline, wheels, curves, scopes, auto white balance | Preview and export colours match; grades copy between clips | Not started |
 | 8 | Audio | Mixer, effects, loudness, clarity check | A noisy three-track recording mixes to −14 LUFS cleanly | Not started |
 | 9 | Effects and extras | Effects drawer, background removal, extra features | Hair edges hold, no flicker; extras pass their tests | Not started |
+| 7 | Color | Float pipeline, wheels, curves, scopes, auto white balance | Preview and export colours match; grades copy between clips | Not started |
 | 10 | Release 1.0 | Hardening, docs, licence, first public release | Release checklist all ticked | Not started |
 
 ## Ground rules and how each task is done
@@ -336,7 +336,7 @@ Phase 4 is the heart of the app and the longest phase, so it runs as three parts
 - [x] **Media pool drawer:** left edge tab sliding out a compact media list (full library comes in phase 5) with the Media / Effects switch in place. (Done: the Media tab on the left edge; files by name with a filter, missing ones marked; double-click or + places one at the end of the timeline. Dragging onto the timeline comes with insert and overwrite. Later: the tab sits beside the toolbar and the viewer only, so the timeline runs from the window's left edge to its right, and the open drawer floats over the page instead of pushing it aside: a click on the page away from it closes it, and it steps aside while a file dragged out of it is over the timeline, so the whole timeline takes the drop.)
 - [ ] **Search palette** (Ctrl K): clips, labels, timeline labels, commands, settings; shows each command's shortcut. (Done: commands with shortcuts, Settings and Timeline settings, timeline labels and clips (jump there; a clip is also selected). Library clips and labels join with the Library page.)
 - [ ] **Slow motion and speed ramps:** speed per clip, ramp keyframes, frame blending; high-frame-rate sources slow down cleanly. (Done so far: a speed per clip from its right-click menu and the inspector's Speed section, 25% to 400%, exact fractions; picture and sound follow it, the sound tape-style. Speed ramps: a clip's speed can change over time, with speed keyframes kept on the timeline from the clip's start (project format 11, `ramp`): the inspector's Speed row has the keyframe diamond (add or remove at the playhead, linear, hold or smooth on to the next, arrows to the previous and next), the speed buttons set the speed at the playhead once there is a ramp, and two buttons make one from the playhead in a click ("Ease into slow motion", "Slow moment": smoothly down over half a second, staying there or for a second and back); "Remove ramp" goes back to one speed. Where the clip is in its file is the ramp added up exactly to the flick (1/705 600 000 s, a whole number for every common frame rate), so preview and export agree and a ramp's steady stretches land exactly on recorded frames; the clip keeps the part of its file it plays and its length follows, to the nearest frame, with linked sound and what comes after moving along; trims, rolls, slides, splits and templates keep the ramp on the picture, a slip keeps it in its place in the clip. Playback, the viewer and export follow the ramp; its sound follows tape-style (the pitch follows the speed as it changes), read at the mixer's rate and resampled per sample. High-frame-rate recordings slow down cleanly: for a recording with more frames than the timeline the Speed buttons offer the speed that shows every recorded frame once (50 % for 120 fps on 60, 42 % for 144 fps), which the ramp buttons slow down to, and at that speed every timeline frame is a recorded frame. Frame blending per clip (format 11, `blend`; Off / Blend in the Speed section): between two recorded frames the compositor mixes them by how near each is, in linear light, from a second picture per layer; exactly on a recorded frame nothing is mixed. A ramped clip shows "Ramp 100→25→100%" by its name and its speed as a thin line along it, and its pictures and waveform follow the ramp. Checked by an export of a recording whose frames show their own numbers. Still to do: keeping the pitch; frame blending when the window has no graphics device to compose with (the top clip is then shown alone, unblended); blending that follows motion rather than mixing; speed keyframes as marks on the timeline (they show as the line on the clip only); several clips at once.)
-- [x] **Nested timelines and several timelines per project;** adjustment layers. (Done: project format 12 gives clips a kind: a part of a file, another timeline of the project, or an adjustment layer. **Several timelines:** a tab for each above the timeline, beside its tools (`ui_kit::timeline_tabs`, shared by every page with a timeline): click to open one, double-click to rename it, "+" for a new one the size and rate of the open one, right-click to duplicate, open its settings, place it in the open timeline or remove it; each has its own settings as before. Making, copying, renaming and removing are undo steps (the last timeline, and one that other timelines play, can't be removed, with the reason); which one is open is not an edit: no undo step, kept with the timeline's layout in `<file>.view`, and undo leaves it open. The shortcut table has New timeline and Duplicate the open timeline, without keys until someone gives them some. **Nested timelines:** "Nest the selected clips" (right-click on the timeline, or the shortcut table) moves the clips and their linked clips into a new timeline and lays a linked picture and sound clip playing it in their place; a tab dragged onto the timeline places that timeline there, and "Place in the open timeline" puts it at the end. A nested clip shows the inner timeline's picture, put together at its own size and then placed, cut, turned, coloured and faded by its look and keyframes like any picture, and plays its sound with its own volume, pan and fades; trims, moves, splits, speed and ramps work as for a file. A timeline never ends up inside itself: placing it so is refused with the reason, and a project file with such a loop or a clip playing a missing timeline is reported as damaged. A double-click on a nested clip (or "Open its timeline") opens its timeline. Export renders it, sound included. **Adjustment layers:** "Add an adjustment layer here" on a video track's right-click menu (or at the playhead from the shortcut table) lays one five seconds long on the first free video track from there up, or on a new one on top; the inspector shows its Opacity and Quick color, with keyframes, and its colour applies to everything below it in the picture: what is below is put together first and drawn again coloured, in linear light, at its opacity. Later: other effects on adjustment layers (they come with effects in phase 7), nested timelines and adjustment layers in the media drawer's list, and waveforms and pictures drawn inside nested clips.)
+- [x] **Nested timelines and several timelines per project;** adjustment layers. (Done: project format 12 gives clips a kind: a part of a file, another timeline of the project, or an adjustment layer. **Several timelines:** a tab for each above the timeline, beside its tools (`ui_kit::timeline_tabs`, shared by every page with a timeline): click to open one, double-click to rename it, "+" for a new one the size and rate of the open one, right-click to duplicate, open its settings, place it in the open timeline or remove it; each has its own settings as before. Making, copying, renaming and removing are undo steps (the last timeline, and one that other timelines play, can't be removed, with the reason); which one is open is not an edit: no undo step, kept with the timeline's layout in `<file>.view`, and undo leaves it open. The shortcut table has New timeline and Duplicate the open timeline, without keys until someone gives them some. **Nested timelines:** "Nest the selected clips" (right-click on the timeline, or the shortcut table) moves the clips and their linked clips into a new timeline and lays a linked picture and sound clip playing it in their place; a tab dragged onto the timeline places that timeline there, and "Place in the open timeline" puts it at the end. A nested clip shows the inner timeline's picture, put together at its own size and then placed, cut, turned, coloured and faded by its look and keyframes like any picture, and plays its sound with its own volume, pan and fades; trims, moves, splits, speed and ramps work as for a file. A timeline never ends up inside itself: placing it so is refused with the reason, and a project file with such a loop or a clip playing a missing timeline is reported as damaged. A double-click on a nested clip (or "Open its timeline") opens its timeline. Export renders it, sound included. **Adjustment layers:** "Add an adjustment layer here" on a video track's right-click menu (or at the playhead from the shortcut table) lays one five seconds long on the first free video track from there up, or on a new one on top; the inspector shows its Opacity and Quick color, with keyframes, and its colour applies to everything below it in the picture: what is below is put together first and drawn again coloured, in linear light, at its opacity. Later: other effects on adjustment layers (they come with the effects library in phase 9), nested timelines and adjustment layers in the media drawer's list, and waveforms and pictures drawn inside nested clips.)
 - [x] **Facecam layouts:** picture-in-picture and vertical game-plus-facecam presets with on-picture handles. (Done: one-click layouts in the inspector's Transform section for the selected clip: small in any corner (a third of its size, a little in from the edges), and filling the top or the bottom half of the frame, cut to fit, for two pictures stacked on a vertical timeline. Handles on the picture itself: while the playhead is on the selected clip, the viewer outlines its picture (turned and cut as it is) with a square handle on each corner; dragging inside moves it, snapping its centre to the frame's centre lines and its sides to the frame's edges with a thin line shown (Alt, or the timeline's snapping switched off, skips that); dragging a corner resizes it about the opposite corner, the corner snapping to the frame's edges; a double-click fits it. The inspector's numbers follow, and letting go is one undo step. Not in the full-screen viewer. Dragging the round handle above it turns it and the bar on a side crops that side (see the Inspector above). The outline and handles show only when switched on (Q, or "On the picture" in the inspector), so selecting a clip doesn't put a frame around it.)
 - [x] **Remove silence:** detect silence on a chosen track, preview the cuts, apply as one undoable command. (Done: Ctrl+Shift+R; threshold, minimum length and edge to keep; found stretches marked red on the timeline; one undoable cut across every track.)
 - [x] **Saved versions, templates, thumbnail grab:** named project snapshots, intro/outro templates, save any frame as a full-quality image. (Done: thumbnail grab, Ctrl+Shift+E saves the frame at the playhead as a full-size PNG; saved versions, Ctrl+Shift+V, kept beside the project and restored as an undoable step; templates, Ctrl+T or the Templates… button: Ctrl+Shift+S saves the region, or the whole timeline, under a name as a small file in the app's data folder (its own versioned format, nothing in the project file), and any template drops into any project at the start, the edit point or the end as one undoable step that moves everything later along, makes missing tracks, reuses media the project already has and keeps links; rename and delete from the same window. Not part of templates yet: timeline labels inside the stretch, the tracks' mute and solo, a picture of each template in the list, replacing a template under the same name, and sharing templates as a file with their media.)
@@ -425,38 +425,6 @@ Chapters from labels and one file per label were not picked for 1.0; they wait i
 - [ ] Every preset plays in a standard media player and uploads to a video site without re-encoding warnings.
 - [ ] Exporting a 10-minute 1440p 60 timeline takes no longer than its real time on either machine with hardware encoding.
 
-## Phase 7 · Color
-
-Phase 7 builds the grading pipeline and the Color page from the mockup: one tool at a time, the picture and one scope, Simple and Advanced wheels, and colours that look the same after export as in the viewer.
-
-**7.1 Pipeline (`render`)**
-
-- [ ] 32-bit float, linear light, on the GPU; input transform per clip (Rec.709, sRGB), output Rec.709.
-- [ ] A grade = an ordered list of nodes (layers) per clip, stored in the project, cached in the render cache.
-- [ ] Operations: exposure, contrast + pivot, temperature / tint, lift / gamma / gain / offset, saturation, highlights, shadows; curves (RGB, per channel, hue vs hue, hue vs saturation, luma vs saturation); HSL qualifier with soft edges; ellipse, rectangle and freehand masks; .cube LUTs with an intensity slider.
-- [ ] Scopes computed on the GPU from the real output: waveform, RGB parade, vectorscope, histogram, plus a one-line plain reading ("nothing is clipped").
-
-**7.2 Auto white balance** (research workflow)
-
-- [ ] Compare at least two statistical methods and one small learned model on facecam and game clips.
-- [ ] Chosen method: several frames across the clip, linear light, ignores clipped, near-black and strongly saturated pixels.
-- [ ] Writes into the temperature and tint sliders; strength slider; the "pick something white" eyedropper overrides it; never runs on its own.
-
-**7.3 Page (as in the mockup)**
-
-- [ ] Large viewport with Compare and Display menus; one scope on the right with a dropdown.
-- [ ] Tool switcher under the picture: Basic, Wheels, Curves, Color range, Masks, Looks; only one shown.
-- [ ] Layer dropdown; Simple / Advanced toggle next to it.
-- [ ] Simple wheels: white balance left, four wheels (Shadows, Midtones, Highlights, Overall) with brightness sliders, tone right. Advanced: large wheels with typed R, G, B and brightness values.
-- [ ] Timeline: video clips with a dot on graded ones, all audio as one view-only bar; Apply to (this clip, all clips with a label, whole timeline), Copy grade, Paste, Match to, Reset.
-- [ ] Transport steps clip by clip as well as frame by frame; shared playhead, edit needle, region and labels from phase 4.
-
-**Gate 7**
-
-- [ ] Golden-frame tests: preview, scopes and export agree within tolerance on both GPUs.
-- [ ] A grade copied to 50 clips applies instantly and plays in real time after caching.
-- [ ] Auto white balance fixes a warm-lit facecam clip and leaves a deliberately tinted game clip almost untouched.
-
 ## Phase 8 · Audio
 
 Phase 8 builds the audio engine's effects and the Audio page from the mockup: video preview top left, one effect at a time top right, the clarity check across the middle, and a Timeline / Mixer / Split view at the bottom that scales to dozens of tracks.
@@ -521,6 +489,38 @@ Phase 9 fills the Effects side of the Edit page's drawer and ships background re
 - [ ] Background removal on the difficult-clips set (hair against busy backgrounds, fast motion, low light): no visible flicker and clean hair edges at full resolution.
 - [ ] Every effect works the same in preview and export (golden frames) and undoes cleanly.
 - [ ] The drawer opens and closes without moving anything underneath it.
+
+## Phase 7 · Color
+
+Phase 7 builds the grading pipeline and the Color page from the mockup: one tool at a time, the picture and one scope, Simple and Advanced wheels, and colours that look the same after export as in the viewer.
+
+**7.1 Pipeline (`render`)**
+
+- [ ] 32-bit float, linear light, on the GPU; input transform per clip (Rec.709, sRGB), output Rec.709.
+- [ ] A grade = an ordered list of nodes (layers) per clip, stored in the project, cached in the render cache.
+- [ ] Operations: exposure, contrast + pivot, temperature / tint, lift / gamma / gain / offset, saturation, highlights, shadows; curves (RGB, per channel, hue vs hue, hue vs saturation, luma vs saturation); HSL qualifier with soft edges; ellipse, rectangle and freehand masks; .cube LUTs with an intensity slider.
+- [ ] Scopes computed on the GPU from the real output: waveform, RGB parade, vectorscope, histogram, plus a one-line plain reading ("nothing is clipped").
+
+**7.2 Auto white balance** (research workflow)
+
+- [ ] Compare at least two statistical methods and one small learned model on facecam and game clips.
+- [ ] Chosen method: several frames across the clip, linear light, ignores clipped, near-black and strongly saturated pixels.
+- [ ] Writes into the temperature and tint sliders; strength slider; the "pick something white" eyedropper overrides it; never runs on its own.
+
+**7.3 Page (as in the mockup)**
+
+- [ ] Large viewport with Compare and Display menus; one scope on the right with a dropdown.
+- [ ] Tool switcher under the picture: Basic, Wheels, Curves, Color range, Masks, Looks; only one shown.
+- [ ] Layer dropdown; Simple / Advanced toggle next to it.
+- [ ] Simple wheels: white balance left, four wheels (Shadows, Midtones, Highlights, Overall) with brightness sliders, tone right. Advanced: large wheels with typed R, G, B and brightness values.
+- [ ] Timeline: video clips with a dot on graded ones, all audio as one view-only bar; Apply to (this clip, all clips with a label, whole timeline), Copy grade, Paste, Match to, Reset.
+- [ ] Transport steps clip by clip as well as frame by frame; shared playhead, edit needle, region and labels from phase 4.
+
+**Gate 7**
+
+- [ ] Golden-frame tests: preview, scopes and export agree within tolerance on both GPUs.
+- [ ] A grade copied to 50 clips applies instantly and plays in real time after caching.
+- [ ] Auto white balance fixes a warm-lit facecam clip and leaves a deliberately tinted game clip almost untouched.
 
 ## Phase 10 · Release 1.0
 
