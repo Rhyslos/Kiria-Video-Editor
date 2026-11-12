@@ -21,6 +21,11 @@ pub struct Options {
     pub export_page: bool,
     /// Start with the viewer full screen (`--full-screen`, for screenshots).
     pub full_screen: bool,
+    /// Select the first clip of the top video track that has one, once the
+    /// project and its imports are in (`--select-first-clip`, for
+    /// screenshots of what a selected clip shows: the inspector's values,
+    /// the handles on its picture).
+    pub select_first_clip: bool,
     /// Commands to run once open, by name (`--action KeyboardShortcuts`, repeatable, for screenshots).
     pub actions: Vec<String>,
     /// Open the keyboard shortcuts page in a state: `filter`, `rebinding` or
@@ -78,6 +83,7 @@ impl Options {
                 "--media-drawer" => options.media_drawer = true,
                 "--export-page" => options.export_page = true,
                 "--full-screen" => options.full_screen = true,
+                "--select-first-clip" => options.select_first_clip = true,
                 "--cpu-colour" => options.cpu_colour = true,
                 "--graphics-warning" => options.graphics_warning = true,
                 "--decoding-warning" => options.decoding_warning = true,
@@ -171,6 +177,8 @@ mod tests {
         assert!(parse(&["--import"]).is_err());
         assert!(parse(&["p.x", "--cpu-colour"]).unwrap().cpu_colour);
         assert!(parse(&["p.x", "--export-page"]).unwrap().export_page);
+        assert!(parse(&["p.x", "--select-first-clip"]).unwrap().select_first_clip);
+        assert!(!parse(&["p.x"]).unwrap().select_first_clip);
         assert!(!parse(&["p.x"]).unwrap().cpu_colour);
         assert_eq!(
             parse(&["p.x", "--hold-reading", "0.4"]).unwrap().hold_reading,

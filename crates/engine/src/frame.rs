@@ -101,7 +101,7 @@ fn layer(clip: &Clip, media: &MediaRef, frame: (u32, u32), at: Time) -> Option<L
         media: clip.media,
         stream: clip.stream,
         source_time: clip.source_at(at),
-        area: Area::of_part(placement(&look, video.display_size(), frame), part),
+        area: shown_area(&look, video.display_size(), frame),
         part,
         opacity: fraction(look.opacity),
         colour: colour(&look),
@@ -125,6 +125,13 @@ pub fn placement(look: &Look, picture: (u32, u32), frame: (u32, u32)) -> Placeme
         size: (w * scale, h * scale),
         degrees: fraction(look.turn),
     }
+}
+
+/// Where what is seen of a clip's picture lands in a frame of `frame`
+/// pixels: its place, with what its look cuts off left out. What is drawn,
+/// and what an outline around the picture follows.
+pub fn shown_area(look: &Look, picture: (u32, u32), frame: (u32, u32)) -> Area {
+    Area::of_part(placement(look, picture, frame), shown_part(look))
 }
 
 /// The part of the picture left after what its look cuts off each side.

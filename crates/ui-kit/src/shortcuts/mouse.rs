@@ -36,6 +36,21 @@ pub const MOUSE: &[MouseAction] = &[
         "Play or pause, step one frame back or forward, stop",
     ),
     on(
+        Context::Viewer,
+        "Drag the selected clip's picture",
+        "Move it in the frame; it snaps to the frame's centre and edges",
+    ),
+    on(
+        Context::Viewer,
+        "Drag a corner of the selected clip's picture",
+        "Resize it, the opposite corner staying where it is",
+    ),
+    on(
+        Context::Viewer,
+        "Double-click the selected clip's picture",
+        "Fit it: as large as fits the frame, centred",
+    ),
+    on(
         Context::Timeline,
         "Wheel",
         "Scroll the tracks under the pointer; pan over the ruler and the scroll bar",
@@ -135,6 +150,11 @@ pub const MOUSE: &[MouseAction] = &[
     on(
         Context::Dragging,
         "Hold Alt while dragging a clip",
+        "No snapping for this drag",
+    ),
+    on(
+        Context::Dragging,
+        "Hold Alt while dragging a picture or its corner in the viewer",
         "No snapping for this drag",
     ),
     on(

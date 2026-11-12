@@ -78,6 +78,8 @@ pub struct Editor {
     drawer: crate::media_drawer::MediaDrawer,
     /// The selected clip's settings, on the right of the Edit page.
     inspector: crate::inspector::Inspector,
+    /// The handles on the selected clip's picture in the viewer.
+    picture_handles: crate::picture_handles::PictureHandles,
     /// The Export page: what to export, and the export under way.
     export_page: crate::export_page::ExportPage,
     frame_grab: crate::frame_grab::FrameGrab,
@@ -94,6 +96,8 @@ pub struct Editor {
     full_screen: bool,
     /// Tell the window about a full-screen change on the next frame.
     full_screen_changed: bool,
+    /// `--select-first-clip`: still to be done, once there is a clip.
+    select_first_clip: bool,
     /// Save this frame was asked for; the dialog opens on the next frame.
     save_frame_requested: bool,
     /// `--play`: start playing as soon as the imports are in.
@@ -168,6 +172,7 @@ impl Editor {
             Page::default()
         };
         let full_screen = project.as_ref().is_some_and(|p| p.full_screen);
+        let select_first_clip = project.as_ref().is_some_and(|p| p.select_first_clip);
         let hold_reading = project.as_ref().and_then(|p| p.hold_reading);
         let convert = crate::video_picture::conversion(
             cc.wgpu_render_state.as_ref(),
@@ -267,12 +272,14 @@ impl Editor {
             startup_actions,
             full_screen,
             full_screen_changed: full_screen,
+            select_first_clip,
             save_frame_requested: false,
             drawer: crate::media_drawer::MediaDrawer {
                 open: drawer_open,
                 ..Default::default()
             },
             inspector: crate::inspector::Inspector::default(),
+            picture_handles: crate::picture_handles::PictureHandles::default(),
             export_page: crate::export_page::ExportPage::default(),
             play_when_ready,
             show_timeline_settings: false,
@@ -1305,9 +1312,19 @@ impl Editor {
         let p = document.project();
         let mut quality = self.settings.preview_quality;
         let height = ui.available_height() - 28.0;
-        let click = self
-            .viewer
-            .ui(ui, &self.theme, p, &mut quality, None, height, &self.shortcuts);
+        // Full screen is for watching: no handles on the picture. A change
+        // still being made when it was entered stays on show.
+        let being_changed = self.inspector.shown(p);
+        let click = self.viewer.ui(
+            ui,
+            &self.theme,
+            being_changed.as_ref().unwrap_or(p),
+            &mut quality,
+            None,
+            height,
+            &self.shortcuts,
+            |_, _, _| {},
+        );
         if let Some(click) = click {
             self.run_action(match click {
                 ui_kit::TransportClick::FrameBack => Action::PreviousFrame,
@@ -1570,6 +1587,7 @@ impl Editor {
     fn edit_page(&mut self, ui: &mut egui::Ui) {
         self.drawer_panels(ui);
         let mut transport_click = None;
+        let mut picture_change = None;
         let mut master_gain = None;
         let mut timeline_events = Vec::new();
         let mut toolbar_click = None;
@@ -1692,8 +1710,13 @@ impl Editor {
         } else {
             let quality_before = self.settings.preview_quality;
             let needle = (!self.settings.edit_at_playhead).then_some(seq.edit_needle);
-            // A value being dragged in the inspector is seen at once.
+            // A value being dragged in the inspector, or the picture being
+            // dragged in the viewer, is seen at once.
             let being_changed = self.inspector.shown(p);
+            let playhead = self.viewer.playhead;
+            let snapping = self.timeline.snapping;
+            let (handles, inspector) = (&mut self.picture_handles, &mut self.inspector);
+            let (theme, selected) = (&self.theme, &self.selected);
             let mut left = ui.new_child(
                 egui::UiBuilder::new()
                     .max_rect(viewer_rect)
@@ -1701,12 +1724,18 @@ impl Editor {
             );
             transport_click = self.viewer.ui(
                 &mut left,
-                &self.theme,
+                theme,
                 being_changed.as_ref().unwrap_or(p),
                 &mut self.settings.preview_quality,
                 needle,
                 viewer_height,
                 &self.shortcuts,
+                // The selected clip's picture can be taken hold of.
+                |ui, frame, response| {
+                    picture_change = handles.ui(
+                        ui, theme, frame, response, p, selected, playhead, inspector, snapping,
+                    );
+                },
             );
             // The viewer and the inspector take their height of the page;
             // the handle and the timeline follow, across its whole width.
@@ -1853,6 +1882,12 @@ impl Editor {
                 ui_kit::TransportClick::PlayPause => Action::PlayPause,
                 ui_kit::TransportClick::Stop => Action::Stop,
             });
+        }
+        // The picture was let go of in the viewer: one undo step.
+        if let Some(command) = picture_change
+            && let Err(err) = self.with_document(|d| d.apply(command))
+        {
+            self.errors.push(&err);
         }
         if !self.status.is_empty() {
             ui.add_space(4.0);
@@ -2216,6 +2251,17 @@ impl eframe::App for Editor {
             }
         }
         self.imports(&ctx);
+        if self.select_first_clip
+            && self.importer.busy() == 0
+            && let Some(clip) = self
+                .document
+                .as_ref()
+                .and_then(|d| d.project().active())
+                .and_then(timeline_panel::first_clip)
+        {
+            self.select_first_clip = false;
+            self.selected = vec![clip];
+        }
         if self.play_when_ready && self.importer.busy() == 0 && self.document.is_some() {
             self.play_when_ready = false;
             self.run_action(Action::PlayPause);
@@ -2387,6 +2433,9 @@ pub struct ProjectToOpen {
     pub export_page: bool,
     /// Start with the viewer full screen.
     pub full_screen: bool,
+    /// Select the first clip of the top video track that has one, once
+    /// imports are done.
+    pub select_first_clip: bool,
     /// Commands to run once open, by name.
     pub actions: Vec<String>,
     /// Convert the viewer's colour on the CPU even when the GPU could.

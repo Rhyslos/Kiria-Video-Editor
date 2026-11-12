@@ -368,6 +368,12 @@ impl Viewer {
     /// Draws the viewer, its transport and the timecodes in `height`, and asks
     /// for the picture it needs. Returns a transport button pressed. The
     /// transport's tooltips name the keys in `shortcuts`.
+    ///
+    /// `over_picture` draws what lies on the picture and under the
+    /// transport (the handles on a selected clip's picture): it is given
+    /// the frame's rectangle on screen and the viewer's own response, and
+    /// since the transport comes after it, the transport's buttons keep
+    /// their clicks.
     #[allow(clippy::too_many_arguments)]
     pub fn ui(
         &mut self,
@@ -378,6 +384,7 @@ impl Viewer {
         needle: Option<Time>,
         height: f32,
         shortcuts: &ui_kit::ShortcutTable,
+        over_picture: impl FnOnce(&mut egui::Ui, egui::Rect, &egui::Response),
     ) -> Option<TransportClick> {
         let seq = project.active()?;
         let rate = seq.settings.frame_rate;
@@ -395,7 +402,8 @@ impl Viewer {
                 ui_kit::viewer::Picture::Video(video)
             }
         });
-        let (frame, _) = ui_kit::viewer::viewer(ui, theme, size, timeline, picture, &self.note);
+        let (frame, response) = ui_kit::viewer::viewer(ui, theme, size, timeline, picture, &self.note);
+        over_picture(ui, frame, &response);
         let click = ui_kit::transport::transport(ui, theme, frame, self.frame_interval.is_some(), shortcuts);
 
         ui.add_space(6.0);

@@ -4,9 +4,16 @@
 //! A value being dragged is shown in the viewer at once ([`Inspector::shown`]
 //! is the project as it would be) and becomes one undo step when the drag
 //! ends, so a slider swept from one end to the other is undone in one go.
+//!
+//! The picture can also be taken hold of in the viewer itself
+//! (`picture_handles`). That change goes through the same look in waiting:
+//! [`Inspector::subject`] says which clip the panel is about and how it looks
+//! now, [`Inspector::changed_outside`] takes what the hand did and
+//! [`Inspector::let_go`] finishes it, so the panel's numbers follow the
+//! picture, the picture follows the numbers, and either way it is one undo step.
 
 use project::look::ONE;
-use project::{ClipId, Command, Look, Project, Speed};
+use project::{ClipId, Command, Look, Project, Speed, Time};
 use ui_kit::Theme;
 use ui_kit::inspector::{self, Number, Touched};
 
@@ -17,6 +24,33 @@ const SPEEDS: [(u32, u32); 5] = [(1, 4), (1, 2), (1, 1), (2, 1), (4, 1)];
 pub struct Inspector {
     /// A look being set and not yet an undo step: whose, and what.
     pending: Option<(ClipId, Look)>,
+    /// A hand outside the panel (on the picture in the viewer) is still on
+    /// the look being set: the panel leaves finishing it to that hand.
+    held: bool,
+}
+
+/// The clip the inspector is about, for what changes its look from outside
+/// the panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Subject {
+    pub clip: ClipId,
+    /// Its look as the panel shows it: with the change being made.
+    pub look: Look,
+    /// Its picture's size as shown, and the timeline's frame, in pixels.
+    pub picture: (u32, u32),
+    pub frame: (u32, u32),
+    /// Where on the timeline it is, and whether its track is hidden.
+    pub start: Time,
+    pub end: Time,
+    pub hidden: bool,
+}
+
+impl Subject {
+    /// Whether the viewer shows this clip's place in the frame at `at`: the
+    /// playhead is on it and its track isn't hidden.
+    pub fn on_show_at(&self, at: Time) -> bool {
+        !self.hidden && self.start <= at && at < self.end
+    }
 }
 
 impl Inspector {
@@ -31,6 +65,77 @@ impl Inspector {
         }
         .apply(project)
         .ok()
+    }
+
+    /// The clip the panel is about (see [`shown_clip`]) with its look as it
+    /// is shown now. `None` when no selected clip has a picture.
+    pub fn subject(&self, project: &Project, selected: &[ClipId]) -> Option<Subject> {
+        let (seq, track, clip) = shown_clip(project, selected)?;
+        let video = project.media.get(&clip.media)?.info.video.as_ref()?;
+        let look = match self.pending {
+            Some((id, look)) if id == clip.id => look,
+            _ => clip.look,
+        };
+        Some(Subject {
+            clip: clip.id,
+            look,
+            picture: video.display_size(),
+            frame: (seq.settings.width, seq.settings.height),
+            start: clip.start,
+            end: clip.end(),
+            hidden: track.hidden,
+        })
+    }
+
+    /// A change to `clip`'s look made outside the panel, on the picture
+    /// itself. It is shown at once, as the panel's own changes are. While
+    /// `busy` the hand is still on it and more will follow; once it is not,
+    /// the change is finished: the undo step comes back.
+    pub fn changed_outside(
+        &mut self,
+        project: &Project,
+        clip: ClipId,
+        look: Look,
+        busy: bool,
+    ) -> Option<Command> {
+        // A change in waiting on another clip is not lost.
+        let other = match self.pending {
+            Some((waiting, _)) if waiting != clip => self.finish(project),
+            _ => None,
+        };
+        self.pending = Some((clip, look.within_limits()));
+        self.held = busy;
+        if busy || other.is_some() {
+            // The other clip's step goes first; this one follows when the
+            // panel next looks (the hand is off it by then).
+            return other;
+        }
+        self.finish(project)
+    }
+
+    /// The hand outside the panel is off the picture: what it was changing
+    /// is finished. Returns the undo step, if anything changed.
+    pub fn let_go(&mut self, project: &Project) -> Option<Command> {
+        self.finish(project)
+    }
+
+    /// Ends the change in waiting: an undo step unless the look is the one
+    /// the clip already has.
+    fn finish(&mut self, project: &Project) -> Option<Command> {
+        self.held = false;
+        let (clip, look) = self.pending.take()?;
+        let stored = project
+            .active()?
+            .video_tracks
+            .iter()
+            .flat_map(|track| &track.clips)
+            .find(|candidate| candidate.id == clip)?
+            .look;
+        (look != stored).then_some(Command::SetLook {
+            sequence: project.active_sequence,
+            clip,
+            look,
+        })
     }
 
     /// Draws the inspector for the first of `selected` that has a picture.
@@ -53,6 +158,7 @@ impl Inspector {
         {
             commands.push(Command::SetLook { sequence, clip, look });
             self.pending = None;
+            self.held = false;
         }
         // Nothing selected: the page shows the timeline here instead.
         let Some((seq, track, clip)) = target else {
@@ -136,7 +242,8 @@ impl Inspector {
                         .on_hover_text("As large as fits the frame, centred: nothing cut off")
                         .clicked()
                     {
-                        (values.x, values.y, values.scale) = (0.0, 0.0, 100.0);
+                        let fit = Values::of(&fitted(&before), frame);
+                        (values.x, values.y, values.scale) = (fit.x, fit.y, fit.scale);
                         touched.changed = true;
                     }
                     if ui
@@ -278,11 +385,13 @@ impl Inspector {
             );
         });
 
-        // Shown at once; an undo step once the hand is off it.
+        // Shown at once; an undo step once the hand is off it, be that a
+        // hand on the panel or one on the picture in the viewer.
         if touched.changed {
             self.pending = Some((clip.id, values.look(frame, &before)));
         }
         if !touched.busy
+            && !self.held
             && let Some((id, look)) = self.pending.take()
             && look != stored
         {
@@ -482,6 +591,18 @@ impl Values {
     }
 }
 
+/// `look` with the picture as large as fits the frame, centred: what the
+/// Fit button and a double-click on the picture in the viewer mean. Its
+/// turn, crop, opacity and colour stay.
+pub fn fitted(look: &Look) -> Look {
+    Look {
+        x: 0,
+        y: 0,
+        scale: ONE,
+        ..*look
+    }
+}
+
 /// The size, in percent of the fitted size, at which a picture of
 /// `picture`'s shape just fills a frame of `frame`'s.
 fn fill_percent(picture: (u32, u32), frame: (u32, u32)) -> f64 {
@@ -637,10 +758,10 @@ fn colour_summary(look: &Look) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use project::{
-        Fingerprint, MediaId, MediaInfo, MediaKind, MediaRef, Rate, SequenceSettings, Time, VideoStream,
+        Fingerprint, MediaId, MediaInfo, MediaKind, MediaRef, Rate, SequenceSettings, VideoStream,
     };
 
     const FRAME: (u32, u32) = (1920, 1080);
@@ -787,7 +908,7 @@ mod tests {
         );
     }
 
-    fn project_with_a_clip() -> Project {
+    pub(crate) fn project_with_a_clip() -> Project {
         let media = MediaRef {
             id: MediaId(0),
             path: "facecam.mkv".into(),
@@ -923,6 +1044,7 @@ mod tests {
         };
         let mut inspector = Inspector {
             pending: Some((clip, look)),
+            held: false,
         };
         // Nothing selected any more: the change is finished, not lost.
         let commands = frame(&mut inspector, &project, &[]);

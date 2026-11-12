@@ -1,6 +1,6 @@
 //! The editor: window, pages and the start-up sequence.
 //!
-//! Usage: `editor [project file] [--open-last-save] [--import <media file>]... [--playhead <seconds>] [--play] [--cpu-colour] [--graphics-warning] [--decoding-warning] [--shortcuts-page <filter|rebinding|clash>] [--cheat-sheet <file.html>] [--smoke-test | --responsiveness-test | --screenshot <file.png>]`.
+//! Usage: `editor [project file] [--open-last-save] [--import <media file>]... [--playhead <seconds>] [--play] [--select-first-clip] [--cpu-colour] [--graphics-warning] [--decoding-warning] [--shortcuts-page <filter|rebinding|clash>] [--cheat-sheet <file.html>] [--smoke-test | --responsiveness-test | --screenshot <file.png>]`.
 //! The extra options are for automated checks; normal use needs none.
 
 // Release builds on Windows open no console window next to the editor.
@@ -18,6 +18,7 @@ mod inspector;
 mod label_editor;
 mod looping;
 mod media_drawer;
+mod picture_handles;
 mod reading;
 mod relink;
 mod run_mode;
@@ -124,6 +125,7 @@ fn main() -> ExitCode {
         media_drawer: options.media_drawer,
         export_page: options.export_page,
         full_screen: options.full_screen,
+        select_first_clip: options.select_first_clip,
         actions: options.actions.clone(),
         cpu_colour: options.cpu_colour,
         hold_reading: options.hold_reading,
