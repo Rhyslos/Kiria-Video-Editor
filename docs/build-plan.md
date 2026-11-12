@@ -362,7 +362,7 @@ Phase 5 turns the simple media list from phase 4 into the full Library page; the
 **5.1 Index and search (`library`)**
 
 - [x] SQLite tables: media, types, labels, custom lists, notes, usage in timelines; full-text search across names, labels and notes. Labels, lists and notes are project data (format 13, undoable commands); the index is built from the project in memory on a worker, so it is never the truth and needs no file. Labels can also be offered in every project (names and colours in `labels.ron` in the app's data folder; using one copies it into the project). The drawer's "Find a file" and the search palette ask it; 10 000 files answer every query in a few milliseconds (`crates/library/tests/index.rs`).
-- [ ] Import checks every file first and explains anything unsupported (codec, damaged, too new) before it reaches a timeline.
+- [x] Import checks every file first and explains anything unsupported (codec, damaged, too new) before it reaches a timeline. `media::check`: unknown codec ("too new"), no decoder ("not supported"), first picture or sound unreadable ("damaged"), end missing; a refused file is not added. Several files at once are summed up in one message; files go into the project 2 ms' worth a frame.
 - [ ] Media folders from the launcher are watched; new recordings show up on their own.
 
 **5.2 Page layout (as in the mockup)**

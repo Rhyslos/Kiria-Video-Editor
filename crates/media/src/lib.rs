@@ -17,6 +17,9 @@
 //! - [`fingerprint`]: recognises a file's contents quickly, so a moved file can
 //!   be found again.
 //! - [`describe`]: both of the above as a [`project::MediaRef`] ready to import.
+//! - [`check`]: [`describe`] plus the checks a file passes before import
+//!   (codecs this build decodes, first picture and sound readable, nothing
+//!   missing at the end), each refusal explained.
 //!
 //! Probing opens the file and reads its headers, which can take tens of
 //! milliseconds on a slow disk: call it from a worker, never the interface thread.
@@ -25,6 +28,7 @@
 #![allow(unsafe_code)]
 
 pub mod audio;
+pub mod check;
 pub mod decode;
 pub mod encode;
 mod ffi;
@@ -38,6 +42,7 @@ pub mod vulkan;
 pub mod yuv;
 
 pub use audio::AudioDecoder;
+pub use check::{Refusal, Refused, check};
 pub use decode::{DecodeCost, Decoded, Decoding, Frame, Level, Newer, Reached, VideoDecoder, Work};
 pub use fingerprint::fingerprint;
 pub use probe::{Probe, probe};

@@ -21,7 +21,7 @@ pub fn probe(path: &Path) -> diag::Result<Probe> {
             AppError::new("This file can't be imported")
                 .why(format!(
                     "{} isn't a video, sound or picture file the app can read ({}).",
-                    name(path),
+                    file_name(path),
                     e.text
                 ))
                 .fix("Check that it plays in a media player. If it does, report it with the file attached.")
@@ -51,7 +51,8 @@ pub fn probe(path: &Path) -> diag::Result<Probe> {
         (None, false) => MediaKind::Audio,
         (None, true) => {
             return Err(AppError::new("This file has nothing to import")
-                .why(format!("No picture or sound was found in {}.", name(path))));
+                .why(format!("No picture or sound was found in {}.", file_name(path)))
+                .fix("Check that it is the file meant: it may hold only subtitles, chapters or data."));
         }
     };
     let duration = if kind == MediaKind::Image {
@@ -76,7 +77,8 @@ pub fn probe(path: &Path) -> diag::Result<Probe> {
     })
 }
 
-fn name(path: &Path) -> String {
+/// A file's name, for messages.
+pub(crate) fn file_name(path: &Path) -> String {
     path.file_name().map_or_else(
         || path.display().to_string(),
         |n| n.to_string_lossy().into_owned(),

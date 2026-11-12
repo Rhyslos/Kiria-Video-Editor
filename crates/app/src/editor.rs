@@ -159,6 +159,9 @@ pub struct Editor {
 /// Room between the viewer and the inspector beside it.
 const INSPECTOR_GAP: f32 = 12.0;
 
+/// How long each frame may spend adding imported files to the project.
+const IMPORT_BUDGET: Duration = Duration::from_millis(2);
+
 const SCREENSHOT_WAIT: Duration = Duration::from_secs(20);
 /// How long a scripted pointer rests before the screenshot, so tooltips are up.
 const POINTER_REST: Duration = Duration::from_millis(1500);
@@ -1251,7 +1254,17 @@ impl Editor {
                 Err(err) => self.errors.push(&err),
             }
         }
-        for read in self.importer.poll(&self.jobs, ctx) {
+        self.importer.poll_dialog(&self.jobs, ctx);
+        // Each file added writes the autosave journal, so only as many as
+        // fit in a few milliseconds go in each frame (at least one).
+        let started = Instant::now();
+        while started.elapsed() < IMPORT_BUDGET {
+            let Some((read, batch)) = self.importer.next_read() else {
+                break;
+            };
+            if self.importer.busy() > 0 {
+                ctx.request_repaint();
+            }
             let result = match read {
                 Read::Ready(media) => {
                     let line = import::summary(&media);
@@ -1278,13 +1291,21 @@ impl Editor {
                         };
                     })
                 }
-                Read::Failed(path, err) => {
-                    tracing::info!(path = %path.display(), "import failed: {}", err.report());
-                    Err(err)
+                Read::Failed { path, refused, alone } => {
+                    tracing::info!(path = %path.display(), "import refused: {}", refused.error.report());
+                    if alone { Err(refused.error) } else { Ok(()) }
                 }
             };
             if let Err(err) = result {
                 self.errors.push(&err);
+            }
+            // Files picked or dropped together: one line for them all, and
+            // one message for those refused.
+            if let Some(batch) = batch.filter(|b| b.files > 1) {
+                self.status = format!("Imported {} of {} files", batch.imported(), batch.files);
+                if let Some(err) = batch.summary() {
+                    self.errors.push(&err);
+                }
             }
         }
     }
@@ -2087,7 +2108,7 @@ impl Editor {
                 ui.spinner();
                 ui.label(
                     egui::RichText::new(format!(
-                        "Reading {busy} file{}…",
+                        "Checking {busy} file{}…",
                         if busy == 1 { "" } else { "s" }
                     ))
                     .color(self.theme.text_secondary),
