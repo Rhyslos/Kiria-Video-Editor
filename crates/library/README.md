@@ -4,7 +4,7 @@ The media index and search: one project's media in SQLite, answering searches, f
 
 ## Status
 
-Phase 5.1: the index (types, labels, custom lists, notes, use on timelines, full-text search) and its worker are done; the Edit page's media drawer ("Find a file") and the search palette ask it. The Library page itself is Phase 5.2.
+Phase 5.1 done: the index (types, labels, custom lists, notes, use on timelines, full-text search) and its worker; the Edit page's media drawer ("Find a file") and the search palette ask it. Media folders are watched for new recordings. The Library page itself is Phase 5.2.
 
 ## Where things live
 
@@ -19,6 +19,7 @@ Phase 5.1: the index (types, labels, custom lists, notes, use on timelines, full
 | `src/index.rs` | `Index`: the tables (below), `sync(project)` (compares each file's row with the last sync and rewrites only those that changed, in one transaction; labels and lists are rewritten when they change), `search(query)` (one SQL query built from the `Query`), `usage(media)` (clips per timeline) and `with_fingerprint` (the same recording imported twice) |
 | `src/query.rs` | `Query`: words, types (`Type`: Video, Audio, Image, Effect), labels (all must be on a file), a list, `Usage` (any, used, unused) and `Sort` (name, newest, oldest, longest, shortest, type, most used, a list's own order) |
 | `src/live.rs` | `Live`: the index on a thread of its own. `follow(project)` hands it a snapshot when the media, the library or the timelines changed (pointer comparisons: free every frame); `ask(asker, query)` asks for one asker ("media drawer", "search palette"); `answer(asker)` reads the newest answer without waiting, and `is_current` says whether it is to the newest query and project. After each sync every asked query is answered again, so lists follow edits and undo |
+| `src/watch.rs` | Media folders watched for new recordings. `Scanner::look` lists video, sound and picture files (`EXTENSIONS`, the import dialog's) in the folders and three levels below (hidden ones skipped) changed after a moment; a file counts (`Found`) once it has the same size and modification time on two looks in a row and opens for reading, so a recording still being written waits until it stops growing. `Watcher` runs it on a thread of its own every `SETTLE` (2 s), asking for the folders before each look (so a folder added in the launcher meanwhile is watched), and publishes the finished files newest first; `found()` never waits. Polling, not system change events: standard library only, the same on every system and on network drives |
 | `tests/index.rs` | What each query finds, syncs that follow edits and undo, the worker, and the phase 5 gate: 10 000 files, every kind of query under 100 ms |
 
 Tables:

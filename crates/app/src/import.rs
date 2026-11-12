@@ -18,12 +18,9 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 
-/// File types offered in the dialog. Anything FFmpeg reads can still be dropped in.
-const EXTENSIONS: &[&str] = &[
-    "mkv", "mp4", "mov", "m4v", "webm", "avi", "ts", "flv", "wmv", // video
-    "wav", "mp3", "flac", "ogg", "opus", "m4a", "aac", "wma", // sound
-    "png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff", "gif", // pictures
-];
+/// File types offered in the dialog (the same the media folders are
+/// watched for). Anything FFmpeg reads can still be dropped in.
+const EXTENSIONS: &[&str] = library::watch::EXTENSIONS;
 
 #[derive(Default)]
 pub struct Importer {
@@ -34,7 +31,7 @@ pub struct Importer {
     batches: Vec<Batch>,
     next_batch: u64,
     /// Files whose end is missing, set aside until the person chooses.
-    aside: std::collections::HashMap<u64, Vec<PathBuf>>,
+    aside: std::collections::HashMap<u64, (Vec<PathBuf>, bool)>,
     next_aside: u64,
 }
 
@@ -55,13 +52,17 @@ type Checked = Result<MediaRef, media::Refused>;
 
 /// A file that finished reading.
 pub enum Read {
-    Ready(MediaRef),
+    /// It passed its checks. `place`: put it on the timeline as well
+    /// (imports do); otherwise it is only added to the project's media.
+    Ready { media: MediaRef, place: bool },
     /// It failed its checks. `alone`: it was picked or dropped on its own,
     /// so its own explanation is shown; otherwise its batch's summary is.
     Failed {
         path: PathBuf,
         refused: media::Refused,
         alone: bool,
+        /// Whether it was to go on the timeline too.
+        place: bool,
     },
 }
 
@@ -69,6 +70,8 @@ pub enum Read {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Batch {
     id: u64,
+    /// Its files go on the timeline too.
+    pub place: bool,
     pub files: usize,
     pub done: usize,
     /// Each file refused: its name and why, in a few words.
@@ -139,31 +142,39 @@ impl Importer {
         self.dialog = Some(rx);
     }
 
-    /// Starts checking these files on workers, as one batch.
+    /// Starts checking these files on workers, as one batch, to add them
+    /// to the project and place them at the end of the timeline.
     pub fn read(&mut self, jobs: &JobSystem, ctx: &egui::Context, paths: Vec<PathBuf>) {
-        self.start(jobs, ctx, paths, How::Check);
+        self.start(jobs, ctx, paths, How::Check, true);
     }
 
-    /// Sets files whose end is missing aside until the person chooses;
-    /// returns the number "Import what's there" names them by.
-    pub fn set_aside(&mut self, paths: Vec<PathBuf>) -> u64 {
+    /// Starts checking these files on workers, as one batch, to add them
+    /// to the project's media only (new files from the media folders).
+    pub fn add(&mut self, jobs: &JobSystem, ctx: &egui::Context, paths: Vec<PathBuf>) {
+        self.start(jobs, ctx, paths, How::Check, false);
+    }
+
+    /// Sets files whose end is missing aside until the person chooses
+    /// (`place`: as their import would have, on the timeline too); returns
+    /// the number "Import what's there" names them by.
+    pub fn set_aside(&mut self, paths: Vec<PathBuf>, place: bool) -> u64 {
         let id = self.next_aside;
         self.next_aside += 1;
-        self.aside.insert(id, paths);
+        self.aside.insert(id, (paths, place));
         id
     }
 
     /// Imports the files set aside as `id` at the length really in them, as
     /// one batch. False when there are none (asked already).
     pub fn whats_there(&mut self, jobs: &JobSystem, ctx: &egui::Context, id: u64) -> bool {
-        let Some(paths) = self.aside.remove(&id) else {
+        let Some((paths, place)) = self.aside.remove(&id) else {
             return false;
         };
-        self.start(jobs, ctx, paths, How::WhatsThere);
+        self.start(jobs, ctx, paths, How::WhatsThere, place);
         true
     }
 
-    fn start(&mut self, jobs: &JobSystem, ctx: &egui::Context, paths: Vec<PathBuf>, how: How) {
+    fn start(&mut self, jobs: &JobSystem, ctx: &egui::Context, paths: Vec<PathBuf>, how: How, place: bool) {
         if paths.is_empty() {
             return;
         }
@@ -171,6 +182,7 @@ impl Importer {
         self.next_batch += 1;
         self.batches.push(Batch {
             id: batch,
+            place,
             files: paths.len(),
             done: 0,
             refused: Vec::new(),
@@ -234,7 +246,10 @@ impl Importer {
                 })
             });
             let read = match checked {
-                Ok(media) => Read::Ready(media),
+                Ok(media) => Read::Ready {
+                    media,
+                    place: batch.place,
+                },
                 Err(refused) => {
                     batch.refused.push((name_of(&path), refused.refusal));
                     if refused.refusal == media::Refusal::CutShort {
@@ -244,12 +259,18 @@ impl Importer {
                         path,
                         refused,
                         alone: batch.files == 1,
+                        place: batch.place,
                     }
                 }
             };
             let finished = (batch.done == batch.files).then(|| self.batches.remove(at));
             return Some((read, finished));
         }
+    }
+
+    /// Whether this file is being checked now.
+    pub fn is_reading(&self, path: &std::path::Path) -> bool {
+        self.reading.iter().any(|(p, _, _)| p == path)
     }
 
     /// How many files are still being read.
@@ -366,6 +387,7 @@ mod tests {
     fn a_batch_sums_up_what_was_refused() {
         let mut batch = Batch {
             id: 0,
+            place: true,
             files: 200,
             done: 200,
             refused: Vec::new(),
@@ -407,7 +429,7 @@ mod tests {
     #[test]
     fn files_set_aside_are_imported_once() {
         let mut importer = Importer::default();
-        let id = importer.set_aside(vec!["cut.mkv".into()]);
+        let id = importer.set_aside(vec!["cut.mkv".into()], true);
         assert_eq!(whats_there_id("import.whats-there#x"), None);
         assert_eq!(whats_there_id("media.relink"), None);
         let jobs = JobSystem::new(jobs::Budgets::default().resolve(&jobs::Machine::detect()));

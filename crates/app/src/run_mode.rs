@@ -20,6 +20,9 @@ pub struct Options {
     /// Open the media drawer with these words in "Find a file" (`--find
     /// drone`, for screenshots of search).
     pub find: Option<String>,
+    /// Watch this folder for new recordings too, as if it were one of the
+    /// launcher's media folders (`--watch-folder <folder>`, repeatable, for checks).
+    pub watch_folders: Vec<PathBuf>,
     /// Start on the Export page (`--export-page`, for screenshots).
     pub export_page: bool,
     /// Start with the viewer full screen (`--full-screen`, for screenshots).
@@ -94,6 +97,10 @@ impl Options {
                 }
                 "--play" => options.play = true,
                 "--media-drawer" => options.media_drawer = true,
+                "--watch-folder" => {
+                    let folder = args.next().ok_or("--watch-folder needs a folder")?;
+                    options.watch_folders.push(folder.into());
+                }
                 "--find" => {
                     let words = args.next().ok_or("--find needs words to find")?;
                     options.media_drawer = true;

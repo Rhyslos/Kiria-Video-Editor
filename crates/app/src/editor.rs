@@ -92,6 +92,8 @@ pub struct Editor {
     relink: crate::relink::Relinker,
     /// Label names and colours offered in every project, and their saving.
     global_labels: crate::global_labels::Everywhere,
+    /// New recordings in the media folders, watched on a thread of their own.
+    media_folders: crate::media_folders::MediaFolders,
     /// The project's media in the library index, on a thread of its own:
     /// what the drawer's "Find a file" and the search palette ask.
     library: library::Live,
@@ -206,6 +208,10 @@ impl Editor {
         let play_when_ready = project.as_ref().is_some_and(|p| p.play);
         let drawer_open = project.as_ref().is_some_and(|p| p.media_drawer);
         let find = project.as_ref().and_then(|p| p.find.clone()).unwrap_or_default();
+        let watch_folders = project
+            .as_ref()
+            .map(|p| p.watch_folders.clone())
+            .unwrap_or_default();
         let start_page = if project.as_ref().is_some_and(|p| p.export_page) {
             Page::Export
         } else {
@@ -351,6 +357,7 @@ impl Editor {
             select_first_clip,
             save_frame_requested: false,
             global_labels,
+            media_folders: crate::media_folders::MediaFolders::new(watch_folders),
             library: {
                 let ctx = cc.egui_ctx.clone();
                 library::Live::start(move || ctx.request_repaint())
@@ -1266,7 +1273,14 @@ impl Editor {
                 ctx.request_repaint();
             }
             let result = match read {
-                Read::Ready(media) => {
+                Read::Ready { media, place: false } => {
+                    let line = import::summary(&media);
+                    let end_missing = media::end_missing_words(&media)
+                        .map_or_else(String::new, |words| format!(". {words}"));
+                    self.with_document(|d| d.apply(Command::AddMedia { media }))
+                        .map(|()| self.status = format!("Added {line} to the project's media{end_missing}"))
+                }
+                Read::Ready { media, place: true } => {
                     let line = import::summary(&media);
                     let end_missing = media::end_missing_words(&media);
                     let mut settled = None;
@@ -1295,12 +1309,17 @@ impl Editor {
                         }
                     })
                 }
-                Read::Failed { path, refused, alone } => {
+                Read::Failed {
+                    path,
+                    refused,
+                    alone,
+                    place,
+                } => {
                     tracing::info!(path = %path.display(), "import refused: {}", refused.error.report());
                     match (alone, refused.refusal) {
                         // The person chooses: what is there, or skip it.
                         (true, media::Refusal::CutShort) => {
-                            let id = self.importer.set_aside(vec![path]);
+                            let id = self.importer.set_aside(vec![path], place);
                             Err(refused
                                 .error
                                 .action(import::whats_there_action("Import what's there", id)))
@@ -1317,8 +1336,8 @@ impl Editor {
             // one message for those refused.
             if let Some(batch) = batch.filter(|b| b.files > 1) {
                 self.status = format!("Imported {} of {} files", batch.imported(), batch.files);
-                let whats_there =
-                    (!batch.cut_short.is_empty()).then(|| self.importer.set_aside(batch.cut_short.clone()));
+                let whats_there = (!batch.cut_short.is_empty())
+                    .then(|| self.importer.set_aside(batch.cut_short.clone(), batch.place));
                 if let Some(err) = batch.summary(whats_there) {
                     self.errors.push(&err);
                 }
@@ -1703,6 +1722,15 @@ impl Editor {
         let mut picked = None;
         let answer = self.library.answer(crate::media_drawer::ASKER);
         let found = answer.as_ref().map(|a| a.media.as_slice());
+        let new_files = match &self.document {
+            Some(document) => self.media_folders.new_files(document.project()),
+            None => Vec::new(),
+        };
+        let importer = &self.importer;
+        let new_files = crate::media_drawer::NewFiles {
+            files: &new_files,
+            checking: &|path| importer.is_reading(path),
+        };
         let (drawer, theme, missing) = (&mut self.drawer, &self.theme, &self.relink.missing);
         let (proxies, global_labels) = (&self.proxies, &self.global_labels.labels);
         let proxy = crate::media_drawer::ProxyInfo {
@@ -1716,6 +1744,7 @@ impl Editor {
                     missing,
                     proxy,
                     global: global_labels,
+                    new_files,
                 };
                 drawer.ui(ui, theme, document.project(), &about)
             })
@@ -1730,6 +1759,14 @@ impl Editor {
             }
             Some(Picked::DeleteProxy(media)) => {
                 self.proxies.delete(&self.jobs, media);
+                None
+            }
+            Some(Picked::AddFound(paths)) => {
+                self.importer.add(&self.jobs, &ctx, paths);
+                None
+            }
+            Some(Picked::Dismiss(path)) => {
+                self.media_folders.dismiss(path);
                 None
             }
             Some(Picked::Edit(command)) => {
@@ -1810,12 +1847,18 @@ impl Editor {
 
     /// Keeps the library index in step with the project and asks it what
     /// the drawer and the search palette show. Never waits for it.
-    fn library_index(&mut self) {
+    fn library_index(&mut self, ctx: &egui::Context) {
         let Some(document) = self.document.as_ref() else {
             return;
         };
         let project = document.project();
         self.library.follow(project);
+        let index_file = self.data_dir.join(project_index::INDEX_FILE_NAME);
+        self.media_folders.start(ctx, document.path(), index_file);
+        let new = self.media_folders.new_files(project);
+        if let Some(line) = self.media_folders.announce(&new) {
+            self.status = line;
+        }
         if self.drawer.open {
             self.library
                 .ask(crate::media_drawer::ASKER, &self.drawer.query(project));
@@ -2782,7 +2825,8 @@ impl Editor {
                     && self.viewer.settled()
                     && self.display.settled()
                     && self.proxies.settled()
-                    && (!self.drawer.open || self.library.is_current(crate::media_drawer::ASKER)))
+                    && (!self.drawer.open || self.library.is_current(crate::media_drawer::ASKER))
+                    && self.media_folders.settled())
                     || now.duration_since(since) > SCREENSHOT_WAIT;
                 // A scripted pointer has done its part, and rested long
                 // enough for a tooltip to come up.
@@ -2962,7 +3006,7 @@ impl eframe::App for Editor {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
         self.relinking(&ctx);
-        self.library_index();
+        self.library_index(&ctx);
         self.frame_grabs(&ctx);
         if let Some(err) = self.viewer.poll(&ctx, self.settings.preview_quality)
             && !self.relink.explains_errors()
@@ -3172,6 +3216,8 @@ pub struct ProjectToOpen {
     pub media_drawer: bool,
     /// Words to start with in the drawer's "Find a file".
     pub find: Option<String>,
+    /// Folders watched for new recordings besides the launcher's media folders.
+    pub watch_folders: Vec<PathBuf>,
     /// Start on the Export page.
     pub export_page: bool,
     /// Start with the viewer full screen.

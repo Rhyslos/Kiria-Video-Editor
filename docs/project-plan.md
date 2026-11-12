@@ -170,6 +170,7 @@ Media is organised by **type** (Video, Audio, Image, Effect) and by any number o
 - **Video, Images, Effects**: a thumbnail grid grouped by label, with a coloured edge per label and badges for "In timeline" and "Needs proxy".
 - **Audio**: rows, not thumbnails. Each row shows a play button, the file name, a full-width waveform in the label colour, format, whether it is used in the timeline, and duration. Rows are grouped by label (Music, Voice, SFX). The detail panel shows a large waveform, loudness and true peak, and explains problems such as peaks near clipping with a one-click fix.
 - Import checks every file and explains anything unsupported before it reaches the timeline.
+- The launcher's media folders are watched while a project is open: recordings that appear there (once they have finished being written) are offered as "New in your folders", added with one click; nothing is added by itself.
 - **Prune**: one button in the sidebar removes all media not used in any timeline from the project. It shows the list first, can be undone, and never deletes files from disk.
 
 ### Edit

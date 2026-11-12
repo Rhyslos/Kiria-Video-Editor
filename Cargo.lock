@@ -2410,6 +2410,7 @@ dependencies = [
  "diag",
  "project",
  "rusqlite",
+ "tempfile",
  "tracing",
 ]
 

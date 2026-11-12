@@ -21,6 +21,7 @@ mod inspector;
 mod label_editor;
 mod looping;
 mod media_drawer;
+mod media_folders;
 mod picture_handles;
 mod proxies;
 mod reading;
@@ -136,6 +137,7 @@ fn main() -> ExitCode {
         play: options.play,
         media_drawer: options.media_drawer,
         find: options.find.clone(),
+        watch_folders: options.watch_folders.clone(),
         export_page: options.export_page,
         full_screen: options.full_screen,
         select_first_clip: options.select_first_clip,
