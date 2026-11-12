@@ -8,7 +8,7 @@ use std::path::PathBuf;
 pub enum FolderKind {
     /// Where projects live. New projects are saved into one of these, and they are searched for project files.
     Projects,
-    /// Folders of recordings, remembered so importing can start there (Phase 5).
+    /// Folders of recordings: the editor watches them for new recordings.
     Media,
     /// Any other folder; searched for project files like project folders.
     Other,
