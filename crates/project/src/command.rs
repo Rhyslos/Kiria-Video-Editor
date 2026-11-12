@@ -103,6 +103,21 @@ pub enum Command {
         track: Option<TrackId>,
         insert: bool,
     },
+    /// Lays a file of the project over the timeline at `at`, its picture
+    /// on the video track `track` (the first one when `None`). What the
+    /// picture covers on that track is replaced: those stretches of the
+    /// clips there go and, when the file has sound of its own, so does the
+    /// sound linked to them. Each of the file's sound streams then takes the
+    /// first audio track where the stretch is free, counting from the one
+    /// [`Command::Import`] would give it; a track is made when none is.
+    /// Nothing else is cut or moved: the picture on the other video tracks,
+    /// and sound that belongs to none of the covered clips, stay as they are.
+    LayMedia {
+        sequence: SequenceId,
+        media: MediaId,
+        at: Time,
+        track: Option<TrackId>,
+    },
     /// Adds an empty track after the others of its kind: a video track on
     /// top of the picture, an audio track at the bottom.
     AddTrack {
@@ -162,6 +177,21 @@ pub enum Command {
         sequence: SequenceId,
         clip: ClipId,
         track: TrackId,
+        by: Time,
+    },
+    /// Moves a clip to the track `track` of its kind, or with `None` to a
+    /// new track made after the others of its kind (a video track on top, an
+    /// audio track at the bottom), and, with every clip linked to it, by
+    /// `by`. Linked sound stays on its own track where that stretch is free
+    /// and otherwise goes to the first audio track where it is (a track is
+    /// made when none is), so a picture moved over another keeps its sound
+    /// and nothing under it is cut. Linked pictures stay on their own
+    /// tracks. Refused if the clip itself or a linked picture would overlap
+    /// a clip, or any of them would start before zero.
+    MoveBetweenTracks {
+        sequence: SequenceId,
+        clip: ClipId,
+        track: Option<TrackId>,
         by: Time,
     },
     /// Moves one edge of a clip (and the same edge of its linked clips) to
@@ -339,6 +369,12 @@ impl Command {
                 track,
                 insert,
             } => drop_media(&mut p, *sequence, *media, *at, *track, *insert)?,
+            Command::LayMedia {
+                sequence,
+                media,
+                at,
+                track,
+            } => crate::layers::lay(&mut p, *sequence, *media, *at, *track)?,
             Command::AddTrack { sequence, kind, name } => {
                 crate::tracks::add(&mut p, *sequence, *kind, name)?;
             }
@@ -420,6 +456,12 @@ impl Command {
                 track,
                 by,
             } => move_linked(&mut p, *sequence, *clip, *by, Some(*track))?,
+            Command::MoveBetweenTracks {
+                sequence,
+                clip,
+                track,
+                by,
+            } => crate::layers::move_between(&mut p, *sequence, *clip, *track, *by)?,
             Command::Trim {
                 sequence,
                 clip,
@@ -574,7 +616,7 @@ fn move_linked(
     Ok(())
 }
 
-fn wrong_kind_of_track() -> AppError {
+pub(crate) fn wrong_kind_of_track() -> AppError {
     AppError::new("The clip can't move to that track")
         .why("Video clips go on video tracks and audio clips on audio tracks.")
 }
@@ -664,16 +706,36 @@ pub(crate) fn settle_automatic(p: &mut Project, sequence: SequenceId, media: &Me
 }
 
 /// How long a file's clips are when placed.
-fn placed_length(media: &MediaRef) -> Time {
+pub(crate) fn placed_length(media: &MediaRef) -> Time {
     match media.kind {
         MediaKind::Image => STILL_LENGTH,
         MediaKind::Video | MediaKind::Audio => media.duration,
     }
 }
 
+/// How long a file's clips are when placed, or why it can't be placed: its
+/// length is not known, or it has neither picture nor sound.
+pub(crate) fn placeable_length(media: &MediaRef) -> diag::Result<Time> {
+    let length = placed_length(media);
+    if length <= Time::ZERO {
+        return Err(AppError::new("This file can't be placed")
+            .why("Its length could not be read, so the app doesn't know how long the clip is.")
+            .fix("Try re-saving the file with a recording or conversion tool, then import it again."));
+    }
+    let (video, audio) = placed_streams(media);
+    if video.is_none() && audio.is_empty() {
+        return Err(
+            AppError::new("This file has nothing to place").why("No picture or sound was found in it.")
+        );
+    }
+    Ok(length)
+}
+
 /// What of a file is placed: its picture stream (none for a sound file) and
 /// its sound streams (none for a still).
-fn placed_streams(media: &MediaRef) -> (Option<&crate::model::VideoStream>, &[crate::model::AudioStream]) {
+pub(crate) fn placed_streams(
+    media: &MediaRef,
+) -> (Option<&crate::model::VideoStream>, &[crate::model::AudioStream]) {
     let video = media
         .info
         .video
@@ -689,7 +751,7 @@ fn placed_streams(media: &MediaRef) -> (Option<&crate::model::VideoStream>, &[cr
 
 /// The video track a file's picture goes on: `chosen`, or the first one
 /// (`None` when the timeline has no video track yet: one is made).
-fn picture_track(seq: &Sequence, chosen: Option<TrackId>) -> diag::Result<Option<TrackId>> {
+pub(crate) fn picture_track(seq: &Sequence, chosen: Option<TrackId>) -> diag::Result<Option<TrackId>> {
     match chosen {
         Some(id) => match seq.track(id) {
             Some(track) if track.kind == TrackKind::Video => Ok(Some(id)),
@@ -750,18 +812,8 @@ fn place_media(
 ) -> diag::Result<()> {
     let media = p.media.get(&id).cloned().ok_or_else(|| missing("media file"))?;
     let media = &media;
-    let length = placed_length(media);
-    if length <= Time::ZERO {
-        return Err(AppError::new("This file can't be placed")
-            .why("Its length could not be read, so the app doesn't know how long the clip is.")
-            .fix("Try re-saving the file with a recording or conversion tool, then import it again."));
-    }
+    let length = placeable_length(media)?;
     let (video, audio) = placed_streams(media);
-    if video.is_none() && audio.is_empty() {
-        return Err(
-            AppError::new("This file has nothing to place").why("No picture or sound was found in it.")
-        );
-    }
     let link: Option<LinkId> = (usize::from(video.is_some()) + audio.len() > 1).then(|| p.allocate_id());
     let at = match at {
         Some(at) => at,

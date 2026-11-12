@@ -22,10 +22,19 @@
 //!
 //! There can be any number of tracks of each kind. A clip dragged up or down
 //! lands on the track of its kind under the pointer, and a file dragged in
-//! from a list on the video track under the pointer. The column of track
-//! names has a right-click menu to add, rename, hide and remove tracks; a
-//! video track's name has an eye that hides the track ([`headers`]), and a
-//! double-click on a name changes it in place.
+//! from a list on the video track under the pointer. Dragged past the last
+//! track of its kind (above the top video track, under the bottom audio
+//! track) a clip asks for a new track there: a lit strip shows where. While
+//! a clip is dragged to a place it could not be put, it is drawn in the
+//! warning colour. The column of track names has a right-click menu to add,
+//! rename, hide and remove tracks; a video track's name has an eye that
+//! hides the track ([`headers`]), and a double-click on a name changes it in
+//! place.
+//!
+//! The video area is as tall as the divider says, or as tall as its tracks
+//! need when that is more, as long as the audio area keeps some room
+//! ([`TimelineView::fit_video`]). So a track that is added shows without
+//! the divider being dragged, and a removed one gives its room back.
 //!
 //! The top edge of the labels row is the cache bar ([`cache_bar`]): a thin
 //! strip that shows which stretches are prepared ahead of time, being
@@ -161,9 +170,15 @@ pub enum TimelineEvent {
     /// Empty space was clicked.
     ClearSelection,
     /// A clip (with its linked clips) was dragged by `by` seconds and, when
-    /// `track` is given, onto that track of its kind (its linked clips stay
-    /// on their own tracks).
-    Move { clip: u64, by: f64, track: Option<u64> },
+    /// `track` is given, onto that track of its kind. With `new_track` it
+    /// was let go past the last track of its kind (above the top video
+    /// track, under the bottom audio track): onto a track to be made there.
+    Move {
+        clip: u64,
+        by: f64,
+        track: Option<u64>,
+        new_track: bool,
+    },
     /// A clip's edge was dragged to `to` (seconds on the timeline).
     Trim { clip: u64, edge: ClipEdge, to: f64 },
     /// The blade tool cut a clip at `at`.
@@ -266,6 +281,14 @@ enum DragKind {
     Slide,
 }
 
+/// Where a dragged clip would land if let go now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Landing {
+    Track(u64),
+    /// Past the last track of its kind: on a track to be made there.
+    NewTrack,
+}
+
 /// A clip being dragged: what is moving and by how much so far.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct ClipDrag {
@@ -273,9 +296,11 @@ struct ClipDrag {
     link: Option<u64>,
     /// The track the clip is on.
     track: u64,
-    /// The track it would land on if let go now: another one of its kind
-    /// once a move has gone up or down far enough.
-    over: u64,
+    /// Where it would land if let go now: another track of its kind, or a
+    /// new one, once a move has gone up or down far enough.
+    over: Landing,
+    /// Let go now, the move would be refused: a clip is in the way.
+    refused: bool,
     kind: DragKind,
     /// Pointer time when the drag began.
     grabbed_at: f64,
@@ -290,10 +315,48 @@ impl ClipDrag {
         c.id == self.clip || (self.link.is_some() && c.link == self.link)
     }
 
-    /// The track the dragged clip is drawn on instead of its own, when the
-    /// drag has taken it to another one.
-    fn lands_elsewhere(&self) -> Option<u64> {
-        (self.kind == DragKind::Move && self.over != self.track).then_some(self.over)
+    /// Where the dragged clip is drawn instead of on its own track, when
+    /// the drag has taken it off it.
+    fn lands_elsewhere(&self) -> Option<Landing> {
+        (self.kind == DragKind::Move && self.over != Landing::Track(self.track)).then_some(self.over)
+    }
+
+    /// Whether a clip is in the way of this move, among `data`'s clips: on
+    /// the track the dragged clip would land on, or on the track of a clip
+    /// linked to it. Linked sound is not counted when the clip changes
+    /// track: it then finds a free track by itself. Overlaps shorter than
+    /// half a frame are not counted either, as places are rounded to frames.
+    fn is_in_the_way(&self, data: &TimelineData) -> bool {
+        if self.kind != DragKind::Move {
+            return false;
+        }
+        let slack = 0.5 / data.fps.max(1.0);
+        let taken = |track: &TimelineTrack, start: f64, end: f64| {
+            track
+                .clips
+                .iter()
+                .any(|c| !self.moves(c) && c.start < end - slack && start < c.start + c.duration - slack)
+        };
+        let changes_track = self.lands_elsewhere().is_some();
+        for (tracks, audio) in [(data.video, false), (data.audio, true)] {
+            for track in tracks {
+                for c in track.clips.iter().filter(|c| self.moves(c)) {
+                    let (start, end) = (c.start + self.delta, c.start + c.duration + self.delta);
+                    let lands_on = if c.id != self.clip {
+                        (!(audio && changes_track)).then_some(track)
+                    } else {
+                        match self.over {
+                            Landing::Track(id) => tracks.iter().find(|t| t.id == id),
+                            Landing::NewTrack => None,
+                        }
+                    };
+                    if lands_on.is_some_and(|track| taken(track, start, end)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
     }
 
     /// Where `c` is drawn while the drag lasts.
@@ -331,8 +394,17 @@ pub struct TimelineView {
     pub audio_scroll: f32,
     /// Share of the body given to video (the divider's place).
     pub split: f32,
+    /// The video area is taller than the divider's place says when its
+    /// tracks need more room, as long as the audio area keeps some
+    /// ([`AUDIO_KEEPS`]). Off once the divider has been dragged to where
+    /// they don't all show; on again when a video track is added or the
+    /// divider is dragged back. View state, like `split`.
+    pub fit_video: bool,
     /// Each track's height. View state: the page keeps and saves it.
     pub heights: TrackHeights,
+    /// The view (rough cut or not) and the tracks drawn last time, to
+    /// notice a track that was added.
+    known_tracks: Option<(bool, Vec<u64>)>,
     /// A track's edge being dragged to change its height.
     height_drag: Option<HeightDrag>,
     /// The area the pointer is over, for commands that act on one area.
@@ -375,7 +447,9 @@ impl Default for TimelineView {
             video_scroll: 0.0,
             audio_scroll: 0.0,
             split: 0.5,
+            fit_video: true,
             heights: TrackHeights::default(),
+            known_tracks: None,
             height_drag: None,
             hover_half: None,
             needle_drag: None,
@@ -420,6 +494,14 @@ const SHORT_CLIP: f32 = 40.0;
 /// A dragged clip stays on its own track until the pointer is this far
 /// past the row's edge, so a sideways drag never changes track by accident.
 const STAYS_ON_ITS_TRACK: f32 = 6.0;
+/// A dragged clip asks for a new track once the pointer is this far past
+/// the last track of its kind.
+const NEW_TRACK_PAST: f32 = 10.0;
+/// The lit strip that shows where a new track would be is at least this tall.
+const NEW_TRACK_STRIP: f32 = MIN_TRACK;
+/// The share of the body the audio area keeps (or one usual audio track, if
+/// that is more) when the video area grows to show its tracks.
+pub const AUDIO_KEEPS: f32 = 0.3;
 
 /// The closest zoom for a timeline at `fps`: single frames stay easy to click.
 pub fn max_zoom(fps: f64) -> f32 {
@@ -505,6 +587,16 @@ impl Layout {
             scrollbar,
             header_x: rect.left(),
         }
+    }
+
+    /// The height the video and audio areas share, for a timeline in `rect`.
+    fn body_height(rect: Rect) -> f32 {
+        (rect.height() - RULER - LABELS - SCROLLBAR - DIVIDER).max(20.0)
+    }
+
+    /// The share of that height the video area has.
+    fn video_share(&self) -> f32 {
+        self.video.height() / (self.video.height() + self.audio.height()).max(1.0)
     }
 
     fn time_left(&self) -> f32 {
@@ -673,6 +765,66 @@ impl TimelineView {
         }
     }
 
+    /// The height every track of `half` takes together.
+    fn content_height(&self, half: Half, data: &TimelineData) -> f32 {
+        let usual = self.usual_height(half);
+        tracks_of(half, data)
+            .iter()
+            .map(|t| self.heights.height(t.id, usual))
+            .sum()
+    }
+
+    /// The share of a body `body` tall that shows every video track, or as
+    /// many as fit while the audio area keeps the room it is due.
+    fn share_for_video_tracks(&self, body: f32, data: &TimelineData) -> f32 {
+        let audio_keeps = self
+            .content_height(Half::Audio, data)
+            .min(AUDIO_TRACK.max(body * AUDIO_KEEPS));
+        self.content_height(Half::Video, data).min(body - audio_keeps) / body.max(1.0)
+    }
+
+    /// The share of the body the video area gets: the divider's place, or
+    /// what its tracks need when that is more.
+    fn shown_split(&self, body: f32, data: &TimelineData) -> f32 {
+        if self.fit_video {
+            self.split.max(self.share_for_video_tracks(body, data))
+        } else {
+            self.split
+        }
+    }
+
+    /// Notices tracks that were not there the last time the timeline was
+    /// drawn: the video area fits its tracks again, and the newest track of
+    /// each area is scrolled into view. Not when the view has just changed
+    /// between rough cut and full, which shows other audio tracks.
+    fn notice_new_tracks(&mut self, rect: Rect, data: &TimelineData) {
+        let now: Vec<u64> = data.video.iter().chain(data.audio).map(|t| t.id).collect();
+        let before = self.known_tracks.replace((self.rough_cut, now));
+        let Some((rough_cut, known)) = before else { return };
+        if rough_cut != self.rough_cut {
+            return;
+        }
+        let newest = |tracks: &[TimelineTrack]| tracks.iter().rposition(|t| !known.contains(&t.id));
+        let new_video = newest(data.video);
+        if new_video.is_some() {
+            self.fit_video = true;
+        }
+        let layout = Layout::new(rect, self.shown_split(Layout::body_height(rect), data));
+        for (half, new) in [(Half::Video, new_video), (Half::Audio, newest(data.audio))] {
+            let area = match half {
+                Half::Video => layout.video,
+                Half::Audio => layout.audio,
+            };
+            let rows = self.rows(half, &layout, data);
+            let Some(row) = new.and_then(|i| rows.rects().get(i)) else {
+                continue;
+            };
+            // How far the row has to come down (or, negative, go up) to be in view.
+            let down = (area.top() - row.top()).max(0.0) - (row.bottom() - area.bottom()).max(0.0);
+            self.scroll_half(half, down);
+        }
+    }
+
     /// Makes every track of `half` `factor` times as tall, within the
     /// limits. With `keep` (a screen y: the pointer), the spot of the track
     /// under it stays under it.
@@ -731,7 +883,8 @@ impl TimelineView {
     ) -> Vec<TimelineEvent> {
         let mut events = Vec::new();
         let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
-        let layout = Layout::new(rect, self.split);
+        self.notice_new_tracks(rect, data);
+        let layout = Layout::new(rect, self.shown_split(Layout::body_height(rect), data));
         let left = layout.time_left();
         let visible = (self.time_at(left, left), self.time_at(left, rect.right()));
 
@@ -838,7 +991,7 @@ impl TimelineView {
                     .filter(|(d, _)| d.track == track.id)
                     .map(|(d, _)| d.clip);
                 let arriving = elsewhere
-                    .filter(|(_, over)| *over == track.id)
+                    .filter(|(_, over)| *over == Landing::Track(track.id))
                     .and_then(|(d, _)| tracks.iter().flat_map(|t| &t.clips).find(|c| c.id == d.clip));
                 let shown = track.clips.iter().filter(|c| Some(c.id) != leaving);
                 for clip in shown.chain(arriving) {
@@ -890,6 +1043,9 @@ impl TimelineView {
                     if let Some(loading) = &clip.loading {
                         loading::draw_on_clip(&clip_painter, theme, r, loading);
                     }
+                    if self.clip_drag.is_some_and(|d| d.refused && d.moves(clip)) {
+                        draw_refused(&clip_painter, r);
+                    }
                 }
                 if let Some(m) = merged {
                     clip_painter.rect_filled(m, 1.0, tiny_fill(theme, colour, audio));
@@ -898,6 +1054,45 @@ impl TimelineView {
                     // Not in the picture: its clips are dimmed.
                     clip_painter.rect_filled(band.shrink2(vec2(0.0, 1.0)), 0.0, theme.bg.gamma_multiply(0.6));
                 }
+            }
+            // A clip dragged past the last track of this area: a lit strip
+            // where the new track would be, with the clip in it.
+            if let Some((drag, Landing::NewTrack)) = elsewhere
+                && let Some(clip) = tracks.iter().flat_map(|t| &t.clips).find(|c| c.id == drag.clip)
+            {
+                let strip = new_track_strip(area, rows, self.usual_height(half), half);
+                let mark = ui.visuals().selection.stroke.color;
+                let lit = Rect::from_min_max(pos2(left, strip.top()), strip.max);
+                clip_painter.rect_filled(lit, 0.0, mark.gamma_multiply(0.3));
+                let edge = match half {
+                    Half::Video => strip.top(),
+                    Half::Audio => strip.bottom(),
+                };
+                ui.painter_at(area).line_segment(
+                    [pos2(area.left(), edge), pos2(area.right(), edge)],
+                    Stroke::new(2.0, mark),
+                );
+                let header = Rect::from_min_max(strip.min, pos2(left, strip.bottom()));
+                header_painter.rect_filled(header, 0.0, theme.panel);
+                header_painter.rect_filled(header, 0.0, mark.gamma_multiply(0.3));
+                header_painter.text(
+                    pos2(layout.header_x + 12.0, strip.center().y),
+                    Align2::LEFT_CENTER,
+                    "New track",
+                    FontId::proportional(11.5),
+                    theme.text,
+                );
+                let (start, duration) = drag.shown(clip);
+                let x0 = self.x_of(left, start);
+                let x1 = self.x_of(left, start + duration).max(x0 + 1.0);
+                let r = Rect::from_min_max(pos2(x0, strip.top() + 3.0), pos2(x1, strip.bottom() - 3.0));
+                let colour = if audio {
+                    AUDIO_COLOURS[0]
+                } else {
+                    theme.line_strong
+                };
+                draw_clip_body(&clip_painter, theme, r, colour, audio);
+                draw_clip_marks(&clip_painter, theme, r, clip);
             }
         }
         if !renaming_shown {
@@ -1570,9 +1765,17 @@ impl TimelineView {
                 Sense::drag(),
             )
             .on_hover_cursor(CursorIcon::ResizeVertical);
+        if divider.drag_started() {
+            // From where the divider is drawn, which the video tracks may
+            // have pushed past the place it was last dragged to.
+            self.split = layout.video_share();
+        }
         if divider.dragged() {
-            let body = layout.audio.bottom() - layout.video.top();
+            let body = layout.video.height() + layout.audio.height();
             self.split = (self.split + divider.drag_delta().y / body.max(1.0)).clamp(0.1, 0.9);
+            // Dragged to where the video tracks don't all show, it stays
+            // there: that was asked for.
+            self.fit_video = self.split + 0.5 / body.max(1.0) >= self.share_for_video_tracks(body, data);
         }
 
         // Scroll bar: drag the thumb.
@@ -1713,7 +1916,8 @@ impl TimelineView {
                     clip: c.id,
                     link: c.link,
                     track: track.id,
-                    over: track.id,
+                    over: Landing::Track(track.id),
+                    refused: false,
                     kind,
                     grabbed_at: t,
                     start: c.start,
@@ -1742,16 +1946,25 @@ impl TimelineView {
                     }
                     _ => delta,
                 };
-                // A move also follows the pointer to another track of this area.
+                // A move also follows the pointer to another track of this
+                // area, and past the last one to a track of its own.
                 let over = match drag.kind {
+                    DragKind::Move
+                        if self.asks_for_new_track(&drag, tracks, rows, time_area, from_bottom, p.y) =>
+                    {
+                        Landing::NewTrack
+                    }
                     DragKind::Move => {
                         let y = p.y.clamp(time_area.top(), time_area.bottom() - 1.0);
-                        landing_track(tracks, rows, y, drag.track).unwrap_or(drag.over)
+                        landing_track(tracks, rows, y, drag.track).map_or(drag.over, Landing::Track)
                     }
-                    _ => drag.track,
+                    _ => Landing::Track(drag.track),
                 };
-                self.clip_drag = Some(ClipDrag { delta, over, ..drag });
+                let mut drag = ClipDrag { delta, over, ..drag };
+                drag.refused = drag.is_in_the_way(data);
+                self.clip_drag = Some(drag);
                 ui.ctx().set_cursor_icon(match drag.kind {
+                    DragKind::Move if drag.refused => CursorIcon::NotAllowed,
                     DragKind::Move => CursorIcon::Grabbing,
                     DragKind::Slip | DragKind::Slide => CursorIcon::ResizeColumn,
                     _ => CursorIcon::ResizeHorizontal,
@@ -1765,7 +1978,11 @@ impl TimelineView {
                     DragKind::Move => TimelineEvent::Move {
                         clip: drag.clip,
                         by: drag.delta,
-                        track: drag.lands_elsewhere(),
+                        track: match drag.lands_elsewhere() {
+                            Some(Landing::Track(track)) => Some(track),
+                            Some(Landing::NewTrack) | None => None,
+                        },
+                        new_track: drag.over == Landing::NewTrack,
                     },
                     DragKind::Trim(ClipEdge::Start) => TimelineEvent::Trim {
                         clip: drag.clip,
@@ -1812,6 +2029,36 @@ impl TimelineView {
                     (_, None) => TimelineEvent::ClearSelection,
                 });
             }
+        }
+    }
+
+    /// Whether a clip dragged to screen position `y` is clearly past the
+    /// last track of its kind (`tracks`, with their `rows` in `area`): above
+    /// the top video track, or under the bottom audio track. Only while
+    /// that track's far edge is in view, so a track scrolled out of sight is
+    /// not skipped; and not for a clip alone on that last track, which a
+    /// new track would only leave empty.
+    fn asks_for_new_track(
+        &self,
+        drag: &ClipDrag,
+        tracks: &[TimelineTrack],
+        rows: &Rows,
+        area: Rect,
+        video: bool,
+        y: f32,
+    ) -> bool {
+        let (Some(last), Some(row)) = (tracks.last(), rows.rects().get(tracks.len().wrapping_sub(1))) else {
+            return false;
+        };
+        // In the rough cut view an audio track may hold more than is shown.
+        let alone = last.id == drag.track && last.clips.len() == 1 && (video || !self.rough_cut);
+        if alone {
+            return false;
+        }
+        if video {
+            row.top() >= area.top() - 0.5 && y < row.top() - NEW_TRACK_PAST
+        } else {
+            row.bottom() <= area.bottom() + 0.5 && y >= row.bottom() + NEW_TRACK_PAST
         }
     }
 
@@ -2083,6 +2330,45 @@ fn landing_track(tracks: &[TimelineTrack], rows: &Rows, y: f32, own: u64) -> Opt
         return Some(own);
     }
     rows.nearest(y).and_then(|row| tracks.get(row)).map(|t| t.id)
+}
+
+/// Where the lit strip for a new track goes: past the last row of `rows`
+/// (above the top video track, under the bottom audio track), as tall as a
+/// track usually is where `area` has that much room, and over the edge of
+/// the area where it has none.
+fn new_track_strip(area: Rect, rows: &Rows, usual: f32, half: Half) -> Rect {
+    let (top, bottom) = match (half, rows.rects().last()) {
+        (Half::Video, last) => {
+            let edge = last.map_or(area.bottom(), |row| row.top());
+            let top = (edge - usual).max(area.top());
+            if edge - top >= NEW_TRACK_STRIP {
+                (top, edge)
+            } else {
+                (area.top(), area.top() + NEW_TRACK_STRIP)
+            }
+        }
+        (Half::Audio, last) => {
+            let edge = last.map_or(area.top(), |row| row.bottom());
+            let bottom = (edge + usual).min(area.bottom());
+            if bottom - edge >= NEW_TRACK_STRIP {
+                (edge, bottom)
+            } else {
+                (area.bottom() - NEW_TRACK_STRIP, area.bottom())
+            }
+        }
+    };
+    Rect::from_min_max(pos2(area.left(), top), pos2(area.right(), bottom))
+}
+
+/// Marks a dragged clip that could not be put where it is now.
+fn draw_refused(p: &egui::Painter, r: Rect) {
+    p.rect_filled(r, 3.0, crate::status::ERROR.gamma_multiply(0.35));
+    p.rect_stroke(
+        r,
+        3.0,
+        Stroke::new(1.5, crate::status::ERROR),
+        egui::StrokeKind::Inside,
+    );
 }
 
 /// The tracks of one area.
@@ -2368,6 +2654,29 @@ mod tests {
             out
         }
 
+        /// How tall the video area is drawn (the body is 336 tall).
+        fn video_height(&self) -> f32 {
+            let data = TimelineData {
+                video: &self.video,
+                audio: &self.audio,
+                length: 60.0,
+                fps: self.fps,
+                playhead: 2.0,
+                needle: None,
+                region: None,
+                markers: &[],
+                highlights: &[],
+                follow: false,
+                cache: CacheBar {
+                    ranges: &[],
+                    about: "",
+                },
+            };
+            let rect = Rect::from_min_size(Pos2::ZERO, vec2(1000.0, 400.0));
+            let share = self.view.shown_split(Layout::body_height(rect), &data);
+            Layout::new(rect, share).video.height()
+        }
+
         /// Turns the wheel by `delta` points with the pointer at `at`.
         fn wheel(&mut self, at: Pos2, delta: Vec2, modifiers: egui::Modifiers) {
             self.modifiers = modifiers;
@@ -2503,7 +2812,7 @@ mod tests {
         let events = rig.button(grab + vec2(60.0, 0.0), primary, false);
         assert!(
             events.iter().any(
-                |e| matches!(e, TimelineEvent::Move { clip: 0, by, track: None } if (by - 1.0).abs() < 1e-6)
+                |e| matches!(e, TimelineEvent::Move { clip: 0, by, track: None, .. } if (by - 1.0).abs() < 1e-6)
             ),
             "{events:?}"
         );
@@ -2760,10 +3069,16 @@ mod tests {
         rig.button(to, primary, false)
             .into_iter()
             .map(|event| match event {
-                TimelineEvent::Move { clip, by, track } => TimelineEvent::Move {
+                TimelineEvent::Move {
+                    clip,
+                    by,
+                    track,
+                    new_track,
+                } => TimelineEvent::Move {
                     clip,
                     by: round(by),
                     track,
+                    new_track,
                 },
                 TimelineEvent::Trim { clip, edge, to } => TimelineEvent::Trim {
                     clip,
@@ -2825,7 +3140,8 @@ mod tests {
             [TimelineEvent::Move {
                 clip: 100,
                 by: 0.5,
-                track: None
+                track: None,
+                new_track: false
             }]
         );
         let events = drag(&mut rig, pos2(202.0, 330.0), pos2(262.0, 330.0));
@@ -2987,8 +3303,10 @@ mod tests {
         rig.view.heights.reset(100);
         rig.frame(Vec::new());
         assert_eq!(rig.view.audio_scroll, 8.0 * 58.0 - 168.0);
-        // The rough cut view has its own usual height for video rows.
+        // The rough cut view has its own usual height for video rows. (With
+        // the divider left where it was put: the area does not grow.)
         rig.view.rough_cut = true;
+        rig.view.fit_video = false;
         rig.view.heights.set(0, ROUGH_CUT_TRACK, 2.0 * ROUGH_CUT_TRACK);
         rig.view.video_scroll = 10_000.0;
         rig.frame(Vec::new());
@@ -2996,7 +3314,22 @@ mod tests {
     }
 
     fn moved(clip: u64, by: f64, track: Option<u64>) -> Vec<TimelineEvent> {
-        vec![TimelineEvent::Move { clip, by, track }]
+        vec![TimelineEvent::Move {
+            clip,
+            by,
+            track,
+            new_track: false,
+        }]
+    }
+
+    /// A clip let go past the last track of its kind.
+    fn moved_to_a_new_track(clip: u64, by: f64) -> Vec<TimelineEvent> {
+        vec![TimelineEvent::Move {
+            clip,
+            by,
+            track: None,
+            new_track: true,
+        }]
     }
 
     #[test]
@@ -3028,14 +3361,9 @@ mod tests {
             "a few points past its row's edge it stays on its track"
         );
         assert_eq!(
-            drag(&mut rig, on_v1, pos2(330.0, 60.0)),
+            drag(&mut rig, on_v1, pos2(330.0, 98.0)),
             moved(0, 0.5, Some(1)),
-            "above the top track: the top track"
-        );
-        assert_eq!(
-            drag(&mut rig, on_v1, pos2(330.0, 10.0)),
-            moved(0, 0.5, Some(1)),
-            "also from over the ruler"
+            "a few points above the top track: still the top track"
         );
         assert_eq!(
             drag(&mut rig, on_v1, pos2(330.0, 300.0)),
@@ -3067,7 +3395,15 @@ mod tests {
         rig.move_to(grab);
         rig.button(grab, primary, true);
         rig.move_to(pos2(310.0, 185.0));
-        let over = |rig: &Rig| rig.view.clip_drag.map(|d| (d.track, d.over, d.lands_elsewhere()));
+        let over = |rig: &Rig| {
+            rig.view.clip_drag.map(|d| {
+                let landing = |landing| match landing {
+                    Landing::Track(track) => track,
+                    Landing::NewTrack => u64::MAX,
+                };
+                (d.track, landing(d.over), d.lands_elsewhere().map(landing))
+            })
+        };
         assert_eq!(over(&rig), Some((0, 0, None)));
         rig.move_to(pos2(330.0, 130.0));
         assert_eq!(over(&rig), Some((0, 1, Some(1))), "shown on the track above");
@@ -3119,6 +3455,296 @@ mod tests {
             drag(&mut rig, pos2(300.0, 190.0), pos2(330.0, 130.0)),
             moved(0, 0.5, Some(1))
         );
+    }
+
+    #[test]
+    fn a_clip_dragged_past_the_last_track_of_its_kind_asks_for_a_new_one() {
+        // Two video tracks: track 0 from y = 158 to 212, track 1 on it from
+        // 104 to 158, and room above it. Two audio tracks: 100 from 218 to
+        // 276, 101 to 334, and room under it.
+        let mut rig = Rig::new(2, 2);
+        rig.view.snapping = false;
+        let (on_v1, on_v2) = (pos2(300.0, 190.0), pos2(300.0, 130.0));
+        assert_eq!(
+            drag(&mut rig, on_v1, pos2(330.0, 80.0)),
+            moved_to_a_new_track(0, 0.5),
+            "above the top track"
+        );
+        assert_eq!(
+            drag(&mut rig, on_v1, pos2(300.0, 10.0)),
+            moved_to_a_new_track(0, 0.0),
+            "also from over the ruler, and straight up"
+        );
+        assert_eq!(
+            drag(&mut rig, pos2(300.0, 240.0), pos2(360.0, 350.0)),
+            moved_to_a_new_track(100, 1.0),
+            "a sound clip under the bottom audio track"
+        );
+        assert_eq!(
+            drag(&mut rig, pos2(300.0, 240.0), pos2(360.0, 340.0)),
+            moved(100, 1.0, Some(101)),
+            "just under it: still the bottom track"
+        );
+        assert_eq!(
+            drag(&mut rig, on_v1, pos2(330.0, 395.0)),
+            moved(0, 0.5, None),
+            "a video clip dragged down past everything stays a video clip on its track"
+        );
+        // Each top track has one clip: on its own up there already, a new
+        // track would only leave an empty one behind.
+        assert_eq!(drag(&mut rig, on_v2, pos2(330.0, 60.0)), moved(1, 0.5, None));
+        rig.video[1].clips.push(clip(9, 8.0, 2.0));
+        assert_eq!(
+            drag(&mut rig, on_v2, pos2(330.0, 60.0)),
+            moved_to_a_new_track(1, 0.5),
+            "with company on its track it can leave"
+        );
+        // The tool that trims never changes track, so never asks for one.
+        assert_eq!(
+            drag(&mut rig, pos2(438.0, 190.0), pos2(378.0, 60.0)),
+            [TimelineEvent::Trim {
+                clip: 0,
+                edge: ClipEdge::End,
+                to: 4.0
+            }]
+        );
+    }
+
+    #[test]
+    fn the_new_track_is_shown_while_the_clip_is_dragged_there_and_not_past_tracks_out_of_view() {
+        let mut rig = Rig::new(2, 1);
+        rig.view.snapping = false;
+        let primary = egui::PointerButton::Primary;
+        let grab = pos2(300.0, 190.0);
+        rig.move_to(grab);
+        rig.button(grab, primary, true);
+        rig.move_to(pos2(310.0, 150.0));
+        rig.move_to(pos2(330.0, 80.0));
+        let drag_now = rig.view.clip_drag.unwrap();
+        assert_eq!(
+            drag_now.lands_elsewhere(),
+            Some(Landing::NewTrack),
+            "the strip is lit"
+        );
+        assert!(!drag_now.refused, "a new track has room for it");
+        rig.move_to(pos2(330.0, 130.0));
+        assert_eq!(
+            rig.view.clip_drag.unwrap().lands_elsewhere(),
+            Some(Landing::Track(1)),
+            "back down on the top track"
+        );
+        rig.button(pos2(330.0, 130.0), primary, false);
+
+        // Four video tracks in an area that shows three: the top one is out
+        // of view above, so a clip dragged up goes to it, not past it.
+        let mut rig = Rig::new(4, 1);
+        rig.view.snapping = false;
+        rig.view.fit_video = false;
+        assert_eq!(
+            drag(&mut rig, grab, pos2(330.0, 10.0)),
+            moved(0, 0.5, Some(3)),
+            "the track at the top of what is shown"
+        );
+    }
+
+    #[test]
+    fn the_strip_for_a_new_track_lies_past_the_last_row_or_over_the_edge() {
+        let area = Rect::from_min_max(pos2(0.0, 100.0), pos2(500.0, 300.0));
+        let ys = |r: Rect| (r.top(), r.bottom());
+        // Two video rows of 50 from the bottom: room above them.
+        let video = Rows::new(area, [50.0, 50.0], 0.0, true);
+        assert_eq!(
+            ys(new_track_strip(area, &video, 54.0, Half::Video)),
+            (146.0, 200.0)
+        );
+        // Rows up to the top of the area: the strip lies over its edge.
+        let full = Rows::new(area, [100.0, 100.0], 0.0, true);
+        assert_eq!(
+            ys(new_track_strip(area, &full, 54.0, Half::Video)),
+            (100.0, 100.0 + NEW_TRACK_STRIP)
+        );
+        // Little room: as much as there is.
+        let nearly = Rows::new(area, [100.0, 70.0], 0.0, true);
+        assert_eq!(
+            ys(new_track_strip(area, &nearly, 54.0, Half::Video)),
+            (100.0, 130.0)
+        );
+        // Audio rows grow down: the strip is under them.
+        let audio = Rows::new(area, [58.0], 0.0, false);
+        assert_eq!(
+            ys(new_track_strip(area, &audio, 58.0, Half::Audio)),
+            (158.0, 216.0)
+        );
+        let full = Rows::new(area, [100.0, 100.0], 0.0, false);
+        assert_eq!(
+            ys(new_track_strip(area, &full, 58.0, Half::Audio)),
+            (300.0 - NEW_TRACK_STRIP, 300.0)
+        );
+    }
+
+    /// Presses at `from`, drags to `to` and says whether the clip is shown
+    /// as refused there, then lets go.
+    fn refused_at(rig: &mut Rig, from: Pos2, to: Pos2) -> bool {
+        let primary = egui::PointerButton::Primary;
+        rig.move_to(from);
+        rig.button(from, primary, true);
+        rig.move_to(from + (to - from) / 2.0);
+        rig.move_to(to);
+        let refused = rig.view.clip_drag.is_some_and(|d| d.refused);
+        rig.button(to, primary, false);
+        refused
+    }
+
+    #[test]
+    fn a_clip_dragged_where_it_cannot_go_is_shown_as_refused() {
+        // Two video tracks and one audio track, each with a clip from 1 s
+        // to 5 s (x = 200 to 440); 60 points are a second.
+        let mut rig = Rig::new(2, 1);
+        rig.view.snapping = false;
+        let (on_v1, on_v2) = (pos2(300.0, 190.0), pos2(300.0, 130.0));
+        assert!(
+            refused_at(&mut rig, on_v1, on_v2),
+            "straight up: onto the clip that is there"
+        );
+        assert!(
+            !refused_at(&mut rig, on_v1, pos2(600.0, 130.0)),
+            "up and five seconds later: room"
+        );
+        assert!(
+            refused_at(&mut rig, on_v1, pos2(500.0, 130.0)),
+            "its start still under the other's end"
+        );
+        assert!(
+            !refused_at(&mut rig, on_v1, pos2(360.0, 190.0)),
+            "along its own track"
+        );
+        assert!(
+            !refused_at(&mut rig, on_v1, pos2(300.0, 60.0)),
+            "a new track has room"
+        );
+        // Let go there, the move is still asked for: the page says why not.
+        assert_eq!(drag(&mut rig, on_v1, on_v2), moved(0, 0.0, Some(1)));
+
+        // The clip on V1 and the sound clip belong together, and other
+        // sound lies from 6 s to 10 s on the same audio track.
+        rig.video[0].clips[0].link = Some(7);
+        rig.audio[0].clips[0].link = Some(7);
+        rig.audio[0].clips.push(clip(150, 6.0, 4.0));
+        assert!(
+            refused_at(&mut rig, on_v1, pos2(600.0, 190.0)),
+            "along its track: its sound would land on other sound"
+        );
+        assert!(
+            !refused_at(&mut rig, on_v1, pos2(600.0, 130.0)),
+            "to another track: its sound finds a free one"
+        );
+        // A touch is not an overlap: from 5 s on, right after the other clip.
+        rig.video[0].clips[0].link = None;
+        rig.view.snapping = true;
+        assert!(
+            !refused_at(&mut rig, on_v1, pos2(538.0, 130.0)),
+            "snapped to its end"
+        );
+    }
+
+    #[test]
+    fn the_video_area_is_as_tall_as_its_tracks_need_and_gives_the_room_back() {
+        // A body 336 tall, the divider in the middle: 168 for video, which
+        // shows three tracks of 54.
+        let mut rig = Rig::new(2, 3);
+        rig.frame(Vec::new());
+        assert_eq!(rig.video_height(), 168.0);
+        let add = |rig: &mut Rig| {
+            let id = rig.video.len() as u64;
+            rig.video.push(track(id, Vec::new()));
+            rig.frame(Vec::new());
+        };
+        add(&mut rig);
+        assert_eq!(rig.video_height(), 168.0, "a third track fits already");
+        add(&mut rig);
+        assert_eq!(
+            rig.video_height(),
+            216.0,
+            "four tracks: the area grew to show them"
+        );
+        assert_eq!(rig.view.split, 0.5, "the divider's own place is as it was");
+        assert_eq!(rig.view.video_scroll, 0.0);
+        // Six tracks need 324: the audio area keeps three tenths of the body.
+        add(&mut rig);
+        add(&mut rig);
+        assert_eq!(rig.video_height(), 235.0);
+        assert!(
+            near(rig.view.video_scroll, 324.0 - 235.0),
+            "and the new track is scrolled into view: {}",
+            rig.view.video_scroll
+        );
+        // Tracks are removed again (or their adding undone).
+        rig.video.truncate(4);
+        rig.frame(Vec::new());
+        assert_eq!((rig.video_height(), rig.view.video_scroll), (216.0, 0.0));
+        rig.video.truncate(2);
+        rig.frame(Vec::new());
+        assert_eq!(rig.video_height(), 168.0, "the room is given back");
+        // Taller tracks need more room too, and with a single audio track
+        // the audio area keeps only what that track needs.
+        rig.audio.truncate(1);
+        rig.view.heights.set(0, VIDEO_TRACK, 200.0);
+        rig.frame(Vec::new());
+        assert_eq!(rig.video_height(), 254.0);
+        rig.view.heights.set(0, VIDEO_TRACK, 400.0);
+        rig.frame(Vec::new());
+        assert_eq!(rig.video_height(), 336.0 - AUDIO_TRACK);
+    }
+
+    #[test]
+    fn the_divider_can_still_be_dragged_anywhere_and_a_new_track_shows_again() {
+        // Four video tracks: the area is 216 tall, the divider at y = 260.
+        let mut rig = Rig::new(4, 3);
+        rig.frame(Vec::new());
+        assert_eq!(rig.video_height(), 216.0);
+        // Up by 100: fewer tracks show than there are, as asked.
+        drag(&mut rig, pos2(500.0, 263.0), pos2(500.0, 163.0));
+        assert!(near(rig.video_height(), 116.0), "{}", rig.video_height());
+        assert!(!rig.view.fit_video);
+        rig.frame(Vec::new());
+        assert!(near(rig.video_height(), 116.0), "and it stays there");
+        // A track is added: the area shows its tracks again.
+        rig.video.push(track(4, Vec::new()));
+        rig.frame(Vec::new());
+        assert!(rig.view.fit_video);
+        assert_eq!(rig.video_height(), 235.0);
+        // Dragged down past what the tracks need, the divider is simply there.
+        rig.video.truncate(2);
+        rig.frame(Vec::new());
+        let at = 44.0 + rig.video_height() + 3.0;
+        drag(&mut rig, pos2(500.0, at), pos2(500.0, at + 60.0));
+        assert!(rig.view.fit_video);
+        let tall = rig.video_height();
+        assert!(tall > 168.0);
+        rig.video.push(track(2, Vec::new()));
+        rig.frame(Vec::new());
+        assert_eq!(rig.video_height(), tall, "room enough: nothing moves");
+    }
+
+    #[test]
+    fn a_new_audio_track_is_scrolled_into_view_but_not_when_the_view_changes() {
+        // Three audio tracks of 58 in an area 168 tall.
+        let mut rig = Rig::new(1, 3);
+        rig.frame(Vec::new());
+        assert_eq!(rig.view.audio_scroll, 0.0);
+        rig.audio.push(track(103, Vec::new()));
+        rig.frame(Vec::new());
+        assert!(
+            near(rig.view.audio_scroll, 4.0 * 58.0 - 168.0),
+            "its row is in view"
+        );
+        // Switching to the rough cut view and back shows other tracks:
+        // that is not a track being added.
+        rig.view.audio_scroll = 0.0;
+        rig.view.rough_cut = true;
+        rig.audio.push(track(104, Vec::new()));
+        rig.frame(Vec::new());
+        assert_eq!(rig.view.audio_scroll, 0.0);
     }
 
     /// Lets go of a file dragged from a list with the pointer at `at`.

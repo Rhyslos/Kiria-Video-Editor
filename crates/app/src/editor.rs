@@ -634,7 +634,13 @@ impl Editor {
             }
             E::Select { clip, add } => timeline_panel::select(&mut self.selected, project::ClipId(clip), add),
             E::ClearSelection => self.selected.clear(),
-            E::Move { clip, by, track } => {
+            E::Move {
+                clip,
+                by,
+                track,
+                new_track,
+            } => {
+                let mut says = None;
                 let result = self.with_document(|d| {
                     let Some(seq) = d.project().active() else {
                         return Ok(());
@@ -650,18 +656,27 @@ impl Editor {
                     };
                     let target = seq.settings.frame_rate.snap(start + seconds(by)).max(Time::ZERO);
                     let (sequence, by) = (seq.id, target - start);
-                    d.apply(match track {
-                        Some(track) => Command::MoveToTrack {
-                            sequence,
-                            clip,
-                            track: project::TrackId(track),
-                            by,
-                        },
-                        None => Command::MoveLinked { sequence, clip, by },
-                    })
+                    if track.is_none() && !new_track {
+                        return d.apply(Command::MoveLinked { sequence, clip, by });
+                    }
+                    // To another track, or past the last one to a new
+                    // track: linked sound finds a free place by itself.
+                    let before = seq.clone();
+                    d.apply(Command::MoveBetweenTracks {
+                        sequence,
+                        clip,
+                        track: track.map(project::TrackId),
+                        by,
+                    })?;
+                    says = d
+                        .project()
+                        .active()
+                        .map(|after| timeline_panel::moved_says(&before, after, clip));
+                    Ok(())
                 });
-                if let Err(err) = result {
-                    self.errors.push(&err);
+                match result {
+                    Ok(()) => self.status = says.unwrap_or_default(),
+                    Err(err) => self.errors.push(&err),
                 }
             }
             E::Trim { clip, edge, to } => {
@@ -780,21 +795,29 @@ impl Editor {
                 insert,
                 track,
             } => {
-                let result = self.with_document(|d| {
-                    let Some(seq) = d.project().active() else {
-                        return Ok(());
-                    };
-                    let at = seq.settings.frame_rate.snap(seconds(at));
-                    d.apply(Command::DropMedia {
-                        sequence: seq.id,
-                        media: project::MediaId(media),
-                        at,
-                        track: track.map(project::TrackId),
-                        insert,
-                    })
-                });
-                if let Err(err) = result {
-                    self.errors.push(&err);
+                let at = self
+                    .document
+                    .as_ref()
+                    .and_then(|d| d.project().active())
+                    .map_or(Time::ZERO, |seq| seq.settings.frame_rate.snap(seconds(at)));
+                let (media, track) = (project::MediaId(media), track.map(project::TrackId));
+                if insert {
+                    // Ctrl held: everything from there on moves later.
+                    let result = self.with_document(|d| {
+                        let sequence = d.project().active_sequence;
+                        d.apply(Command::DropMedia {
+                            sequence,
+                            media,
+                            at,
+                            track,
+                            insert,
+                        })
+                    });
+                    if let Err(err) = result {
+                        self.errors.push(&err);
+                    }
+                } else {
+                    self.lay_media(media, at, track);
                 }
             }
             E::AddTrack { audio } => {
@@ -1363,17 +1386,60 @@ impl Editor {
         if let Some((media, placement)) = picked {
             use crate::media_drawer::Placement;
             let at = self.edit_point();
-            let result = self.with_document(|d| {
-                let sequence = d.project().active_sequence;
-                d.apply(match placement {
-                    Placement::End => Command::PlaceMedia { sequence, media },
-                    Placement::Insert => Command::InsertMedia { sequence, media, at },
-                    Placement::Overwrite => Command::OverwriteMedia { sequence, media, at },
-                })
-            });
-            match result {
-                Ok(()) => self.fitted = false,
-                Err(err) => self.errors.push(&err),
+            let placed = match placement {
+                // As a drop on the first video track does it.
+                Placement::Overwrite => self.lay_media(media, at, None),
+                Placement::End | Placement::Insert => {
+                    let result = self.with_document(|d| {
+                        let sequence = d.project().active_sequence;
+                        d.apply(match placement {
+                            Placement::End => Command::PlaceMedia { sequence, media },
+                            _ => Command::InsertMedia { sequence, media, at },
+                        })
+                    });
+                    if let Err(err) = &result {
+                        self.errors.push(err);
+                    }
+                    result.is_ok()
+                }
+            };
+            if placed {
+                self.fitted = false;
+            }
+        }
+    }
+
+    /// Lays a file of the project over the timeline at `at`, its picture on
+    /// the video track `track` (the first when `None`): what a drop on a
+    /// track and the drawer's "Overwrite at the edit point" both do. Its
+    /// sound finds free audio tracks, and the status line says where it
+    /// went when that is not the usual place. Returns whether it was done.
+    fn lay_media(&mut self, media: project::MediaId, at: Time, track: Option<project::TrackId>) -> bool {
+        let mut says = None;
+        let result = self.with_document(|d| {
+            let Some(before) = d.project().active().cloned() else {
+                return Ok(());
+            };
+            d.apply(Command::LayMedia {
+                sequence: before.id,
+                media,
+                at,
+                track,
+            })?;
+            says = d
+                .project()
+                .active()
+                .map(|after| timeline_panel::laid_says(&before, after, media, at));
+            Ok(())
+        });
+        match result {
+            Ok(()) => {
+                self.status = says.unwrap_or_default();
+                true
+            }
+            Err(err) => {
+                self.errors.push(&err);
+                false
             }
         }
     }

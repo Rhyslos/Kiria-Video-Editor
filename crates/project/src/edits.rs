@@ -192,6 +192,24 @@ pub(crate) fn clear_space_on(
     tracks: &[TrackId],
 ) -> diag::Result<()> {
     let end = at + length;
+    cut_edges_on(p, sequence, at, end, tracks)?;
+    let seq = sequence_mut(p, sequence)?;
+    for track in tracks_mut(seq).filter(|t| tracks.contains(&t.id)) {
+        track.clips.retain(|c| c.end() <= at || c.start >= end);
+    }
+    Ok(())
+}
+
+/// Cuts the clips of `tracks` that cross `at` or `end` there, each together
+/// with the clips linked to it, wherever they are. Afterwards every clip of
+/// `tracks` lies inside `at`..`end` or outside it.
+pub(crate) fn cut_edges_on(
+    p: &mut Project,
+    sequence: SequenceId,
+    at: Time,
+    end: Time,
+    tracks: &[TrackId],
+) -> diag::Result<()> {
     for cut in [end, at] {
         // One clip at a time: cutting it may cut a linked clip on another
         // of these tracks too.
@@ -205,10 +223,6 @@ pub(crate) fn clear_space_on(
             let Some(crossing) = crossing else { break };
             split(p, sequence, cut, Some(crossing))?;
         }
-    }
-    let seq = sequence_mut(p, sequence)?;
-    for track in tracks_mut(seq).filter(|t| tracks.contains(&t.id)) {
-        track.clips.retain(|c| c.end() <= at || c.start >= end);
     }
     Ok(())
 }
