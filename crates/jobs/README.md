@@ -27,7 +27,7 @@ if let Some(result) = handle.try_result() { /* ... */ }
 | Pools | Decode, render, analysis and export, each with its own threads. The worker budget is split 40 / 30 / 15 / 15 %, at least one thread each |
 | Interface thread | Never part of a pool. Auto budgets leave one CPU thread free for it |
 | Priorities | `Playback` runs before `Interactive`, which runs before `Background`; equal priorities run oldest first |
-| Background policy | `Always`, `PauseWhilePlaying` (default) or `OnlyWhenIdle`. Tell it with `set_playing` and `set_idle` |
+| Background policy | `Always`, `PauseWhilePlaying` (default) or `OnlyWhenIdle`. Tell it with `set_playing` and `set_idle`; `closing` lets everything held back run, so closing the app can wait for a save started while playing |
 | Results | `JobHandle::try_result()` (never blocks) or `wait()` (workers and tests only). Errors and panics come back as explained `AppError`s |
 | Cancelling | `JobHandle::cancel()` sets a flag the job reads with `ctx.is_cancelled()` |
 | Progress | A job says how far it is with `ctx.set_progress(0.0..=1.0)`; `JobHandle::progress()` reads it without blocking: `Waiting` until the job starts, then `Running(share done)`. One atomic number per job |
