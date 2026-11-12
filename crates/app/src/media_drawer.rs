@@ -1,7 +1,10 @@
 //! What the Edit page's drawer lists: the project's media files. Double-click
-//! one (or press its +) to place it at the end of the timeline.
+//! one (or press its +) to place it at the end of the timeline. Each video
+//! file says what its proxy is up to ("Needs proxy", "Proxy 43 %",
+//! "Proxy"); right-click to build one now or delete it.
 
 use crate::import;
+use crate::proxies::{self, Status};
 use project::{MediaId, MediaRef, Project};
 use ui_kit::Theme;
 use ui_kit::drawer::DrawerTab;
@@ -15,6 +18,23 @@ pub enum Placement {
     /// At the edit point, over what is on the first video track there: as
     /// a file dropped on that track, its sound finds free audio tracks.
     Overwrite,
+}
+
+/// What was asked for in the drawer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Picked {
+    /// Place the file on the timeline.
+    Place(MediaId, Placement),
+    /// Build the file's proxy next.
+    BuildProxy(MediaId),
+    /// Delete the file's proxy.
+    DeleteProxy(MediaId),
+}
+
+/// What the drawer is told about proxies: each file's, and the mode.
+pub struct ProxyInfo<'a> {
+    pub status: &'a dyn Fn(MediaId) -> Status,
+    pub mode: cache::proxy::ProxyMode,
 }
 
 /// The drawer's state, kept by the page.
@@ -46,15 +66,15 @@ fn name(m: &MediaRef) -> String {
 }
 
 impl MediaDrawer {
-    /// Draws the drawer's contents. Returns the file to place and where, if
-    /// one was picked.
+    /// Draws the drawer's contents. Returns what was asked for, if anything.
     pub fn ui(
         &mut self,
         ui: &mut egui::Ui,
         theme: &Theme,
         project: &Project,
         missing: &[MediaId],
-    ) -> Option<(MediaId, Placement)> {
+        proxy: &ProxyInfo<'_>,
+    ) -> Option<Picked> {
         ui_kit::drawer::tab_switch(ui, &mut self.tab);
         ui.add_space(6.0);
         if self.tab == DrawerTab::Effects {
@@ -78,8 +98,11 @@ impl MediaDrawer {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 for media in list {
-                    if let Some(placement) = row(ui, theme, media, missing.contains(&media.id)) {
-                        picked = Some((media.id, placement));
+                    let status = (proxy.status)(media.id);
+                    if let Some(asked) =
+                        row(ui, theme, media, missing.contains(&media.id), &status, proxy.mode)
+                    {
+                        picked = Some(asked);
                     }
                 }
             });
@@ -87,19 +110,32 @@ impl MediaDrawer {
     }
 }
 
-/// One file: name, details, and a + to place it at the end; right-click to
-/// insert or overwrite at the edit point. Returns where it was asked to go.
-fn row(ui: &mut egui::Ui, theme: &Theme, media: &MediaRef, missing: bool) -> Option<Placement> {
+/// One file: name, details, what its proxy is up to, and a + to place it
+/// at the end; right-click to insert or overwrite at the edit point, or to
+/// build or delete its proxy. Returns what was asked for.
+fn row(
+    ui: &mut egui::Ui,
+    theme: &Theme,
+    media: &MediaRef,
+    missing: bool,
+    proxy: &Status,
+    mode: cache::proxy::ProxyMode,
+) -> Option<Picked> {
     let width = ui.available_width();
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 42.0), egui::Sense::click_and_drag());
+    // What its proxy is up to, on a line of its own under the details.
+    let proxy_line = proxies::label(proxy).filter(|_| !missing);
+    let height = if proxy_line.is_some() { 56.0 } else { 42.0 };
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::click_and_drag());
     if response.drag_started() {
         response.dnd_set_drag_payload(ui_kit::DraggedMedia(media.id.0));
     }
     if response.dragged() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
     }
+    let about_proxy =
+        proxies::explanation(proxy, mode).map_or_else(String::new, |text| format!("\n\n{text}"));
     let response = response.on_hover_text(format!(
-        "{}\nDouble-click to place it at the end of the timeline; right-click to insert or overwrite at the edit point; or drag it onto the timeline.",
+        "{}\nDouble-click to place it at the end of the timeline; right-click to insert or overwrite at the edit point; or drag it onto the timeline.{about_proxy}",
         media.path.display()
     ));
     let painter = ui.painter_at(rect);
@@ -112,6 +148,18 @@ fn row(ui: &mut egui::Ui, theme: &Theme, media: &MediaRef, missing: bool) -> Opt
     if missing {
         painter.circle_filled(egui::pos2(x + 3.0, rect.top() + 13.0), 3.5, ui_kit::status::ERROR);
         x += 12.0;
+    }
+    if let Some(text) = proxy_line {
+        let colour = match proxy {
+            Status::Failed(_) => ui_kit::status::ERROR,
+            Status::Ready => theme.accent,
+            _ => theme.muted,
+        };
+        let mut line =
+            egui::text::LayoutJob::simple_singleline(text, egui::FontId::proportional(11.0), colour);
+        line.wrap = egui::text::TextWrapping::truncate_at_width(width - 44.0);
+        let galley = painter.layout_job(line);
+        painter.galley(egui::pos2(rect.left() + 8.0, rect.top() + 39.0), galley, colour);
     }
     painter.text(
         egui::pos2(x, rect.top() + 6.0),
@@ -153,7 +201,8 @@ fn row(ui: &mut egui::Ui, theme: &Theme, media: &MediaRef, missing: bool) -> Opt
             },
         );
     }
-    let mut placed = (response.double_clicked() || add.clicked()).then_some(Placement::End);
+    let mut picked =
+        (response.double_clicked() || add.clicked()).then_some(Picked::Place(media.id, Placement::End));
     response.context_menu(|ui| {
         for (placement, text) in [
             (Placement::End, "Place at the end"),
@@ -161,12 +210,40 @@ fn row(ui: &mut egui::Ui, theme: &Theme, media: &MediaRef, missing: bool) -> Opt
             (Placement::Overwrite, "Overwrite at the edit point"),
         ] {
             if ui.button(text).clicked() {
-                placed = Some(placement);
+                picked = Some(Picked::Place(media.id, placement));
                 ui.close();
             }
         }
+        if let Some(asked) = proxy_menu(ui, media.id, proxy, missing) {
+            picked = Some(asked);
+            ui.close();
+        }
     });
-    placed
+    picked
+}
+
+/// The proxy's lines in a video file's right-click menu.
+fn proxy_menu(ui: &mut egui::Ui, media: MediaId, proxy: &Status, missing: bool) -> Option<Picked> {
+    match proxy {
+        Status::Nothing if !missing => None,
+        Status::Ready => {
+            ui.separator();
+            ui.button("Delete proxy")
+                .on_hover_text("It is not built again by itself this session; build it again from here.")
+                .clicked()
+                .then_some(Picked::DeleteProxy(media))
+        }
+        Status::NotNeeded | Status::Needed | Status::Failed(_) if !missing => {
+            ui.separator();
+            ui.button("Build proxy now")
+                .on_hover_text(
+                    "A small copy that is quick to jump around in, built in the background before any other.",
+                )
+                .clicked()
+                .then_some(Picked::BuildProxy(media))
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]

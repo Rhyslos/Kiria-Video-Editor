@@ -29,6 +29,8 @@ pub struct RunReport {
 pub struct Start {
     pub settings: Settings,
     pub data_dir: PathBuf,
+    /// Where proxies are kept (the app's cache folder).
+    pub proxy_dir: PathBuf,
     pub project: Option<ProjectToOpen>,
     pub mode: RunMode,
     pub report: Arc<Mutex<RunReport>>,
@@ -74,6 +76,8 @@ pub struct Editor {
     fitted: bool,
     waveforms: crate::waveforms::Waveforms,
     pictures: crate::clip_pictures::ClipPictures,
+    /// Proxies for the project's video files, built in the background.
+    proxies: crate::proxies::ProxyBuilds,
     /// How fast each track's waveforms or pictures are being read, for the time left.
     track_paces: timeline_panel::TrackPaces,
     relink: crate::relink::Relinker,
@@ -153,6 +157,7 @@ impl Editor {
         let Start {
             settings,
             data_dir,
+            proxy_dir,
             project,
             mode,
             report,
@@ -179,6 +184,7 @@ impl Editor {
         let full_screen = project.as_ref().is_some_and(|p| p.full_screen);
         let select_first_clip = project.as_ref().is_some_and(|p| p.select_first_clip);
         let hold_reading = project.as_ref().and_then(|p| p.hold_reading);
+        let hold_proxy = project.as_ref().and_then(|p| p.hold_proxy);
         let convert = crate::video_picture::conversion(
             cc.wgpu_render_state.as_ref(),
             project.as_ref().is_some_and(|p| p.cpu_colour),
@@ -234,7 +240,7 @@ impl Editor {
         if !imports.is_empty() {
             importer.read(&jobs, &cc.egui_ctx, imports);
         }
-        let viewer = Viewer::new(
+        let mut viewer = Viewer::new(
             &cc.egui_ctx,
             start_at,
             convert,
@@ -243,6 +249,14 @@ impl Editor {
                 .as_ref()
                 .map(|state| (state.device.clone(), state.queue.clone())),
         );
+        let proxies = crate::proxies::ProxyBuilds::new(
+            proxy_dir,
+            settings.proxies,
+            jobs.budgets().disk_cache_gb,
+            hold_proxy,
+        );
+        // Before the split view's Source is made: it takes the shelf from here.
+        viewer.set_proxies(Some(proxies.shelf()));
         let display = crate::display::ViewerDisplay::new(settings.split_view, &viewer);
         Editor {
             theme: settings.theme.theme(),
@@ -269,6 +283,7 @@ impl Editor {
             fitted: false,
             waveforms: crate::waveforms::Waveforms::holding_at(hold_reading),
             pictures: crate::clip_pictures::ClipPictures::holding_at(hold_reading),
+            proxies,
             track_paces: timeline_panel::TrackPaces::default(),
             relink: crate::relink::Relinker::default(),
             frame_grab: crate::frame_grab::FrameGrab::default(),
@@ -1565,12 +1580,30 @@ impl Editor {
         }
         let mut picked = None;
         let (drawer, theme, missing) = (&mut self.drawer, &self.theme, &self.relink.missing);
+        let proxies = &self.proxies;
+        let proxy = crate::media_drawer::ProxyInfo {
+            status: &|media| proxies.status(media),
+            mode: self.settings.proxies,
+        };
         if let Some(document) = &self.document {
             picked = ui_kit::drawer::overlay(&ctx, theme, egui::Id::unique("media-drawer"), rect, |ui| {
-                drawer.ui(ui, theme, document.project(), missing)
+                drawer.ui(ui, theme, document.project(), missing, &proxy)
             })
             .inner;
         }
+        use crate::media_drawer::Picked;
+        let picked = match picked {
+            Some(Picked::Place(media, placement)) => Some((media, placement)),
+            Some(Picked::BuildProxy(media)) => {
+                self.proxies.build_now(media);
+                None
+            }
+            Some(Picked::DeleteProxy(media)) => {
+                self.proxies.delete(&self.jobs, media);
+                None
+            }
+            None => None,
+        };
         if let Some((media, placement)) = picked {
             use crate::media_drawer::Placement;
             let at = self.edit_point();
@@ -2336,6 +2369,15 @@ impl Editor {
                         .color(self.theme.muted),
                 );
                 ui.add_space(8.0);
+                ui.heading("Proxies");
+                ui.horizontal(|ui| {
+                    for mode in cache::proxy::ProxyMode::ALL {
+                        ui.radio_value(&mut self.settings.proxies, mode, mode.label())
+                            .on_hover_text(mode.explained());
+                    }
+                });
+                ui.label(egui::RichText::new(self.settings.proxies.explained()).color(self.theme.muted));
+                ui.add_space(8.0);
                 ui.heading("Graphics");
                 if let Some(err) = self.graphics.settings_row(ui, &self.theme) {
                     self.errors.push(&err);
@@ -2359,6 +2401,7 @@ impl Editor {
                 self.theme = self.settings.theme.theme();
                 self.theme.apply(ctx);
             }
+            self.proxies.set_mode(self.settings.proxies);
             if let Err(err) = self.settings.save(&self.data_dir) {
                 self.errors.push(&err);
             }
@@ -2460,7 +2503,10 @@ impl Editor {
                 // viewer's picture back. Not for ever, so a file that can't
                 // be shown still gets its screenshot.
                 let since = *self.probe.started.get_or_insert(now);
-                let ready = (self.importer.busy() == 0 && self.viewer.settled() && self.display.settled())
+                let ready = (self.importer.busy() == 0
+                    && self.viewer.settled()
+                    && self.display.settled()
+                    && self.proxies.settled())
                     || now.duration_since(since) > SCREENSHOT_WAIT;
                 // A scripted pointer has done its part, and rested long
                 // enough for a tooltip to come up.
@@ -2493,8 +2539,12 @@ impl Editor {
                 let probe = &mut self.probe;
                 if probe.job.is_none() {
                     probe.started = Some(now);
+                    // On the export pool, which nothing else uses here, so the
+                    // analysis pool's own work (waveforms, clip pictures, a
+                    // proxy being built) goes on during the test, also on a
+                    // machine with one thread per pool.
                     probe.job = Some(self.jobs.submit(
-                        PoolKind::Analysis,
+                        PoolKind::Export,
                         Priority::Interactive,
                         "8-second test job",
                         |_| {
@@ -2607,6 +2657,10 @@ impl eframe::App for Editor {
         self.follow_playback(&ctx);
         self.waveforms.poll(&ctx, now);
         self.pictures.poll(&ctx, now);
+        let project = self.document.as_ref().map(Document::project);
+        if let Some(err) = self.proxies.poll(&self.jobs, &ctx, project, now) {
+            self.errors.push(&err);
+        }
         self.relinking(&ctx);
         self.frame_grabs(&ctx);
         if let Some(err) = self.viewer.poll(&ctx, self.settings.preview_quality)
@@ -2705,6 +2759,7 @@ impl eframe::App for Editor {
         // closing never waits for a long file.
         self.waveforms.stop();
         self.pictures.stop();
+        self.proxies.stop();
         if let Some(keeper) = &mut self.view_keeper {
             keeper.close(&self.timeline);
         }
@@ -2827,6 +2882,8 @@ pub struct ProjectToOpen {
     pub cpu_colour: bool,
     /// Stop background reading at this share, for screenshots of it in progress.
     pub hold_reading: Option<f32>,
+    /// Stop proxy builds at this share, for screenshots of one in progress.
+    pub hold_proxy: Option<f32>,
 }
 
 /// Opens a project, or creates it if it doesn't exist.

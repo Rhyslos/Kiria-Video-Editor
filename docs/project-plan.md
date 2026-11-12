@@ -129,7 +129,7 @@ Note: no OS lets an app reserve an exact GPU percentage. The GPU setting is a wo
 ### Caching layers
 
 1. **Thumbnails and waveforms**, built on import and stored on disk.
-2. **Proxies**: lower-resolution, edit-friendly copies generated in the background. Toggle per clip or globally; export always uses originals.
+2. **Proxies**: lower-resolution, edit-friendly copies generated in the background (540p H.264 with key frames close together and exactly the original's frame times). They belong to the recording, not to a project: kept in the app's cache folder by the file's fingerprint, shared by every project that uses it, the ones used longest ago dropped first when the disk budget is reached. Off / On / Auto for the whole app, and built or deleted per file from its right-click menu; export always uses originals.
 3. **RAM frame cache** of decoded frames around the playhead, filled ahead in the playback direction.
 4. **GPU texture cache** for frames the compositor touches repeatedly.
 5. **Render cache**: timeline sections with heavy effects (grades, background removal) are pre-rendered in the background. Each section is keyed by a hash of its inputs, so a change only re-renders what it touched. The timeline shows cached sections as a green bar and pending ones as grey.
@@ -138,7 +138,7 @@ Note: no OS lets an app reserve an exact GPU percentage. The GPU setting is a wo
 
 - Preview resolution: Full, 1/2, 1/4, or Auto (drops during playback, full when paused).
 - Effects quality: Draft or Full. Draft uses cheaper keying and grading paths.
-- Proxy mode: Off, On, Auto (on for files heavier than the machine can decode in real time).
+- Proxy mode: Off, On, Auto (a proxy for files in which a jump can't put a picture on screen within 50 ms, judged from the file's key frame distance and a decode timed on this machine). On Auto the proxy's frame is shown at once and the exact frame when the playhead rests; On shows proxy frames only.
 - A small indicator in the viewport always shows the current quality and why it changed.
 
 ### Targets

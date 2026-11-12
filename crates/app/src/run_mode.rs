@@ -41,6 +41,9 @@ pub struct Options {
     /// Stop the background reading of waveforms and clip pictures at this
     /// share, 0 to 1 (`--hold-reading 0.4`, for screenshots of reading in progress).
     pub hold_reading: Option<f32>,
+    /// Stop proxy builds at this share, 0 to 1 (`--hold-proxy 0.43`, for
+    /// screenshots of a proxy being built).
+    pub hold_proxy: Option<f32>,
     /// Put the pointer here, and maybe drag it from there with the left
     /// button held (`--pointer 640,420 [--drag-to 640,480]`, for
     /// screenshots of what pointing and dragging show). `--release` after
@@ -150,6 +153,13 @@ impl Options {
                         .ok_or("--hold-reading needs a share between 0 and 1")?;
                     options.hold_reading = Some(share);
                 }
+                "--hold-proxy" => {
+                    let share = args
+                        .next()
+                        .and_then(|s| s.parse().ok())
+                        .ok_or("--hold-proxy needs a share between 0 and 1")?;
+                    options.hold_proxy = Some(share);
+                }
                 "--playhead" => {
                     let secs = args
                         .next()
@@ -199,6 +209,10 @@ mod tests {
             Some(0.4)
         );
         assert!(parse(&["p.x", "--hold-reading", "soon"]).is_err());
+        assert_eq!(
+            parse(&["p.x", "--hold-proxy", "0.43"]).unwrap().hold_proxy,
+            Some(0.43)
+        );
         let o = parse(&["p.x", "--pointer", "1200,400", "--scroll", "400"]).unwrap();
         assert_eq!(o.pointer.map(|p| p.scroll), Some(400.0));
         assert!(parse(&["p.x", "--scroll", "400"]).is_err());

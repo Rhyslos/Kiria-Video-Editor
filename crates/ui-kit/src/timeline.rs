@@ -70,7 +70,7 @@ mod track_views;
 pub use cache_bar::{CacheBar, CacheRange, CacheState};
 pub use fades::ClipSound;
 pub use keyframes::KeyframeMark;
-pub use loading::{LoadKind, LoadState, Loading};
+pub use loading::{LoadKind, LoadState, Loading, percent};
 pub use rows::{MAX_TRACK, MIN_TRACK, TrackHeights};
 pub use track_views::COMPACT_TRACK;
 
