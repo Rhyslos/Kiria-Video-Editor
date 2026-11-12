@@ -38,17 +38,17 @@ pub const MOUSE: &[MouseAction] = &[
     on(
         Context::Viewer,
         "Drag the selected clip's picture",
-        "Move it in the frame; it snaps to the frame's centre and edges",
+        "Move it in the frame, with handles on the picture switched on (Q); it snaps to the frame's centre and edges",
     ),
     on(
         Context::Viewer,
         "Drag a corner of the selected clip's picture",
-        "Resize it, the opposite corner staying where it is",
+        "Resize it, the opposite corner staying where it is (handles on)",
     ),
     on(
         Context::Viewer,
         "Double-click the selected clip's picture",
-        "Fit it: as large as fits the frame, centred",
+        "Fit it: as large as fits the frame, centred (handles on)",
     ),
     on(
         Context::Timeline,

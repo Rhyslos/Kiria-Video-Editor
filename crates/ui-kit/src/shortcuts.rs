@@ -203,6 +203,7 @@ const USUAL: &[(Action, Shortcut)] = &[
     (Action::SaveFrame, Shortcut::ctrl_shift(Key::E)),
     (Action::RemoveSilence, Shortcut::ctrl_shift(Key::R)),
     (Action::FullScreenViewer, Shortcut::key(Key::F)),
+    (Action::PictureHandles, Shortcut::key(Key::Q)),
     (Action::Versions, Shortcut::ctrl_shift(Key::V)),
     (Action::Templates, Shortcut::ctrl(Key::T)),
     (Action::SaveTemplate, Shortcut::ctrl_shift(Key::S)),
