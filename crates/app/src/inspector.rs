@@ -44,14 +44,7 @@ impl Inspector {
     ) -> Vec<Command> {
         let mut commands = Vec::new();
         let sequence = project.active_sequence;
-        let target = project.active().and_then(|seq| {
-            let clip = seq
-                .video_tracks
-                .iter()
-                .flat_map(|track| track.clips.iter().map(move |clip| (track, clip)))
-                .find(|(_, clip)| selected.contains(&clip.id))?;
-            Some((seq, clip.0, clip.1))
-        });
+        let target = shown_clip(project, selected);
         // A change left hanging on a clip that is no longer the one shown
         // (another was selected mid-drag) is finished first.
         let showing = target.map(|(_, _, clip)| clip.id);
@@ -95,9 +88,19 @@ impl Inspector {
         );
         if selected.len() > 1 {
             ui.label(
-                egui::RichText::new("Several clips are selected: this is the first.")
+                egui::RichText::new("Several clips are selected: this is the one on top.")
                     .color(theme.muted)
                     .size(12.0),
+            );
+        }
+        if track.hidden {
+            ui.label(
+                egui::RichText::new(format!(
+                    "{} is hidden (the eye by its name), so the viewer doesn't show this clip.",
+                    track.name
+                ))
+                .color(ui_kit::status::WARNING)
+                .size(12.0),
             );
         }
         ui.add_space(6.0);
@@ -295,6 +298,22 @@ impl Inspector {
         }
         commands
     }
+}
+
+/// The clip the inspector is about: of the selected ones with a picture,
+/// the one on the highest track (what is seen on top), and on that track
+/// the earliest.
+fn shown_clip<'a>(
+    project: &'a Project,
+    selected: &[ClipId],
+) -> Option<(&'a project::Sequence, &'a project::Track, &'a project::Clip)> {
+    let seq = project.active()?;
+    seq.video_tracks
+        .iter()
+        .rev()
+        .flat_map(|track| track.clips.iter().map(move |clip| (track, clip)))
+        .find(|(_, clip)| selected.contains(&clip.id))
+        .map(|(track, clip)| (seq, track, clip))
 }
 
 /// A look's numbers as the inspector shows them.
@@ -783,6 +802,47 @@ mod tests {
             Look::PLAIN,
             "the project itself is untouched"
         );
+    }
+
+    #[test]
+    fn of_clips_on_two_tracks_the_one_on_top_is_shown() {
+        let project = project_with_a_clip();
+        let seq = project.active_sequence;
+        let with_track = Command::AddTrack {
+            sequence: seq,
+            kind: project::TrackKind::Video,
+            name: "V2".into(),
+        }
+        .apply(&project)
+        .unwrap();
+        let sequence = with_track.active().unwrap();
+        let lower = sequence.video_tracks[0].clips[0].clone();
+        let mut upper = lower.clone();
+        upper.link = None;
+        let placed = Command::PlaceClip {
+            sequence: seq,
+            track: sequence.video_tracks[1].id,
+            clip: upper,
+        }
+        .apply(&with_track)
+        .unwrap();
+        let tracks = &placed.active().unwrap().video_tracks;
+        let (lower, upper) = (tracks[0].clips[0].id, tracks[1].clips[0].id);
+        let shown = |selected: &[ClipId]| {
+            shown_clip(&placed, selected).map(|(_, track, clip)| (track.name.clone(), clip.id))
+        };
+        assert_eq!(shown(&[lower, upper]), Some(("V2".to_owned(), upper)));
+        assert_eq!(shown(&[lower]), Some(("V1".to_owned(), lower)));
+        assert_eq!(shown(&[]), None);
+        // Sound alone has nothing to show.
+        let sound: Vec<ClipId> = placed
+            .active()
+            .unwrap()
+            .audio_tracks
+            .iter()
+            .flat_map(|t| t.clips.iter().map(|c| c.id))
+            .collect();
+        assert_eq!(shown(&sound), None);
     }
 
     /// Runs the inspector for one frame without a window.
