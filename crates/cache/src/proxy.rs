@@ -103,6 +103,31 @@ pub struct Shelf {
     /// Proxies being deleted: no longer offered, though their file may
     /// still be there while a preview worker lets go of it.
     retiring: Mutex<HashSet<PathBuf>>,
+    /// Held while the list of cleared proxies is read and written.
+    marks: Mutex<()>,
+}
+
+/// The list of proxies cleared on purpose, in the cache folder: one name
+/// a line, as [`Shelf::file_for`] names the proxy without its extension.
+const CLEARED_LIST: &str = "cleared.txt";
+
+/// What a clearing removed.
+#[derive(Debug, Default)]
+pub struct Cleared {
+    pub usage: Usage,
+    /// The proxies removed.
+    pub paths: Vec<PathBuf>,
+    /// Why some proxy could not be removed, when one could not (the others
+    /// are gone).
+    pub problem: Option<AppError>,
+}
+
+/// What some proxies take on disk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Usage {
+    pub bytes: u64,
+    /// How many proxies.
+    pub files: usize,
 }
 
 /// How a file was judged for a proxy ([`judge`]).
@@ -124,6 +149,7 @@ impl Shelf {
             mode: AtomicU8::new(mode.to_bits()),
             generation: AtomicU64::new(0),
             retiring: Mutex::new(HashSet::new()),
+            marks: Mutex::new(()),
         })
     }
 
@@ -207,6 +233,10 @@ impl Shelf {
                 ))
                 .fix("Check that the disk is not full and that you can write there.")
         })?;
+        // Built on purpose: no longer one that was cleared.
+        if let Err(err) = self.unmark_cleared(fingerprint, stream) {
+            tracing::warn!("a cleared proxy's mark could not be taken off: {}", err.report());
+        }
         let done = self.file_for(fingerprint, stream);
         let building = done.with_extension(format!("{}.{BUILDING}", std::process::id()));
         let written = media::proxy::write(original, stream, length, &building, decoding, false, steps)?;
@@ -232,25 +262,159 @@ impl Shelf {
         }
         self.retiring().insert(path.clone());
         self.changed();
-        let mut tries = 0;
-        loop {
-            match std::fs::remove_file(&path) {
-                Ok(()) => break,
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => break,
-                Err(err) if tries < DELETE_TRIES => {
-                    tracing::debug!(file = %path.display(), "a proxy is still in use: {err}");
-                    tries += 1;
-                    std::thread::sleep(DELETE_RETRY);
+        let removed = remove_waiting(&path).map_err(|err| {
+            AppError::new("The proxy can't be deleted")
+                .why(format!("Removing {} failed: {err}.", path.display()))
+                .fix("It is not used any more. Close other programs that may have it open, then try again.")
+        });
+        self.retiring().remove(&path);
+        removed?;
+        // Deleted on purpose: not built again by itself, only by hand.
+        if let Err(err) = self.mark_cleared(proxy_name(&path).into_iter()) {
+            tracing::warn!("a deleted proxy could not be noted: {}", err.report());
+        }
+        Ok(true)
+    }
+
+    /// What the proxies take on disk: those at `only` (a project's, from
+    /// [`Shelf::file_for`]), or all of them. Reads the folder: run it on a
+    /// worker.
+    pub fn usage(&self, only: Option<&[PathBuf]>) -> Usage {
+        self.listed()
+            .into_iter()
+            .filter(|(path, _, _)| only.is_none_or(|only| only.contains(path)))
+            .fold(Usage::default(), |sum, (_, bytes, _)| Usage {
+                bytes: sum.bytes + bytes,
+                files: sum.files + 1,
+            })
+    }
+
+    /// Deletes the proxies at `only` (a project's), or every proxy and the
+    /// files of builds a program left behind. Only proxy files in the
+    /// cache folder are ever removed. Each is no longer offered at once,
+    /// and may take a moment to go while a preview worker lets go of it:
+    /// run this on a worker. Each one removed is marked as cleared on
+    /// purpose ([`Shelf::is_cleared`]), so it is not built again by itself,
+    /// until a build asked for by hand. Returns what was removed, and why
+    /// some proxy could not be.
+    pub fn clear(&self, only: Option<&[PathBuf]>) -> Cleared {
+        if only.is_none() {
+            self.remove_left_behind();
+        }
+        let going: Vec<(PathBuf, u64)> = self
+            .listed()
+            .into_iter()
+            .filter(|(path, _, _)| only.is_none_or(|only| only.contains(path)))
+            .map(|(path, bytes, _)| (path, bytes))
+            .collect();
+        let mut cleared = Cleared::default();
+        if going.is_empty() {
+            return cleared;
+        }
+        self.retiring().extend(going.iter().map(|(path, _)| path.clone()));
+        self.changed();
+        let mut failed = None;
+        for (path, bytes) in &going {
+            match remove_waiting(path) {
+                Ok(()) => {
+                    cleared.usage.bytes += bytes;
+                    cleared.usage.files += 1;
+                    cleared.paths.push(path.clone());
                 }
                 Err(err) => {
-                    return Err(AppError::new("The proxy can't be deleted")
-                        .why(format!("Removing {} failed: {err}.", path.display()))
-                        .fix("It is not used any more. Close other programs that may have it open, then try again."));
+                    tracing::warn!(file = %path.display(), "a proxy could not be cleared: {err}");
+                    failed.get_or_insert((path.clone(), err));
                 }
             }
+            self.retiring().remove(path);
         }
-        self.retiring().remove(&path);
-        Ok(true)
+        let names = cleared.paths.iter().filter_map(|p| proxy_name(p));
+        if let Err(err) = self.mark_cleared(names) {
+            tracing::warn!("cleared proxies could not be noted: {}", err.report());
+        }
+        cleared.problem = failed.map(|(path, err)| {
+            AppError::new("Some of the cache could not be cleared")
+                .why(format!(
+                    "{} of {} proxies were removed; removing {} failed: {err}.",
+                    cleared.usage.files,
+                    going.len(),
+                    path.display()
+                ))
+                .fix("Close other programs that may have it open, then clear again.")
+        });
+        cleared
+    }
+
+    /// Whether this recording's proxy was cleared on purpose: then it is
+    /// not built again by itself (only when asked for by hand, which takes
+    /// the mark off). Reads a small file: run it on a worker.
+    pub fn is_cleared(&self, fingerprint: &Fingerprint, stream: u32) -> bool {
+        let _held = self.marks();
+        let name = self.name_for(fingerprint, stream);
+        self.cleared_names().contains(&name)
+    }
+
+    /// Takes the "cleared on purpose" mark off a recording's proxy.
+    pub fn unmark_cleared(&self, fingerprint: &Fingerprint, stream: u32) -> diag::Result<()> {
+        let _held = self.marks();
+        let mut names = self.cleared_names();
+        if names.remove(&self.name_for(fingerprint, stream)) {
+            self.write_cleared(&names)?;
+        }
+        Ok(())
+    }
+
+    fn mark_cleared(&self, new: impl Iterator<Item = String>) -> diag::Result<()> {
+        let _held = self.marks();
+        let mut names = self.cleared_names();
+        let before = names.len();
+        names.extend(new);
+        if names.len() != before {
+            self.write_cleared(&names)?;
+        }
+        Ok(())
+    }
+
+    fn marks(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.marks.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// The name a proxy's file has without its extension.
+    fn name_for(&self, fingerprint: &Fingerprint, stream: u32) -> String {
+        proxy_name(&self.file_for(fingerprint, stream)).unwrap_or_default()
+    }
+
+    /// The proxies cleared on purpose, as the list in the folder says
+    /// (none when there is no list).
+    fn cleared_names(&self) -> HashSet<String> {
+        std::fs::read_to_string(self.folder.join(CLEARED_LIST))
+            .map(|text| {
+                text.lines()
+                    .map(str::trim)
+                    .filter(|line| !line.is_empty())
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Writes the list whole: a file of its own first, then put in place.
+    fn write_cleared(&self, names: &HashSet<String>) -> diag::Result<()> {
+        let mut lines: Vec<&str> = names.iter().map(String::as_str).collect();
+        lines.sort_unstable();
+        let path = self.folder.join(CLEARED_LIST);
+        let writing = path.with_extension(format!("{}.writing", std::process::id()));
+        let cant = || {
+            AppError::new("The list of cleared proxies can't be saved")
+                .why(format!("Writing {} failed.", path.display()))
+                .fix("Check that the disk is not full and that you can write there.")
+        };
+        std::fs::create_dir_all(&self.folder).or_explain(cant)?;
+        std::fs::write(&writing, lines.join("\n")).or_explain(cant)?;
+        std::fs::rename(&writing, &path).or_explain(|| {
+            let _ = std::fs::remove_file(&writing);
+            cant()
+        })
     }
 
     /// The proxies there are, with their size and last use, oldest first.
@@ -328,6 +492,31 @@ impl Shelf {
             if stale && path.extension().is_some_and(|e| e == BUILDING) {
                 let _ = std::fs::remove_file(&path);
             }
+        }
+    }
+}
+
+/// A proxy's name without its extension: what the list of cleared ones
+/// keeps.
+fn proxy_name(path: &Path) -> Option<String> {
+    path.file_stem().map(|stem| stem.to_string_lossy().into_owned())
+}
+
+/// Removes the file at `path`, waiting a while for whoever still has it
+/// open to let go (an open file can't be removed on every system). A file
+/// that is gone already counts as removed.
+fn remove_waiting(path: &Path) -> std::io::Result<()> {
+    let mut tries = 0;
+    loop {
+        match std::fs::remove_file(path) {
+            Ok(()) => return Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(err) if tries < DELETE_TRIES => {
+                tracing::debug!(file = %path.display(), "a proxy is still in use: {err}");
+                tries += 1;
+                std::thread::sleep(DELETE_RETRY);
+            }
+            Err(err) => return Err(err),
         }
     }
 }
@@ -456,5 +645,98 @@ mod tests {
         let judged = judge(&fixture("game-3-audio.mkv"), 0, 3.0, Decoding::Software).unwrap();
         assert!(judged.longest_gap > 0.0);
         assert!(!judged.needs_proxy, "{judged:?}");
+    }
+
+    #[test]
+    fn a_projects_proxies_or_all_are_measured_and_cleared_and_nothing_else() {
+        let dir = tempfile::tempdir().unwrap();
+        let shelf = Shelf::new(dir.path(), ProxyMode::Auto);
+        let print = |n: u64| Fingerprint {
+            size: n,
+            sample_hash: format!("{n:x}"),
+        };
+        let ours = shelf.file_for(&print(1), 0);
+        let theirs = shelf.file_for(&print(2), 0);
+        std::fs::write(&ours, vec![0u8; 1000]).unwrap();
+        std::fs::write(&theirs, vec![0u8; 4000]).unwrap();
+        // Not proxies: never measured, never removed.
+        let other = dir.path().join("notes.txt");
+        std::fs::write(&other, "keep").unwrap();
+        let building = dir.path().join("3-c-0.mp4.77.building");
+        std::fs::write(&building, "half").unwrap();
+        let project = [ours.clone()];
+        assert_eq!(
+            shelf.usage(Some(&project)),
+            Usage {
+                bytes: 1000,
+                files: 1
+            }
+        );
+        assert_eq!(
+            shelf.usage(None),
+            Usage {
+                bytes: 5000,
+                files: 2
+            }
+        );
+        let generation = shelf.generation();
+        assert_eq!(
+            shelf.clear(Some(&project)).usage,
+            Usage {
+                bytes: 1000,
+                files: 1
+            }
+        );
+        assert!(shelf.generation() > generation, "workers look again");
+        assert!(!ours.exists() && theirs.exists());
+        assert_eq!(shelf.ready(&print(1), 0), None);
+        assert_eq!(
+            shelf.clear(Some(&project)).usage,
+            Usage::default(),
+            "nothing left of ours"
+        );
+        assert_eq!(
+            shelf.clear(None).usage,
+            Usage {
+                bytes: 4000,
+                files: 1
+            }
+        );
+        assert!(!theirs.exists());
+        assert!(other.exists(), "only proxies go");
+        assert!(building.exists(), "a build under way is left alone");
+        assert_eq!(shelf.usage(None), Usage::default());
+    }
+
+    #[test]
+    fn a_cleared_proxy_stays_marked_until_built_on_purpose() {
+        let dir = tempfile::tempdir().unwrap();
+        let print = |n: u64| Fingerprint {
+            size: n,
+            sample_hash: format!("{n:x}"),
+        };
+        let shelf = Shelf::new(dir.path(), ProxyMode::On);
+        assert!(!shelf.is_cleared(&print(1), 0), "nothing cleared yet");
+        std::fs::write(shelf.file_for(&print(1), 0), b"proxy").unwrap();
+        std::fs::write(shelf.file_for(&print(2), 0), b"proxy").unwrap();
+        shelf.clear(Some(&[shelf.file_for(&print(1), 0)]));
+        assert!(shelf.is_cleared(&print(1), 0));
+        assert!(!shelf.is_cleared(&print(2), 0), "only what was cleared");
+        assert!(!shelf.is_cleared(&print(1), 1), "per picture stream");
+        // Kept for good: a shelf opened later (the next start) knows it.
+        let later = Shelf::new(dir.path(), ProxyMode::Auto);
+        assert!(later.is_cleared(&print(1), 0));
+        // Clearing everything marks every proxy it removed.
+        later.clear(None);
+        assert!(later.is_cleared(&print(2), 0));
+        assert_eq!(later.usage(None), Usage::default(), "the list is not a proxy");
+        // Built on purpose ("Build proxy now"): the mark comes off.
+        later.unmark_cleared(&print(1), 0).unwrap();
+        assert!(!later.is_cleared(&print(1), 0));
+        assert!(later.is_cleared(&print(2), 0));
+        // "Delete proxy" is on purpose too: the same mark.
+        std::fs::write(later.file_for(&print(1), 0), b"proxy").unwrap();
+        assert!(later.delete(&print(1), 0).unwrap());
+        assert!(later.is_cleared(&print(1), 0));
     }
 }

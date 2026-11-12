@@ -6,6 +6,7 @@
 // Release builds on Windows open no console window next to the editor.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod cache_cleanup;
 mod cheat_sheet;
 mod clip_pictures;
 mod device_decoding;

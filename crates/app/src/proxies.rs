@@ -10,8 +10,8 @@
 //! Builds are background work on the analysis pool: they wait while the
 //! timeline plays, also in the middle of a file. "Build proxy now" puts a
 //! file first in line (an automatic build under way gives way to it);
-//! "Delete proxy" removes it, and it is not built again by itself this
-//! session. After every build the proxies used longest ago, other than the
+//! "Delete proxy" removes it, and like a proxy cleared in Settings › Cache
+//! it is never built again by itself (the shelf remembers it), only by hand. After every build the proxies used longest ago, other than the
 //! open project's, are dropped to stay inside the disk budget.
 
 use crate::reading::{self, Pace};
@@ -43,6 +43,8 @@ pub enum Status {
     Ready,
     /// Being deleted.
     Deleting,
+    /// Cleared from the cache on purpose: not built again by itself.
+    Cleared,
     /// It could not be built: why.
     Failed(String),
 }
@@ -60,8 +62,11 @@ enum State {
     Building(Option<Judgement>),
     Ready,
     Deleting(JobHandle<bool>),
-    /// Deleted by hand: not built again by itself this session.
-    Declined,
+    /// Cleared from the cache or deleted on purpose (Settings › Cache,
+    /// "Delete proxy"): not built
+    /// again by itself, in this session or any later one, until asked for
+    /// by hand (`cache::proxy::Shelf::is_cleared`).
+    Cleared,
     Failed(String),
 }
 
@@ -69,6 +74,8 @@ enum State {
 #[derive(Debug, Clone, Copy)]
 struct Look {
     ready: bool,
+    /// Its proxy was cleared on purpose.
+    cleared: bool,
     judgement: Option<Judgement>,
 }
 
@@ -144,13 +151,14 @@ impl ProxyBuilds {
             State::Judged(judged) if judged.needs_proxy || self.shelf.mode() == ProxyMode::On => {
                 Status::Needed
             }
-            State::Judged(_) | State::Declined => Status::NotNeeded,
+            State::Judged(_) => Status::NotNeeded,
             State::Building(_) => match &self.build {
                 Some(build) if build.media == media => Status::Building(build.state),
                 _ => Status::Needed,
             },
             State::Ready => Status::Ready,
             State::Deleting(_) => Status::Deleting,
+            State::Cleared => Status::Cleared,
             State::Failed(why) => Status::Failed(why.clone()),
         }
     }
@@ -158,7 +166,7 @@ impl ProxyBuilds {
     /// Builds `media`'s proxy next, whatever the mode and the judgement.
     pub fn build_now(&mut self, media: MediaId) {
         if let Some(file) = self.files.get_mut(&media)
-            && matches!(file.state, State::Declined | State::Failed(_))
+            && matches!(file.state, State::Cleared | State::Failed(_))
         {
             file.state = State::Unjudged;
         }
@@ -307,7 +315,8 @@ impl ProxyBuilds {
             "proxy needed?",
             move |_| {
                 let ready = shelf.ready(&fingerprint, stream).is_some();
-                let judgement = if judge && !ready {
+                let cleared = !ready && shelf.is_cleared(&fingerprint, stream);
+                let judgement = if judge && !ready && !cleared {
                     Some(cache::proxy::judge(&path, stream, length, media::Decoding::Best)?)
                 } else {
                     None
@@ -322,7 +331,11 @@ impl ProxyBuilds {
                     );
                 }
                 ctx.request_repaint();
-                Ok(Look { ready, judgement })
+                Ok(Look {
+                    ready,
+                    cleared,
+                    judgement,
+                })
             },
         )
     }
@@ -334,10 +347,12 @@ impl ProxyBuilds {
             match &file.state {
                 State::Looking(handle) => match handle.try_result() {
                     Some(Ok(look)) => {
-                        file.state = match (look.ready, look.judgement) {
-                            (true, _) => State::Ready,
-                            (false, Some(judged)) => State::Judged(judged),
-                            (false, None) => State::Unjudged,
+                        file.state = if look.ready {
+                            State::Ready
+                        } else if look.cleared {
+                            State::Cleared
+                        } else {
+                            look.judgement.map_or(State::Unjudged, State::Judged)
                         };
                     }
                     Some(Err(err)) => {
@@ -347,9 +362,9 @@ impl ProxyBuilds {
                     None => {}
                 },
                 State::Deleting(handle) => match handle.try_result() {
-                    Some(Ok(_)) => file.state = State::Declined,
+                    Some(Ok(_)) => file.state = State::Cleared,
                     Some(Err(err)) => {
-                        file.state = State::Declined;
+                        file.state = State::Cleared;
                         problem = Some(err);
                     }
                     None => {}
@@ -398,17 +413,39 @@ impl ProxyBuilds {
         }
     }
 
+    /// Where the proxies of `project`'s video files are (or would be).
+    pub fn project_proxies(&self, project: &Project) -> Vec<PathBuf> {
+        crate::cache_cleanup::proxies_of(&self.shelf, project)
+    }
+
+    /// The cache is about to be cleared (Settings › Cache): the build
+    /// under way stops, and so do builds asked for by hand.
+    pub fn clearing(&mut self) {
+        if let Some(build) = &self.build {
+            build.handle.cancel();
+        }
+        self.asked.clear();
+    }
+
+    /// The proxies at `paths` were cleared: their files say so, and are
+    /// not built again by themselves (the shelf remembers it for later
+    /// sessions) until "Build proxy now".
+    pub fn cleared(&mut self, paths: &[PathBuf]) {
+        for file in self.files.values_mut() {
+            let proxy = self.shelf.file_for(&file.fingerprint, file.stream);
+            if paths.contains(&proxy) && !matches!(file.state, State::Looking(_) | State::Deleting(_)) {
+                file.state = State::Cleared;
+            }
+        }
+    }
+
     /// Drops the proxies used longest ago, other than the project's, to
     /// stay inside the budget.
     fn start_trim(&mut self, jobs: &JobSystem, project: &Project) {
         if self.trim.is_some() {
             return;
         }
-        let keep: Vec<PathBuf> = project
-            .media
-            .values()
-            .filter_map(|m| video_stream(m).map(|stream| self.shelf.file_for(&m.fingerprint, stream)))
-            .collect();
+        let keep = self.project_proxies(project);
         let (shelf, budget) = (Arc::clone(&self.shelf), self.budget);
         self.trim = Some(jobs.submit(
             PoolKind::Analysis,
@@ -489,7 +526,7 @@ impl ProxyBuilds {
 /// Whether a build that ended was stopped on purpose (the file's state
 /// moved on meanwhile).
 fn build_was_stopped(state: &State) -> bool {
-    matches!(state, State::Deleting(_) | State::Declined)
+    matches!(state, State::Deleting(_) | State::Cleared)
 }
 
 /// Whether a file in `state` is built next: by hand (`asked`) whatever
@@ -504,7 +541,7 @@ fn buildable(state: &State, asked: bool, mode: ProxyMode) -> bool {
 }
 
 /// The picture stream a proxy would be made of: video files only.
-fn video_stream(media: &MediaRef) -> Option<u32> {
+pub(crate) fn video_stream(media: &MediaRef) -> Option<u32> {
     (media.kind == MediaKind::Video)
         .then_some(media.info.video.as_ref())
         .flatten()
@@ -528,6 +565,7 @@ pub fn label(status: &Status) -> Option<String> {
         Status::Building(LoadState::Failed) | Status::Failed(_) => Some("Proxy failed".into()),
         Status::Ready => Some("Proxy".into()),
         Status::Deleting => Some("Deleting proxy".into()),
+        Status::Cleared => Some("Proxy cleared · build from menu".into()),
     }
 }
 
@@ -548,6 +586,9 @@ pub fn explanation(status: &Status, mode: ProxyMode) -> Option<String> {
             "Jumps show the proxy's frame at once, sharpening when the playhead rests. Export always uses the original.".into()
         }
         Status::Deleting => "The proxy is being deleted.".into(),
+        Status::Cleared => {
+            "Its proxy was cleared from the cache, so none is built by itself any more. Right-click and \"Build proxy now\" to make one again.".into()
+        }
         Status::Failed(why) => format!("The proxy could not be built: {why}"),
     };
     Some(text)
@@ -581,8 +622,43 @@ mod tests {
         );
         assert!(!buildable(&State::Ready, true, On));
         assert!(
-            !buildable(&State::Declined, false, On),
-            "deleted by hand: not again by itself"
+            !buildable(&State::Cleared, false, On) && !buildable(&State::Cleared, false, Auto),
+            "cleared on purpose: never again by itself"
+        );
+    }
+
+    #[test]
+    fn a_cleared_proxy_is_built_again_only_when_asked_for() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut builds = ProxyBuilds::new(dir.path().to_path_buf(), ProxyMode::On, 1, None);
+        let file = |size: u64| File {
+            path: PathBuf::from(format!("{size}.mp4")),
+            fingerprint: Fingerprint {
+                size,
+                sample_hash: format!("{size:x}"),
+            },
+            stream: 0,
+            length: 10.0,
+            state: State::Ready,
+        };
+        let (ours, other) = (MediaId(1), MediaId(2));
+        builds.files.insert(ours, file(1));
+        builds.files.insert(other, file(2));
+        let cleared = builds.shelf.file_for(
+            &Fingerprint {
+                size: 1,
+                sample_hash: "1".into(),
+            },
+            0,
+        );
+        builds.cleared(&[cleared]);
+        assert_eq!(builds.status(ours), Status::Cleared);
+        assert_eq!(builds.status(other), Status::Ready, "only what was cleared");
+        assert!(!buildable(&builds.files[&ours].state, false, ProxyMode::On));
+        builds.build_now(ours);
+        assert!(
+            buildable(&builds.files[&ours].state, true, ProxyMode::Off),
+            "by hand it is"
         );
     }
 
@@ -596,6 +672,11 @@ mod tests {
         });
         assert_eq!(label(&building).as_deref(), Some("Proxy 43 %"));
         assert_eq!(label(&Status::NotNeeded), None);
+        assert_eq!(
+            label(&Status::Cleared).as_deref(),
+            Some("Proxy cleared · build from menu")
+        );
+        assert!(explanation(&Status::Cleared, ProxyMode::On).is_some_and(|t| t.contains("Build proxy now")));
         assert!(explanation(&Status::Needed, ProxyMode::Off).is_some_and(|t| t.contains("Off")));
     }
 

@@ -24,6 +24,7 @@ jobs = { path = "../jobs" }
 media = { path = "../media" }
 os = { path = "../os" }
 project = { path = "../project" }
+project-index = { path = "../project-index" }
 rfd = "0.18"
 ron = "0.12"
 serde = { version = "1", features = ["derive"] }

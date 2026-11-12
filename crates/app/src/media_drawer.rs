@@ -229,11 +229,11 @@ fn proxy_menu(ui: &mut egui::Ui, media: MediaId, proxy: &Status, missing: bool) 
         Status::Ready => {
             ui.separator();
             ui.button("Delete proxy")
-                .on_hover_text("It is not built again by itself this session; build it again from here.")
+                .on_hover_text("It is not built again by itself; build it again from here.")
                 .clicked()
                 .then_some(Picked::DeleteProxy(media))
         }
-        Status::NotNeeded | Status::Needed | Status::Failed(_) if !missing => {
+        Status::NotNeeded | Status::Needed | Status::Cleared | Status::Failed(_) if !missing => {
             ui.separator();
             ui.button("Build proxy now")
                 .on_hover_text(
