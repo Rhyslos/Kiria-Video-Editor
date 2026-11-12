@@ -433,6 +433,19 @@ impl Editor {
                 };
                 Ok(())
             }
+            Action::PictureHandles => {
+                self.settings.picture_handles = !self.settings.picture_handles;
+                self.status = if self.settings.picture_handles {
+                    "Handles on the picture: drag the selected clip to move it, a corner to resize it"
+                } else {
+                    "Handles on the picture off"
+                }
+                .into();
+                if let Err(err) = self.settings.save(&self.data_dir) {
+                    self.errors.push(&err);
+                }
+                Ok(())
+            }
             Action::ToggleSnapping => {
                 self.timeline.snapping = !self.timeline.snapping;
                 self.status = if self.timeline.snapping {
@@ -1487,6 +1500,14 @@ impl Editor {
         if !crate::inspector::shows_a_clip(self.document.as_ref().map(|d| d.project()), &self.selected) {
             self.timeline_details(ui);
         }
+        self.inspector.on_picture = self.settings.picture_handles;
+        self.inspector.on_picture_tip = format!(
+            "Show the clip's outline in the viewer, to move it and drag its corners to resize it.{}",
+            match self.shortcuts.keys_for(Action::PictureHandles) {
+                keys if keys.is_empty() => String::new(),
+                keys => format!(" ({keys})"),
+            }
+        );
         let Some(document) = &self.document else { return };
         let commands = egui::ScrollArea::vertical()
             .auto_shrink([false, false])
@@ -1495,6 +1516,9 @@ impl Editor {
                     .ui(ui, &self.theme, document.project(), &self.selected)
             })
             .inner;
+        if self.inspector.on_picture != self.settings.picture_handles {
+            self.run_action(Action::PictureHandles);
+        }
         for command in commands {
             let speed = matches!(command, Command::SetSpeed { .. });
             if let Err(err) = self.with_document(|d| d.apply(command)) {
@@ -1781,6 +1805,7 @@ impl Editor {
             let being_changed = self.inspector.shown(p);
             let playhead = self.viewer.playhead;
             let snapping = self.timeline.snapping;
+            let on_picture = self.settings.picture_handles;
             let (handles, inspector) = (&mut self.picture_handles, &mut self.inspector);
             let (theme, selected) = (&self.theme, &self.selected);
             let mut left = ui.new_child(
@@ -1797,10 +1822,13 @@ impl Editor {
                 viewer_height,
                 &self.shortcuts,
                 // The selected clip's picture can be taken hold of.
+                // Only when handles on the picture are switched on.
                 |ui, frame, response| {
-                    picture_change = handles.ui(
-                        ui, theme, frame, response, p, selected, playhead, inspector, snapping,
-                    );
+                    if on_picture {
+                        picture_change = handles.ui(
+                            ui, theme, frame, response, p, selected, playhead, inspector, snapping,
+                        );
+                    }
                 },
             );
             // The viewer and the inspector take their height of the page;

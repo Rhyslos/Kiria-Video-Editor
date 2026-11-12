@@ -27,6 +27,12 @@ pub struct Inspector {
     /// A hand outside the panel (on the picture in the viewer) is still on
     /// the look being set: the panel leaves finishing it to that hand.
     held: bool,
+    /// Whether the selected clip can be moved and resized on the picture in
+    /// the viewer (its outline and handles are shown). Off unless asked for,
+    /// so selecting a clip doesn't put a frame around it.
+    pub on_picture: bool,
+    /// The tooltip of the switch for that: what it does, and its keys.
+    pub on_picture_tip: String,
 }
 
 /// The clip the inspector is about, for what changes its look from outside
@@ -254,6 +260,8 @@ impl Inspector {
                         (values.x, values.y, values.scale) = (0.0, 0.0, fill_percent(picture, frame));
                         touched.changed = true;
                     }
+                    ui.toggle_value(&mut self.on_picture, "On the picture")
+                        .on_hover_text(&self.on_picture_tip);
                 });
                 // One click for the usual places: a small picture in a
                 // corner (a facecam over a recording), or one half of the
@@ -1044,7 +1052,7 @@ pub(crate) mod tests {
         };
         let mut inspector = Inspector {
             pending: Some((clip, look)),
-            held: false,
+            ..Inspector::default()
         };
         // Nothing selected any more: the change is finished, not lost.
         let commands = frame(&mut inspector, &project, &[]);

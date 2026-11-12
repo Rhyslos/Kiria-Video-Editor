@@ -25,6 +25,9 @@ pub struct Settings {
     pub shortcuts: ui_kit::shortcuts::SavedBindings,
     /// The keyboard the shortcuts page draws.
     pub keyboard_layout: ui_kit::keyboard::LayoutId,
+    /// The selected clip's outline and handles on the picture in the viewer.
+    /// Off unless switched on (Q, or "On the picture" in the inspector).
+    pub picture_handles: bool,
 }
 
 impl Settings {
@@ -66,6 +69,14 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn handles_on_the_picture_are_off_unless_switched_on() {
+        assert!(!Settings::default().picture_handles);
+        // Settings written before the switch existed read it as off.
+        let old: Settings = ron::from_str("(edit_at_playhead: true)").unwrap();
+        assert!(!old.picture_handles);
+    }
 
     #[test]
     fn settings_round_trip_and_damage_falls_back_to_defaults() {
