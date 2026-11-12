@@ -357,7 +357,7 @@ Phase 4 is the heart of the app and the longest phase, so it runs as three parts
 
 ## Phase 5 · Library
 
-Phase 5 turns the simple media list from phase 4 into the full Library page and gives long recordings a head start with the highlight finder; the same index also powers the Edit page's media drawer.
+Phase 5 turns the simple media list from phase 4 into the full Library page; the same index also powers the Edit page's media drawer.
 
 **5.1 Index and search (`library`)**
 
@@ -381,17 +381,10 @@ Phase 5 turns the simple media list from phase 4 into the full Library page and 
 - [ ] Relink: by fingerprint, automatically when files moved inside a known folder.
 - [ ] Package project: copy the project plus only the media it uses into one folder (with progress and size shown first) that opens on the other person's machine.
 
-**5.4 Highlight finder** (research workflow; note and spike in `docs/research/highlights.md`, measured on synthetic clips, waiting for the owner's recordings with picked moments before the choice)
-
-- [ ] Background analysis on import of long recordings: mic loudness bursts, game-audio spikes, scene changes, sudden motion.
-- [ ] Results become suggested timeline labels on the clip, shown faded until accepted; accept or dismiss one by one or all at once.
-- [ ] Sensitivity setting; tested on at least five recordings from different games, with false positives counted.
-
 **Gate 5**
 
 - [ ] 500 mixed files import with live progress while the UI stays smooth; filters and search answer in under 100 ms.
 - [ ] A packaged project opens on the other machine with nothing missing.
-- [ ] The highlight finder marks at least the moments both of you would pick in a 30-minute test recording.
 
 ## Phase 6 · Export
 
@@ -546,6 +539,16 @@ Phase 10 adds no big features: it polishes, settles the two open decisions, and 
 - [ ] Code-signing certificate in place for Windows; AppImage tested on two Linux distributions.
 - [ ] Changelog from 0.1 to 1.0; tag `v1.0.0` on the Stable channel.
 - [ ] Manual smoke test on both machines: install, launcher, import, cut, grade, key, mix, export, update to a 1.0.1 test build.
+
+## Phase 10b · Highlight finder (last, may be dropped)
+
+Moved here by the owner (November 2026): it may turn out not to be needed, so it comes after everything else and may be left out. The research is done: `docs/research/highlights.md` and `spikes/highlights/` (loudness on every audio stream plus cuts from key frames found 92 % of planted moments with no false positives on synthetic clips; the owner's recordings with picked moments settle the choice).
+
+- [ ] Runs only when asked (right-click a file: Find highlights), in the background, paused while playing: mic reactions, game-audio events, voice-chat reactions, scene changes and sudden camera moves.
+- [ ] Results become suggested timeline labels on the clip, shown faded until accepted; accept or dismiss one by one or all at once.
+- [ ] Sensitivity setting; tested on at least five recordings from different games, with false positives counted.
+- [ ] Later, if wanted: a small learned sound classifier (an AI model run on the PC, a few MB shipped with the app) as a second stage; the owner decides when this phase is reached.
+- [ ] Gate: it marks at least the moments both of you would pick in a 30-minute test recording.
 
 ## After 1.0
 

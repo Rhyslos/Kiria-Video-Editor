@@ -272,7 +272,7 @@ Agreed additions beyond the core pages. Each one is built in the phase of the pa
 
 **For game recordings**
 
-- **Highlight finder:** scans long recordings for loud or busy moments (mic shouts, game-audio spikes, scene changes) and suggests timeline labels there. Works for any game because it only listens and looks.
+- **Highlight finder:** scans long recordings for loud or busy moments (mic shouts, game-audio spikes, scene changes) and suggests timeline labels there. Works for any game because it only listens and looks. It runs only when asked (right-click a file: Find highlights), and it is built last, after the release work, since it may turn out not to be needed.
 - **Remove silence:** finds dead air on the mic track and cuts or shortens it, showing what it will remove first.
 - **Facecam layouts:** one-click picture-in-picture, and a vertical layout with the facecam stacked above the game.
 - **Slow motion and speed ramps:** clean slow motion from 120 and 144 fps sources, with smooth ramps in and out: speed keyframes on a clip (the same diamonds as every other value), one-click ramps from the playhead, the speed that shows every recorded frame once offered for high-frame-rate recordings, and frame blending (the two recorded frames around each moment mixed) for footage slowed further than it has frames. The sound follows the speed tape-style; keeping its pitch comes later.
