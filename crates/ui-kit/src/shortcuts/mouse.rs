@@ -47,6 +47,16 @@ pub const MOUSE: &[MouseAction] = &[
     ),
     on(
         Context::Viewer,
+        "Drag the bar on a side of the selected clip's picture",
+        "Crop that side, or give some back; the whole picture shows faintly while dragging, and the side snaps to the frame's edges and centre (handles on)",
+    ),
+    on(
+        Context::Viewer,
+        "Drag the round handle above the selected clip's picture",
+        "Turn it about its middle; it lands on upright and quarter turns when near, Shift turns in steps of 15° (handles on)",
+    ),
+    on(
+        Context::Viewer,
         "Double-click the selected clip's picture",
         "Fit it: as large as fits the frame, centred (handles on)",
     ),

@@ -1,11 +1,14 @@
 //! Handles on the selected clip's picture in the Edit page's viewer: drag
-//! the picture to move it, a corner to resize it, double-click it to fit it.
+//! the picture to move it, a corner to resize it, a side to crop it, the
+//! turn handle to turn it, double-click it to fit it.
 //!
 //! The outline, the hit-testing, the snapping and the drag itself are
 //! `ui_kit::picture_handles`, shared by every page with a viewer. This is
 //! the Edit page's part: which clip it is (the one the inspector is about,
 //! while the playhead is on it), what a drag means for its look ([`moved`],
-//! [`resized`]), and handing the change to the inspector's look in waiting,
+//! [`resized`], [`turned`], [`cropped`]), what the viewer shows while a
+//! side is dragged ([`uncropped`]: the whole picture, the handles veiling
+//! what is cut off), and handing the change to the inspector's look in waiting,
 //! so the panel's numbers follow the hand and letting go is one undo step.
 //! A picture whose place or size changes over time is held as it is at the
 //! playhead, and what the hand does there becomes keyframes at the playhead
@@ -13,9 +16,9 @@
 
 use crate::inspector::{Inspector, Subject};
 use project::look::ONE;
-use project::{ClipId, Command, Look, Project, Time};
+use project::{ClipId, Command, Look, LookField, Project, Time};
 use ui_kit::Theme;
-use ui_kit::picture_handles::{Change, FrameMap, Handles};
+use ui_kit::picture_handles::{Area, Change, FrameMap, Handles, Part, Picture, Side};
 
 #[derive(Debug, Default)]
 pub struct PictureHandles {
@@ -60,10 +63,10 @@ impl PictureHandles {
             on_screen,
             frame: subject.frame,
         };
-        let area = |look: &Look| engine::frame::shown_area(look, subject.picture, subject.frame);
+        let picture = |look: &Look| picture(look, subject.picture, subject.frame);
         let handled = self
             .handles
-            .interact(ui, response, map, area(&subject.look), snapping);
+            .interact(ui, response, map, picture(&subject.look), snapping);
         let mut look = subject.look;
         let mut finished = None;
         match handled.change {
@@ -87,8 +90,16 @@ impl PictureHandles {
             // The panel was drawn before this: its numbers follow in the next frame.
             ui.ctx().request_repaint();
         }
-        self.handles.draw(ui, theme, response.rect, map, area(&look));
+        self.handles.draw(ui, theme, response.rect, map, picture(&look));
         finished
+    }
+
+    /// The clip whose side is being dragged, if one is: the viewer shows
+    /// its whole picture meanwhile ([`uncropped`]).
+    pub fn cropping(&self) -> Option<ClipId> {
+        self.from
+            .filter(|_| self.handles.cropping())
+            .map(|(clip, _)| clip)
     }
 
     /// Ends a drag whose picture is no longer there to hold.
@@ -98,11 +109,46 @@ impl PictureHandles {
     }
 }
 
+/// A clip's picture as the handles take it: where the whole of it is, the
+/// part of it that is seen and its turn, for a picture of `picture` pixels
+/// in a frame of `frame`.
+fn picture(look: &Look, picture: (u32, u32), frame: (u32, u32)) -> Picture {
+    let placement = engine::frame::placement(look, picture, frame);
+    Picture {
+        whole: Area::of_part(placement, Part::WHOLE),
+        part: engine::frame::shown_part(look),
+        degrees: f64::from(look.turn) / ONE_F,
+    }
+}
+
+/// `project` with `clip` shown whole, as if nothing were cut off it: what
+/// the viewer shows while one of its sides is dragged, so the part being
+/// cut off or given back can be seen (the handles veil it). Only for
+/// showing; `None` when the clip isn't there.
+pub fn uncropped(project: &Project, clip: ClipId) -> Option<Project> {
+    Command::ResetLook {
+        sequence: project.active_sequence,
+        clip,
+        fields: CROP.to_vec(),
+    }
+    .apply(project)
+    .ok()
+}
+
+const CROP: [LookField; 4] = [
+    LookField::CropLeft,
+    LookField::CropTop,
+    LookField::CropRight,
+    LookField::CropBottom,
+];
+
 /// `from` after `change`, a drag counted from where it began.
 fn changed(from: &Look, change: Change, subject: &Subject) -> Look {
     match change {
         Change::Move { by } => moved(from, by, subject.frame),
         Change::Resize { factor, anchor } => resized(from, factor, anchor, subject.frame),
+        Change::Turn { degrees, about } => turned(from, degrees, about, subject.frame),
+        Change::Crop { side, cut } => cropped(from, side, cut),
         Change::Fit => crate::inspector::fitted(from),
     }
 }
@@ -157,12 +203,56 @@ pub fn resized(from: &Look, factor: f32, anchor: (f32, f32), frame: (u32, u32)) 
     .within_limits()
 }
 
+/// `from` turned to `degrees` (clockwise; past a whole turn is kept as a
+/// look keeps it) about the place `about` (frame pixels), which stays
+/// where it is: a look turns a picture about its own centre, so the centre
+/// goes round `about` by as much as the turn changes. For a picture with
+/// nothing cut off `about` is its centre, and only the turn changes.
+pub fn turned(from: &Look, degrees: f64, about: (f32, f32), frame: (u32, u32)) -> Look {
+    let (fw, fh) = sides(frame);
+    let turn = (degrees * ONE_F)
+        .round()
+        .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32;
+    let by = (f64::from(turn) - f64::from(from.turn)) / ONE_F;
+    let (sin, cos) = by.to_radians().sin_cos();
+    // The centre, from `about`, in frame pixels.
+    let centre = (
+        fw * (0.5 + f64::from(from.x) / ONE_F),
+        fh * (0.5 + f64::from(from.y) / ONE_F),
+    );
+    let (dx, dy) = (centre.0 - f64::from(about.0), centre.1 - f64::from(about.1));
+    let step = (dx * cos - dy * sin - dx, dx * sin + dy * cos - dy);
+    Look {
+        x: from.x.saturating_add(millionths(step.0 / fw)),
+        y: from.y.saturating_add(millionths(step.1 / fh)),
+        turn,
+        ..*from
+    }
+    .within_limits()
+}
+
+/// `from` with `cut` more of `side` cut off (a share of the picture's
+/// width for left and right, of its height for top and bottom; under 0
+/// gives some back): never less than nothing, and never so much that less
+/// than a look's least is left beside what the opposite side cuts.
+pub fn cropped(from: &Look, side: Side, cut: f32) -> Look {
+    let mut look = *from;
+    let (this, opposite) = match side {
+        Side::Left => (&mut look.crop_left, from.crop_right),
+        Side::Top => (&mut look.crop_top, from.crop_bottom),
+        Side::Right => (&mut look.crop_right, from.crop_left),
+        Side::Bottom => (&mut look.crop_bottom, from.crop_top),
+    };
+    let most = (Look::MOST_CROP - opposite).max(0);
+    *this = this.saturating_add(millionths(f64::from(cut))).clamp(0, most);
+    look.within_limits()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::inspector::tests::project_with_a_clip;
     use egui::{Rect, pos2, vec2};
-    use project::LookField;
     use ui_kit::picture_handles::Corner;
 
     const FRAME: (u32, u32) = (1920, 1080);
@@ -638,5 +728,217 @@ mod tests {
         assert!(rig.button(at, false).is_empty());
         assert!(rig.frame(Vec::new()).is_empty());
         assert_eq!(rig.stored(), SMALL);
+    }
+
+    #[test]
+    fn a_turn_is_kept_to_the_millionth_and_a_whole_picture_turns_in_place() {
+        let from = Look {
+            x: 123_456,
+            y: -65_432,
+            scale: 400_000,
+            turn: 10 * ONE,
+            ..Look::PLAIN
+        };
+        let about = ui_kit::picture_handles::centre(&engine::frame::shown_area(&from, PICTURE, FRAME));
+        let to = turned(&from, 90.0, about, FRAME);
+        assert_eq!(to.turn, 90 * ONE);
+        assert_eq!(
+            (to.x, to.y, to.scale),
+            (from.x, from.y, from.scale),
+            "nothing else moves"
+        );
+        assert_eq!(turned(&from, -37.25, about, FRAME).turn, -37_250_000);
+        // Past a whole turn it is kept as a look keeps it.
+        assert_eq!(turned(&from, 400.0, about, FRAME).turn, 40 * ONE);
+        assert_eq!(turned(&from, 10.0, about, FRAME), from, "no turn is no change");
+    }
+
+    #[test]
+    fn a_cut_picture_turns_about_the_middle_of_what_is_seen() {
+        let from = Look {
+            scale: 500_000,
+            x: 100_000,
+            turn: 20 * ONE,
+            crop_left: 400_000,
+            crop_bottom: 200_000,
+            ..Look::PLAIN
+        };
+        let area = |look: &Look| engine::frame::shown_area(look, PICTURE, FRAME);
+        let centre = ui_kit::picture_handles::centre;
+        let about = centre(&area(&from));
+        for degrees in [-45.0, 0.0, 65.0, 180.0, 380.0] {
+            let to = turned(&from, degrees, about, FRAME);
+            assert!(
+                near(centre(&area(&to)), about),
+                "{degrees}: {:?}",
+                centre(&area(&to))
+            );
+            assert_eq!(
+                (to.crop_left, to.crop_bottom, to.scale),
+                (400_000, 200_000, 500_000)
+            );
+        }
+    }
+
+    #[test]
+    fn a_crop_is_kept_within_the_picture() {
+        let from = Look {
+            crop_left: 300_000,
+            crop_top: 50_000,
+            ..Look::PLAIN
+        };
+        assert_eq!(cropped(&from, Side::Left, 0.1).crop_left, 400_000);
+        assert_eq!(cropped(&from, Side::Top, -0.02).crop_top, 30_000);
+        assert_eq!(cropped(&from, Side::Bottom, 0.25).crop_bottom, 250_000);
+        // Never under nothing.
+        assert_eq!(cropped(&from, Side::Left, -1.0).crop_left, 0);
+        // Never past the other side: a hundredth of the picture is left.
+        let to = cropped(&from, Side::Right, 2.0);
+        assert_eq!(to.crop_right, Look::MOST_CROP - 300_000);
+        assert_eq!(to.crop_left, 300_000, "the other side stays");
+        let to = cropped(&from, Side::Left, 2.0);
+        assert_eq!(to.crop_left, Look::MOST_CROP);
+        assert!(to.check().is_ok());
+        // Nothing else changes.
+        assert_eq!(
+            Look {
+                crop_left: from.crop_left,
+                ..cropped(&from, Side::Left, 0.1)
+            },
+            from
+        );
+    }
+
+    /// SMALL's turn handle: 24 points above its top edge's middle, which is
+    /// at (576, 189) pixels.
+    const KNOB: (f32, f32) = (238.4, 83.6 - 24.0);
+
+    #[test]
+    fn a_turn_drag_turns_the_picture_and_is_one_undo_step() {
+        let mut rig = Rig::new();
+        rig.set(SMALL);
+        let knob = pos2(KNOB.0, KNOB.1);
+        rig.move_to(knob);
+        rig.button(knob, true);
+        // Round to straight right of the middle: a quarter turn.
+        rig.move_to(pos2(300.0, 80.0));
+        assert!(rig.move_to(pos2(320.0, 138.6)).is_empty());
+        assert_eq!(rig.shown().turn, 90 * ONE, "near a right angle it lands on it");
+        let steps = rig.button(pos2(320.0, 138.6), false);
+        let turned = Look {
+            turn: 90 * ONE,
+            ..SMALL
+        };
+        assert_eq!(
+            steps,
+            vec![Command::SetLookAt {
+                sequence: rig.project.active_sequence,
+                clip: rig.clip(),
+                at: rig.playhead,
+                look: turned
+            }]
+        );
+        assert_eq!(rig.stored(), turned);
+        assert!(rig.frame(Vec::new()).is_empty());
+    }
+
+    #[test]
+    fn a_side_drag_crops_the_picture_shows_it_whole_meanwhile_and_is_one_step() {
+        let mut rig = Rig::new();
+        rig.set(SMALL);
+        rig.modifiers = egui::Modifiers::ALT;
+        // The left side is at 336 pixels: (142.4, 137.6) on screen. 19.2
+        // points right is 48 pixels, a tenth of the picture's width.
+        let from = pos2(142.4, 137.6);
+        rig.move_to(from);
+        rig.button(from, true);
+        rig.move_to(pos2(150.0, 140.0));
+        assert!(rig.move_to(pos2(161.6, 145.0)).is_empty());
+        assert_eq!(rig.shown().crop_left, 100_000);
+        assert_eq!(
+            rig.handles.cropping(),
+            Some(rig.clip()),
+            "the viewer shows it whole"
+        );
+        let shown = rig.inspector.shown(&rig.project).unwrap();
+        let whole = uncropped(&shown, rig.clip()).unwrap();
+        assert_eq!(whole.active().unwrap().video_tracks[0].clips[0].look, SMALL);
+        let steps = rig.button(pos2(161.6, 145.0), false);
+        assert_eq!(steps.len(), 1);
+        assert_eq!(rig.handles.cropping(), None);
+        let cut = Look {
+            crop_left: 100_000,
+            ..SMALL
+        };
+        assert_eq!(rig.stored(), cut);
+        // The rest of the picture stayed where it was.
+        let area = engine::frame::shown_area(&cut, PICTURE, FRAME);
+        assert!(near(Corner::TopLeft.of(&area), (384.0, 189.0)));
+        assert!(near(Corner::BottomRight.of(&area), (816.0, 459.0)));
+    }
+
+    #[test]
+    fn a_side_of_a_turned_picture_is_cropped_along_the_picture() {
+        let mut rig = Rig::new();
+        // A quarter turn: the picture's top side is on the right as it
+        // stands, at 576 + 135 = 711 pixels: (292.4, 137.6) on screen.
+        let quarter = Look {
+            turn: 90 * ONE,
+            ..SMALL
+        };
+        rig.set(quarter);
+        rig.modifiers = egui::Modifiers::ALT;
+        // 10.8 points left, into the picture: 27 pixels, a tenth of its height.
+        let from = pos2(292.4, 137.6);
+        rig.move_to(from);
+        rig.button(from, true);
+        rig.move_to(pos2(287.0, 137.6));
+        rig.move_to(pos2(281.6, 137.6));
+        let steps = rig.button(pos2(281.6, 137.6), false);
+        assert_eq!(steps.len(), 1);
+        let stored = rig.stored();
+        assert_eq!((stored.crop_top, stored.turn), (100_000, 90 * ONE));
+    }
+
+    #[test]
+    fn a_crop_or_a_turn_on_a_picture_that_changes_over_time_keys_the_playhead() {
+        let mut rig = Rig::new();
+        rig.set(SMALL);
+        let (sequence, clip) = (rig.project.active_sequence, rig.clip());
+        for field in [LookField::CropLeft, LookField::Turn] {
+            rig.project = Command::Keyframe {
+                sequence,
+                clip,
+                at: Time::ZERO,
+                fields: field.group().to_vec(),
+                change: project::animate::KeyframeChange::Add,
+            }
+            .apply(&rig.project)
+            .unwrap();
+        }
+        let from = pos2(142.4, 137.6);
+        rig.move_to(from);
+        rig.button(from, true);
+        rig.move_to(pos2(150.0, 137.6));
+        rig.move_to(pos2(161.6, 137.6));
+        assert_eq!(rig.button(pos2(161.6, 137.6), false).len(), 1);
+        let knob = pos2(KNOB.0 + 9.6, KNOB.1);
+        rig.move_to(knob);
+        rig.button(knob, true);
+        rig.move_to(pos2(320.0, 80.0));
+        rig.move_to(pos2(340.0, 138.6));
+        assert_eq!(rig.button(pos2(340.0, 138.6), false).len(), 1);
+        let stored = &rig.project.active().unwrap().video_tracks[0].clips[0];
+        let values =
+            |field: LookField| -> Vec<i32> { stored.keyframes.of(field).iter().map(|k| k.value).collect() };
+        assert_eq!(
+            values(LookField::CropLeft),
+            [0, 100_000],
+            "a second keyframe, at the playhead"
+        );
+        assert_eq!(values(LookField::Turn), [0, 90 * ONE]);
+        assert_eq!(stored.look_at(Time::ZERO).crop_left, 0, "the first ones stay");
+        assert_eq!(stored.look.turn, 0, "the clip's own value is not what changed");
+        assert_eq!((rig.shown().crop_left, rig.shown().turn), (100_000, 90 * ONE));
     }
 }
