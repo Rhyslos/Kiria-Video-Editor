@@ -89,8 +89,33 @@ pub const MOUSE: &[MouseAction] = &[
     ),
     on(
         Context::Timeline,
+        "Drag a clip up or down",
+        "Move it to another track of its kind",
+    ),
+    on(
+        Context::Timeline,
         "Right-click",
         "The menu for that clip or place",
+    ),
+    on(
+        Context::Timeline,
+        "Right-click a track's name",
+        "Add a track; rename, hide or remove that one",
+    ),
+    on(
+        Context::Timeline,
+        "Double-click a track's name",
+        "Type a new name for it",
+    ),
+    on(
+        Context::Timeline,
+        "Click the eye by a video track's name",
+        "Hide the track from the picture, or show it again",
+    ),
+    on(
+        Context::Timeline,
+        "Drag a file from the media drawer onto a track",
+        "Place it there: its picture on the video track under the pointer",
     ),
     on(
         Context::Timeline,

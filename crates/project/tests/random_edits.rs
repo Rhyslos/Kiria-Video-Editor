@@ -6,8 +6,9 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use project::{
-    Clip, ClipId, Command, Document, Fingerprint, LabelColor, LabelId, MediaId, MediaKind, MediaRef, Project,
-    Recovery, Region, SequenceSettings, Time, TimelineLabel, TrackKind,
+    AudioStream, Clip, ClipId, Command, Document, Fingerprint, LabelColor, LabelId, MediaId, MediaInfo,
+    MediaKind, MediaRef, Project, Rate, Recovery, Region, SequenceSettings, Time, TimelineLabel, TrackKind,
+    VideoStream,
 };
 use proptest::prelude::*;
 
@@ -38,6 +39,29 @@ enum Action {
     AddTrack {
         video: bool,
     },
+    RemoveTrack {
+        video: bool,
+        track: usize,
+    },
+    RenameTrack {
+        video: bool,
+        track: usize,
+    },
+    HideTrack {
+        track: usize,
+        hidden: bool,
+    },
+    MoveToTrack {
+        pick: usize,
+        video: bool,
+        track: usize,
+        by: i64,
+    },
+    Drop {
+        at: i64,
+        track: Option<usize>,
+        insert: bool,
+    },
     AddLabel {
         at: i64,
     },
@@ -65,6 +89,13 @@ fn action() -> impl Strategy<Value = Action> {
         2 => (any::<usize>(), t.clone()).prop_map(|(pick, at)| Action::SplitSelected { pick, at }),
         1 => t.clone().prop_map(|at| Action::SplitAll { at }),
         1 => any::<bool>().prop_map(|video| Action::AddTrack { video }),
+        1 => (any::<bool>(), 0usize..4).prop_map(|(video, track)| Action::RemoveTrack { video, track }),
+        1 => (any::<bool>(), 0usize..4).prop_map(|(video, track)| Action::RenameTrack { video, track }),
+        1 => (0usize..4, any::<bool>()).prop_map(|(track, hidden)| Action::HideTrack { track, hidden }),
+        3 => (any::<usize>(), any::<bool>(), 0usize..4, -40i64..40)
+            .prop_map(|(pick, video, track, by)| Action::MoveToTrack { pick, video, track, by }),
+        2 => (-5i64..120, prop::option::of(0usize..4), any::<bool>())
+            .prop_map(|(at, track, insert)| Action::Drop { at, track, insert }),
         1 => t.clone().prop_map(|at| Action::AddLabel { at }),
         1 => any::<usize>().prop_map(|pick| Action::RemoveLabel { pick }),
         1 => (t.clone(), t.clone()).prop_map(|(a, b)| Action::Region { a, b }),
@@ -74,9 +105,16 @@ fn action() -> impl Strategy<Value = Action> {
     ]
 }
 
-fn command_for(action: &Action, p: &Project, media: MediaId) -> Option<Command> {
+fn command_for(action: &Action, p: &Project, media: MediaId, recording: MediaId) -> Option<Command> {
     let seq = p.active()?;
     let sequence = seq.id;
+    let tracks = |video: bool| {
+        if video {
+            &seq.video_tracks
+        } else {
+            &seq.audio_tracks
+        }
+    };
     let all_clips: Vec<ClipId> = seq.tracks().flat_map(|t| t.clips.iter().map(|c| c.id)).collect();
     let pick_clip = |pick: usize| (!all_clips.is_empty()).then(|| all_clips[pick % all_clips.len()]);
     Some(match *action {
@@ -132,8 +170,52 @@ fn command_for(action: &Action, p: &Project, media: MediaId) -> Option<Command> 
         Action::AddTrack { video } => Command::AddTrack {
             sequence,
             kind: if video { TrackKind::Video } else { TrackKind::Audio },
-            name: "Extra".into(),
+            name: seq.next_track_name(if video { TrackKind::Video } else { TrackKind::Audio }),
         },
+        // Often refused: the track has clips, or is the last of its kind.
+        Action::RemoveTrack { video, track } => Command::RemoveTrack {
+            sequence,
+            track: tracks(video).get(track % tracks(video).len())?.id,
+        },
+        Action::RenameTrack { video, track } => Command::RenameTrack {
+            sequence,
+            track: tracks(video).get(track % tracks(video).len())?.id,
+            name: format!("Renamed {track}"),
+        },
+        // Any track, so hiding an audio track is tried (and refused) too.
+        Action::HideTrack { track, hidden } => {
+            let all: Vec<_> = seq.tracks().map(|t| t.id).collect();
+            Command::SetTrackHidden {
+                sequence,
+                track: *all.get(track % all.len())?,
+                hidden,
+            }
+        }
+        // To a track of either kind: the wrong kind is refused.
+        Action::MoveToTrack {
+            pick,
+            video,
+            track,
+            by,
+        } => Command::MoveToTrack {
+            sequence,
+            clip: pick_clip(pick)?,
+            track: tracks(video).get(track % tracks(video).len())?.id,
+            by: Time::seconds(by),
+        },
+        Action::Drop { at, track, insert } => {
+            let all: Vec<_> = seq.tracks().map(|t| t.id).collect();
+            Command::DropMedia {
+                sequence,
+                media: recording,
+                at: Time::seconds(at),
+                track: match track {
+                    Some(track) => Some(*all.get(track % all.len())?),
+                    None => None,
+                },
+                insert,
+            }
+        }
         Action::AddLabel { at } => Command::AddLabel {
             sequence,
             label: TimelineLabel {
@@ -176,6 +258,34 @@ fn media() -> MediaRef {
     }
 }
 
+/// A file with a picture and one sound stream, so dropping it places linked clips.
+fn recording() -> MediaRef {
+    MediaRef {
+        path: "match.mkv".into(),
+        duration: Time::seconds(20),
+        info: MediaInfo {
+            container: "matroska,webm".into(),
+            video: Some(VideoStream {
+                index: 0,
+                codec: "hevc".into(),
+                width: 1920,
+                height: 1080,
+                frame_rate: Rate::FPS_60,
+                variable_frame_rate: false,
+                rotation: 0,
+            }),
+            audio: vec![AudioStream {
+                index: 1,
+                codec: "aac".into(),
+                channels: 2,
+                sample_rate: 48_000,
+                name: "Game".into(),
+            }],
+        },
+        ..media()
+    }
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
 
@@ -185,14 +295,16 @@ proptest! {
         let path = tmp.path().join("random.project");
         let mut doc = Document::create(&path, Project::new("Random", SequenceSettings::GAME_CLIP)).unwrap();
         doc.apply(Command::AddMedia { media: media() }).unwrap();
-        let media_id = *doc.project().media.keys().next().unwrap();
+        doc.apply(Command::AddMedia { media: recording() }).unwrap();
+        let mut ids = doc.project().media.keys().copied();
+        let (media_id, recording_id) = (ids.next().unwrap(), ids.next().unwrap());
 
         for action in &actions {
             match action {
                 Action::Undo => { doc.undo().unwrap(); }
                 Action::Redo => { doc.redo().unwrap(); }
                 other => {
-                    if let Some(command) = command_for(other, doc.project(), media_id) {
+                    if let Some(command) = command_for(other, doc.project(), media_id, recording_id) {
                         // Refused commands are fine; they must just change nothing.
                         let before = doc.project().clone();
                         if doc.apply(command).is_err() {

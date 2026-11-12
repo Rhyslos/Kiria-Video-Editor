@@ -38,7 +38,10 @@ pub struct Options {
     pub hold_reading: Option<f32>,
     /// Put the pointer here, and maybe drag it from there with the left
     /// button held (`--pointer 640,420 [--drag-to 640,480]`, for
-    /// screenshots of what pointing and dragging show).
+    /// screenshots of what pointing and dragging show). `--release` after
+    /// `--drag-to` lets go at the end, so the drag is carried out;
+    /// `--right-click` after `--pointer` clicks the right button there, for
+    /// screenshots of menus, and `--double-click` the left button twice.
     pub pointer: Option<crate::fake_pointer::FakePointer>,
     /// Show the question about video decoding that stopped the app (`--decoding-warning`, for screenshots).
     pub decoding_warning: bool,
@@ -106,12 +109,20 @@ impl Options {
                             ..pointer
                         },
                         ("--drag-to", None) => return Err("--drag-to needs --pointer before it".into()),
-                        _ => crate::fake_pointer::FakePointer {
-                            at: pos,
-                            drag_to: None,
-                        },
+                        _ => crate::fake_pointer::FakePointer::resting(pos),
                     });
                 }
+                "--release" => match &mut options.pointer {
+                    Some(pointer) if pointer.drag_to.is_some() => pointer.release = true,
+                    _ => return Err("--release needs --drag-to before it".into()),
+                },
+                "--right-click" | "--double-click" => match &mut options.pointer {
+                    Some(pointer) if pointer.drag_to.is_none() && arg == "--right-click" => {
+                        pointer.right_click = true;
+                    }
+                    Some(pointer) if pointer.drag_to.is_none() => pointer.double_click = true,
+                    _ => return Err(format!("{arg} needs --pointer before it, and no --drag-to")),
+                },
                 "--hold-reading" => {
                     let share = args
                         .next()
@@ -174,6 +185,27 @@ mod tests {
         );
         assert!(parse(&["p.x", "--drag-to", "640,480"]).is_err(), "from where?");
         assert!(parse(&["p.x", "--pointer", "640"]).is_err());
+        assert!(!pointer.release && !pointer.right_click);
+        let dragged = ["p.x", "--pointer", "640,420", "--drag-to", "640,480", "--release"];
+        assert!(parse(&dragged).unwrap().pointer.unwrap().release);
+        assert!(
+            parse(&["p.x", "--pointer", "640,420", "--release"]).is_err(),
+            "of what?"
+        );
+        let o = parse(&["p.x", "--pointer", "40,300", "--right-click"]).unwrap();
+        assert!(o.pointer.unwrap().right_click);
+        assert!(parse(&["p.x", "--right-click"]).is_err(), "where?");
+        let o = parse(&["p.x", "--pointer", "40,300", "--double-click"]).unwrap();
+        assert!(o.pointer.unwrap().double_click);
+        let both = [
+            "p.x",
+            "--pointer",
+            "640,420",
+            "--drag-to",
+            "640,480",
+            "--double-click",
+        ];
+        assert!(parse(&both).is_err(), "a drag or a double-click, not both");
         assert!(parse(&["--decoding-warning"]).unwrap().decoding_warning);
         assert_eq!(
             parse(&["--shortcuts-page", "clash"]).unwrap().shortcuts_page,
