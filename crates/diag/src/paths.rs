@@ -6,13 +6,17 @@ use std::path::{Path, PathBuf};
 /// The app's own folders.
 ///
 /// On Windows they live under `%LOCALAPPDATA%\<app name>`, on Linux under
-/// `~/.local/share/<app name>`.
+/// `~/.local/share/<app name>`. The cache (files that can always be made
+/// again, such as proxies) is `cache` in that folder on Windows and
+/// `~/.cache/<app name>` on Linux, where the system expects caches.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppDirs {
     /// Root of everything the app stores for this user.
     pub data: PathBuf,
     pub logs: PathBuf,
     pub crashes: PathBuf,
+    /// Files that can be made again (proxies): may be cleared at any time.
+    pub cache: PathBuf,
 }
 
 impl AppDirs {
@@ -23,7 +27,13 @@ impl AppDirs {
                 .why("The operating system did not report a home or app-data folder for this user.")
                 .fix("Check that your user account has a home folder, then start the app again.")
         })?;
-        Ok(Self::under(base.data_local_dir().join(brand::DATA_DIR_NAME)))
+        let mut dirs = Self::under(base.data_local_dir().join(brand::DATA_DIR_NAME));
+        // Where the system keeps caches apart from data (Linux), the cache
+        // goes there; where it doesn't (Windows), into the data folder.
+        if base.cache_dir() != base.data_local_dir() {
+            dirs.cache = base.cache_dir().join(brand::DATA_DIR_NAME);
+        }
+        Ok(dirs)
     }
 
     /// The layout under a given root folder (used directly by tests).
@@ -32,6 +42,7 @@ impl AppDirs {
         Self {
             logs: data.join("logs"),
             crashes: data.join("crash-reports"),
+            cache: data.join("cache"),
             data,
         }
     }
@@ -59,6 +70,7 @@ mod tests {
         assert_eq!(dirs.data, PathBuf::from("/root"));
         assert_eq!(dirs.logs, PathBuf::from("/root/logs"));
         assert_eq!(dirs.crashes, PathBuf::from("/root/crash-reports"));
+        assert_eq!(dirs.cache, PathBuf::from("/root/cache"));
     }
 
     #[test]

@@ -487,6 +487,46 @@ fn export_of(
 }
 
 #[test]
+fn export_never_reads_proxies() {
+    let Some(devices) = devices() else {
+        eprintln!("no graphics device here: exporting isn't checked");
+        return;
+    };
+    let (project, seq) = counted();
+    let recording = project.media.values().next().unwrap().clone();
+    // A "proxy" of the counted recording that shows something else
+    // altogether (another file's picture), with proxies On.
+    let dir = tempfile::tempdir().unwrap();
+    let shelf = cache::proxy::Shelf::new(dir.path(), cache::proxy::ProxyMode::On);
+    let other = fixture("colour-709-full.mp4");
+    let steps = media::proxy::Steps {
+        cancelled: &|| false,
+        progress: &|_| {},
+        pause: &|| {},
+    };
+    shelf
+        .build(&other, 0, 1.0, &recording.fingerprint, Decoding::Software, &steps)
+        .unwrap();
+    // The viewer's worker, handed the shelf, shows it.
+    let mut preview = crate::Preview::start(
+        Decoding::Software,
+        Convert::WhileDrawing { largest_side: 8192 },
+        None,
+        || {},
+    );
+    preview.set_proxies(Some(std::sync::Arc::clone(&shelf)));
+    preview.show(&project, seq, Time::ZERO, 128, 32);
+    let shown = preview.wait(Duration::from_secs(20)).expect("a picture");
+    assert_eq!(shown.method.as_deref(), Some(crate::preview::PROXY_ONLY));
+    // The export of the same timeline reads the recording itself: every
+    // frame shows its own number (two recorded frames a timeline frame).
+    let (path, _out) = export_of(project, seq, devices, 12, "out.mp4");
+    let numbers: Vec<Option<u32>> = exported_bars(&path, 12).into_iter().map(number).collect();
+    let expected: Vec<Option<u32>> = (0..12).map(|frame| Some(frame * 2)).collect();
+    assert_eq!(numbers, expected);
+}
+
+#[test]
 fn a_speed_ramp_exports_exactly_the_recorded_frames_it_reaches() {
     let Some(devices) = devices() else {
         eprintln!("no graphics device here: exporting isn't checked");

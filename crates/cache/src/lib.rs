@@ -5,9 +5,14 @@
 //!
 //! - [`thumbs`]: small pictures along a video file, for drawing in clips.
 //!
-//! Still to come: the RAM frame cache, GPU textures, the disk render cache
-//! and proxies.
+//! - [`proxy`]: proxies, small copies of recordings that are cheap to jump
+//!   around in, kept in the app's cache folder by the recording's
+//!   fingerprint, within the disk budget.
+//!
+//! Still to come: the RAM frame cache and the disk render cache. (Frames
+//! kept on the graphics card are `engine::frames`.)
 
+pub mod proxy;
 pub mod thumbs;
 pub mod waveform;
 

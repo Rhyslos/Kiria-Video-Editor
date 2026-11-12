@@ -287,6 +287,64 @@ enum Way<'a> {
     Software,
 }
 
+/// What a decoder is opened for, besides the way it decodes.
+#[derive(Clone, Copy, Default)]
+struct Purpose {
+    /// One frame out for one packet in: a software decoder with several
+    /// threads holds back a frame per thread, which a fetch of a single
+    /// frame (a key frame, a proxy frame) would wait for.
+    one_thread: bool,
+    /// A proxy: frame times count from the file's zero, not from its first
+    /// frame (they are the original's times), and any key frame on the way
+    /// is jumped to.
+    proxy: bool,
+}
+
+/// How far ahead of the frame held a moment still counts as near
+/// ([`VideoDecoder::is_near`]), in seconds: a few frames, as when playing
+/// or dragging slowly forwards.
+const NEAR: f64 = 0.15;
+
+/// What decoding a file costs, timed on a short stretch from its start
+/// ([`VideoDecoder::decode_cost`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DecodeCost {
+    /// From asking until the first frame came out: a jump's fixed part.
+    pub first: Duration,
+    /// Each frame after it, on average.
+    pub per_frame: Duration,
+    /// Seconds from one frame to the next, from the frames' own times.
+    pub frame_interval: f64,
+}
+
+impl DecodeCost {
+    /// How long a typical jump takes in a file whose longest stretch
+    /// between key frames is `longest_gap` seconds: the first frame, then
+    /// half of that stretch decoded frame by frame (a jump lands anywhere
+    /// in a stretch, half way on average).
+    pub fn typical_jump(&self, longest_gap: f64) -> Duration {
+        let frames = (longest_gap / 2.0 / self.frame_interval.max(1e-3)).max(0.0);
+        self.first + self.per_frame.mul_f64(frames)
+    }
+}
+
+/// A frame decoded in a pass through a whole stream
+/// ([`VideoDecoder::each_frame`]): in ordinary memory, with its own
+/// timestamp in the stream's time base.
+pub(crate) struct PassedFrame {
+    pub frame: *const ff::AVFrame,
+    pub timestamp: i64,
+}
+
+impl From<Decoding> for Way<'_> {
+    fn from(decoding: Decoding) -> Self {
+        match decoding {
+            Decoding::Best => Way::Best,
+            Decoding::Software => Way::Software,
+        }
+    }
+}
+
 const HARDWARE: &str = if cfg!(windows) { "d3d11va" } else { "vaapi" };
 
 /// The FFmpeg build loads the GPU decoding libraries on first use and stops
@@ -364,11 +422,35 @@ impl VideoDecoder {
     /// Opens stream `stream` of the file. `rotation` is the clockwise turn
     /// that shows it upright (from probing).
     pub fn open(path: &Path, stream: u32, rotation: u16, decoding: Decoding) -> diag::Result<VideoDecoder> {
-        let way = match decoding {
-            Decoding::Best => Way::Best,
-            Decoding::Software => Way::Software,
+        VideoDecoder::open_as(path, stream, rotation, Way::from(decoding), Purpose::default())
+    }
+
+    /// Opens stream `stream` of the file for fetching single frames (a key
+    /// frame to show at once): each frame comes out as soon as its packet
+    /// is in, without waiting for the frames other threads would decode.
+    pub fn open_for_glances(
+        path: &Path,
+        stream: u32,
+        rotation: u16,
+        decoding: Decoding,
+    ) -> diag::Result<VideoDecoder> {
+        let purpose = Purpose {
+            one_thread: true,
+            proxy: false,
         };
-        VideoDecoder::open_as(path, stream, rotation, way)
+        VideoDecoder::open_as(path, stream, rotation, Way::from(decoding), purpose)
+    }
+
+    /// Opens a proxy (see `cache::proxy`): its picture stream, on the CPU
+    /// with one thread, with the frame times of the original it was made
+    /// from. `rotation` is the original's: a proxy is stored as the
+    /// original is, sideways or not.
+    pub fn open_proxy(path: &Path, rotation: u16) -> diag::Result<VideoDecoder> {
+        let purpose = Purpose {
+            one_thread: true,
+            proxy: true,
+        };
+        VideoDecoder::open_as(path, 0, rotation, Way::Software, purpose)
     }
 
     /// Opens stream `stream` of the file for decoding on the window's own
@@ -381,7 +463,7 @@ impl VideoDecoder {
         rotation: u16,
         device: &Arc<WindowDevice>,
     ) -> diag::Result<VideoDecoder> {
-        VideoDecoder::open_as(path, stream, rotation, Way::Device(device))
+        VideoDecoder::open_as(path, stream, rotation, Way::Device(device), Purpose::default())
     }
 
     /// How this decoder works.
@@ -395,7 +477,13 @@ impl VideoDecoder {
         }
     }
 
-    fn open_as(path: &Path, stream: u32, rotation: u16, way: Way<'_>) -> diag::Result<VideoDecoder> {
+    fn open_as(
+        path: &Path,
+        stream: u32,
+        rotation: u16,
+        way: Way<'_>,
+        purpose: Purpose,
+    ) -> diag::Result<VideoDecoder> {
         let input = Input::open(path).map_err(|e| {
             AppError::new("The video can't be shown")
                 .why(format!("{}: {}.", path.display(), e.text))
@@ -478,7 +566,8 @@ impl VideoDecoder {
                 ended: false,
                 method: "software".into(),
             };
-            if (*st).start_time != ff::AV_NOPTS_VALUE {
+            // A proxy holds the original's own times, counted from zero.
+            if (*st).start_time != ff::AV_NOPTS_VALUE && !purpose.proxy {
                 this.start = (*st).start_time as f64 * this.time_base;
             }
             this.tick = (this.time_base / 2.0).clamp(1e-6, LARGEST_TICK);
@@ -486,14 +575,14 @@ impl VideoDecoder {
             if r < 0 {
                 return Err(explain(path, "Reading the video settings", r));
             }
-            (*codec).thread_count = 0;
+            (*codec).thread_count = if purpose.one_thread { 1 } else { 0 };
             (*codec).thread_type = ff::FF_THREAD_FRAME | ff::FF_THREAD_SLICE;
             match (way, hardware) {
                 (Way::Device(device), Some((_, format))) => this.use_device(device, format)?,
                 (_, Some((_, format))) if !this.try_hardware(format) => {
                     // No GPU device after all: the default decoder, in software.
                     drop(this);
-                    return VideoDecoder::open(path, stream, rotation, Decoding::Software);
+                    return VideoDecoder::open_as(path, stream, rotation, Way::Software, purpose);
                 }
                 _ => {}
             }
@@ -502,6 +591,10 @@ impl VideoDecoder {
                 return Err(explain(path, "Opening the decoder", r));
             }
             this.keys = this.listed_key_frames();
+            if purpose.proxy {
+                this.keys = this.keys.clone().eager();
+                this.method = "proxy".into();
+            }
             Ok(this)
         }
     }
@@ -560,6 +653,161 @@ impl VideoDecoder {
     /// much after it.
     pub fn tick(&self) -> f64 {
         self.tick
+    }
+
+    /// Whether the frame on screen at `target` is a few frames' decoding
+    /// away, without a jump: the decoder holds a frame shortly before it
+    /// (or it), as when playing or stepping forwards. Then it is quicker
+    /// to decode it than to show anything first.
+    pub fn is_near(&self, target: f64) -> bool {
+        let Some(held) = self.held_time else {
+            return false;
+        };
+        !self.jumps_to(target) && target + self.tick >= held && target - held <= NEAR
+    }
+
+    /// Jumps to the key frame before `target` and gives the first frame
+    /// there, the way [`VideoDecoder::picture_at`] gives a picture: a
+    /// first picture after a jump, up to one key frame distance early,
+    /// for a few milliseconds' decoding instead of a whole stretch. The
+    /// picture's time says which frame it is. The decoder holds that frame
+    /// afterwards, so asking it for a later moment decodes on from there.
+    /// With `rgba` the picture comes converted, as [`VideoDecoder::frame_at`]
+    /// gives it.
+    pub fn key_frame_picture(
+        &mut self,
+        target: f64,
+        max_width: u32,
+        max_height: u32,
+        rgba: bool,
+    ) -> diag::Result<Decoded> {
+        let started = Instant::now();
+        self.work = Work::default();
+        self.seek(target.max(0.0))?;
+        self.work.jumped = true;
+        self.work.jump = started.elapsed();
+        let Some(time) = self.decode_next()? else {
+            return Err(AppError::new("The video can't be shown")
+                .why("No picture could be decoded at this point of the file.")
+                .fix("The file may be damaged. Check that it plays in a media player."));
+        };
+        // SAFETY: both frames are owned by self; `held` is cleared first.
+        unsafe {
+            ff::av_frame_unref(self.held);
+            ff::av_frame_move_ref(self.held, self.ahead);
+        }
+        self.held_time = Some(time);
+        self.ahead_time = None;
+        self.held_picture = None;
+        self.work.frames = 1;
+        self.work.first_frame = Some(started.elapsed());
+        self.work.decoding = started.elapsed();
+        if rgba {
+            self.held_as_frame(max_width, max_height).map(Decoded::Rgba)
+        } else {
+            self.held_as_picture(max_width, max_height)
+        }
+    }
+
+    /// The time of the frame the decoder holds (the last one shown), if any.
+    pub fn position(&self) -> Option<f64> {
+        self.held_time
+    }
+
+    /// Times decoding `frames` frames in a row from the start of the file
+    /// (fewer in a shorter file): what a jump in it costs, for deciding
+    /// whether it needs a proxy. Nothing is converted or copied out, as
+    /// when the preview decodes on towards a moment. `None` when fewer
+    /// than three frames could be decoded.
+    pub fn decode_cost(&mut self, frames: u32) -> diag::Result<Option<DecodeCost>> {
+        self.seek(0.0)?;
+        let started = Instant::now();
+        let mut first = None;
+        let mut times = Vec::new();
+        while times.len() < frames.max(3) as usize {
+            let Some(time) = self.decode_next()? else {
+                break;
+            };
+            first.get_or_insert_with(|| started.elapsed());
+            times.push(time);
+        }
+        let total = started.elapsed();
+        // Back to the start, so the next picture asked for decodes afresh.
+        self.seek(0.0)?;
+        let (Some(first), true) = (first, times.len() >= 3) else {
+            return Ok(None);
+        };
+        times.sort_by(f64::total_cmp);
+        let span = times.last().copied().unwrap_or(0.0) - times.first().copied().unwrap_or(0.0);
+        let after_first = (times.len() - 1) as u32;
+        Ok(Some(DecodeCost {
+            first,
+            per_frame: total.saturating_sub(first) / after_first,
+            frame_interval: span / f64::from(after_first),
+        }))
+    }
+
+    /// Decodes the whole stream from its start, handing each frame (in
+    /// ordinary memory, copied back from the GPU when decoded there) to
+    /// `each` with its own timestamp. Frames without one are left out.
+    /// `each` returns whether to go on.
+    pub(crate) fn each_frame(
+        &mut self,
+        each: &mut dyn FnMut(&PassedFrame) -> diag::Result<bool>,
+    ) -> diag::Result<()> {
+        self.seek(0.0)?;
+        while let Some(time) = self.decode_next()? {
+            // SAFETY: `ahead` holds the frame just decoded.
+            let timestamp = unsafe { (*self.ahead).best_effort_timestamp };
+            // SAFETY: both frames are owned by self; `held` is cleared first.
+            unsafe {
+                ff::av_frame_unref(self.held);
+                ff::av_frame_move_ref(self.held, self.ahead);
+            }
+            self.held_time = Some(time);
+            if timestamp == ff::AV_NOPTS_VALUE {
+                continue;
+            }
+            let frame = self.in_memory()?;
+            if !each(&PassedFrame { frame, timestamp })? {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    /// The stream's time base, as FFmpeg gives it.
+    pub(crate) fn time_base_rational(&self) -> ff::AVRational {
+        // SAFETY: the stream index was checked when the file was opened.
+        unsafe {
+            let st = *(*self.input.raw()).streams.add(self.stream as usize);
+            (*st).time_base
+        }
+    }
+
+    /// The timestamp the stream counts from (its first frame's), in its
+    /// time base; 0 when the file doesn't say.
+    pub(crate) fn start_timestamp(&self) -> i64 {
+        // SAFETY: as above.
+        unsafe {
+            let st = *(*self.input.raw()).streams.add(self.stream as usize);
+            if (*st).start_time == ff::AV_NOPTS_VALUE {
+                0
+            } else {
+                (*st).start_time
+            }
+        }
+    }
+
+    /// The stream's size as stored (before turning upright).
+    pub(crate) fn coded_size(&self) -> (u32, u32) {
+        // SAFETY: the codec context is open.
+        unsafe {
+            (
+                (*self.codec).width.max(0) as u32,
+                (*self.codec).height.max(0) as u32,
+            )
+        }
     }
 
     /// Whether this decoder hands over the frames it passes on the way to
