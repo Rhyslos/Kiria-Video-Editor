@@ -10,8 +10,8 @@
 //! Builds are background work on the analysis pool: they wait while the
 //! timeline plays, also in the middle of a file. "Build proxy now" puts a
 //! file first in line (an automatic build under way gives way to it);
-//! "Delete proxy" removes it, and it is not built again by itself this
-//! session. After every build the proxies used longest ago, other than the
+//! "Delete proxy" removes it, and like a proxy cleared in Settings › Cache
+//! it is never built again by itself (the shelf remembers it), only by hand. After every build the proxies used longest ago, other than the
 //! open project's, are dropped to stay inside the disk budget.
 
 use crate::reading::{self, Pace};
@@ -62,9 +62,8 @@ enum State {
     Building(Option<Judgement>),
     Ready,
     Deleting(JobHandle<bool>),
-    /// Deleted by hand: not built again by itself this session.
-    Declined,
-    /// Cleared from the cache on purpose (Settings › Cache): not built
+    /// Cleared from the cache or deleted on purpose (Settings › Cache,
+    /// "Delete proxy"): not built
     /// again by itself, in this session or any later one, until asked for
     /// by hand (`cache::proxy::Shelf::is_cleared`).
     Cleared,
@@ -152,7 +151,7 @@ impl ProxyBuilds {
             State::Judged(judged) if judged.needs_proxy || self.shelf.mode() == ProxyMode::On => {
                 Status::Needed
             }
-            State::Judged(_) | State::Declined => Status::NotNeeded,
+            State::Judged(_) => Status::NotNeeded,
             State::Building(_) => match &self.build {
                 Some(build) if build.media == media => Status::Building(build.state),
                 _ => Status::Needed,
@@ -167,7 +166,7 @@ impl ProxyBuilds {
     /// Builds `media`'s proxy next, whatever the mode and the judgement.
     pub fn build_now(&mut self, media: MediaId) {
         if let Some(file) = self.files.get_mut(&media)
-            && matches!(file.state, State::Declined | State::Cleared | State::Failed(_))
+            && matches!(file.state, State::Cleared | State::Failed(_))
         {
             file.state = State::Unjudged;
         }
@@ -363,9 +362,9 @@ impl ProxyBuilds {
                     None => {}
                 },
                 State::Deleting(handle) => match handle.try_result() {
-                    Some(Ok(_)) => file.state = State::Declined,
+                    Some(Ok(_)) => file.state = State::Cleared,
                     Some(Err(err)) => {
-                        file.state = State::Declined;
+                        file.state = State::Cleared;
                         problem = Some(err);
                     }
                     None => {}
@@ -527,7 +526,7 @@ impl ProxyBuilds {
 /// Whether a build that ended was stopped on purpose (the file's state
 /// moved on meanwhile).
 fn build_was_stopped(state: &State) -> bool {
-    matches!(state, State::Deleting(_) | State::Declined | State::Cleared)
+    matches!(state, State::Deleting(_) | State::Cleared)
 }
 
 /// Whether a file in `state` is built next: by hand (`asked`) whatever
@@ -622,10 +621,6 @@ mod tests {
             "asked for by hand: whatever the mode"
         );
         assert!(!buildable(&State::Ready, true, On));
-        assert!(
-            !buildable(&State::Declined, false, On),
-            "deleted by hand: not again by itself"
-        );
         assert!(
             !buildable(&State::Cleared, false, On) && !buildable(&State::Cleared, false, Auto),
             "cleared on purpose: never again by itself"

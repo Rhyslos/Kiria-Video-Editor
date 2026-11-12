@@ -268,7 +268,12 @@ impl Shelf {
                 .fix("It is not used any more. Close other programs that may have it open, then try again.")
         });
         self.retiring().remove(&path);
-        removed.map(|()| true)
+        removed?;
+        // Deleted on purpose: not built again by itself, only by hand.
+        if let Err(err) = self.mark_cleared(proxy_name(&path).into_iter()) {
+            tracing::warn!("a deleted proxy could not be noted: {}", err.report());
+        }
+        Ok(true)
     }
 
     /// What the proxies take on disk: those at `only` (a project's, from
@@ -729,5 +734,9 @@ mod tests {
         later.unmark_cleared(&print(1), 0).unwrap();
         assert!(!later.is_cleared(&print(1), 0));
         assert!(later.is_cleared(&print(2), 0));
+        // "Delete proxy" is on purpose too: the same mark.
+        std::fs::write(later.file_for(&print(1), 0), b"proxy").unwrap();
+        assert!(later.delete(&print(1), 0).unwrap());
+        assert!(later.is_cleared(&print(1), 0));
     }
 }
