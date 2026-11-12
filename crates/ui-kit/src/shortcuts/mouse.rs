@@ -139,6 +139,16 @@ pub const MOUSE: &[MouseAction] = &[
     ),
     on(
         Context::Timeline,
+        "Click the level button by an audio track's name",
+        "Show or hide a line across each of its clips at the clip's volume",
+    ),
+    on(
+        Context::Timeline,
+        "Drag a clip's level line up or down",
+        "That clip's volume: +12 dB at the top, Off at the bottom; double-click it for 0 dB",
+    ),
+    on(
+        Context::Timeline,
         "Drag a file from the media drawer onto a track",
         "Lay it there: its picture on the video track under the pointer, its sound where there is room",
     ),
@@ -166,6 +176,11 @@ pub const MOUSE: &[MouseAction] = &[
         Context::Dragging,
         "Hold Alt while dragging a picture or its corner in the viewer",
         "No snapping for this drag",
+    ),
+    on(
+        Context::Dragging,
+        "Hold Alt while dragging a level line",
+        "Change the volume more finely",
     ),
     on(
         Context::Dragging,

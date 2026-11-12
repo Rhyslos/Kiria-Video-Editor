@@ -468,6 +468,35 @@ pub fn track_command(
     })
 }
 
+/// A volume in decibels from the timeline (its level line) in the
+/// project's thousandths, the bottom of the range being silence.
+pub fn gain_mdb(db: f32) -> i32 {
+    if db <= ui_kit::timeline::level::SILENT_DB {
+        project::Sound::SILENT
+    } else {
+        ((db * 1000.0).round() as i32).clamp(project::Sound::SILENT, project::Sound::LOUDEST)
+    }
+}
+
+/// The undo step for a clip's level line let go at `gain_db`: that clip's
+/// volume only, its pan and fades as they are. `None` when the clip is gone
+/// or its volume is already that.
+pub fn clip_volume_command(seq: &Sequence, clip: ClipId, gain_db: f32) -> Option<project::Command> {
+    let found = seq
+        .audio_tracks
+        .iter()
+        .flat_map(|t| &t.clips)
+        .find(|c| c.id == clip)?;
+    let sound = project::Sound {
+        gain_mdb: gain_mdb(gain_db),
+        ..found.sound
+    };
+    (sound != found.sound).then(|| project::Command::SetSound {
+        sequence: seq.id,
+        sounds: vec![(clip, sound)],
+    })
+}
+
 /// The ids of every track of the timeline, for forgetting the heights of
 /// tracks that were removed.
 pub fn track_ids(seq: &Sequence) -> Vec<u64> {
@@ -934,5 +963,63 @@ mod tests {
             [31],
             "unlinked sound stays"
         );
+    }
+
+    #[test]
+    fn a_level_line_let_go_sets_that_clips_volume_only() {
+        use project::{Command, SequenceSettings, Sound, Time};
+        let p = Project::new("Test", SequenceSettings::GAME_CLIP);
+        let sequence = p.active_sequence;
+        // A recording with two sound streams: two linked sound clips.
+        let p = Command::Import {
+            sequence,
+            media: recording(2, 10),
+        }
+        .apply(&p)
+        .unwrap();
+        let seq = p.active().unwrap();
+        let (first, second) = (seq.audio_tracks[0].clips[0].id, seq.audio_tracks[1].clips[0].id);
+        // It already fades in and sits to the left: that stays.
+        let shaped = Sound {
+            pan: -400_000,
+            fade_in: Time::seconds(1),
+            ..Sound::PLAIN
+        };
+        let p = Command::SetSound {
+            sequence,
+            sounds: vec![(first, shaped)],
+        }
+        .apply(&p)
+        .unwrap();
+        let seq = p.active().unwrap();
+
+        let command = clip_volume_command(seq, first, -6.5).unwrap();
+        let after = command.apply(&p).unwrap();
+        let clip = |id| {
+            after
+                .active()
+                .unwrap()
+                .audio_tracks
+                .iter()
+                .flat_map(|t| &t.clips)
+                .find(|c| c.id == id)
+                .unwrap()
+                .sound
+        };
+        assert_eq!(
+            clip(first),
+            Sound {
+                gain_mdb: -6_500,
+                ..shaped
+            }
+        );
+        assert_eq!(clip(second), Sound::PLAIN, "the other stream is left alone");
+
+        // The bottom is silence; the same volume again is no step; a clip that is gone neither.
+        assert_eq!(gain_mdb(-60.0), Sound::SILENT);
+        assert_eq!(gain_mdb(12.0), Sound::LOUDEST);
+        assert_eq!(gain_mdb(-3.04), -3_040);
+        assert_eq!(clip_volume_command(seq, first, 0.0), None);
+        assert_eq!(clip_volume_command(seq, ClipId(999_999), -3.0), None);
     }
 }

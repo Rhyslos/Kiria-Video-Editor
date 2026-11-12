@@ -1,5 +1,6 @@
 //! How the timeline of a project was laid out when it was last open: each
-//! track's height and the divider between video and audio.
+//! track's height, the divider between video and audio, and which audio
+//! tracks show their level lines.
 //!
 //! This is view state, not an edit. It lives in its own small file beside
 //! the project (`<file>.view`), never in the project file, so making a track
@@ -31,6 +32,9 @@ pub struct ProjectView {
     /// tracks. Off once the divider was dragged to where they don't all
     /// show. On when the file doesn't say (it was written before this).
     pub video_fits_tracks: bool,
+    /// Audio tracks whose clips show their level line (none when the file
+    /// doesn't say).
+    pub level_lines: Vec<u64>,
 }
 
 impl Default for ProjectView {
@@ -39,6 +43,7 @@ impl Default for ProjectView {
             track_heights: Vec::new(),
             video_share: None,
             video_fits_tracks: true,
+            level_lines: Vec::new(),
         }
     }
 }
@@ -50,6 +55,7 @@ impl ProjectView {
             track_heights: timeline.heights.to_save(),
             video_share: Some(timeline.split),
             video_fits_tracks: timeline.fit_video,
+            level_lines: timeline.level_lines(),
         }
     }
 
@@ -60,6 +66,7 @@ impl ProjectView {
             timeline.split = share.clamp(0.1, 0.9);
         }
         timeline.fit_video = self.video_fits_tracks;
+        timeline.set_level_lines(self.level_lines.iter().copied());
     }
 
     /// Reads the view kept for a project; the usual layout when there is
@@ -85,6 +92,23 @@ impl ProjectView {
     }
 }
 
+/// What of the view is kept, cheaply compared every frame: the heights'
+/// revision, the divider, whether the video area fits its tracks, and the
+/// tracks with level lines.
+#[derive(Debug, Clone, PartialEq)]
+struct Looks(u64, f32, bool, Vec<u64>);
+
+impl Looks {
+    fn of(timeline: &TimelineView) -> Looks {
+        Looks(
+            timeline.heights.revision(),
+            timeline.split,
+            timeline.fit_video,
+            timeline.level_lines(),
+        )
+    }
+}
+
 /// Keeps a project's view file up to date: notices when the view changes and
 /// writes it on a worker a moment after it stops changing.
 #[derive(Debug)]
@@ -95,9 +119,8 @@ pub struct ViewKeeper {
     writable: bool,
     /// What the file holds, or will once `writing` finishes.
     kept: ProjectView,
-    /// The view's height revision, divider and whether the video area fits
-    /// its tracks, when last looked at.
-    seen: Option<(u64, f32, bool)>,
+    /// What of the view is kept, when last looked at.
+    seen: Option<Looks>,
     changed_at: Option<Instant>,
     writing: Option<JobHandle<()>>,
 }
@@ -111,7 +134,7 @@ impl ViewKeeper {
             path,
             writable,
             kept: ProjectView::of(timeline),
-            seen: Some((timeline.heights.revision(), timeline.split, timeline.fit_video)),
+            seen: Some(Looks::of(timeline)),
             changed_at: None,
             writing: None,
         }
@@ -120,8 +143,8 @@ impl ViewKeeper {
     /// Call every frame: hands the view to a worker when it changed and has
     /// since settled.
     pub fn tick(&mut self, now: Instant, timeline: &TimelineView, jobs: &JobSystem) {
-        let looks = (timeline.heights.revision(), timeline.split, timeline.fit_video);
-        if self.seen != Some(looks) {
+        let looks = Looks::of(timeline);
+        if self.seen.as_ref() != Some(&looks) {
             self.seen = Some(looks);
             self.changed_at = Some(now);
         }
@@ -179,6 +202,7 @@ mod tests {
         timeline.heights.set(2, 54.0, 81.0);
         timeline.split = 0.3;
         timeline.fit_video = false;
+        timeline.set_level_line(12, true);
         timeline
     }
 
@@ -199,6 +223,10 @@ mod tests {
         );
         assert_eq!(reopened.split, 0.3);
         assert!(!reopened.fit_video, "the divider was put where it is on purpose");
+        assert!(
+            reopened.level_line(12) && !reopened.level_line(7),
+            "level lines where they were"
+        );
         assert_eq!(keeper.kept, ProjectView::of(&reopened));
     }
 
@@ -216,6 +244,7 @@ mod tests {
         assert_eq!(timeline.heights.height(4, 50.0), 100.0);
         assert_eq!(timeline.split, TimelineView::default().split);
         assert!(timeline.fit_video, "and the video area shows its tracks");
+        assert!(timeline.level_lines().is_empty(), "and no level lines");
         // So does one from before the video area grew by itself, also when
         // the timeline had been laid out otherwise meanwhile.
         timeline.fit_video = false;
@@ -255,6 +284,18 @@ mod tests {
         // Nothing new: nothing written again.
         keeper.tick(start + Duration::from_secs(5), &timeline, &jobs);
         assert!(keeper.writing.is_none());
+
+        // Turning a track's level lines on is kept too.
+        timeline.set_level_line(9, true);
+        keeper.tick(start + Duration::from_secs(6), &timeline, &jobs);
+        keeper.tick(start + Duration::from_secs(7), &timeline, &jobs);
+        keeper
+            .writing
+            .take()
+            .expect("written once it settled")
+            .wait()
+            .unwrap();
+        assert_eq!(ProjectView::load(&path).level_lines, [9]);
     }
 
     #[test]
