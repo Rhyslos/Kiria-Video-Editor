@@ -16,9 +16,12 @@
 //! replaces it); keyframes of numbers that are not pasted stay, so marks
 //! join as they do when moved. Moving refuses a clash instead, because a
 //! drag that lands on a keyframe is more often a slip of the hand than a
-//! wish to lose it; a paste is asked for at a chosen place. A paste that
-//! would put a mark past either end of the clip is refused whole, with
-//! how far, so a paste never leaves keyframes where they can't be seen.
+//! wish to lose it; a paste is asked for at a chosen place. Marks that
+//! would land past either end of the clip are left out, so a paste never
+//! leaves keyframes where they can't be seen, and the rest are pasted
+//! ([`CopiedKeyframes::landing`] says which, so the window can say how
+//! many were left out); a paste where none fits is refused with the
+//! reason.
 
 use crate::animate::picture_clip;
 use crate::ids::{ClipId, SequenceId};
@@ -103,6 +106,21 @@ impl CopiedKeyframes {
         self.marks.is_empty()
     }
 
+    /// Where each mark lands when pasted on `clip` (timeline at `rate`)
+    /// with the playhead at `at`: the timeline frame, or `None` when it
+    /// would land past either end of the clip and is left out. The first
+    /// goes on the frame at the playhead brought onto the clip, the others
+    /// as far after it as they were copied, in whole frames.
+    pub fn landing(&self, clip: &Clip, rate: Rate, at: Time) -> Vec<Option<i64>> {
+        let base = rate.frame_start(rate.frame_at(clip.moment(at, rate)));
+        let (first, end) = (rate.frame_at(clip.start), rate.frame_at(clip.end()));
+        self.marks
+            .iter()
+            .map(|m| rate.frame_at(base + rate.snap(m.after)))
+            .map(|frame| (first..end).contains(&frame).then_some(frame))
+            .collect()
+    }
+
     /// The numbers it has keyframes for, in plain words, each once, in
     /// the order the inspector shows them ("position, opacity").
     pub fn says(&self) -> String {
@@ -139,32 +157,14 @@ pub(crate) fn paste_keyframes(
             .why(format!("A {} value is out of its range.", key.field.name())));
     }
     let (clip, rate) = picture_clip(p, sequence, clip)?;
-    let base = rate.frame_at(clip.moment(at, rate));
-    let (first, end) = (rate.frame_at(clip.start), rate.frame_at(clip.end()));
-    let frames: Vec<i64> = copied
-        .marks
-        .iter()
-        .map(|m| rate.frame_at(rate.frame_start(base) + rate.snap(m.after)))
-        .collect();
-    if let Some(past) = frames
-        .iter()
-        .map(|f| f - (end - 1))
-        .filter(|over| *over > 0)
-        .max()
-    {
-        let frames = if past == 1 { "frame" } else { "frames" };
+    let landing = copied.landing(clip, rate, at);
+    if landing.iter().all(Option::is_none) {
         return Err(AppError::new("The keyframes don't fit on the clip")
-            .why(format!(
-                "Pasted at the playhead, the last of them would land {past} {frames} past the clip's end."
-            ))
-            .fix("Move the playhead earlier, or trim the clip longer first."));
+            .why("Pasted at the playhead, every copied mark would land past the clip's ends.")
+            .fix("Move the playhead onto the clip, or trim the clip longer first."));
     }
-    if frames.iter().any(|f| *f < first) {
-        return Err(AppError::new("The keyframes don't fit on the clip")
-            .why("Pasted at the playhead, the first of them would land before the clip's start.")
-            .fix("Move the playhead onto the clip."));
-    }
-    for (mark, frame) in copied.marks.iter().zip(frames) {
+    for (mark, frame) in copied.marks.iter().zip(landing) {
+        let Some(frame) = frame else { continue };
         let moment = rate.frame_start(frame).max(clip.start);
         let near = clip.frame_in_file(moment, rate);
         let source = clip.source_at(moment);
@@ -410,21 +410,54 @@ mod tests {
     }
 
     #[test]
-    fn a_paste_that_does_not_fit_is_refused_with_how_far() {
+    fn a_paste_puts_what_fits_and_leaves_out_the_rest() {
         let (p, _, a, b) = faded(false);
         let copied = copy_of(&p, a, &[1, 3]);
-        // The second clip ends at 30 s: from 29 s the second mark is at 31 s.
-        let refused = paste(&p, b, Time::seconds(29), &copied).unwrap_err();
-        assert!(refused.what().contains("don't fit"));
-        assert!(refused.why_text().unwrap_or_default().contains("61 frames past"));
-        // On its last frame exactly: fits.
+        // The second clip ends at 30 s: from 29 s the second mark would be
+        // at 31 s, so only the first is pasted.
+        assert_eq!(
+            copied.landing(clip(&p, b), Rate::FPS_60, Time::seconds(29)),
+            [Some(29 * 60), None]
+        );
+        let partly = paste(&p, b, Time::seconds(29), &copied).unwrap();
+        let to = clip(&partly, b);
+        assert_eq!(to.keyframe_frames(&LookField::ALL, Rate::FPS_60), [29 * 60]);
+        assert_eq!(to.look_at(Time::seconds(29)).opacity, 0);
+        assert!(partly.problems().is_empty(), "{:?}", partly.problems());
+        // On its last frame exactly: both fit.
         let last = Rate::FPS_60.frame_start(30 * 60 - 1) - Time::seconds(2);
-        assert!(paste(&p, b, last, &copied).is_ok());
+        let whole = paste(&p, b, last, &copied).unwrap();
+        assert_eq!(
+            clip(&whole, b)
+                .keyframe_frames(&LookField::ALL, Rate::FPS_60)
+                .len(),
+            2
+        );
         // With the playhead before the clip, from its first frame.
         let early = paste(&p, b, Time::seconds(15), &copied).unwrap();
         assert_eq!(
             clip(&early, b).keyframe_frames(&LookField::ALL, Rate::FPS_60),
             [20 * 60, 22 * 60]
+        );
+        // Nothing fits (a copy whose marks all come long after the
+        // playhead): refused with the reason, the clip untouched.
+        let far = CopiedKeyframes {
+            marks: copied
+                .marks
+                .iter()
+                .map(|m| CopiedMark {
+                    after: m.after + Time::seconds(20),
+                    ..m.clone()
+                })
+                .collect(),
+        };
+        let refused = paste(&p, b, Time::seconds(22), &far).unwrap_err();
+        assert!(refused.what().contains("don't fit"));
+        assert!(
+            refused
+                .why_text()
+                .unwrap_or_default()
+                .contains("every copied mark")
         );
         let empty = CopiedKeyframes { marks: Vec::new() };
         assert!(paste(&p, b, Time::seconds(22), &empty).is_err());

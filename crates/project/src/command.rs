@@ -122,8 +122,8 @@ pub enum Command {
     /// the frame at `at` on the timeline (the playhead, brought onto the
     /// clip), the others as far after it as they were copied. One step for
     /// all of them. A pasted number's keyframe replaces one already in its
-    /// frame; refused when a mark would land off the clip. See
-    /// [`crate::clipboard`].
+    /// frame. Marks that would land off the clip are left out; refused
+    /// when none fits. See [`crate::clipboard`].
     PasteKeyframes {
         sequence: SequenceId,
         clip: ClipId,

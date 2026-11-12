@@ -24,18 +24,39 @@ pub(crate) fn picture_of<'s>(seq: &'s Sequence, selected: &[project::ClipId]) ->
     })
 }
 
-/// The timeline frames (starts, in seconds) the marks of `copied` land on
-/// when pasted on `clip` at `at`, as the paste puts them.
-pub(crate) fn pasted_at(clip: &Clip, rate: Rate, at: Time, copied: &CopiedKeyframes) -> Vec<f64> {
-    let base = rate.frame_start(rate.frame_at(clip.moment(at, rate)));
-    copied
-        .marks
-        .iter()
-        .map(|m| {
-            rate.frame_start(rate.frame_at(base + rate.snap(m.after)))
-                .as_secs_f64()
-        })
-        .collect()
+/// Where the marks of `copied` land when pasted on `clip` at `at`, as the
+/// paste puts them: the starts (in seconds) of the frames of those that
+/// fit on the clip, and how many are left out because they would land
+/// past its ends.
+pub(crate) fn pasted_at(clip: &Clip, rate: Rate, at: Time, copied: &CopiedKeyframes) -> (Vec<f64>, usize) {
+    let landing = copied.landing(clip, rate, at);
+    let left_out = landing.iter().filter(|frame| frame.is_none()).count();
+    let landed = landing
+        .into_iter()
+        .flatten()
+        .map(|frame| rate.frame_start(frame).as_secs_f64())
+        .collect();
+    (landed, left_out)
+}
+
+/// The status line after a paste: what was pasted and, when some marks
+/// would have landed past the clip's ends, how many were left out.
+pub(crate) fn pasted_says(copied: &CopiedKeyframes, left_out: usize) -> String {
+    let says = described(copied);
+    match left_out {
+        0 => format!("Pasted {says} at the playhead."),
+        n => {
+            let them = if n == 1 {
+                "1 mark was".to_owned()
+            } else {
+                format!("{n} marks were")
+            };
+            let pasted = copied.len().saturating_sub(n);
+            format!(
+                "Pasted {pasted} of {says} at the playhead; {them} left out, landing past the clip's ends."
+            )
+        }
+    }
 }
 
 /// "2 keyframe marks (opacity, turn)".
@@ -100,13 +121,13 @@ impl Editor {
             let rate = seq.settings.frame_rate;
             Some((seq.id, clip.id, pasted_at(clip, rate, at, &copied)))
         });
-        let Some((sequence, clip, landed)) = target else {
+        let Some((sequence, clip, (landed, left_out))) = target else {
             self.status =
                 "Select a clip with a picture first: copied keyframes are pasted on it at the playhead."
                     .into();
             return Ok(());
         };
-        let says = described(&copied);
+        let says = pasted_says(&copied, left_out);
         self.with_document(|d| {
             d.apply(Command::PasteKeyframes {
                 sequence,
@@ -116,7 +137,7 @@ impl Editor {
             })
         })?;
         self.timeline.choose_keyframes(clip.0, landed);
-        self.status = format!("Pasted {says} at the playhead.");
+        self.status = says;
         Ok(())
     }
 }
@@ -161,11 +182,23 @@ mod tests {
             ],
         };
         let at = clip.start + Time::seconds(2) + Time::from_ratio(1, 1000).unwrap();
-        let landed = pasted_at(&clip, rate, at, &copied);
+        let (landed, left_out) = pasted_at(&clip, rate, at, &copied);
         let start = rate
             .frame_start(rate.frame_at(clip.start + Time::seconds(2)))
             .as_secs_f64();
-        assert_eq!(landed, [start, start + 1.0]);
+        assert_eq!((landed, left_out), (vec![start, start + 1.0], 0));
+        // From the clip's last frame the second mark is left out.
+        let last = clip.end() - Time::from_ratio(1, 1000).unwrap();
+        let (landed, left_out) = pasted_at(&clip, rate, last, &copied);
+        assert_eq!((landed.len(), left_out), (1, 1));
+        assert_eq!(
+            pasted_says(&copied, 0),
+            "Pasted 2 keyframe marks at the playhead."
+        );
+        assert_eq!(
+            pasted_says(&copied, 1),
+            "Pasted 1 of 2 keyframe marks at the playhead; 1 mark was left out, landing past the clip's ends."
+        );
         assert_eq!(described(&copied), "2 keyframe marks");
     }
 }
