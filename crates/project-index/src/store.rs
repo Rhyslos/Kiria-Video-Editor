@@ -133,6 +133,20 @@ impl Index {
         rows.map(|r| r.or_explain(unreadable)).collect()
     }
 
+    /// Every known project file, listed or removed from the list: what
+    /// may still use a recording (the editor's cache cleanup asks).
+    pub fn known_paths(&self) -> diag::Result<Vec<PathBuf>> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT path FROM projects ORDER BY path")
+            .or_explain(unreadable)?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .or_explain(unreadable)?;
+        rows.map(|r| r.map(PathBuf::from).or_explain(unreadable))
+            .collect()
+    }
+
     /// One project, if it is known (listed or not).
     pub fn project(&self, path: &Path) -> diag::Result<Option<ProjectEntry>> {
         let sql = format!("SELECT {COLUMNS} FROM projects WHERE path = ?1");
@@ -429,6 +443,23 @@ mod tests {
 
     fn ext() -> &'static str {
         project::FILE_EXTENSION
+    }
+
+    #[test]
+    fn every_known_project_is_named_also_those_removed_from_the_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = Index::open_in_memory().unwrap();
+        let (a, b) = (
+            dir.path().join(format!("a.{}", ext())),
+            dir.path().join(format!("b.{}", ext())),
+        );
+        write_project(&a, "A", SequenceSettings::GAME_CLIP);
+        write_project(&b, "B", SequenceSettings::GAME_CLIP);
+        index.record(&a).unwrap();
+        index.record(&b).unwrap();
+        index.forget(&b).unwrap();
+        assert_eq!(index.projects().unwrap().len(), 1, "b is removed from the list");
+        assert_eq!(index.known_paths().unwrap(), [a, b], "but still known");
     }
 
     #[test]

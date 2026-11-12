@@ -233,7 +233,7 @@ fn proxy_menu(ui: &mut egui::Ui, media: MediaId, proxy: &Status, missing: bool) 
                 .clicked()
                 .then_some(Picked::DeleteProxy(media))
         }
-        Status::NotNeeded | Status::Needed | Status::Failed(_) if !missing => {
+        Status::NotNeeded | Status::Needed | Status::Cleared | Status::Failed(_) if !missing => {
             ui.separator();
             ui.button("Build proxy now")
                 .on_hover_text(

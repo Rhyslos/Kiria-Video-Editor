@@ -2487,11 +2487,11 @@ impl Editor {
         self.show_settings = open;
         let project_proxies = self.project_proxies();
         let shelf = self.proxies.shelf();
-        if let Some(crate::cache_cleanup::Asked::Clearing(_)) =
-            self.cache_cleanup
-                .question(ctx, &self.theme, &self.jobs, &shelf, project_proxies)
+        if self
+            .cache_cleanup
+            .question(ctx, &self.theme, &self.jobs, &shelf, project_proxies)
         {
-            self.proxies.cleared();
+            self.proxies.clearing();
         }
         if self.settings != before {
             if self.settings.theme != before.theme {
@@ -2519,7 +2519,11 @@ impl Editor {
     /// Measures the cache on a worker, for Settings › Cache.
     fn measure_cache(&mut self) {
         let (project, shelf) = (self.project_proxies(), self.proxies.shelf());
-        self.cache_cleanup.measure(&self.jobs, &shelf, project);
+        let others = crate::cache_cleanup::OtherProjects {
+            index_file: self.data_dir.join(project_index::INDEX_FILE_NAME),
+            this_project: self.document.as_ref().map(|d| d.path().to_path_buf()),
+        };
+        self.cache_cleanup.measure(&self.jobs, &shelf, project, others);
     }
 
     fn search_window(&mut self, ctx: &egui::Context) {
@@ -2776,11 +2780,14 @@ impl eframe::App for Editor {
         if let Some(err) = self.proxies.poll(&self.jobs, &ctx, project, now) {
             self.errors.push(&err);
         }
-        let (problem, measure_again) = self.cache_cleanup.poll();
-        if let Some(err) = problem {
-            self.errors.push(&err);
+        let polled = self.cache_cleanup.poll();
+        if let Some(err) = &polled.problem {
+            self.errors.push(err);
         }
-        if measure_again {
+        if !polled.cleared.is_empty() {
+            self.proxies.cleared(&polled.cleared);
+        }
+        if polled.measure_again {
             self.measure_cache();
         }
         if self.cache_cleanup.busy() {

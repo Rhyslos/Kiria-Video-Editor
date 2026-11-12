@@ -233,6 +233,7 @@ dependencies = [
  "os",
  "pollster",
  "project",
+ "project-index",
  "rfd",
  "ron",
  "serde",

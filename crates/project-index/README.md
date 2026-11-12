@@ -13,7 +13,7 @@ A small SQLite file, `projects.sqlite` in the app's data folder, with two tables
 - `folders`: every folder in the launcher's tree and its group (Projects, Media folders, Other folders).
 - `projects`: one row per known project file: name, picture size, frame rate, length, when it was last opened, when the file last changed, any issue (missing, saved by a newer version, damaged), and whether it was removed from the list.
 
-`Index::projects` is one query and is safe on the interface thread (200 projects list in well under a millisecond). `Index::refresh` walks the project and other folders (three levels deep, hidden folders skipped), re-reads only files whose modification time changed, and marks files that disappeared; the launcher runs it on a worker thread with its own connection. SQLite runs in WAL mode so both connections work at once.
+`Index::known_paths` names every known project file, those removed from the list too (the editor's cache cleanup reads them on a worker to tell which recordings other projects use). `Index::projects` is one query and is safe on the interface thread (200 projects list in well under a millisecond). `Index::refresh` walks the project and other folders (three levels deep, hidden folders skipped), re-reads only files whose modification time changed, and marks files that disappeared; the launcher runs it on a worker thread with its own connection. SQLite runs in WAL mode so both connections work at once.
 
 Saved versions are project files too, kept in `<project file>.versions/` beside their project. They belong to that project and are not listed: the search skips those folders, and a refresh drops version files an earlier search listed (unless one was opened on purpose).
 
