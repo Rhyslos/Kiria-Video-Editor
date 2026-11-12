@@ -18,6 +18,10 @@ pub const MAX_TRACK: f32 = 400.0;
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct TrackHeights {
     factors: HashMap<u64, f32>,
+    /// Heights of tracks that were removed, put aside for as long as the
+    /// app runs: when the removal is undone the track gets its height back.
+    /// They are not saved.
+    put_aside: HashMap<u64, f32>,
     /// Counts changes, so the page can tell when to save.
     revision: u64,
 }
@@ -30,6 +34,7 @@ impl TrackHeights {
                 .into_iter()
                 .filter(|(_, f)| f.is_finite() && *f > 0.0 && (*f - 1.0).abs() > f32::EPSILON)
                 .collect(),
+            put_aside: HashMap::new(),
             revision: 0,
         }
     }
@@ -78,12 +83,31 @@ impl TrackHeights {
         self.factors.contains_key(&track)
     }
 
-    /// Forgets the heights of tracks that are not among `tracks` any more
-    /// (they were removed), so what is saved does not grow for ever.
+    /// Keeps the heights of `tracks`, the tracks there are now. The height
+    /// of a track that is gone (it was removed) is put aside, so what is
+    /// saved does not grow for ever; a track that is back (the removal was
+    /// undone) gets its height back.
     pub fn keep_only(&mut self, tracks: &[u64]) {
-        let before = self.factors.len();
-        self.factors.retain(|track, _| tracks.contains(track));
-        if self.factors.len() != before {
+        let mut changed = false;
+        for track in tracks {
+            if let Some(factor) = self.put_aside.remove(track) {
+                self.factors.insert(*track, factor);
+                changed = true;
+            }
+        }
+        let gone: Vec<u64> = self
+            .factors
+            .keys()
+            .copied()
+            .filter(|track| !tracks.contains(track))
+            .collect();
+        for track in gone {
+            if let Some(factor) = self.factors.remove(&track) {
+                self.put_aside.insert(track, factor);
+                changed = true;
+            }
+        }
+        if changed {
             self.revision += 1;
         }
     }
@@ -227,6 +251,36 @@ mod tests {
         assert!(!h.is_changed(1));
         assert_eq!(h.height(2, 50.0), 80.0, "the others keep theirs");
         assert_eq!(h.to_save().len(), 1);
+    }
+
+    #[test]
+    fn a_track_that_comes_back_gets_its_height_back() {
+        let mut h = TrackHeights::default();
+        h.set(1, 50.0, 100.0);
+        h.set(2, 50.0, 80.0);
+        // Track 1 is removed.
+        h.keep_only(&[2, 3]);
+        assert_eq!(h.height(1, 50.0), 50.0, "gone: nothing of it is drawn or saved");
+        assert_eq!(h.to_save(), [(2, 1.6)]);
+        // The removal is undone.
+        let before = h.revision();
+        h.keep_only(&[1, 2, 3]);
+        assert_eq!(h.height(1, 50.0), 100.0, "as tall as it was");
+        assert_ne!(h.revision(), before, "and that is saved again");
+        assert_eq!(h.to_save().len(), 2);
+        // Redone and undone once more, it still comes back.
+        h.keep_only(&[2, 3]);
+        h.keep_only(&[1, 2, 3]);
+        assert_eq!(h.height(1, 50.0), 100.0);
+        // A track that never had a height of its own gets none.
+        h.keep_only(&[1, 2]);
+        h.keep_only(&[1, 2, 3]);
+        assert!(!h.is_changed(3));
+        // What is put aside is not part of what two layouts are compared by
+        // once saved and read again.
+        h.keep_only(&[2]);
+        let reopened = TrackHeights::from_saved(h.to_save());
+        assert_eq!(reopened.to_save(), [(2, 1.6)]);
     }
 
     #[test]
