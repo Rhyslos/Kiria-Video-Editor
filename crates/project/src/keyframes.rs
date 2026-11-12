@@ -296,22 +296,29 @@ impl Keyframes {
             .map(|(field, _)| *field)
     }
 
-    /// Moves every keyframe that lies in one of `stretches` (of the file,
-    /// ends excluded) by `by`, keeping its value and ease. A number can't
-    /// have two keyframes in one stretch: when a keyframe that stays lies
-    /// where one of the same number would land (its stretch moved by `by`),
-    /// nothing moves and the numbers in the way come back.
-    pub fn move_by(&mut self, stretches: &[(Time, Time)], by: Time) -> Result<(), Vec<LookField>> {
-        let inside = |at: Time| stretches.iter().any(|s| s.0 <= at && at < s.1);
+    /// Moves every keyframe that lies in one of the stretches (of the file,
+    /// ends excluded) by that stretch's distance, keeping its value and
+    /// ease (a clip with a speed ramp moves each frame's keyframes by a
+    /// different distance in the file). A number can't have two keyframes
+    /// in one stretch: when a keyframe that stays lies where one of the
+    /// same number would land (its stretch moved by its distance), nothing
+    /// moves and the numbers in the way come back.
+    pub fn move_by(&mut self, moves: &[((Time, Time), Time)]) -> Result<(), Vec<LookField>> {
+        let moved_by = |at: Time| {
+            moves
+                .iter()
+                .find(|(s, _)| s.0 <= at && at < s.1)
+                .map(|(_, by)| *by)
+        };
         let mut clashes = Vec::new();
         for (field, keys) in &self.0 {
-            let lands_on_one = stretches.iter().any(|s| {
-                let moves = keys.iter().any(|k| s.0 <= k.at && k.at < s.1);
-                let landing = (s.0 + by, s.1 + by);
-                moves
+            let lands_on_one = moves.iter().any(|(s, by)| {
+                let moves_here = keys.iter().any(|k| s.0 <= k.at && k.at < s.1);
+                let landing = (s.0 + *by, s.1 + *by);
+                moves_here
                     && keys
                         .iter()
-                        .any(|k| !inside(k.at) && landing.0 <= k.at && k.at < landing.1)
+                        .any(|k| moved_by(k.at).is_none() && landing.0 <= k.at && k.at < landing.1)
             });
             if lands_on_one {
                 clashes.push(*field);
@@ -321,8 +328,10 @@ impl Keyframes {
             return Err(clashes);
         }
         for keys in self.0.values_mut() {
-            for key in keys.iter_mut().filter(|k| inside(k.at)) {
-                key.at = key.at + by;
+            for key in keys.iter_mut() {
+                if let Some(by) = moved_by(key.at) {
+                    key.at = key.at + by;
+                }
             }
             keys.sort_by_key(|k| k.at);
         }
@@ -464,8 +473,57 @@ impl Clip {
     }
 
     /// Where on the timeline the moment `source` of its file is shown.
+    /// With a ramp: the first flick at which the clip has reached it.
     pub fn timeline_at(&self, source: Time) -> Time {
-        self.start + self.speed.unscale(source - self.source_in)
+        if self.ramp.is_empty() {
+            return self.start + self.speed.unscale(source - self.source_in);
+        }
+        let wanted = source - self.source_in;
+        // The played file only grows with time: find where it reaches `wanted`.
+        let reached = |flicks: i128| self.ramp.source_offset(Time::from_flicks(flicks)) >= wanted;
+        let (mut low, mut high) = (-1i128, 1i128);
+        while !reached(high) && high < 1 << 60 {
+            high *= 2;
+        }
+        while reached(low) && low > -(1 << 60) {
+            low *= 2;
+        }
+        while high - low > 1 {
+            let middle = low + (high - low) / 2;
+            if reached(middle) {
+                high = middle;
+            } else {
+                low = middle;
+            }
+        }
+        self.start + Time::from_flicks(high)
+    }
+
+    /// The timeline frame (at `rate`) that shows the moment `source` of its
+    /// file: the last frame starting at or before it in the file.
+    pub fn frame_showing(&self, source: Time, rate: Rate) -> i64 {
+        if self.ramp.is_empty() {
+            return rate.frame_at(self.timeline_at(source));
+        }
+        let shows = |frame: i64| self.source_at(rate.frame_start(frame)) <= source;
+        // Near where it is, then exactly, by halving.
+        let guess = rate.frame_at(self.timeline_at(source));
+        let (mut low, mut high) = (guess - 1, guess + 1);
+        while !shows(low) {
+            low -= 2;
+        }
+        while shows(high) {
+            high += 2;
+        }
+        while high - low > 1 {
+            let middle = low + (high - low) / 2;
+            if shows(middle) {
+                low = middle;
+            } else {
+                high = middle;
+            }
+        }
+        low
     }
 
     /// `at` brought onto the clip: its first frame's start when `at` is
@@ -497,7 +555,7 @@ impl Clip {
         let mut frames: Vec<i64> = fields
             .iter()
             .flat_map(|field| self.keyframes.of(*field))
-            .map(|key| rate.frame_at(self.timeline_at(key.at)))
+            .map(|key| self.frame_showing(key.at, rate))
             .filter(|frame| (first..end).contains(frame))
             .collect();
         frames.sort_unstable();

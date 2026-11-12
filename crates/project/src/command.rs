@@ -9,9 +9,10 @@ use crate::ids::{ClipId, LabelId, LinkId, MediaId, SequenceId, TrackId};
 use crate::keyframes::LookField;
 use crate::look::Look;
 use crate::model::{
-    Clip, LabelColor, MediaKind, MediaRef, Project, Region, Sequence, SequenceSettings, TimelineLabel, Track,
-    TrackKind,
+    Clip, FrameBlend, LabelColor, MediaKind, MediaRef, Project, Region, Sequence, SequenceSettings,
+    TimelineLabel, Track, TrackKind,
 };
+use crate::ramp::Ramp;
 use crate::sound::Sound;
 use crate::templates::Template;
 use crate::time::{Speed, Time};
@@ -55,6 +56,24 @@ pub enum Command {
         sequence: SequenceId,
         clip: ClipId,
         speed: Speed,
+    },
+    /// Gives `clip` (and its linked clips, at the same place on the
+    /// timeline) a speed that changes over time: `ramp`'s keyframes are
+    /// from `clip`'s start. It plays the same part of its file from the
+    /// same start, so its length follows the ramp (to the nearest frame)
+    /// and everything after it on the timeline moves along. An empty ramp
+    /// puts it back at its one speed.
+    SetRamp {
+        sequence: SequenceId,
+        clip: ClipId,
+        ramp: Ramp,
+    },
+    /// Whether `clip`'s picture mixes the two recorded frames around each
+    /// moment when slowed down ([`FrameBlend`]). Only clips on video tracks.
+    SetFrameBlend {
+        sequence: SequenceId,
+        clip: ClipId,
+        blend: FrameBlend,
     },
     /// Sets where `clip`'s picture sits in the frame, which part of it
     /// shows, how strong it is and its quick colour. Only that clip: its
@@ -364,6 +383,26 @@ impl Command {
                 speed,
             } => {
                 crate::edits::set_speed(&mut p, *sequence, *clip, *speed)?;
+            }
+            Command::SetRamp { sequence, clip, ramp } => {
+                crate::edits::set_ramp(&mut p, *sequence, *clip, ramp)?;
+            }
+            Command::SetFrameBlend {
+                sequence,
+                clip,
+                blend,
+            } => {
+                let seq = sequence_mut(&mut p, *sequence)?;
+                if seq
+                    .audio_tracks
+                    .iter()
+                    .any(|t| t.clips.iter().any(|c| c.id == *clip))
+                {
+                    return Err(AppError::new("Sound has no frames to blend")
+                        .why("Frame blending mixes pictures, and belongs to clips on video tracks.")
+                        .fix("Select the clip's picture on a video track."));
+                }
+                crate::animate::picture_clip(&mut p, *sequence, *clip)?.0.blend = *blend;
             }
             Command::SetLook { sequence, clip, look } => {
                 look.check()?;
@@ -732,8 +771,8 @@ fn trim(p: &mut Project, sequence: SequenceId, clip: ClipId, edge: Edge, to: Tim
             let mut t = c.clone();
             match edge {
                 Edge::Start => {
+                    t = c.start_cut_by(delta);
                     t.start = c.start + delta;
-                    t.source_in = c.source_in + c.speed.scale(delta);
                     t.duration = c.duration - delta;
                 }
                 Edge::End => t.duration = c.duration + delta,
@@ -920,6 +959,8 @@ fn place_media(
         look: Look::PLAIN,
         sound: Default::default(),
         keyframes: Default::default(),
+        ramp: Default::default(),
+        blend: Default::default(),
     };
 
     if let Some(v) = video {
@@ -1009,6 +1050,8 @@ pub(crate) fn split(
                     link: *right_link,
                     sound: left.sound.without_fade_in(),
                     keyframes: left.keyframes.cut_to(cut, left.source_at(left.end())),
+                    // Both halves keep the whole ramp, in its place.
+                    ramp: left.ramp.shifted(Time::ZERO - first),
                     ..left.clone()
                 };
                 track.clips[i] = Clip {
@@ -1163,6 +1206,8 @@ mod tests {
             look: Default::default(),
             sound: Default::default(),
             keyframes: Default::default(),
+            ramp: Default::default(),
+            blend: Default::default(),
         }
     }
 
@@ -2201,6 +2246,189 @@ mod tests {
         );
         assert!(refused(sound, look).contains("no picture"));
         assert!(refused(ClipId(9999), look).contains("clip"));
+    }
+
+    /// The first clip (0-30 s of a 30 s file, with two linked sound
+    /// streams) easing from full speed into half speed 10 s in, over 2 s.
+    fn ramped() -> (Project, SequenceId, ClipId) {
+        let (p, seq) = imported();
+        let first = first_video(&p, 0).id;
+        let ramp = Ramp::new([
+            crate::ramp::SpeedKey {
+                at: Time::seconds(10),
+                speed: Speed::NORMAL,
+                ease: crate::Ease::Linear,
+            },
+            crate::ramp::SpeedKey {
+                at: Time::seconds(12),
+                speed: Speed::new(1, 2).unwrap(),
+                ease: crate::Ease::Linear,
+            },
+        ]);
+        let p = Command::SetRamp {
+            sequence: seq,
+            clip: first,
+            ramp,
+        }
+        .apply(&p)
+        .unwrap();
+        (p, seq, first)
+    }
+
+    #[test]
+    fn a_ramp_keeps_the_same_part_of_the_file_and_its_length_follows() {
+        let (p, _, _) = ramped();
+        let s = p.active().unwrap();
+        let a = &s.video_tracks[0].clips[0];
+        // 10 s at full speed, 2 s playing 1.5 s, then 18.5 s of file at
+        // half speed (37 s): 49 s, for the same 30 s of the file.
+        assert_eq!(a.duration, Time::seconds(49));
+        assert_eq!(a.source_len(), Time::seconds(30));
+        assert_eq!(a.source_at(Time::seconds(11)), Time::from_ratio(87, 8).unwrap());
+        assert_eq!(a.speed_summary(), "Ramp 100→50%");
+        assert_eq!(
+            s.video_tracks[0].clips[1].start,
+            Time::seconds(49),
+            "what follows moved along"
+        );
+        for sound in [&s.audio_tracks[0].clips[0], &s.audio_tracks[1].clips[0]] {
+            assert_eq!(
+                (sound.duration, &sound.ramp),
+                (a.duration, &a.ramp),
+                "its sound follows"
+            );
+        }
+        assert!(p.problems().is_empty());
+    }
+
+    #[test]
+    fn a_ramps_length_is_whole_frames_and_never_past_the_files_end() {
+        let (p, seq) = imported();
+        let first = first_video(&p, 0).id;
+        // A third of normal speed after an eased start: lengths that are
+        // no whole number of frames.
+        let ramp = Ramp::new([
+            crate::ramp::SpeedKey {
+                at: Time::ZERO,
+                speed: Speed::NORMAL,
+                ease: crate::Ease::Smooth,
+            },
+            crate::ramp::SpeedKey {
+                at: Time::from_ratio(7, 10).unwrap(),
+                speed: Speed::new(1, 3).unwrap(),
+                ease: crate::Ease::Linear,
+            },
+        ]);
+        let q = Command::SetRamp {
+            sequence: seq,
+            clip: first,
+            ramp,
+        }
+        .apply(&p)
+        .unwrap();
+        let a = first_video(&q, 0);
+        let rate = Rate::FPS_60;
+        assert_eq!(rate.snap(a.duration), a.duration);
+        assert!(a.source_len() <= Time::seconds(30), "inside the file");
+        assert!(Time::seconds(30) - a.source_len() < rate.frame_duration());
+    }
+
+    #[test]
+    fn a_ramp_keeps_its_place_on_the_picture_through_trims_and_splits() {
+        let (p, seq, first) = ramped();
+        let before = first_video(&p, 0);
+        let at = |c: &Clip, t: i64| c.source_at(Time::seconds(t));
+        // Trimmed 5 s at the start: the rest shows what it showed.
+        let trimmed = Command::Trim {
+            sequence: seq,
+            clip: first,
+            edge: Edge::Start,
+            to: Time::seconds(5),
+        }
+        .apply(&p)
+        .unwrap();
+        let t = first_video(&trimmed, 0);
+        for s in [5, 11, 13, 30] {
+            assert_eq!(at(&t, s), at(&before, s), "at {s} s");
+        }
+        assert_eq!(t.ramp.keys()[0].at, Time::seconds(5));
+        // Trimmed back out: as before.
+        let back = Command::Trim {
+            sequence: seq,
+            clip: first,
+            edge: Edge::Start,
+            to: Time::ZERO,
+        }
+        .apply(&trimmed)
+        .unwrap();
+        assert_eq!(first_video(&back, 0), before);
+        // Split in the middle of the ramp: both halves as before.
+        let cut = Command::Split {
+            sequence: seq,
+            at: Time::seconds(11),
+            clip: Some(first),
+        }
+        .apply(&p)
+        .unwrap();
+        let (left, right) = (first_video(&cut, 0), first_video(&cut, 1));
+        assert_eq!(at(&left, 10), at(&before, 10));
+        for s in [11, 12, 20, 40] {
+            assert_eq!(at(&right, s), at(&before, s), "at {s} s");
+        }
+        assert_eq!(right.end(), before.end());
+        // A plain speed takes the ramp's place; an empty ramp is the speed again.
+        let plain = Command::SetSpeed {
+            sequence: seq,
+            clip: first,
+            speed: Speed::NORMAL,
+        }
+        .apply(&p)
+        .unwrap();
+        let c = first_video(&plain, 0);
+        assert!(c.ramp.is_empty());
+        assert_eq!(
+            (c.duration, c.source_len()),
+            (Time::seconds(30), Time::seconds(30))
+        );
+        let none = Command::SetRamp {
+            sequence: seq,
+            clip: first,
+            ramp: Ramp::default(),
+        }
+        .apply(&p)
+        .unwrap();
+        assert_eq!(first_video(&none, 0).duration, Time::seconds(30));
+    }
+
+    #[test]
+    fn frame_blending_is_for_pictures() {
+        let (p, seq, first) = ramped();
+        let blended = Command::SetFrameBlend {
+            sequence: seq,
+            clip: first,
+            blend: FrameBlend::Blend,
+        }
+        .apply(&p)
+        .unwrap();
+        assert_eq!(first_video(&blended, 0).blend, FrameBlend::Blend);
+        let sound = p.active().unwrap().audio_tracks[0].clips[0].id;
+        let refused = Command::SetFrameBlend {
+            sequence: seq,
+            clip: sound,
+            blend: FrameBlend::Blend,
+        }
+        .apply(&p);
+        assert!(refused.is_err());
+        let odd = Command::SetRamp {
+            sequence: seq,
+            clip: first,
+            ramp: Ramp::new([crate::ramp::SpeedKey {
+                at: Time::ZERO,
+                speed: Speed::new(10_001, 10_000).unwrap(),
+                ease: crate::Ease::Linear,
+            }]),
+        };
+        assert!(odd.apply(&p).is_err(), "speeds a ramp can't add up are refused");
     }
 
     #[test]

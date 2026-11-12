@@ -112,6 +112,31 @@ enum Action {
         change: u8,
         by: i64,
     },
+    /// Gives a clip a slow-motion ramp starting `at` seconds into it (back
+    /// to full speed afterwards with `back`), or with `clear` takes it away.
+    Ramp {
+        pick: usize,
+        at: i64,
+        back: bool,
+        clear: bool,
+    },
+    /// Plays a clip at a quarter, half, normal or twice the speed.
+    Speed {
+        pick: usize,
+        which: u8,
+    },
+    /// Turns frame blending on or off for a clip (refused for sound).
+    Blend {
+        pick: usize,
+        on: bool,
+    },
+    /// Trims a clip's start (`ripple`: the rest follows) or slips it, by
+    /// `by` frames: what a ramp has to keep its place through.
+    Trim {
+        pick: usize,
+        by: i64,
+        how: u8,
+    },
     Undo,
     Redo,
 }
@@ -145,6 +170,11 @@ fn action() -> impl Strategy<Value = Action> {
             .prop_map(|(pick, at, value, keyed)| Action::Animate { pick, at, value, keyed }),
         3 => (any::<usize>(), any::<usize>(), any::<bool>(), 0u8..4, -600i64..600)
             .prop_map(|(pick, mark, both, change, by)| Action::Marks { pick, mark, both, change, by }),
+        3 => (any::<usize>(), 0i64..20, any::<bool>(), prop::bool::weighted(0.2))
+            .prop_map(|(pick, at, back, clear)| Action::Ramp { pick, at, back, clear }),
+        1 => (any::<usize>(), 0u8..4).prop_map(|(pick, which)| Action::Speed { pick, which }),
+        1 => (any::<usize>(), any::<bool>()).prop_map(|(pick, on)| Action::Blend { pick, on }),
+        3 => (any::<usize>(), -300i64..300, 0u8..3).prop_map(|(pick, by, how)| Action::Trim { pick, by, how }),
         2 => Just(Action::Undo),
         1 => Just(Action::Redo),
     ]
@@ -190,6 +220,8 @@ fn command_for(action: &Action, p: &Project, media: MediaId, recording: MediaId)
                     look: Default::default(),
                     sound: Default::default(),
                     keyframes: Default::default(),
+                    ramp: Default::default(),
+                    blend: Default::default(),
                 },
             }
         }
@@ -386,6 +418,66 @@ fn command_for(action: &Action, p: &Project, media: MediaId, recording: MediaId)
                 // A stretch with no clips in it is nothing to save.
                 template: Box::new(Template::capture(p, sequence, range).ok()?),
                 at: Time::from_ratio(at * 2 + 1, 2)?,
+            }
+        }
+        Action::Ramp {
+            pick,
+            at,
+            back,
+            clear,
+        } => Command::SetRamp {
+            sequence,
+            clip: pick_clip(pick)?,
+            ramp: if clear {
+                project::Ramp::default()
+            } else {
+                project::ramp::slow_motion(
+                    Time::seconds(at),
+                    project::Speed::NORMAL,
+                    project::Speed::new(1, 4).ok()?,
+                    Time::from_ratio(1, 2)?,
+                    back.then_some(Time::seconds(1)),
+                )
+            },
+        },
+        Action::Speed { pick, which } => Command::SetSpeed {
+            sequence,
+            clip: pick_clip(pick)?,
+            speed: [(1, 4), (1, 2), (1, 1), (2, 1)]
+                .get(usize::from(which))
+                .and_then(|(n, d)| project::Speed::new(*n, *d).ok())?,
+        },
+        Action::Blend { pick, on } => Command::SetFrameBlend {
+            sequence,
+            clip: pick_clip(pick)?,
+            blend: if on {
+                project::FrameBlend::Blend
+            } else {
+                project::FrameBlend::Off
+            },
+        },
+        Action::Trim { pick, by, how } => {
+            let id = pick_clip(pick)?;
+            let clip = seq.tracks().flat_map(|t| t.clips.iter()).find(|c| c.id == id)?;
+            let by = seq.settings.frame_rate.frame_start(by);
+            match how {
+                0 => Command::Trim {
+                    sequence,
+                    clip: id,
+                    edge: project::Edge::Start,
+                    to: clip.start + by,
+                },
+                1 => Command::RippleTrim {
+                    sequence,
+                    clip: id,
+                    edge: project::Edge::Start,
+                    to: clip.start + by,
+                },
+                _ => Command::Slip {
+                    sequence,
+                    clip: id,
+                    by,
+                },
             }
         }
         Action::Undo | Action::Redo => return None,

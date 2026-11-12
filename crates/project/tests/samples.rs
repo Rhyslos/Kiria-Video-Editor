@@ -92,6 +92,8 @@ fn rich_project() -> Project {
         look: Default::default(),
         sound: Default::default(),
         keyframes: Default::default(),
+        ramp: Default::default(),
+        blend: Default::default(),
     };
     // The picture in a corner, cut a little, slightly see-through and warmer.
     let look = project::Look {
@@ -128,9 +130,20 @@ fn rich_project() -> Project {
     keyframes.set(project::LookField::Scale, from + Time::seconds(6), none, 450_000);
     let at_five = (from + Time::seconds(5), from + Time::seconds(6));
     keyframes.set_ease(project::LookField::Scale, at_five, project::Ease::Hold);
+    // It eases into slow motion two seconds in and back out a second
+    // later, blending frames (format 11); its sound follows the same ramp.
+    let ramp = project::ramp::slow_motion(
+        Time::seconds(2),
+        project::Speed::NORMAL,
+        project::Speed::new(1, 4).expect("a quarter"),
+        Time::from_ratio(1, 2).expect("half a second"),
+        Some(Time::seconds(1)),
+    );
     seq.video_tracks[0].clips.push_back(Clip {
         look,
         keyframes,
+        ramp: ramp.clone(),
+        blend: project::FrameBlend::Blend,
         ..clip(v_clip, 0)
     });
     // The game sound a little quieter, a little to the left, fading in and out.
@@ -142,6 +155,7 @@ fn rich_project() -> Project {
     };
     seq.audio_tracks[0].clips.push_back(Clip {
         sound,
+        ramp,
         ..clip(a_clip, 1)
     });
     seq.audio_tracks.push_back(extra_audio);
@@ -220,6 +234,23 @@ fn version_9_sample_opens_without_keyframes() {
 }
 
 #[test]
+fn version_10_sample_opens_without_ramps() {
+    let project = file::load(&sample_path(10)).expect("the version 10 sample opens");
+    let seq = project.active().expect("an open timeline");
+    let picture = &seq.video_tracks[0].clips[0];
+    assert!(!picture.keyframes.is_empty(), "format 10 kept the keyframes");
+    for clip in seq.tracks().flat_map(|t| t.clips.iter()) {
+        assert!(clip.ramp.is_empty(), "format 10 had no speed ramps");
+        assert_eq!(clip.blend, project::FrameBlend::Off, "nor frame blending");
+        assert_eq!(
+            clip.source_len(),
+            clip.duration,
+            "so a clip plays at its one speed"
+        );
+    }
+}
+
+#[test]
 fn current_format_sample_matches_the_model() {
     let path = sample_path(FORMAT_VERSION);
     if std::env::var_os("WRITE_SAMPLES").is_some() {
@@ -263,12 +294,25 @@ fn template_version_1_sample_opens() {
     );
 }
 
-/// The version 1 sample was written before clips had a `look`, a `sound`
-/// or `keyframes`. Apart from
+/// The version 1 sample was written before clips had a `look`, a `sound`,
+/// `keyframes`, a `ramp` or `blend`. Apart from
 /// that, it is the template the model gives today.
 #[test]
 fn the_stored_template_matches_the_model_but_for_what_came_later() {
-    let mut expected = rich_template();
+    // Cut from the project as it was then: clips at their one speed (a
+    // ramp moves where in the file a cut clip begins).
+    let mut p = rich_project();
+    for sequence in p.sequences.iter_mut() {
+        let tracks = sequence
+            .video_tracks
+            .iter_mut()
+            .chain(sequence.audio_tracks.iter_mut());
+        for clip in tracks.flat_map(|t| t.clips.iter_mut()) {
+            clip.ramp = project::Ramp::default();
+        }
+    }
+    let range = Region::between(Time::seconds(11), Time::seconds(18));
+    let mut expected = Template::capture(&p, p.active_sequence, range).expect("the stretch has clips");
     let tracks = expected
         .video_tracks
         .iter_mut()
@@ -277,6 +321,8 @@ fn the_stored_template_matches_the_model_but_for_what_came_later() {
         clip.look = project::Look::PLAIN;
         clip.sound = project::Sound::PLAIN;
         clip.keyframes = project::Keyframes::default();
+        clip.ramp = project::Ramp::default();
+        clip.blend = project::FrameBlend::Off;
     }
     assert_eq!(read_template(1), expected);
 }

@@ -526,6 +526,8 @@ mod tests {
             look: Default::default(),
             sound: Default::default(),
             keyframes: Default::default(),
+            ramp: Default::default(),
+            blend: Default::default(),
         };
         let mut placed = p.clone();
         for start in [0, 4] {

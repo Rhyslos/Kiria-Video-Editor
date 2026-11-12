@@ -10,6 +10,8 @@ use crate::command::{
 };
 use crate::ids::{ClipId, SequenceId, TrackId};
 use crate::model::{Clip, MediaKind, Project, Region, Sequence};
+use crate::ramp::Ramp;
+use crate::time::Rate;
 use crate::time::{Speed, Time};
 use diag::AppError;
 
@@ -39,7 +41,7 @@ pub(crate) fn ripple_trim(
         if group.contains(&c.id) {
             match edge {
                 Edge::Start => {
-                    t.source_in = c.source_in + c.speed.scale(delta);
+                    t = c.start_cut_by(delta);
                     t.duration = c.duration - delta;
                 }
                 Edge::End => t.duration = c.duration + delta,
@@ -69,9 +71,11 @@ pub(crate) fn set_speed(
     let mut changed = Vec::new();
     for c in seq.tracks().flat_map(|t| t.clips.iter()) {
         if group.contains(&c.id) {
+            // A ramp gives way to the one speed.
             changed.push(Clip {
                 duration: speed.unscale(c.source_len()),
                 speed,
+                ramp: Ramp::default(),
                 ..c.clone()
             });
         } else if c.start >= after {
@@ -82,6 +86,90 @@ pub(crate) fn set_speed(
         }
     }
     put_back(p, sequence, changed)
+}
+
+/// See [`crate::Command::SetRamp`].
+pub(crate) fn set_ramp(p: &mut Project, sequence: SequenceId, clip: ClipId, ramp: &Ramp) -> diag::Result<()> {
+    if let Some(problem) = ramp.problems("The ramp").into_iter().next() {
+        return Err(AppError::new("That speed ramp can't be used").why(format!("{problem}.")));
+    }
+    let seq = sequence_ref(p, sequence)?;
+    let rate = seq.settings.frame_rate;
+    let reference = find(seq, clip)?;
+    let group = with_linked(seq, clip)?;
+    let file_end = |c: &Clip| {
+        p.media
+            .get(&c.media)
+            .filter(|m| m.kind != MediaKind::Image && m.duration > Time::ZERO)
+            .map(|m| m.duration)
+    };
+    let new_end = ramped(&reference, ramp.clone(), rate, file_end(&reference)).end();
+    let shift = new_end - reference.end();
+    let after = reference.end();
+    let mut changed = Vec::new();
+    for c in seq.tracks().flat_map(|t| t.clips.iter()) {
+        if group.contains(&c.id) {
+            // Linked clips get the same ramp at the same place on the timeline.
+            let own = ramp.shifted(reference.start - c.start);
+            changed.push(ramped(c, own, rate, file_end(c)));
+        } else if c.start >= after && shift != Time::ZERO {
+            changed.push(Clip {
+                start: c.start + shift,
+                ..c.clone()
+            });
+        }
+    }
+    put_back(p, sequence, changed)
+}
+
+/// `c` with `ramp`, playing the same part of its file from the same start:
+/// its length is what the ramp needs for that, brought to the nearest
+/// timeline frame (at `rate`) and never past `file_end`. An empty ramp
+/// leaves it at its one speed, exactly.
+fn ramped(c: &Clip, ramp: Ramp, rate: Rate, file_end: Option<Time>) -> Clip {
+    let end_in_file = c.source_in + c.source_len();
+    let mut new = Clip { ramp, ..c.clone() };
+    if new.ramp.is_empty() {
+        new.duration = c.speed.unscale(c.source_len());
+        return new;
+    }
+    let reached = |frame: i64| new.source_at(rate.frame_start(frame));
+    // The first frame boundary after the start, then the first where the
+    // file is played to its end (speeds are never below 1/100, so the
+    // doubling finds it within a few steps).
+    let first = rate.frame_at(c.start) + 1;
+    let (mut low, mut high, mut step) = (first, first, 1i64);
+    for _ in 0..62 {
+        if reached(high) >= end_in_file {
+            break;
+        }
+        low = high;
+        high = high.saturating_add(step);
+        step = step.saturating_mul(2);
+    }
+    while low < high {
+        let middle = low + (high - low) / 2;
+        if reached(middle) >= end_in_file {
+            high = middle;
+        } else {
+            low = middle + 1;
+        }
+    }
+    let past = high;
+    let before = past - 1;
+    let nearer = if before >= first && end_in_file - reached(before) <= reached(past) - end_in_file {
+        before
+    } else {
+        past
+    };
+    let beyond_file = file_end.is_some_and(|end| reached(nearer) > end);
+    let end = if beyond_file && before >= first {
+        before
+    } else {
+        nearer
+    };
+    new.duration = rate.frame_start(end) - c.start;
+    new
 }
 
 pub(crate) fn roll(p: &mut Project, sequence: SequenceId, clip: ClipId, to: Time) -> diag::Result<()> {
@@ -99,9 +187,8 @@ pub(crate) fn roll(p: &mut Project, sequence: SequenceId, clip: ClipId, to: Time
         if let Some(next) = next_to(seq, &c) {
             changed.push(Clip {
                 start: next.start + delta,
-                source_in: next.source_in + next.speed.scale(delta),
                 duration: next.duration - delta,
-                ..next
+                ..next.start_cut_by(delta)
             });
         }
         changed.push(Clip {
@@ -117,8 +204,9 @@ pub(crate) fn slip(p: &mut Project, sequence: SequenceId, clip: ClipId, by: Time
     let mut changed = Vec::new();
     for id in with_linked(seq, clip)? {
         let c = find(seq, id)?;
+        // A ramp stays where it is in the clip; the picture slips under it.
         changed.push(Clip {
-            source_in: c.source_in + c.speed.scale(by),
+            source_in: c.source_in + c.source_offset(by),
             ..c
         });
     }
@@ -139,9 +227,8 @@ pub(crate) fn slide(p: &mut Project, sequence: SequenceId, clip: ClipId, by: Tim
         if let Some(next) = next_to(seq, &c) {
             changed.push(Clip {
                 start: next.start + by,
-                source_in: next.source_in + next.speed.scale(by),
                 duration: next.duration - by,
-                ..next
+                ..next.start_cut_by(by)
             });
         }
         changed.push(Clip {
