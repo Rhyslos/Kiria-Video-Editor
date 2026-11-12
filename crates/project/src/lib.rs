@@ -7,6 +7,7 @@
 //! - [`ramp`]: how a clip's speed changes over time (speed ramps).
 //! - [`sound`]: how loud a clip is, its pan and its fades.
 //! - [`library`]: labels, custom lists and notes on the project's media.
+//! - [`global_labels`]: label names and colours offered in every project.
 //! - [`model`]: projects, timelines, tracks, clips, media, labels, the region.
 //! - [`file`]: the versioned project file, atomic saves and migrations.
 //! - [`animate`]: setting a clip's look at a moment, keyframes added, removed and reset.
@@ -25,6 +26,7 @@ pub mod command;
 pub mod document;
 mod edits;
 pub mod file;
+pub mod global_labels;
 pub mod history;
 pub mod ids;
 pub mod keyframes;
@@ -44,6 +46,7 @@ pub mod versions;
 pub use clipboard::CopiedKeyframes;
 pub use command::{Command, Edge};
 pub use document::{Document, OpenCheck, Recovery, thumbnail_path, view_path};
+pub use global_labels::{GlobalLabel, GlobalLabels};
 pub use history::History;
 pub use ids::{ClipId, LabelId, LinkId, MediaId, MediaLabelId, MediaListId, SequenceId, TrackId};
 pub use keyframes::{Ease, Keyframe, Keyframes, LookField};

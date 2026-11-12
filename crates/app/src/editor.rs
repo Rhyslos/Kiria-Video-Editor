@@ -90,6 +90,8 @@ pub struct Editor {
     /// How fast each track's waveforms or pictures are being read, for the time left.
     track_paces: timeline_panel::TrackPaces,
     relink: crate::relink::Relinker,
+    /// Label names and colours offered in every project, and their saving.
+    global_labels: crate::global_labels::Everywhere,
     /// The project's media in the library index, on a thread of its own:
     /// what the drawer's "Find a file" and the search palette ask.
     library: library::Live,
@@ -296,6 +298,7 @@ impl Editor {
         viewer.set_proxies(Some(proxies.shelf()));
         viewer.set_key_frame_first(settings.jump_picture.key_frame_first());
         let display = crate::display::ViewerDisplay::new(settings.split_view, &viewer);
+        let global_labels = crate::global_labels::Everywhere::load(&data_dir, &mut errors);
         Editor {
             theme: settings.theme.theme(),
             settings,
@@ -344,6 +347,7 @@ impl Editor {
             full_screen_changed: full_screen,
             select_first_clip,
             save_frame_requested: false,
+            global_labels,
             library: {
                 let ctx = cc.egui_ctx.clone();
                 library::Live::start(move || ctx.request_repaint())
@@ -1663,14 +1667,20 @@ impl Editor {
         let answer = self.library.answer(crate::media_drawer::ASKER);
         let found = answer.as_ref().map(|a| a.media.as_slice());
         let (drawer, theme, missing) = (&mut self.drawer, &self.theme, &self.relink.missing);
-        let proxies = &self.proxies;
+        let (proxies, global_labels) = (&self.proxies, &self.global_labels.labels);
         let proxy = crate::media_drawer::ProxyInfo {
             status: &|media| proxies.status(media),
             mode: self.settings.proxies,
         };
         if let Some(document) = &self.document {
             picked = ui_kit::drawer::overlay(&ctx, theme, egui::Id::unique("media-drawer"), rect, |ui| {
-                drawer.ui(ui, theme, document.project(), found, missing, &proxy)
+                let about = crate::media_drawer::About {
+                    found,
+                    missing,
+                    proxy,
+                    global: global_labels,
+                };
+                drawer.ui(ui, theme, document.project(), &about)
             })
             .inner;
         }
@@ -1688,6 +1698,13 @@ impl Editor {
             Some(Picked::Edit(command)) => {
                 if let Err(err) = self.with_document(|d| d.apply(*command)) {
                     self.errors.push(&err);
+                }
+                None
+            }
+            Some(Picked::Everywhere(change)) => {
+                match self.global_labels.change(&self.jobs, &self.data_dir, change) {
+                    Ok(line) => self.status = line,
+                    Err(err) => self.errors.push(&err),
                 }
                 None
             }
@@ -1773,6 +1790,9 @@ impl Editor {
             );
         }
         if let Some(err) = self.library.take_error() {
+            self.errors.push(&err);
+        }
+        if let Some(err) = self.global_labels.poll() {
             self.errors.push(&err);
         }
     }

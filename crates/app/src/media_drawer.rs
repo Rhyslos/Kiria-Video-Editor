@@ -9,7 +9,10 @@
 use crate::import;
 use crate::proxies::{self, Status};
 use library::{Query, Sort, Type};
-use project::{Command, MediaId, MediaLabel, MediaLabelId, MediaListId, MediaRef, Project};
+use project::{
+    Command, GlobalLabel, GlobalLabels, LabelColor, Library, MediaId, MediaLabel, MediaLabelId, MediaListId,
+    MediaRef, Project,
+};
 use ui_kit::Theme;
 use ui_kit::drawer::DrawerTab;
 
@@ -32,12 +35,25 @@ pub enum Placement {
 pub enum Picked {
     /// A change to the project's labels, lists or notes: one undo step.
     Edit(Box<Command>),
+    /// A change to the labels offered in every project.
+    Everywhere(Everywhere),
     /// Place the file on the timeline.
     Place(MediaId, Placement),
     /// Build the file's proxy next.
     BuildProxy(MediaId),
     /// Delete the file's proxy.
     DeleteProxy(MediaId),
+}
+
+/// What the drawer is told besides the project.
+pub struct About<'a> {
+    /// The library index's newest answer (`None` until it has one).
+    pub found: Option<&'a [MediaId]>,
+    /// Files the project has that aren't on disk.
+    pub missing: &'a [MediaId],
+    pub proxy: ProxyInfo<'a>,
+    /// The labels offered in every project.
+    pub global: &'a GlobalLabels,
 }
 
 /// What the drawer is told about proxies: each file's, and the mode.
@@ -118,17 +134,20 @@ impl MediaDrawer {
         self.kind.is_some() || self.label.is_some() || self.list.is_some()
     }
 
-    /// Draws the drawer's contents: `found` is the index's newest answer
-    /// (`None` until it has one). Returns what was asked for, if anything.
+    /// Draws the drawer's contents. Returns what was asked for, if anything.
     pub fn ui(
         &mut self,
         ui: &mut egui::Ui,
         theme: &Theme,
         project: &Project,
-        found: Option<&[MediaId]>,
-        missing: &[MediaId],
-        proxy: &ProxyInfo<'_>,
+        about: &About<'_>,
     ) -> Option<Picked> {
+        let About {
+            found,
+            missing,
+            proxy,
+            global,
+        } = about;
         ui_kit::drawer::tab_switch(ui, &mut self.tab);
         ui.add_space(6.0);
         if self.tab == DrawerTab::Effects {
@@ -143,7 +162,7 @@ impl MediaDrawer {
         ui.add_space(4.0);
         self.filters(ui, project);
         ui.add_space(6.0);
-        let list: Vec<&MediaRef> = match found {
+        let list: Vec<&MediaRef> = match *found {
             Some(ids) => ids.iter().filter_map(|id| project.media.get(id)).collect(),
             None => listed(project, &self.filter),
         };
@@ -169,6 +188,7 @@ impl MediaDrawer {
                         missing: missing.contains(&media.id),
                         proxy: &status,
                         mode: proxy.mode,
+                        global,
                     };
                     if let Some(asked) = self.row(ui, theme, project, &about) {
                         picked = Some(asked);
@@ -245,6 +265,7 @@ struct Row<'a> {
     missing: bool,
     proxy: &'a Status,
     mode: cache::proxy::ProxyMode,
+    global: &'a GlobalLabels,
 }
 
 impl MediaDrawer {
@@ -264,6 +285,7 @@ impl MediaDrawer {
             missing,
             proxy,
             mode,
+            global,
         } = *about;
         let width = ui.available_width();
         // What its proxy is up to and its labels, on a line under the details.
@@ -401,8 +423,11 @@ impl MediaDrawer {
                 ui.close();
             }
             ui.separator();
-            if let Some(asked) = self.organise_menu(ui, project, media.id) {
-                picked = Some(Picked::Edit(Box::new(asked)));
+            if let Some(asked) = self.organise_menu(ui, project, global, media.id) {
+                picked = Some(match asked {
+                    Organised::Edit(command) => Picked::Edit(command),
+                    Organised::Everywhere(change) => Picked::Everywhere(change),
+                });
                 ui.close();
             }
         });
@@ -411,55 +436,85 @@ impl MediaDrawer {
 
     /// Labels, lists and the note, in a file's right-click menu. Each change
     /// is one command, so one undo step.
-    fn organise_menu(&mut self, ui: &mut egui::Ui, project: &Project, media: MediaId) -> Option<Command> {
+    fn organise_menu(
+        &mut self,
+        ui: &mut egui::Ui,
+        project: &Project,
+        global: &GlobalLabels,
+        media: MediaId,
+    ) -> Option<Organised> {
         let library = &project.library;
         let mut asked = None;
+        let choices = label_choices(&project.library, global);
         ui.menu_button("Labels", |ui| {
-            for label in &library.labels {
-                let mut on = library.has_label(media, label.id);
-                let text =
-                    egui::RichText::new(&label.name).color(crate::timeline_panel::label_colour(label.color));
+            for choice in &choices {
+                let (name, color, everywhere) = choice.shown();
+                let mut on = choice
+                    .project_label()
+                    .is_some_and(|l| library.has_label(media, l));
+                let mut text = egui::text::LayoutJob::default();
+                text.append(
+                    name,
+                    0.0,
+                    egui::TextFormat::simple(
+                        egui::FontId::proportional(13.0),
+                        crate::timeline_panel::label_colour(color),
+                    ),
+                );
+                if everywhere {
+                    text.append(
+                        "everywhere",
+                        8.0,
+                        egui::TextFormat::simple(
+                            egui::FontId::proportional(11.0),
+                            ui.visuals().weak_text_color(),
+                        ),
+                    );
+                }
                 if ui.checkbox(&mut on, text).changed() {
-                    asked = Some(Command::SetMediaLabel {
-                        media: vec![media],
-                        label: label.id,
-                        on,
-                    });
+                    asked = Some(Organised::Edit(Box::new(choice.command(media, on))));
                 }
             }
-            if !library.labels.is_empty() {
+            if !choices.is_empty() {
                 ui.separator();
             }
             if let Some(name) = name_field(ui, &mut self.name_draft, "New label") {
-                asked = Some(Command::AddMediaLabel {
+                // A name offered everywhere keeps its colour.
+                let color = global
+                    .find(&name)
+                    .map_or_else(|| library.next_color(), |g| g.color);
+                asked = Some(Organised::Edit(Box::new(Command::AddMediaLabel {
                     label: MediaLabel {
                         id: MediaLabelId(0),
                         name,
-                        color: library.next_color(),
+                        color,
                     },
                     media: vec![media],
-                });
+                })));
+            }
+            if let Some(change) = everywhere_menu(ui, library, global) {
+                asked = Some(Organised::Everywhere(change));
             }
         });
         ui.menu_button("Lists", |ui| {
             for list in &library.lists {
                 let mut member = list.media.contains(&media);
                 if ui.checkbox(&mut member, &list.name).changed() {
-                    asked = Some(Command::SetListMember {
+                    asked = Some(Organised::Edit(Box::new(Command::SetListMember {
                         list: list.id,
                         media: vec![media],
                         member,
-                    });
+                    })));
                 }
             }
             if !library.lists.is_empty() {
                 ui.separator();
             }
             if let Some(name) = name_field(ui, &mut self.name_draft, "New list") {
-                asked = Some(Command::AddMediaList {
+                asked = Some(Organised::Edit(Box::new(Command::AddMediaList {
                     name,
                     media: vec![media],
-                });
+                })));
             }
         });
         ui.menu_button("Note", |ui| {
@@ -474,10 +529,10 @@ impl MediaDrawer {
                     .desired_width(240.0),
             );
             if ui.button("Keep note").clicked() {
-                asked = Some(Command::SetMediaNote {
+                asked = Some(Organised::Edit(Box::new(Command::SetMediaNote {
                     media,
                     note: std::mem::take(&mut self.note_draft),
-                });
+                })));
                 self.editing = None;
             }
         });
@@ -486,6 +541,130 @@ impl MediaDrawer {
         }
         asked
     }
+}
+
+/// What a file's Labels, Lists and Note menus asked for.
+enum Organised {
+    /// A change to the project: one undo step.
+    Edit(Box<Command>),
+    /// A change to the labels offered in every project (not an edit).
+    Everywhere(Everywhere),
+}
+
+/// A change to the labels offered in every project.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Everywhere {
+    /// Offer this project label in every project.
+    Offer(String, LabelColor),
+    /// Stop offering it; projects that use it keep their own copy.
+    StopOffering(String),
+}
+
+/// One line of the Labels menu: a label of the project (marked when it is
+/// offered everywhere too), or one offered everywhere that this project
+/// doesn't have yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LabelChoice<'a> {
+    Project { label: &'a MediaLabel, everywhere: bool },
+    Everywhere(&'a GlobalLabel),
+}
+
+impl LabelChoice<'_> {
+    /// Name, colour and whether it is offered everywhere.
+    fn shown(&self) -> (&str, LabelColor, bool) {
+        match self {
+            LabelChoice::Project { label, everywhere } => (&label.name, label.color, *everywhere),
+            LabelChoice::Everywhere(g) => (&g.name, g.color, true),
+        }
+    }
+
+    fn project_label(&self) -> Option<MediaLabelId> {
+        match self {
+            LabelChoice::Project { label, .. } => Some(label.id),
+            LabelChoice::Everywhere(_) => None,
+        }
+    }
+
+    /// Ticking (`on`) or unticking it for `media`. A label offered
+    /// everywhere is copied into the project the first time it is used.
+    fn command(&self, media: MediaId, on: bool) -> Command {
+        match self {
+            LabelChoice::Project { label, .. } => Command::SetMediaLabel {
+                media: vec![media],
+                label: label.id,
+                on,
+            },
+            LabelChoice::Everywhere(g) => Command::AddMediaLabel {
+                label: MediaLabel {
+                    id: MediaLabelId(0),
+                    name: g.name.clone(),
+                    color: g.color,
+                },
+                media: vec![media],
+            },
+        }
+    }
+}
+
+/// The Labels menu's lines: the project's labels, then those offered
+/// everywhere that it doesn't have (by name, whatever the capitals).
+pub fn label_choices<'a>(library: &'a Library, global: &'a GlobalLabels) -> Vec<LabelChoice<'a>> {
+    let mut choices: Vec<LabelChoice<'a>> = library
+        .labels
+        .iter()
+        .map(|label| LabelChoice::Project {
+            label,
+            everywhere: global.find(&label.name).is_some(),
+        })
+        .collect();
+    let has = |name: &str| {
+        library
+            .labels
+            .iter()
+            .any(|l| l.name.to_lowercase() == name.to_lowercase())
+    };
+    choices.extend(
+        global
+            .labels
+            .iter()
+            .filter(|g| !has(&g.name))
+            .map(LabelChoice::Everywhere),
+    );
+    choices
+}
+
+/// "Every project": offer a project label everywhere, or stop offering one.
+fn everywhere_menu(ui: &mut egui::Ui, library: &Library, global: &GlobalLabels) -> Option<Everywhere> {
+    let offerable: Vec<&MediaLabel> = library
+        .labels
+        .iter()
+        .filter(|l| global.find(&l.name).is_none())
+        .collect();
+    if offerable.is_empty() && global.labels.is_empty() {
+        return None;
+    }
+    let mut asked = None;
+    ui.menu_button("Every project", |ui| {
+        for label in offerable {
+            if ui
+                .button(format!("Use \"{}\" in every project", label.name))
+                .on_hover_text("Offered in every project's Labels menu, with this colour")
+                .clicked()
+            {
+                asked = Some(Everywhere::Offer(label.name.clone(), label.color));
+            }
+        }
+        for g in &global.labels {
+            if ui
+                .button(format!("Stop offering \"{}\" everywhere", g.name))
+                .on_hover_text("Projects that use it keep it as their own label")
+                .clicked()
+            {
+                asked = Some(Everywhere::StopOffering(g.name.clone()));
+            }
+        }
+    });
+    asked
 }
 
 /// A field for a new name and its button; the name when it was asked for
@@ -547,6 +726,53 @@ mod tests {
             duration: Time::seconds(1),
             info: MediaInfo::default(),
         }
+    }
+
+    #[test]
+    fn labels_offered_everywhere_join_the_project_s_own() {
+        let mut p = Project::new_automatic("T");
+        p.media.insert(MediaId(1), media(1, "/r/a.mkv"));
+        let p = Command::AddMediaLabel {
+            label: MediaLabel {
+                id: MediaLabelId(0),
+                name: "Drone".into(),
+                color: LabelColor::Green,
+            },
+            media: vec![],
+        }
+        .apply(&p)
+        .unwrap();
+        let mut global = GlobalLabels::default();
+        global.add("drone", LabelColor::Red).unwrap();
+        global.add("Interview", LabelColor::Orange).unwrap();
+        let choices = label_choices(&p.library, &global);
+        assert_eq!(choices.len(), 2, "a name the project has shows once");
+        assert!(
+            matches!(choices[0], LabelChoice::Project { label, everywhere: true } if label.name == "Drone"),
+            "the project's own, marked as offered everywhere"
+        );
+        let LabelChoice::Everywhere(interview) = choices[1] else {
+            panic!("the one the project hasn't got yet")
+        };
+        assert_eq!(interview.name, "Interview");
+        // Ticking it copies it into the project, so the project file needs
+        // nothing from outside.
+        let p = choices[1].command(MediaId(1), true).apply(&p).unwrap();
+        let on = p.library.labels_of(MediaId(1));
+        assert_eq!(on[0].name, "Interview");
+        assert_eq!(on[0].color, LabelColor::Orange);
+        let global = GlobalLabels::default();
+        let choices = label_choices(&p.library, &global);
+        assert!(
+            matches!(
+                choices[1],
+                LabelChoice::Project {
+                    everywhere: false,
+                    ..
+                }
+            ),
+            "taken out of the set, the project keeps its copy"
+        );
     }
 
     #[test]

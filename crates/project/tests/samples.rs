@@ -341,6 +341,21 @@ fn version_11_sample_opens_with_one_timeline_of_file_clips() {
 }
 
 #[test]
+fn the_labels_for_every_project_sample_opens() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/samples/labels-v1.ron");
+    let text = std::fs::read_to_string(path).expect("the sample is there");
+    let set = project::GlobalLabels::parse(&text).expect("it reads");
+    let names: Vec<&str> = set.labels.iter().map(|l| l.name.as_str()).collect();
+    assert_eq!(names, ["Drone", "Interview"]);
+    assert_eq!(set.labels[0].color, LabelColor::Green);
+    assert_eq!(
+        project::global_labels::FORMAT_VERSION,
+        1,
+        "a new format of labels.ron needs a migration and a sample of its own"
+    );
+}
+
+#[test]
 fn version_12_sample_opens_with_no_labels_lists_or_notes() {
     let project = file::load(&sample_path(12)).expect("the version 12 sample opens");
     assert!(project.library.is_empty(), "format 12 had no library");

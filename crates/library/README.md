@@ -9,6 +9,7 @@ Phase 5.1: the index (types, labels, custom lists, notes, use on timelines, full
 ## Where things live
 
 - **Labels, lists and notes are project data** (`project::Library`, format 13), changed only by commands (`AddMediaLabel`, `SetMediaLabel`, `SetMediaNote`, `AddMediaList`, `SetListMember`, …). So they undo and redo like every other edit, go into the autosave journal, come back after a crash, travel with the project file and restore with a saved version.
+- **Labels can also be offered in every project** (`project::GlobalLabels`, `labels.ron` in the app's data folder, like templates): only names and colours. Putting one on a file copies it into the project's own labels first, so the index, like the project file, only ever sees project labels.
 - **The index is derived.** Everything in it is built from the project (`Index::sync`), in memory, when a project opens; after that each sync writes only the files that changed. There is no index file on disk, so there is nothing to list in `project::side_files`, nothing to migrate, and nothing that can disagree with the project file. 10 000 files are indexed in well under a second on a worker.
 
 ## How it works
