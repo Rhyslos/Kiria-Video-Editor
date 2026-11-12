@@ -358,6 +358,16 @@ pub fn track_ids(seq: &Sequence) -> Vec<u64> {
     seq.tracks().map(|t| t.id.0).collect()
 }
 
+/// The first clip of the highest video track that has any: the picture on
+/// top at the start of the timeline. What `--select-first-clip` selects.
+pub fn first_clip(seq: &Sequence) -> Option<ClipId> {
+    seq.video_tracks
+        .iter()
+        .rev()
+        .find_map(|track| track.clips.iter().min_by_key(|clip| clip.start))
+        .map(|clip| clip.id)
+}
+
 /// Drops clips that no longer exist (after a delete or an undo).
 pub fn keep_existing(selected: &mut Vec<ClipId>, seq: &Sequence) {
     selected.retain(|id| seq.tracks().any(|t| t.clips.iter().any(|c| c.id == *id)));
@@ -557,6 +567,48 @@ mod tests {
             track_ids(seq),
             [seq.video_tracks[0].id.0, v2.0, seq.audio_tracks[0].id.0]
         );
+    }
+
+    #[test]
+    fn the_first_clip_is_the_earliest_on_the_highest_track_with_any() {
+        use project::{Command, SequenceSettings, TrackKind};
+        let p = crate::inspector::tests::project_with_a_clip();
+        let sequence = p.active_sequence;
+        let on_v1 = p.active().unwrap().video_tracks[0].clips[0].clone();
+        assert_eq!(first_clip(p.active().unwrap()), Some(on_v1.id));
+        // An empty track on top changes nothing.
+        let p = Command::AddTrack {
+            sequence,
+            kind: TrackKind::Video,
+            name: "V2".into(),
+        }
+        .apply(&p)
+        .unwrap();
+        assert_eq!(first_clip(p.active().unwrap()), Some(on_v1.id));
+        // Two clips on it, the later one placed first: the earlier is the first.
+        let v2 = p.active().unwrap().video_tracks[1].id;
+        let mut p = p;
+        for start in [6, 2] {
+            let mut clip = on_v1.clone();
+            clip.id = p.allocate_id();
+            clip.start = project::Time::seconds(start);
+            clip.duration = project::Time::seconds(2);
+            clip.link = None;
+            p = Command::PlaceClip {
+                sequence,
+                track: v2,
+                clip,
+            }
+            .apply(&p)
+            .unwrap();
+        }
+        let seq = p.active().unwrap();
+        let first = first_clip(seq).unwrap();
+        let found = seq.video_tracks[1].clips.iter().find(|c| c.id == first);
+        assert_eq!(found.map(|c| c.start), Some(project::Time::seconds(2)));
+        // Nothing on the timeline, nothing to select.
+        let empty = Project::new("Test", SequenceSettings::GAME_CLIP);
+        assert_eq!(first_clip(empty.active().unwrap()), None);
     }
 
     #[test]

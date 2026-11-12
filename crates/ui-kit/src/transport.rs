@@ -52,6 +52,9 @@ pub fn transport(
         pos2(viewer.center().x, viewer.bottom() - HEIGHT / 2.0 - 14.0),
         vec2(width, HEIGHT),
     );
+    // The bar takes what happens on it: a press between its buttons, or a
+    // drag begun on one, never reaches the picture under it.
+    ui.interact(bar, ui.scope_id().with("transport-bar"), Sense::click_and_drag());
     let painter = ui.painter();
     painter.rect_filled(bar, HEIGHT / 2.0 - 4.0, theme.panel.gamma_multiply(0.92));
     painter.rect_stroke(

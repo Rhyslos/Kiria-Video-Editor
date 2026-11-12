@@ -13,6 +13,7 @@ pub mod inspector;
 pub mod keyboard;
 pub mod layout;
 pub mod master;
+pub mod picture_handles;
 pub mod shortcuts;
 pub mod splitter;
 pub mod theme;
