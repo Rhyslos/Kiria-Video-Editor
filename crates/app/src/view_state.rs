@@ -19,7 +19,7 @@ use ui_kit::TimelineView;
 const SETTLED_AFTER: Duration = Duration::from_millis(800);
 
 /// What is kept between sessions.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ProjectView {
     /// Tracks with a height of their own: the track's id and how many times
@@ -27,6 +27,20 @@ pub struct ProjectView {
     pub track_heights: Vec<(u64, f32)>,
     /// The share of the timeline's body given to video (the divider's place).
     pub video_share: Option<f32>,
+    /// The video area grows past the divider's place to show all its
+    /// tracks. Off once the divider was dragged to where they don't all
+    /// show. On when the file doesn't say (it was written before this).
+    pub video_fits_tracks: bool,
+}
+
+impl Default for ProjectView {
+    fn default() -> Self {
+        ProjectView {
+            track_heights: Vec::new(),
+            video_share: None,
+            video_fits_tracks: true,
+        }
+    }
 }
 
 impl ProjectView {
@@ -35,6 +49,7 @@ impl ProjectView {
         ProjectView {
             track_heights: timeline.heights.to_save(),
             video_share: Some(timeline.split),
+            video_fits_tracks: timeline.fit_video,
         }
     }
 
@@ -44,6 +59,7 @@ impl ProjectView {
         if let Some(share) = self.video_share.filter(|s| s.is_finite()) {
             timeline.split = share.clamp(0.1, 0.9);
         }
+        timeline.fit_video = self.video_fits_tracks;
     }
 
     /// Reads the view kept for a project; the usual layout when there is
@@ -79,8 +95,9 @@ pub struct ViewKeeper {
     writable: bool,
     /// What the file holds, or will once `writing` finishes.
     kept: ProjectView,
-    /// The view's height revision and divider when last looked at.
-    seen: Option<(u64, f32)>,
+    /// The view's height revision, divider and whether the video area fits
+    /// its tracks, when last looked at.
+    seen: Option<(u64, f32, bool)>,
     changed_at: Option<Instant>,
     writing: Option<JobHandle<()>>,
 }
@@ -94,7 +111,7 @@ impl ViewKeeper {
             path,
             writable,
             kept: ProjectView::of(timeline),
-            seen: Some((timeline.heights.revision(), timeline.split)),
+            seen: Some((timeline.heights.revision(), timeline.split, timeline.fit_video)),
             changed_at: None,
             writing: None,
         }
@@ -103,7 +120,7 @@ impl ViewKeeper {
     /// Call every frame: hands the view to a worker when it changed and has
     /// since settled.
     pub fn tick(&mut self, now: Instant, timeline: &TimelineView, jobs: &JobSystem) {
-        let looks = (timeline.heights.revision(), timeline.split);
+        let looks = (timeline.heights.revision(), timeline.split, timeline.fit_video);
         if self.seen != Some(looks) {
             self.seen = Some(looks);
             self.changed_at = Some(now);
@@ -161,6 +178,7 @@ mod tests {
         timeline.heights.set(7, 58.0, 174.0);
         timeline.heights.set(2, 54.0, 81.0);
         timeline.split = 0.3;
+        timeline.fit_video = false;
         timeline
     }
 
@@ -180,6 +198,7 @@ mod tests {
             "untouched tracks keep the usual height"
         );
         assert_eq!(reopened.split, 0.3);
+        assert!(!reopened.fit_video, "the divider was put where it is on purpose");
         assert_eq!(keeper.kept, ProjectView::of(&reopened));
     }
 
@@ -196,6 +215,13 @@ mod tests {
         ProjectView::load(&path).apply(&mut timeline);
         assert_eq!(timeline.heights.height(4, 50.0), 100.0);
         assert_eq!(timeline.split, TimelineView::default().split);
+        assert!(timeline.fit_video, "and the video area shows its tracks");
+        // So does one from before the video area grew by itself, also when
+        // the timeline had been laid out otherwise meanwhile.
+        timeline.fit_video = false;
+        std::fs::write(&path, "(track_heights: [], video_share: Some(0.4))").unwrap();
+        ProjectView::load(&path).apply(&mut timeline);
+        assert!(timeline.fit_video && timeline.split == 0.4);
         // Nonsense for the divider is put back in range.
         std::fs::write(&path, "(video_share: Some(7.5))").unwrap();
         ProjectView::load(&path).apply(&mut timeline);

@@ -325,6 +325,98 @@ pub fn added_track_says(name: &str, kind: project::TrackKind, rough_cut: bool) -
     }
 }
 
+/// A track's name for the status line, saying so when the track was only
+/// just made (it is not among `before`'s).
+fn named(track: &project::Track, before: &Sequence) -> String {
+    if before.track(track.id).is_some() {
+        track.name.clone()
+    } else {
+        format!("{} (a new track)", track.name)
+    }
+}
+
+/// "A3", "Mic and A3" or "Game, Mic and A3".
+fn listed(names: &[String]) -> String {
+    match names {
+        [] => String::new(),
+        [one] => one.clone(),
+        [most @ .., last] => format!("{} and {last}", most.join(", ")),
+    }
+}
+
+/// What the status line says about sound that went somewhere else than
+/// expected, on the audio tracks named in `tracks`. Nothing when there is none.
+fn sound_says(tracks: &[String]) -> String {
+    if tracks.is_empty() {
+        return String::new();
+    }
+    format!(
+        "Its sound is on {}: other sound was in the way, and nothing was cut",
+        listed(tracks)
+    )
+}
+
+/// What the status line says after `clip` was dragged to another track or
+/// past the last one (`before` and `after` are the timeline around the
+/// move): the track that was made for it, and where its linked sound went
+/// when that had to leave its track. Empty when nothing needs saying.
+pub fn moved_says(before: &Sequence, after: &Sequence, clip: ClipId) -> String {
+    let track_of = |seq: &Sequence, id: ClipId| {
+        seq.tracks()
+            .find(|t| t.clips.iter().any(|c| c.id == id))
+            .map(|t| t.id)
+    };
+    let mut says = Vec::new();
+    if let Some(track) = track_of(after, clip).and_then(|id| after.track(id))
+        && before.track(track.id).is_none()
+    {
+        says.push(format!("{} was made for it", track.name));
+    }
+    let link = after
+        .tracks()
+        .flat_map(|t| t.clips.iter())
+        .find(|c| c.id == clip)
+        .and_then(|c| c.link);
+    let moved: Vec<String> = after
+        .audio_tracks
+        .iter()
+        .filter(|t| {
+            t.clips.iter().any(|c| {
+                c.id != clip && link.is_some() && c.link == link && track_of(before, c.id) != Some(t.id)
+            })
+        })
+        .map(|t| named(t, before))
+        .collect();
+    if !moved.is_empty() {
+        says.push(sound_says(&moved));
+    }
+    says.join(". ")
+}
+
+/// What the status line says after the file `media` was laid over the
+/// timeline at `at`: where its sound went, when that is not the first audio
+/// tracks. Empty when it landed as an import would put it.
+pub fn laid_says(before: &Sequence, after: &Sequence, media: project::MediaId, at: project::Time) -> String {
+    let was_there = |id: ClipId| before.tracks().any(|t| t.clips.iter().any(|c| c.id == id));
+    // Its sound clips, top to bottom: one per stream, in the file's order.
+    let landed: Vec<&project::Track> = after
+        .audio_tracks
+        .iter()
+        .filter(|t| {
+            t.clips
+                .iter()
+                .any(|c| c.media == media && c.start == at && !was_there(c.id))
+        })
+        .collect();
+    let elsewhere: Vec<String> = landed
+        .iter()
+        .enumerate()
+        .filter(|(i, track)| after.audio_tracks.get(*i).map(|t| t.id) != Some(track.id))
+        .map(|(_, track)| named(track, before))
+        .collect();
+    sound_says(&elsewhere)
+}
+
 /// The command for what was asked of a track in its header (remove, hide
 /// or show, rename); `None` for anything else.
 pub fn track_command(
@@ -598,6 +690,126 @@ mod tests {
         let err = ask(&p, E::RemoveTrack { track: v1 }).unwrap_err();
         assert!(err.what().contains("the only video track"), "{}", err.what());
         assert_eq!(track_command(sequence, E::ClearSelection), None);
+    }
+
+    /// A recording with a picture and `sound` sound streams, `seconds` long.
+    fn recording(sound: u32, seconds: i64) -> project::MediaRef {
+        project::MediaRef {
+            id: project::MediaId(0),
+            path: "match.mkv".into(),
+            fingerprint: project::Fingerprint {
+                size: 1,
+                sample_hash: "y".into(),
+            },
+            kind: project::MediaKind::Video,
+            duration: project::Time::seconds(seconds),
+            info: project::MediaInfo {
+                container: "matroska,webm".into(),
+                video: Some(project::VideoStream {
+                    index: 0,
+                    codec: "hevc".into(),
+                    width: 1920,
+                    height: 1080,
+                    frame_rate: project::Rate::FPS_60,
+                    rotation: 0,
+                    variable_frame_rate: false,
+                }),
+                audio: (1..=sound)
+                    .map(|index| project::AudioStream {
+                        index,
+                        codec: "aac".into(),
+                        channels: 2,
+                        sample_rate: 48_000,
+                        name: format!("Stream {index}"),
+                    })
+                    .collect(),
+            },
+        }
+    }
+
+    #[test]
+    fn the_status_line_says_where_sound_went_when_it_had_to_find_room() {
+        use project::{Command, SequenceSettings, Time, TrackKind};
+        let p = Project::new("Test", SequenceSettings::GAME_CLIP);
+        let sequence = p.active_sequence;
+        let import = |p: &Project, media| Command::Import { sequence, media }.apply(p).unwrap();
+        // 0 to 30 s with two sound streams, then 30 to 40 s with one; V2 on top.
+        let p = import(&import(&p, recording(2, 30)), recording(1, 10));
+        let p = Command::AddTrack {
+            sequence,
+            kind: TrackKind::Video,
+            name: "V2".into(),
+        }
+        .apply(&p)
+        .unwrap();
+        let seq = p.active().unwrap();
+        let (v2, second) = (seq.video_tracks[1].id, seq.video_tracks[0].clips[1].clone());
+        let apply = |p: &Project, command: Command| command.apply(p).unwrap();
+
+        // Dragged up over the first recording: its sound needs a new track.
+        let moved = |track, by| Command::MoveBetweenTracks {
+            sequence,
+            clip: second.id,
+            track,
+            by: Time::seconds(by),
+        };
+        let over = apply(&p, moved(Some(v2), -20));
+        assert_eq!(
+            moved_says(seq, over.active().unwrap(), second.id),
+            "Its sound is on A3 (a new track): other sound was in the way, and nothing was cut"
+        );
+        // Straight up: nothing to say.
+        let up = apply(&p, moved(Some(v2), 0));
+        assert_eq!(moved_says(seq, up.active().unwrap(), second.id), "");
+        // Past the top track, over the first recording.
+        let top = apply(&p, moved(None, -20));
+        assert_eq!(
+            moved_says(seq, top.active().unwrap(), second.id),
+            "V3 was made for it. Its sound is on A3 (a new track): other sound was in the way, and nothing was cut"
+        );
+        // Back down from where its sound has a track of its own that is
+        // free there too: the sound stays, nothing to say.
+        let back = apply(&over, moved(Some(seq.video_tracks[0].id), 20));
+        assert_eq!(
+            moved_says(over.active().unwrap(), back.active().unwrap(), second.id),
+            ""
+        );
+
+        // The short file laid on V2 over the first recording, then again
+        // later on V2: its sound shares the track that was made.
+        let lay = |p: &Project, at| {
+            let command = Command::LayMedia {
+                sequence,
+                media: second.media,
+                at: Time::seconds(at),
+                track: Some(v2),
+            };
+            let after = command.apply(p).unwrap();
+            let says = laid_says(
+                p.active().unwrap(),
+                after.active().unwrap(),
+                second.media,
+                Time::seconds(at),
+            );
+            (after, says)
+        };
+        let (laid, says) = lay(&p, 5);
+        assert_eq!(
+            says,
+            "Its sound is on A3 (a new track): other sound was in the way, and nothing was cut"
+        );
+        let (_, says) = lay(&laid, 18);
+        assert_eq!(
+            says,
+            "Its sound is on A3: other sound was in the way, and nothing was cut"
+        );
+        // Where the first audio track is free, it lands as usual.
+        let (_, says) = lay(&p, 60);
+        assert_eq!(says, "");
+        assert_eq!(
+            listed(&["Mic".into(), "A3".into(), "A4".into()]),
+            "Mic, A3 and A4"
+        );
     }
 
     #[test]

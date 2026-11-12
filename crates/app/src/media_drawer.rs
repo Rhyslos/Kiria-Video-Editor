@@ -12,7 +12,8 @@ pub enum Placement {
     End,
     /// At the edit point, pushing everything after it later.
     Insert,
-    /// At the edit point, over whatever is there.
+    /// At the edit point, over what is on the first video track there: as
+    /// a file dropped on that track, its sound finds free audio tracks.
     Overwrite,
 }
 
