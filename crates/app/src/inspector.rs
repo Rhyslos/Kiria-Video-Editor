@@ -54,12 +54,8 @@ impl Inspector {
             commands.push(Command::SetLook { sequence, clip, look });
             self.pending = None;
         }
+        // Nothing selected: the page shows the timeline here instead.
         let Some((seq, track, clip)) = target else {
-            inspector::note(
-                ui,
-                theme,
-                "Select a clip on a video track to place, crop and colour its picture.",
-            );
             return commands;
         };
         let frame = (seq.settings.width, seq.settings.height);
@@ -298,6 +294,46 @@ impl Inspector {
         }
         commands
     }
+}
+
+/// Whether the inspector has a clip to show for `selected`; when it hasn't,
+/// the page shows the timeline in its place.
+pub fn shows_a_clip(project: Option<&Project>, selected: &[ClipId]) -> bool {
+    project.is_some_and(|project| shown_clip(project, selected).is_some())
+}
+
+/// What the inspector says about a timeline when no clip is selected:
+/// label and value, the first also being the folded section's summary.
+pub fn timeline_rows(seq: &project::Sequence) -> Vec<(&'static str, String)> {
+    let settings = seq.settings;
+    let rate = settings.frame_rate;
+    let clips: usize = seq
+        .video_tracks
+        .iter()
+        .chain(seq.audio_tracks.iter())
+        .map(|track| track.clips.len())
+        .sum();
+    let fps = format!("{:.2}", rate.as_f64());
+    let fps = fps.trim_end_matches('0').trim_end_matches('.');
+    vec![
+        ("Size", format!("{} × {}", settings.width, settings.height)),
+        ("Frame rate", format!("{fps} frames a second")),
+        (
+            "Sound",
+            format!("{} kHz", f64::from(settings.sample_rate) / 1000.0),
+        ),
+        ("Length", seq.length().timecode(rate)),
+        (
+            "Tracks",
+            format!(
+                "{} video, {} audio",
+                seq.video_tracks.len(),
+                seq.audio_tracks.len()
+            ),
+        ),
+        ("Clips", clips.to_string()),
+        ("Master", format!("{:+.1} dB", seq.master_gain_db)),
+    ]
 }
 
 /// The clip the inspector is about: of the selected ones with a picture,
@@ -802,6 +838,26 @@ mod tests {
             Look::PLAIN,
             "the project itself is untouched"
         );
+    }
+
+    #[test]
+    fn with_nothing_selected_the_timeline_is_described() {
+        let project = project_with_a_clip();
+        assert!(!shows_a_clip(Some(&project), &[]));
+        assert!(!shows_a_clip(None, &[]));
+        let clip = project.active().unwrap().video_tracks[0].clips[0].id;
+        assert!(shows_a_clip(Some(&project), &[clip]));
+        let rows = timeline_rows(project.active().unwrap());
+        let row = |name: &str| {
+            rows.iter()
+                .find(|(label, _)| *label == name)
+                .map(|(_, v)| v.clone())
+                .unwrap()
+        };
+        assert_eq!(row("Size"), "1920 × 1080");
+        assert_eq!(row("Frame rate"), "60 frames a second");
+        assert_eq!(row("Clips"), "1");
+        assert_eq!(row("Master"), "+0.0 dB");
     }
 
     #[test]
