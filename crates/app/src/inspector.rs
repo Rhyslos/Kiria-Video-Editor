@@ -12,19 +12,49 @@
 //! now, [`Inspector::changed_outside`] takes what the hand did and
 //! [`Inspector::let_go`] finishes it, so the panel's numbers follow the
 //! picture, the picture follows the numbers, and either way it is one undo step.
+//!
+//! Every number of the picture can change over time: the diamond at the end
+//! of its row adds a keyframe at the playhead (or removes the one there),
+//! the arrows beside it move the playhead to the previous or next one, and
+//! a right-click on a filled diamond says how the value goes on from it.
+//! The numbers shown are the clip's at the playhead, and a change to a
+//! number that has keyframes is a keyframe at the playhead
+//! (`Command::SetLookAt`), so the hand on the picture keys it too.
 
+use project::animate::KeyframeChange;
 use project::look::ONE;
-use project::{ClipId, Command, Look, Project, Rate, Sound, Speed, Time, TrackKind};
+use project::{ClipId, Command, Ease, Look, LookField, Project, Rate, Sound, Speed, Time, TrackKind};
 use ui_kit::Theme;
-use ui_kit::inspector::{self, Number, Touched, Words};
+use ui_kit::inspector::{self, Keyed, Number, Touched, Words};
+use ui_kit::keyframe::{KeyClicks, KeyState, Keys};
 
 /// The speeds offered as buttons, as fractions.
 const SPEEDS: [(u32, u32); 5] = [(1, 4), (1, 2), (1, 1), (2, 1), (4, 1)];
 
+/// A look being set and not yet an undo step: whose, at which moment of
+/// the timeline (where it began), and what.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Pending {
+    clip: ClipId,
+    at: Time,
+    look: Look,
+}
+
+impl Pending {
+    fn command(&self, sequence: project::SequenceId) -> Command {
+        Command::SetLookAt {
+            sequence,
+            clip: self.clip,
+            at: self.at,
+            look: self.look,
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct Inspector {
-    /// A look being set and not yet an undo step: whose, and what.
-    pending: Option<(ClipId, Look)>,
+    /// A look being set and not yet an undo step.
+    pending: Option<Pending>,
     /// Sound being set and not yet an undo step: each sound clip's new
     /// settings (a picture's linked sound clips change together).
     pending_sound: Option<Vec<(ClipId, Sound)>>,
@@ -41,6 +71,9 @@ pub struct Inspector {
     pub on_picture: bool,
     /// The tooltip of the switch for that: what it does, and its keys.
     pub on_picture_tip: String,
+    /// Where the playhead was asked to go (an arrow beside a keyframe
+    /// diamond). The page takes it.
+    pub seek: Option<Time>,
 }
 
 /// The clip the inspector is about, for what changes its look from outside
@@ -48,7 +81,11 @@ pub struct Inspector {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Subject {
     pub clip: ClipId,
-    /// Its look as the panel shows it: with the change being made.
+    /// The moment of the timeline its look is shown at: the playhead,
+    /// brought onto the clip.
+    pub at: Time,
+    /// Its look as the panel shows it: at that moment, with the change
+    /// being made.
     pub look: Look,
     /// Its picture's size as shown, and the timeline's frame, in pixels.
     pub picture: (u32, u32),
@@ -74,7 +111,7 @@ impl Inspector {
         let sequence = project.active_sequence;
         let looked = self
             .pending
-            .and_then(|(clip, look)| Command::SetLook { sequence, clip, look }.apply(project).ok());
+            .and_then(|pending| pending.command(sequence).apply(project).ok());
         let Some(sounds) = &self.pending_sound else {
             return looked;
         };
@@ -93,19 +130,21 @@ impl Inspector {
     }
 
     /// The clip the panel is about (see [`shown_clip`]) with its look as it
-    /// is shown now. `None` when no selected clip has a picture.
-    pub fn subject(&self, project: &Project, selected: &[ClipId]) -> Option<Subject> {
+    /// is shown now, at `playhead`. `None` when no selected clip has a picture.
+    pub fn subject(&self, project: &Project, selected: &[ClipId], playhead: Time) -> Option<Subject> {
         let (seq, track, clip) = shown_clip(project, selected)?;
         if track.kind != TrackKind::Video {
             return None;
         }
         let video = project.media.get(&clip.media)?.info.video.as_ref()?;
+        let at = clip.moment(playhead, seq.settings.frame_rate);
         let look = match self.pending {
-            Some((id, look)) if id == clip.id => look,
-            _ => clip.look,
+            Some(pending) if pending.clip == clip.id => pending.look,
+            _ => clip.look_at(at),
         };
         Some(Subject {
             clip: clip.id,
+            at,
             look,
             picture: video.display_size(),
             frame: (seq.settings.width, seq.settings.height),
@@ -115,23 +154,31 @@ impl Inspector {
         })
     }
 
-    /// A change to `clip`'s look made outside the panel, on the picture
-    /// itself. It is shown at once, as the panel's own changes are. While
-    /// `busy` the hand is still on it and more will follow; once it is not,
-    /// the change is finished: the undo step comes back.
+    /// A change to `clip`'s look as seen at `at` on the timeline, made
+    /// outside the panel, on the picture itself. It is shown at once, as the
+    /// panel's own changes are. While `busy` the hand is still on it and
+    /// more will follow; once it is not, the change is finished: the undo
+    /// step comes back.
     pub fn changed_outside(
         &mut self,
         project: &Project,
         clip: ClipId,
+        at: Time,
         look: Look,
         busy: bool,
     ) -> Option<Command> {
         // A change in waiting on another clip is not lost.
         let other = match self.pending {
-            Some((waiting, _)) if waiting != clip => self.finish(project),
+            Some(waiting) if waiting.clip != clip => self.finish(project),
             _ => None,
         };
-        self.pending = Some((clip, look.within_limits()));
+        // A change keeps the moment it began at.
+        let at = self.pending.map_or(at, |pending| pending.at);
+        self.pending = Some(Pending {
+            clip,
+            at,
+            look: look.within_limits(),
+        });
         self.held = busy;
         if busy || other.is_some() {
             // The other clip's step goes first; this one follows when the
@@ -148,32 +195,23 @@ impl Inspector {
     }
 
     /// Ends the change in waiting: an undo step unless the look is the one
-    /// the clip already has.
+    /// the clip already has there.
     fn finish(&mut self, project: &Project) -> Option<Command> {
         self.held = false;
-        let (clip, look) = self.pending.take()?;
-        let stored = project
-            .active()?
-            .video_tracks
-            .iter()
-            .flat_map(|track| &track.clips)
-            .find(|candidate| candidate.id == clip)?
-            .look;
-        (look != stored).then_some(Command::SetLook {
-            sequence: project.active_sequence,
-            clip,
-            look,
-        })
+        let pending = self.pending.take()?;
+        changes(project, &pending).then(|| pending.command(project.active_sequence))
     }
 
-    /// Draws the inspector for the first of `selected` that has a picture.
-    /// Returns the changes that are finished: each is one undo step.
+    /// Draws the inspector for the first of `selected` that has a picture,
+    /// its numbers as they are at `playhead`. Returns the changes that are
+    /// finished: each is one undo step.
     pub fn ui(
         &mut self,
         ui: &mut egui::Ui,
         theme: &Theme,
         project: &Project,
         selected: &[ClipId],
+        playhead: Time,
     ) -> Vec<Command> {
         let mut commands = Vec::new();
         let sequence = project.active_sequence;
@@ -181,10 +219,10 @@ impl Inspector {
         // A change left hanging on a clip that is no longer the one shown
         // (another was selected mid-drag) is finished first.
         let showing = target.map(|(_, _, clip)| clip.id);
-        if let Some((clip, look)) = self.pending
-            && Some(clip) != showing
+        if let Some(pending) = self.pending
+            && Some(pending.clip) != showing
         {
-            commands.push(Command::SetLook { sequence, clip, look });
+            commands.push(pending.command(sequence));
             self.pending = None;
             self.held = false;
         }
@@ -245,21 +283,40 @@ impl Inspector {
                 .size(12.0),
             );
         }
+        // The numbers are the clip's at the playhead (at its first or last
+        // frame when the playhead is off it).
+        let moment = clip.moment(playhead, rate);
+        let on_clip = clip.start <= playhead && playhead < clip.end();
+        if track.kind == TrackKind::Video && !clip.keyframes.is_empty() && !on_clip {
+            let end = if playhead < clip.start { "first" } else { "last" };
+            ui.label(
+                egui::RichText::new(format!(
+                    "The playhead is off this clip: these are its {end} frame's values, and changes go there."
+                ))
+                .color(theme.muted)
+                .size(12.0),
+            );
+        }
         ui.add_space(6.0);
 
-        let stored = clip.look;
-        let before = self.pending.map_or(stored, |(_, look)| look);
+        let before = match self.pending {
+            Some(pending) if pending.clip == clip.id => pending.look,
+            _ => clip.look_at(moment),
+        };
         let mut values = Values::of(&before, frame);
         let mut touched = Touched::default();
+        let mut asks = Asks::default();
+        let keys = KeyTable::at(clip, playhead, rate, on_clip);
         if track.kind == TrackKind::Video {
             let on_picture = (&mut self.on_picture, self.on_picture_tip.as_str());
-            picture_sections(
+            asks = picture_sections(
                 ui,
                 theme,
                 &before,
                 frame,
                 picture,
                 on_picture,
+                &keys,
                 &mut values,
                 &mut touched,
             );
@@ -297,18 +354,69 @@ impl Inspector {
         // Shown at once; an undo step once the hand is off it, be that a
         // hand on the panel or one on the picture in the viewer.
         if touched.changed {
-            self.pending = Some((clip.id, values.look(frame, &before)));
+            let at = self.pending.map_or(moment, |pending| pending.at);
+            self.pending = Some(Pending {
+                clip: clip.id,
+                at,
+                look: values.look(frame, &before),
+            });
         }
         if !touched.busy
             && !self.held
-            && let Some((id, look)) = self.pending.take()
-            && look != stored
+            && let Some(pending) = self.pending.take()
+            && changes(project, &pending)
         {
-            commands.push(Command::SetLook {
+            commands.push(pending.command(sequence));
+        }
+        commands.extend(self.answer(&asks, &keys, sequence, clip.id, playhead, rate));
+        commands
+    }
+
+    /// What the sections' Reset and keyframe controls asked for: each a
+    /// command (one undo step), or a place for the playhead.
+    fn answer(
+        &mut self,
+        asks: &Asks,
+        keys: &KeyTable,
+        sequence: project::SequenceId,
+        clip: ClipId,
+        playhead: Time,
+        rate: Rate,
+    ) -> Vec<Command> {
+        let mut commands = Vec::new();
+        for fields in &asks.resets {
+            commands.push(Command::ResetLook {
                 sequence,
-                clip: id,
-                look,
+                clip,
+                fields: fields.to_vec(),
             });
+        }
+        for (group, clicks) in &asks.keys {
+            let Some(here) = keys.of(group) else { continue };
+            let keyframe = |change| Command::Keyframe {
+                sequence,
+                clip,
+                at: playhead,
+                fields: group.to_vec(),
+                change,
+            };
+            if clicks.toggle {
+                commands.push(keyframe(match here.state {
+                    KeyState::At => KeyframeChange::Remove,
+                    _ => KeyframeChange::Add,
+                }));
+            }
+            if let Some(ease) = clicks.ease.and_then(|i| Ease::ALL.get(i)) {
+                commands.push(keyframe(KeyframeChange::Ease(*ease)));
+            }
+            let jump = match (clicks.previous, clicks.next) {
+                (true, _) => here.before,
+                (_, true) => here.after,
+                _ => None,
+            };
+            if let Some(frame) = jump {
+                self.seek = Some(rate.frame_start(frame));
+            }
         }
         commands
     }
@@ -434,7 +542,143 @@ impl Inspector {
     }
 }
 
-/// Transform, Crop and Quick color: for clips with a picture.
+/// The numbers each picture section holds: what its Reset puts back, and
+/// takes the keyframes of.
+const TRANSFORM: [LookField; 5] = [
+    LookField::X,
+    LookField::Y,
+    LookField::Scale,
+    LookField::Turn,
+    LookField::Opacity,
+];
+const CROP_FIELDS: [LookField; 4] = [
+    LookField::CropLeft,
+    LookField::CropTop,
+    LookField::CropRight,
+    LookField::CropBottom,
+];
+const COLOUR: [LookField; 5] = [
+    LookField::Exposure,
+    LookField::Contrast,
+    LookField::Saturation,
+    LookField::Temperature,
+    LookField::Tint,
+];
+
+/// Where one group of numbers' keyframes ([`LookField::GROUPS`]) stand at
+/// the playhead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct GroupKeys {
+    state: KeyState,
+    /// The nearest timeline frames with a keyframe before and after the
+    /// playhead's, inside the clip.
+    before: Option<i64>,
+    after: Option<i64>,
+    /// The ease of the keyframe at the playhead, as an index of `Ease::ALL`.
+    ease: Option<usize>,
+}
+
+/// Every group's keyframes at the playhead, for the diamonds.
+#[derive(Debug, Clone, PartialEq)]
+struct KeyTable {
+    groups: [GroupKeys; LookField::GROUPS.len()],
+    /// The playhead is on the clip, so keyframes can be added and removed.
+    can: bool,
+}
+
+impl KeyTable {
+    fn at(clip: &project::Clip, playhead: Time, rate: Rate, can: bool) -> KeyTable {
+        let here = rate.frame_at(playhead);
+        let groups = LookField::GROUPS.map(|group| {
+            if !group.iter().any(|field| clip.keyframes.animates(*field)) {
+                return GroupKeys::default();
+            }
+            let frames = clip.keyframe_frames(group, rate);
+            let at = frames.contains(&here);
+            let near = clip.frame_in_file(playhead, rate);
+            let ease = group
+                .iter()
+                .flat_map(|field| clip.keyframes.of(*field))
+                .find(|key| at && near.0 <= key.at && key.at < near.1)
+                .and_then(|key| Ease::ALL.iter().position(|ease| *ease == key.ease));
+            GroupKeys {
+                state: if at { KeyState::At } else { KeyState::Between },
+                before: frames.iter().rev().find(|frame| **frame < here).copied(),
+                after: frames.iter().find(|frame| **frame > here).copied(),
+                ease,
+            }
+        });
+        KeyTable { groups, can }
+    }
+
+    /// The group `fields` is (or starts with).
+    fn of(&self, fields: &[LookField]) -> Option<&GroupKeys> {
+        let first = fields.first()?;
+        LookField::GROUPS
+            .iter()
+            .position(|group| group.contains(first))
+            .and_then(|i| self.groups.get(i))
+    }
+
+    /// The diamond's state for the group of `field`.
+    fn keys<'a>(&self, field: LookField, eases: &'a [&'a str]) -> Keys<'a> {
+        let group = self.of(&[field]).copied().unwrap_or_default();
+        Keys {
+            state: group.state,
+            before: group.before.is_some(),
+            after: group.after.is_some(),
+            can: self.can,
+            eases,
+            ease: group.ease,
+        }
+    }
+
+    /// Whether any of `fields` changes over time.
+    fn animates(&self, fields: &[LookField]) -> bool {
+        fields
+            .iter()
+            .any(|field| self.of(&[*field]).is_some_and(|g| g.state != KeyState::Still))
+    }
+}
+
+/// What the picture sections asked for besides changed numbers.
+#[derive(Debug, Default)]
+struct Asks {
+    /// A section's Reset: these numbers back as they come, keyframes gone.
+    resets: Vec<&'static [LookField]>,
+    /// A keyframe control was used, for this group.
+    keys: Vec<(&'static [LookField], KeyClicks)>,
+}
+
+impl Asks {
+    /// Takes a keyed row's outcome for the group of `field`.
+    fn row(&mut self, touched: &mut Touched, field: LookField, keyed: Keyed) {
+        *touched = touched.and(keyed.touched);
+        if keyed.clicks.any() {
+            self.keys.push((field.group(), keyed.clicks));
+        }
+    }
+}
+
+/// The names of `fields` that change over time, put first in a section's
+/// summary so a narrow header still shows them: "Over time: opacity,
+/// size · ", or nothing.
+fn over_time(keys: &KeyTable, fields: &[LookField]) -> String {
+    let mut names: Vec<&str> = Vec::new();
+    for field in fields {
+        if keys.animates(&[*field]) && !names.contains(&field.name()) {
+            names.push(field.name());
+        }
+    }
+    match names.is_empty() {
+        true => String::new(),
+        false => format!("Over time: {} · ", names.join(", ")),
+    }
+}
+
+/// Transform, Crop and Quick color: for clips with a picture. The numbers
+/// in `values` change as they are touched; Reset and the keyframe controls
+/// come back as [`Asks`].
 #[allow(clippy::too_many_arguments)]
 fn picture_sections(
     ui: &mut egui::Ui,
@@ -443,33 +687,50 @@ fn picture_sections(
     frame: (u32, u32),
     picture: (u32, u32),
     on_picture: (&mut bool, &str),
+    keys: &KeyTable,
     values: &mut Values,
     touched: &mut Touched,
-) {
+) -> Asks {
     let before = *before;
-    let clicks = inspector::section(
+    let mut asks = Asks::default();
+    let eases = Ease::ALL.map(Ease::label);
+    let k = |field| keys.keys(field, &eases);
+    let clicks = inspector::animated_section(
         ui,
         theme,
         "Transform",
-        &transform_summary(&before, frame),
+        &format!(
+            "{}{}",
+            over_time(keys, &TRANSFORM),
+            transform_summary(&before, frame)
+        ),
         before.is_moved() || before.opacity != ONE,
+        keys.animates(&TRANSFORM),
         |ui| {
-            *touched = touched.and(inspector::pair(
+            let keyed = inspector::keyed_pair(
                 ui,
                 theme,
                 "Position",
                 ("X", &mut values.x, pixels(frame.0)),
                 ("Y", &mut values.y, pixels(frame.1)),
-            ));
-            *touched = touched.and(inspector::number(ui, theme, "Size", &mut values.scale, SIZE));
-            *touched = touched.and(inspector::number(ui, theme, "Turn", &mut values.turn, TURN));
-            *touched = touched.and(inspector::slider(
+                &k(LookField::X),
+            );
+            asks.row(touched, LookField::X, keyed);
+            let keyed =
+                inspector::keyed_number(ui, theme, "Size", &mut values.scale, SIZE, &k(LookField::Scale));
+            asks.row(touched, LookField::Scale, keyed);
+            let keyed =
+                inspector::keyed_number(ui, theme, "Turn", &mut values.turn, TURN, &k(LookField::Turn));
+            asks.row(touched, LookField::Turn, keyed);
+            let keyed = inspector::keyed_slider(
                 ui,
                 theme,
                 "Opacity",
                 &mut values.opacity,
                 PERCENT_FULL,
-            ));
+                &k(LookField::Opacity),
+            );
+            asks.row(touched, LookField::Opacity, keyed);
             ui.horizontal(|ui| {
                 ui.add_space(90.0);
                 if ui
@@ -534,66 +795,75 @@ fn picture_sections(
         },
     );
     if clicks.reset {
-        let plain = Values::of(&Look::PLAIN, frame);
-        (values.x, values.y, values.scale, values.turn, values.opacity) =
-            (plain.x, plain.y, plain.scale, plain.turn, plain.opacity);
-        touched.changed = true;
+        asks.resets.push(&TRANSFORM);
     }
 
-    let clicks = inspector::section(
+    let clicks = inspector::animated_section(
         ui,
         theme,
         "Crop",
-        &crop_summary(&before),
+        &format!("{}{}", over_time(keys, &CROP_FIELDS), crop_summary(&before)),
         before.is_cropped(),
+        keys.animates(&CROP_FIELDS),
         |ui| {
-            for (label, value) in ["Left", "Top", "Right", "Bottom"]
+            for ((label, value), field) in ["Left", "Top", "Right", "Bottom"]
                 .into_iter()
                 .zip(&mut values.crop)
+                .zip(CROP_FIELDS)
             {
-                *touched = touched.and(inspector::slider(ui, theme, label, value, CROP));
+                let keyed = inspector::keyed_slider(ui, theme, label, value, CROP, &k(field));
+                asks.row(touched, field, keyed);
             }
         },
     );
     if clicks.reset {
-        values.crop = [0.0; 4];
-        touched.changed = true;
+        asks.resets.push(&CROP_FIELDS);
     }
 
-    let clicks = inspector::section(
+    let clicks = inspector::animated_section(
         ui,
         theme,
         "Quick color",
-        &colour_summary(&before),
+        &format!("{}{}", over_time(keys, &COLOUR), colour_summary(&before)),
         before.is_coloured(),
+        keys.animates(&COLOUR),
         |ui| {
-            *touched = touched.and(inspector::slider(
+            let keyed = inspector::keyed_slider(
                 ui,
                 theme,
                 "Exposure",
                 &mut values.exposure,
                 EXPOSURE,
-            ));
-            for (label, value) in [
-                ("Contrast", &mut values.contrast),
-                ("Saturation", &mut values.saturation),
-                ("Temperature", &mut values.temperature),
-                ("Tint", &mut values.tint),
+                &k(LookField::Exposure),
+            );
+            asks.row(touched, LookField::Exposure, keyed);
+            for (label, value, field) in [
+                ("Contrast", &mut values.contrast, LookField::Contrast),
+                ("Saturation", &mut values.saturation, LookField::Saturation),
+                ("Temperature", &mut values.temperature, LookField::Temperature),
+                ("Tint", &mut values.tint, LookField::Tint),
             ] {
-                *touched = touched.and(inspector::slider(ui, theme, label, value, EITHER_WAY));
+                let keyed = inspector::keyed_slider(ui, theme, label, value, EITHER_WAY, &k(field));
+                asks.row(touched, field, keyed);
             }
         },
     );
     if clicks.reset {
-        (
-            values.exposure,
-            values.contrast,
-            values.saturation,
-            values.temperature,
-            values.tint,
-        ) = (0.0, 0.0, 0.0, 0.0, 0.0);
-        touched.changed = true;
+        asks.resets.push(&COLOUR);
     }
+    asks
+}
+
+/// Whether `pending` changes its clip's look at its moment.
+fn changes(project: &Project, pending: &Pending) -> bool {
+    let Some(seq) = project.active() else {
+        return false;
+    };
+    seq.video_tracks
+        .iter()
+        .flat_map(|track| &track.clips)
+        .find(|clip| clip.id == pending.clip)
+        .is_some_and(|clip| clip.look_at(clip.moment(pending.at, seq.settings.frame_rate)) != pending.look)
 }
 
 /// Whether the inspector has a clip to show for `selected`; when it hasn't,
@@ -1331,7 +1601,11 @@ pub(crate) mod tests {
             scale: 500_000,
             ..Look::PLAIN
         };
-        inspector.pending = Some((clip.id, look));
+        inspector.pending = Some(Pending {
+            clip: clip.id,
+            at: Time::ZERO,
+            look,
+        });
         let shown = inspector.shown(&project).unwrap();
         assert_eq!(shown.active().unwrap().video_tracks[0].clips[0].look, look);
         assert_eq!(
@@ -1442,8 +1716,16 @@ pub(crate) mod tests {
         assert_eq!(shown(&[spare]), Some((TrackKind::Audio, spare)));
         assert_eq!(shown(&[mic, picture.id]), Some((TrackKind::Video, picture.id)));
         // A sound clip has no picture to take hold of in the viewer.
-        assert!(Inspector::default().subject(&project, &[mic]).is_none());
-        assert!(Inspector::default().subject(&project, &[picture.id]).is_some());
+        assert!(
+            Inspector::default()
+                .subject(&project, &[mic], Time::ZERO)
+                .is_none()
+        );
+        assert!(
+            Inspector::default()
+                .subject(&project, &[picture.id], Time::ZERO)
+                .is_some()
+        );
     }
 
     /// The recording, plus a sound clip of its own (music) later on the mic's track.
@@ -1471,7 +1753,13 @@ pub(crate) mod tests {
             let ctx = egui::Context::default();
             let mut inspector = Inspector::default();
             let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-                inspector.ui(ui, &ui_kit::ThemeName::default().theme(), &project, selected);
+                inspector.ui(
+                    ui,
+                    &ui_kit::ThemeName::default().theme(),
+                    &project,
+                    selected,
+                    Time::ZERO,
+                );
             });
             output.textures_delta.clear();
             let text = format!("{:?}", output.shapes);
@@ -1613,12 +1901,181 @@ pub(crate) mod tests {
         );
     }
 
+    /// The clip of `project_with_a_clip` (10 s from 0) with its opacity
+    /// keyed: 0 at 2 s, full at 6 s (on the timeline).
+    fn fading() -> (Project, ClipId) {
+        let mut project = project_with_a_clip();
+        let sequence = project.active_sequence;
+        let clip = project.active().unwrap().video_tracks[0].clips[0].id;
+        for (at, opacity) in [(2, 0), (6, ONE)] {
+            project = Command::Keyframe {
+                sequence,
+                clip,
+                at: Time::seconds(at),
+                fields: vec![LookField::Opacity],
+                change: KeyframeChange::Add,
+            }
+            .apply(&project)
+            .unwrap();
+            project = Command::SetLookAt {
+                sequence,
+                clip,
+                at: Time::seconds(at),
+                look: Look {
+                    opacity,
+                    ..Look::PLAIN
+                },
+            }
+            .apply(&project)
+            .unwrap();
+        }
+        (project, clip)
+    }
+
+    #[test]
+    fn diamonds_say_where_the_keyframes_are() {
+        let (project, _) = fading();
+        let clip = &project.active().unwrap().video_tracks[0].clips[0];
+        let rate = Rate::FPS_60;
+        let table = |seconds: i64| KeyTable::at(clip, Time::seconds(seconds), rate, true);
+        let opacity = |seconds: i64| *table(seconds).of(&[LookField::Opacity]).unwrap();
+        assert_eq!(opacity(2).state, KeyState::At);
+        assert_eq!(opacity(2).ease, Some(0), "linear");
+        assert_eq!(opacity(4).state, KeyState::Between);
+        assert_eq!((opacity(4).before, opacity(4).after), (Some(120), Some(360)));
+        assert_eq!((opacity(1).before, opacity(1).after), (None, Some(120)));
+        assert_eq!(table(4).of(&[LookField::Y]).unwrap().state, KeyState::Still);
+        assert!(table(4).animates(&TRANSFORM) && !table(4).animates(&CROP_FIELDS));
+        assert_eq!(over_time(&table(4), &TRANSFORM), "Over time: opacity · ");
+        assert_eq!(over_time(&table(4), &COLOUR), "");
+        // The numbers shown are the ones at the playhead.
+        let inspector = Inspector::default();
+        let shown = |seconds| {
+            inspector
+                .subject(&project, &[clip.id], Time::seconds(seconds))
+                .unwrap()
+                .look
+                .opacity
+        };
+        assert_eq!((shown(1), shown(4), shown(8)), (0, ONE / 2, ONE));
+    }
+
+    #[test]
+    fn a_diamond_click_adds_or_removes_and_an_arrow_moves_the_playhead() {
+        let (project, clip_id) = fading();
+        let sequence = project.active_sequence;
+        let clip = &project.active().unwrap().video_tracks[0].clips[0];
+        let rate = Rate::FPS_60;
+        let mut inspector = Inspector::default();
+        let clicked = |group: &'static [LookField], clicks: KeyClicks| Asks {
+            resets: Vec::new(),
+            keys: vec![(group, clicks)],
+        };
+        let toggle = KeyClicks {
+            toggle: true,
+            ..KeyClicks::default()
+        };
+        let at = |seconds: i64| Time::seconds(seconds);
+        let answer = |inspector: &mut Inspector, asks: &Asks, seconds: i64| {
+            let keys = KeyTable::at(clip, at(seconds), rate, true);
+            inspector.answer(asks, &keys, sequence, clip_id, at(seconds), rate)
+        };
+        let keyframe = |seconds: i64, fields: &[LookField], change| Command::Keyframe {
+            sequence,
+            clip: clip_id,
+            at: at(seconds),
+            fields: fields.to_vec(),
+            change,
+        };
+        let on_opacity = clicked(LookField::Opacity.group(), toggle);
+        assert_eq!(
+            answer(&mut inspector, &on_opacity, 2),
+            [keyframe(2, &[LookField::Opacity], KeyframeChange::Remove)]
+        );
+        assert_eq!(
+            answer(&mut inspector, &on_opacity, 4),
+            [keyframe(4, &[LookField::Opacity], KeyframeChange::Add)]
+        );
+        // A place starts changing over time with X and Y together.
+        let on_place = clicked(LookField::X.group(), toggle);
+        assert_eq!(
+            answer(&mut inspector, &on_place, 4),
+            [keyframe(4, &[LookField::X, LookField::Y], KeyframeChange::Add)]
+        );
+        let hold = KeyClicks {
+            ease: Some(1),
+            ..KeyClicks::default()
+        };
+        assert_eq!(
+            answer(&mut inspector, &clicked(LookField::Opacity.group(), hold), 6),
+            [keyframe(
+                6,
+                &[LookField::Opacity],
+                KeyframeChange::Ease(Ease::Hold)
+            )]
+        );
+        let back = KeyClicks {
+            previous: true,
+            ..KeyClicks::default()
+        };
+        assert!(answer(&mut inspector, &clicked(LookField::Opacity.group(), back), 4).is_empty());
+        assert_eq!(inspector.seek, Some(at(2)));
+        // Reset puts the section back and takes its keyframes.
+        let reset = Asks {
+            resets: vec![&TRANSFORM],
+            keys: Vec::new(),
+        };
+        let commands = answer(&mut inspector, &reset, 4);
+        assert_eq!(
+            commands,
+            [Command::ResetLook {
+                sequence,
+                clip: clip_id,
+                fields: TRANSFORM.to_vec()
+            }]
+        );
+        let after = commands[0].apply(&project).unwrap();
+        assert!(
+            after.active().unwrap().video_tracks[0].clips[0]
+                .keyframes
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_change_to_an_animated_number_is_a_keyframe_where_it_began() {
+        let (project, clip) = fading();
+        let mut inspector = Inspector::default();
+        let look = Look {
+            opacity: 100_000,
+            ..Look::PLAIN
+        };
+        // Begun with the playhead at 4 s; the playhead moved on since.
+        inspector.pending = Some(Pending {
+            clip,
+            at: Time::seconds(4),
+            look,
+        });
+        let commands = frame(&mut inspector, &project, &[]);
+        let after = commands[0].apply(&project).unwrap();
+        let stored = &after.active().unwrap().video_tracks[0].clips[0];
+        assert_eq!(stored.keyframes.of(LookField::Opacity).len(), 3);
+        assert_eq!(stored.look_at(Time::seconds(4)).opacity, 100_000);
+        assert_eq!(stored.look_at(Time::seconds(2)).opacity, 0, "the others stay");
+    }
+
     /// Runs the inspector for one frame without a window.
     fn frame(inspector: &mut Inspector, project: &Project, selected: &[ClipId]) -> Vec<Command> {
         let ctx = egui::Context::default();
         let mut commands = Vec::new();
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-            commands = inspector.ui(ui, &ui_kit::ThemeName::default().theme(), project, selected);
+            commands = inspector.ui(
+                ui,
+                &ui_kit::ThemeName::default().theme(),
+                project,
+                selected,
+                Time::ZERO,
+            );
         });
         // No window to hand the fonts' texture to.
         output.textures_delta.clear();
@@ -1633,17 +2090,19 @@ pub(crate) mod tests {
             opacity: 400_000,
             ..Look::PLAIN
         };
+        let at = Time::seconds(1);
         let mut inspector = Inspector {
-            pending: Some((clip, look)),
+            pending: Some(Pending { clip, at, look }),
             ..Inspector::default()
         };
         // Nothing selected any more: the change is finished, not lost.
         let commands = frame(&mut inspector, &project, &[]);
         assert_eq!(
             commands,
-            vec![Command::SetLook {
+            vec![Command::SetLookAt {
                 sequence: project.active_sequence,
                 clip,
+                at,
                 look
             }]
         );

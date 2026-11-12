@@ -95,6 +95,14 @@ enum Action {
         b: i64,
         at: i64,
     },
+    /// Sets a picture clip's opacity and place as seen at `at`, after a
+    /// keyframe there for them (`keyed`), so they change over time.
+    Animate {
+        pick: usize,
+        at: i64,
+        value: i32,
+        keyed: bool,
+    },
     Undo,
     Redo,
 }
@@ -124,6 +132,8 @@ fn action() -> impl Strategy<Value = Action> {
         1 => (t.clone(), t.clone()).prop_map(|(a, b)| Action::Region { a, b }),
         1 => t.clone().prop_map(|at| Action::Needle { at }),
         2 => (t.clone(), t.clone(), t).prop_map(|(a, b, at)| Action::Template { a, b, at }),
+        3 => (any::<usize>(), 0i64..120, 0i32..=1_000_000, any::<bool>())
+            .prop_map(|(pick, at, value, keyed)| Action::Animate { pick, at, value, keyed }),
         2 => Just(Action::Undo),
         1 => Just(Action::Redo),
     ]
@@ -168,6 +178,7 @@ fn command_for(action: &Action, p: &Project, media: MediaId, recording: MediaId)
                     speed: Default::default(),
                     look: Default::default(),
                     sound: Default::default(),
+                    keyframes: Default::default(),
                 },
             }
         }
@@ -187,6 +198,40 @@ fn command_for(action: &Action, p: &Project, media: MediaId, recording: MediaId)
             at: Time::from_ratio(at * 2 + 1, 2)?,
             clip: Some(pick_clip(pick)?),
         },
+        Action::Animate {
+            pick,
+            at,
+            value,
+            keyed,
+        } => {
+            let pictures: Vec<&Clip> = seq.video_tracks.iter().flat_map(|t| t.clips.iter()).collect();
+            let clip = pictures.get(pick % pictures.len().max(1))?;
+            let at = Time::from_ratio(at * 4 + 1, 4)?;
+            if keyed {
+                Command::Keyframe {
+                    sequence,
+                    clip: clip.id,
+                    at,
+                    fields: vec![
+                        project::LookField::Opacity,
+                        project::LookField::X,
+                        project::LookField::Y,
+                    ],
+                    change: project::animate::KeyframeChange::Add,
+                }
+            } else {
+                Command::SetLookAt {
+                    sequence,
+                    clip: clip.id,
+                    at,
+                    look: project::Look {
+                        opacity: value,
+                        x: value / 4,
+                        ..clip.look_at(at)
+                    },
+                }
+            }
+        }
         Action::SplitAll { at } => Command::Split {
             sequence,
             at: Time::from_ratio(at * 3 + 1, 3)?,

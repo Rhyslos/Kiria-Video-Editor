@@ -3,9 +3,11 @@
 //! - [`time`]: exact time and frame rates (fractions, never floats).
 //! - [`ids`]: one id type per kind of thing.
 //! - [`look`]: how a clip's picture is placed, cut and coloured.
+//! - [`keyframes`]: how a clip's look changes over time.
 //! - [`sound`]: how loud a clip is, its pan and its fades.
 //! - [`model`]: projects, timelines, tracks, clips, media, labels, the region.
 //! - [`file`]: the versioned project file, atomic saves and migrations.
+//! - [`animate`]: setting a clip's look at a moment, keyframes added, removed and reset.
 //! - [`command`]: every change is a `Command` applied to a snapshot.
 //! - [`tracks`]: adding, removing, renaming and hiding tracks.
 //! - `layers`: laying a file over a track and moving a clip between tracks, with sound that finds a free place.
@@ -15,12 +17,14 @@
 //! - [`side_files`]: the files that belong to a project besides the project file.
 //! - [`templates`]: stretches of a timeline saved to drop into any project.
 
+pub mod animate;
 pub mod command;
 pub mod document;
 mod edits;
 pub mod file;
 pub mod history;
 pub mod ids;
+pub mod keyframes;
 mod layers;
 pub mod look;
 pub mod model;
@@ -35,6 +39,7 @@ pub use command::{Command, Edge};
 pub use document::{Document, OpenCheck, Recovery, thumbnail_path, view_path};
 pub use history::History;
 pub use ids::{ClipId, LabelId, LinkId, MediaId, SequenceId, TrackId};
+pub use keyframes::{Ease, Keyframe, Keyframes, LookField};
 pub use look::Look;
 pub use model::{
     AudioStream, Clip, Fingerprint, LabelColor, MediaInfo, MediaKind, MediaRef, Project, Region, Sequence,

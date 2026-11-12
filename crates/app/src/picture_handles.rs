@@ -7,6 +7,9 @@
 //! while the playhead is on it), what a drag means for its look ([`moved`],
 //! [`resized`]), and handing the change to the inspector's look in waiting,
 //! so the panel's numbers follow the hand and letting go is one undo step.
+//! A picture whose place or size changes over time is held as it is at the
+//! playhead, and what the hand does there becomes keyframes at the playhead
+//! for the numbers it changed.
 
 use crate::inspector::{Inspector, Subject};
 use project::look::ONE;
@@ -40,7 +43,7 @@ impl PictureHandles {
         snapping: bool,
     ) -> Option<Command> {
         let subject = inspector
-            .subject(project, selected)
+            .subject(project, selected, playhead)
             .filter(|subject| subject.on_show_at(playhead));
         let Some(subject) = subject else {
             // Nothing to hold any more (the playhead left the clip, or
@@ -66,12 +69,12 @@ impl PictureHandles {
         match handled.change {
             Some(Change::Fit) => {
                 look = crate::inspector::fitted(&subject.look);
-                finished = inspector.changed_outside(project, subject.clip, look, false);
+                finished = inspector.changed_outside(project, subject.clip, subject.at, look, false);
             }
             Some(change) => {
                 let (_, from) = *self.from.get_or_insert((subject.clip, subject.look));
                 look = changed(&from, change, &subject);
-                finished = inspector.changed_outside(project, subject.clip, look, handled.busy);
+                finished = inspector.changed_outside(project, subject.clip, subject.at, look, handled.busy);
             }
             // Let go without having moved since the last frame.
             None if handled.ended && self.from.is_some() => finished = inspector.let_go(project),
@@ -159,6 +162,7 @@ mod tests {
     use super::*;
     use crate::inspector::tests::project_with_a_clip;
     use egui::{Rect, pos2, vec2};
+    use project::LookField;
     use ui_kit::picture_handles::Corner;
 
     const FRAME: (u32, u32) = (1920, 1080);
@@ -326,7 +330,7 @@ mod tests {
         /// The look the viewer and the panel show.
         fn shown(&self) -> Look {
             self.inspector
-                .subject(&self.project, &self.selected)
+                .subject(&self.project, &self.selected, self.playhead)
                 .unwrap()
                 .look
         }
@@ -357,7 +361,9 @@ mod tests {
             let mut commands = Vec::new();
             let mut output = self.ctx.run_ui(input, |ui| {
                 egui::Panel::right("inspector").exact_size(292.0).show(ui, |ui| {
-                    commands = self.inspector.ui(ui, &theme, &self.project, &self.selected);
+                    commands = self
+                        .inspector
+                        .ui(ui, &theme, &self.project, &self.selected, self.playhead);
                 });
                 egui::CentralPanel::default()
                     .frame(egui::Frame::new())
@@ -441,9 +447,10 @@ mod tests {
         let steps = rig.button(pos2(315.2, 137.6), false);
         assert_eq!(
             steps,
-            vec![Command::SetLook {
+            vec![Command::SetLookAt {
                 sequence: rig.project.active_sequence,
                 clip: rig.clip(),
+                at: rig.playhead,
                 look: moved
             }],
             "letting go is the one step"
@@ -519,9 +526,10 @@ mod tests {
         };
         assert_eq!(
             steps,
-            vec![Command::SetLook {
+            vec![Command::SetLookAt {
                 sequence: rig.project.active_sequence,
                 clip: rig.clip(),
+                at: rig.playhead,
                 look: fit
             }]
         );
@@ -577,6 +585,47 @@ mod tests {
         // Letting go afterwards adds nothing.
         assert!(rig.button(pos2(315.2, 137.6), false).is_empty());
         assert!(rig.frame(Vec::new()).is_empty());
+    }
+
+    #[test]
+    fn a_drag_on_a_picture_that_moves_over_time_keys_where_the_playhead_is() {
+        let mut rig = Rig::new();
+        rig.set(SMALL);
+        rig.modifiers = egui::Modifiers::ALT;
+        // Its place has a keyframe at 0 s: it is animated, held there.
+        let (sequence, clip) = (rig.project.active_sequence, rig.clip());
+        rig.project = Command::Keyframe {
+            sequence,
+            clip,
+            at: Time::ZERO,
+            fields: LookField::X.group().to_vec(),
+            change: project::animate::KeyframeChange::Add,
+        }
+        .apply(&rig.project)
+        .unwrap();
+        let from = pos2(238.4, 137.6);
+        rig.move_to(from);
+        rig.button(from, true);
+        rig.move_to(pos2(280.0, 137.6));
+        rig.move_to(pos2(315.2, 137.6));
+        let steps = rig.button(pos2(315.2, 137.6), false);
+        assert_eq!(steps.len(), 1);
+        let stored = &rig.project.active().unwrap().video_tracks[0].clips[0];
+        let xs: Vec<i32> = stored
+            .keyframes
+            .of(LookField::X)
+            .iter()
+            .map(|k| k.value)
+            .collect();
+        assert_eq!(xs, [SMALL.x, -100_000], "a second keyframe, at the playhead");
+        assert_eq!(
+            stored.keyframes.of(LookField::Y).len(),
+            2,
+            "its place's Y with it"
+        );
+        assert_eq!(stored.look_at(Time::ZERO).x, SMALL.x, "the first one stays");
+        assert_eq!(stored.look.x, SMALL.x, "the clip's own value is not what changed");
+        assert_eq!(rig.shown().x, -100_000);
     }
 
     #[test]

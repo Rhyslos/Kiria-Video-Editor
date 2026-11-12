@@ -6,6 +6,7 @@
 //! read the same.
 
 use crate::Theme;
+use crate::keyframe::{self, KeyClicks, Keys};
 use egui::{Align, Layout, RichText, Sense, Stroke, Ui};
 
 /// What a section's header was asked to do.
@@ -24,6 +25,37 @@ pub fn section(
     title: &str,
     summary: &str,
     changed: bool,
+    body: impl FnOnce(&mut Ui),
+) -> SectionClicks {
+    let tip = format!("Put {title} back as it comes");
+    section_with_reset(ui, theme, title, summary, changed, &tip, body)
+}
+
+/// [`section`] for values that can change over time: while `animated`,
+/// Reset also takes their keyframes away, and says so.
+pub fn animated_section(
+    ui: &mut Ui,
+    theme: &Theme,
+    title: &str,
+    summary: &str,
+    changed: bool,
+    animated: bool,
+    body: impl FnOnce(&mut Ui),
+) -> SectionClicks {
+    let tip = match animated {
+        true => format!("Put {title} back as it comes, and remove its keyframes"),
+        false => format!("Put {title} back as it comes"),
+    };
+    section_with_reset(ui, theme, title, summary, changed || animated, &tip, body)
+}
+
+fn section_with_reset(
+    ui: &mut Ui,
+    theme: &Theme,
+    title: &str,
+    summary: &str,
+    changed: bool,
+    reset_tip: &str,
     body: impl FnOnce(&mut Ui),
 ) -> SectionClicks {
     let mut clicks = SectionClicks::default();
@@ -47,7 +79,7 @@ pub fn section(
                             egui::Button::new(RichText::new("Reset").color(theme.text_secondary).size(12.0))
                                 .frame(false),
                         )
-                        .on_hover_text(format!("Put {title} back as it comes"))
+                        .on_hover_text(reset_tip)
                         .clicked()
                 {
                     clicks.reset = true;
@@ -142,6 +174,85 @@ pub fn slider(ui: &mut Ui, theme: &Theme, label: &str, value: &mut f64, how: Num
     slider_row(ui, theme, label, value, how, None)
 }
 
+/// What happened in a row with a keyframe control: to its value, and to
+/// its keyframes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Keyed {
+    pub touched: Touched,
+    pub clicks: KeyClicks,
+}
+
+/// [`number`], with the keyframe control at the end of the row
+/// ([`keyframe::control`]).
+pub fn keyed_number(
+    ui: &mut Ui,
+    theme: &Theme,
+    label: &str,
+    value: &mut f64,
+    how: Number,
+    keys: &Keys,
+) -> Keyed {
+    keyed_row(ui, theme, label, keys, |ui| drag(ui, value, how))
+}
+
+/// [`pair`], with one keyframe control for both numbers: they change over
+/// time together.
+pub fn keyed_pair(
+    ui: &mut Ui,
+    theme: &Theme,
+    label: &str,
+    first: (&str, &mut f64, Number),
+    second: (&str, &mut f64, Number),
+    keys: &Keys,
+) -> Keyed {
+    keyed_row(ui, theme, label, keys, |ui| {
+        // Each number gets half of what is left, so a long one never
+        // pushes the keyframe control out of its place.
+        let names = 2.0 * (12.0 + 2.0 * ui.spacing().item_spacing.x);
+        let width = ((ui.available_width() - names) / 2.0).clamp(36.0, 90.0);
+        ui.label(RichText::new(first.0).color(theme.muted).size(12.0));
+        let a = sized_drag(ui, first.1, first.2, width);
+        ui.label(RichText::new(second.0).color(theme.muted).size(12.0));
+        a.and(sized_drag(ui, second.1, second.2, width))
+    })
+}
+
+/// [`slider`], with the keyframe control at the end of the row.
+pub fn keyed_slider(
+    ui: &mut Ui,
+    theme: &Theme,
+    label: &str,
+    value: &mut f64,
+    how: Number,
+    keys: &Keys,
+) -> Keyed {
+    keyed_row(ui, theme, label, keys, |ui| slider_values(ui, value, how, None))
+}
+
+/// A row whose keyframe control sits at its right end; the values take
+/// what is left between the label and it.
+fn keyed_row(
+    ui: &mut Ui,
+    theme: &Theme,
+    label: &str,
+    keys: &Keys,
+    values: impl FnOnce(&mut Ui) -> Touched,
+) -> Keyed {
+    ui.horizontal(|ui| {
+        ui.set_min_height(24.0);
+        label_cell(ui, theme, label, LABEL_WIDTH);
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            let clicks = keyframe::control(ui, theme, label, keys);
+            let touched = ui
+                .with_layout(Layout::left_to_right(Align::Center), |ui| values(ui))
+                .inner;
+            Keyed { touched, clicks }
+        })
+        .inner
+    })
+    .inner
+}
+
 /// How a number is written in words of its own ("L 20", "Off",
 /// "0.50 s · 30 frames") and how typed text is read back. Text that
 /// `read` can't make sense of leaves the number as it was.
@@ -193,21 +304,24 @@ fn slider_row(
     how: Number,
     words: Option<Words>,
 ) -> Touched {
-    row(ui, theme, label, |ui| {
-        // The number has a fixed place at the end of the row; the slider
-        // takes what is left, so rows line up whatever the numbers say.
-        let room = ui.available_width() - VALUE_WIDTH - ui.spacing().item_spacing.x;
-        ui.spacing_mut().slider_width = room.max(40.0);
-        let before = *value;
-        let slider = ui.add(
-            egui::Slider::new(value, how.range.0..=how.range.1)
-                .show_value(false)
-                .clamping(egui::SliderClamping::Always),
-        );
-        let on_slider = touched(&slider, value, before, how);
-        let typed = ui.add_sized([VALUE_WIDTH, 20.0], worded(value_drag(value, how), words));
-        on_slider.and(touched(&typed, value, before, how))
-    })
+    row(ui, theme, label, |ui| slider_values(ui, value, how, words))
+}
+
+/// A slider across the room left, with its number after it.
+fn slider_values(ui: &mut Ui, value: &mut f64, how: Number, words: Option<Words>) -> Touched {
+    // The number has a fixed place at the end of the row; the slider
+    // takes what is left, so rows line up whatever the numbers say.
+    let room = ui.available_width() - VALUE_WIDTH - ui.spacing().item_spacing.x;
+    ui.spacing_mut().slider_width = room.max(40.0);
+    let before = *value;
+    let slider = ui.add(
+        egui::Slider::new(value, how.range.0..=how.range.1)
+            .show_value(false)
+            .clamping(egui::SliderClamping::Always),
+    );
+    let on_slider = touched(&slider, value, before, how);
+    let typed = ui.add_sized([VALUE_WIDTH, 20.0], worded(value_drag(value, how), words));
+    on_slider.and(touched(&typed, value, before, how))
 }
 
 /// The number to drag sideways or type, as `how` says.
@@ -235,6 +349,13 @@ fn row(ui: &mut Ui, theme: &Theme, label: &str, values: impl FnOnce(&mut Ui) -> 
         values(ui)
     })
     .inner
+}
+
+/// [`drag`] in a box `width` wide.
+fn sized_drag(ui: &mut Ui, value: &mut f64, how: Number, width: f32) -> Touched {
+    let before = *value;
+    let response = ui.add_sized([width, 20.0], value_drag(value, how));
+    touched(&response, value, before, how)
 }
 
 fn drag(ui: &mut Ui, value: &mut f64, how: Number) -> Touched {

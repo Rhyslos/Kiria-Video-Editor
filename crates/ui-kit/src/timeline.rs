@@ -60,6 +60,7 @@
 pub mod cache_bar;
 mod fades;
 mod headers;
+mod keyframes;
 pub mod level;
 mod loading;
 mod rows;
@@ -100,6 +101,10 @@ pub struct TimelineClip {
     /// Its sound's volume and fades: the waveform is drawn as loud as the
     /// clip is set, and its fades as lines from the corners.
     pub sound: ClipSound,
+    /// Where its look has keyframes, in seconds on the timeline: small
+    /// diamonds along its bottom edge, which move the playhead there when
+    /// clicked. The page fills them in for the selected clip only.
+    pub keyframes: Vec<f64>,
 }
 
 /// Small pictures along a clip's file: one every `every` seconds from the
@@ -1276,6 +1281,13 @@ impl TimelineView {
                     if self.clip_drag.is_some_and(|d| d.refused && d.moves(clip)) {
                         draw_refused(&clip_painter, r);
                     }
+                    if full && !clip.keyframes.is_empty() {
+                        // On top of everything else in the clip, where it is
+                        // shown (also while it is dragged).
+                        let shift = start - clip.start;
+                        let x_of = |t: f64| self.x_of(left, t + shift);
+                        keyframes::draw(&clip_painter, r, &clip.keyframes, x_of, theme.accent);
+                    }
                 }
                 if let Some(m) = merged {
                     clip_painter.rect_filled(m, 1.0, tiny_fill(theme, colour, audio));
@@ -2425,7 +2437,25 @@ impl TimelineView {
                 self.menu_at = Some((t, hit.map(|c| (c.id, c.start, c.start + c.duration))));
             }
             clip_menu(&r, self.menu_at, data.region.is_some(), events);
-            if r.clicked() {
+            // A keyframe mark on a clip: the playhead goes there.
+            let on_mark = match (hit, rows.at(p.y).and_then(|row| row_rects.get(row))) {
+                (Some(c), Some(row)) if !self.compact && !c.keyframes.is_empty() => {
+                    let drawn = Rect::from_min_max(
+                        pos2(self.x_of(left, c.start), row.top() + 3.0),
+                        pos2(self.x_of(left, c.start + c.duration), row.bottom() - 3.0),
+                    );
+                    keyframes::hit(drawn, &c.keyframes, |t| self.x_of(left, t), p)
+                }
+                _ => None,
+            };
+            if on_mark.is_some() && r.hovered() && self.clip_drag.is_none() {
+                ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+            }
+            if r.clicked()
+                && let Some(at) = on_mark
+            {
+                events.push(TimelineEvent::Seek(at));
+            } else if r.clicked() {
                 let add = ui.input(|i| i.modifiers.shift || i.modifiers.command);
                 events.push(match (self.tool, hit) {
                     (Tool::Blade, Some(c)) => TimelineEvent::Blade { clip: c.id, at: t },
@@ -3038,6 +3068,7 @@ mod tests {
             pictures: None,
             loading: None,
             sound: ClipSound::default(),
+            keyframes: Vec::new(),
         }
     }
 
@@ -3579,6 +3610,32 @@ mod tests {
 
     fn near(a: f32, b: f32) -> bool {
         (a - b).abs() < 1e-3
+    }
+
+    #[test]
+    fn a_click_on_a_keyframe_mark_moves_the_playhead_there() {
+        let primary = egui::PointerButton::Primary;
+        let mut rig = Rig::new(1, 1);
+        rig.video[0].clips[0].selected = true;
+        rig.video[0].clips[0].keyframes = vec![3.0];
+        // The clip runs from x = 200 (1 s) to 440 (5 s): 3 s is at x = 320.
+        // Somewhere near the bottom edge of the clip, the mark is taken.
+        let mut marked = None;
+        for y in (60..212).rev() {
+            let events = click(&mut rig, pos2(321.0, y as f32), primary);
+            if events == vec![TimelineEvent::Seek(3.0)] {
+                marked = Some(y);
+                break;
+            }
+        }
+        let y = marked.expect("the mark is under the pointer near the clip's bottom edge") as f32;
+        // Higher up in the clip, or beside the mark, a click selects as before.
+        let select = vec![TimelineEvent::Select { clip: 0, add: false }];
+        assert_eq!(click(&mut rig, pos2(321.0, y - 20.0), primary), select);
+        assert_eq!(click(&mut rig, pos2(360.0, y), primary), select);
+        // Without marks, the same place selects too.
+        rig.video[0].clips[0].keyframes.clear();
+        assert_eq!(click(&mut rig, pos2(321.0, y), primary), select);
     }
 
     #[test]

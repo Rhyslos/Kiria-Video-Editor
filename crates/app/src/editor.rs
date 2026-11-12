@@ -562,6 +562,10 @@ impl Editor {
                 }
                 Ok(())
             }
+            Action::PreviousKeyframe | Action::NextKeyframe => {
+                self.jump_to_keyframe(action == Action::NextKeyframe);
+                Ok(())
+            }
         };
         if let Err(err) = result {
             self.errors.push(&err);
@@ -680,11 +684,54 @@ impl Editor {
 
     /// Moves the playhead; while playing, playback carries on from there.
     fn seek(&mut self, seconds: f64) {
+        let at = Time::from_ratio((seconds * 1_000_000.0).round() as i64, 1_000_000).unwrap_or(Time::ZERO);
+        self.go_to(at);
+    }
+
+    /// Moves the playhead to the selected clip's next (or previous)
+    /// keyframe of any of its numbers, or says why it can't.
+    fn jump_to_keyframe(&mut self, next: bool) {
+        let Some(project) = self.document.as_ref().map(|d| d.project()) else {
+            return;
+        };
+        let Some(seq) = project.active() else { return };
+        let rate = seq.settings.frame_rate;
+        let here = rate.frame_at(self.viewer.playhead);
+        let clip = seq
+            .video_tracks
+            .iter()
+            .rev()
+            .flat_map(|track| track.clips.iter())
+            .find(|clip| self.selected.contains(&clip.id));
+        let Some(clip) = clip else {
+            self.status =
+                "Select a clip with a picture first: its keyframes are what this moves between.".into();
+            return;
+        };
+        let frames = clip.keyframe_frames(&project::LookField::ALL, rate);
+        let target = match next {
+            true => frames.iter().find(|frame| **frame > here),
+            false => frames.iter().rev().find(|frame| **frame < here),
+        };
+        match target {
+            Some(frame) => {
+                let at = rate.frame_start(*frame);
+                self.go_to(at);
+            }
+            None => {
+                let way = if next { "after" } else { "before" };
+                self.status = format!("The selected clip has no keyframe {way} the playhead.");
+            }
+        }
+    }
+
+    /// Moves the playhead to `at` (on a frame, within the timeline), going
+    /// on playing from there if it was.
+    fn go_to(&mut self, at: Time) {
         let Some(seq) = self.document.as_ref().and_then(|d| d.project().active()) else {
             return;
         };
         let (rate, length) = (seq.settings.frame_rate, seq.length());
-        let at = Time::from_ratio((seconds * 1_000_000.0).round() as i64, 1_000_000).unwrap_or(Time::ZERO);
         let was_playing = self.playback.take().is_some();
         self.viewer.go_to(at, rate, length);
         if was_playing {
@@ -1630,13 +1677,18 @@ impl Editor {
             }
         );
         let Some(document) = &self.document else { return };
+        let playhead = self.viewer.playhead;
         let commands = egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 self.inspector
-                    .ui(ui, &self.theme, document.project(), &self.selected)
+                    .ui(ui, &self.theme, document.project(), &self.selected, playhead)
             })
             .inner;
+        // An arrow beside a keyframe diamond moves the playhead.
+        if let Some(at) = self.inspector.seek.take() {
+            self.go_to(at);
+        }
         if self.inspector.on_picture != self.settings.picture_handles {
             self.run_action(Action::PictureHandles);
         }

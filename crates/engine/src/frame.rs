@@ -94,7 +94,8 @@ pub fn describe(project: &Project, sequence: &Sequence, at: Time) -> FrameDescri
 /// `clip`'s picture at `at`, or nothing when its file has no picture.
 fn layer(clip: &Clip, media: &MediaRef, frame: (u32, u32), at: Time) -> Option<Layer> {
     let video = media.info.video.as_ref()?;
-    let look = clip.look;
+    // Its look at this moment: keyframes give the numbers that change.
+    let look = clip.look_at(at);
     let part = shown_part(&look);
     Some(Layer {
         clip: clip.id,

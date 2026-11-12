@@ -144,6 +144,7 @@ pub fn drawn(
         .filter_map(|c| c.link)
         .collect();
     let mut cache = Vec::new();
+    let rate = seq.settings.frame_rate;
     let mut track = |t: &project::Track| {
         let what = match t.kind {
             project::TrackKind::Audio => LoadKind::Sound,
@@ -220,6 +221,10 @@ pub fn drawn(
                     }),
                     loading: state.map(|state| Loading { what, state }),
                     sound: drawn_sound(&c.sound),
+                    keyframes: match (t.kind, selected.contains(&c.id)) {
+                        (project::TrackKind::Video, true) => keyframe_marks(c, rate),
+                        _ => Vec::new(),
+                    },
                 }
             })
             .collect();
@@ -325,6 +330,15 @@ pub fn label_colour(c: LabelColor) -> egui::Color32 {
 }
 
 /// Clicking a clip: alone, or added to (or taken out of) the selection.
+/// Where a clip's look has keyframes, in seconds on the timeline: the
+/// start of each timeline frame that holds one, inside the clip.
+pub fn keyframe_marks(clip: &project::Clip, rate: project::Rate) -> Vec<f64> {
+    clip.keyframe_frames(&project::LookField::ALL, rate)
+        .into_iter()
+        .map(|frame| rate.frame_start(frame).as_secs_f64())
+        .collect()
+}
+
 pub fn select(selected: &mut Vec<ClipId>, clip: ClipId, add: bool) {
     if !add {
         selected.clear();
@@ -520,6 +534,33 @@ pub fn keep_existing(selected: &mut Vec<ClipId>, seq: &Sequence) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn keyframe_marks_are_the_frames_that_hold_one_inside_the_clip() {
+        let project = crate::inspector::tests::project_with_a_clip();
+        let sequence = project.active_sequence;
+        let clip = project.active().unwrap().video_tracks[0].clips[0].clone();
+        let mut keyed = project;
+        for (seconds, fields) in [
+            (1, vec![project::LookField::Opacity]),
+            (3, vec![project::LookField::Scale]),
+            (30, vec![project::LookField::Tint]),
+        ] {
+            keyed = project::Command::Keyframe {
+                sequence,
+                clip: clip.id,
+                at: project::Time::seconds(seconds),
+                fields,
+                change: project::animate::KeyframeChange::Add,
+            }
+            .apply(&keyed)
+            .unwrap();
+        }
+        let clip = &keyed.active().unwrap().video_tracks[0].clips[0];
+        let marks = keyframe_marks(clip, project::Rate::FPS_60);
+        // The one asked for at 30 s went on the clip's last frame (10 s long).
+        assert_eq!(marks, vec![1.0, 3.0, 599.0 / 60.0]);
+    }
+
     use super::*;
 
     #[test]
@@ -553,6 +594,7 @@ mod tests {
             pictures: None,
             loading: None,
             sound: Default::default(),
+            keyframes: Default::default(),
         }
     }
 

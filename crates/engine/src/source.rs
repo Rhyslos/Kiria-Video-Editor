@@ -112,6 +112,7 @@ pub fn file_alone(media: &MediaRef) -> Option<Project> {
         speed: project::Speed::NORMAL,
         look: project::Look::default(),
         sound: project::Sound::default(),
+        keyframes: Default::default(),
     };
     let sequence = project.sequences.iter_mut().next()?;
     let track = sequence

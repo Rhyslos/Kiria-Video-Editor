@@ -5,6 +5,7 @@
 //! rendering can each hold their own snapshot.
 
 use crate::ids::{ClipId, LabelId, LinkId, MediaId, SequenceId, TrackId};
+use crate::keyframes::Keyframes;
 use crate::look::Look;
 use crate::sound::Sound;
 use crate::time::{Rate, Speed, Time};
@@ -257,6 +258,11 @@ pub struct Clip {
     /// its linked sound clips.
     #[serde(default)]
     pub sound: Sound,
+    /// How numbers of its look change over time (format 10): keyframes at
+    /// moments of its file. Numbers without any keep `look`'s value. Means
+    /// nothing for sound.
+    #[serde(default)]
+    pub keyframes: Keyframes,
 }
 
 impl Clip {
@@ -462,6 +468,10 @@ impl Project {
             if !clip.sound.fits(clip.duration) {
                 problems.push(format!("{place} has fades longer than itself"));
             }
+            problems.extend(clip.keyframes.problems(&place));
+            if track.kind == TrackKind::Audio && !clip.keyframes.is_empty() {
+                problems.push(format!("{place} is sound but has picture keyframes"));
+            }
             if previous_end.is_some_and(|end| clip.start < end) {
                 problems.push(format!("{place} overlaps the clip before it"));
             }
@@ -551,6 +561,7 @@ mod tests {
             speed: Default::default(),
             look: Default::default(),
             sound: Default::default(),
+            keyframes: Default::default(),
         });
         p
     }

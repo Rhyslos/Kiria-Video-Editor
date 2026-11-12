@@ -4,7 +4,9 @@
 //! explained error and no change. Commands are plain data, so they can be
 //! written to the autosave journal and replayed after a crash.
 
+use crate::animate::KeyframeChange;
 use crate::ids::{ClipId, LabelId, LinkId, MediaId, SequenceId, TrackId};
+use crate::keyframes::LookField;
 use crate::look::Look;
 use crate::model::{
     Clip, LabelColor, MediaKind, MediaRef, Project, Region, Sequence, SequenceSettings, TimelineLabel, Track,
@@ -56,11 +58,40 @@ pub enum Command {
     },
     /// Sets where `clip`'s picture sits in the frame, which part of it
     /// shows, how strong it is and its quick colour. Only that clip: its
-    /// linked sound has no picture.
+    /// linked sound has no picture. Numbers that have keyframes keep them
+    /// (and follow them); [`Command::SetLookAt`] is what the inspector uses.
     SetLook {
         sequence: SequenceId,
         clip: ClipId,
         look: Look,
+    },
+    /// Sets `clip`'s look as it is seen at `at` on the timeline (the
+    /// playhead, brought onto the clip). A number that changes over time
+    /// gets a keyframe there (the one already in that frame changes, or a
+    /// new one is added); a number that doesn't is set for the whole clip.
+    /// Only numbers that differ from what is seen there are written, and a
+    /// place's X and Y always go together (format 10).
+    SetLookAt {
+        sequence: SequenceId,
+        clip: ClipId,
+        at: Time,
+        look: Look,
+    },
+    /// Adds, removes or sets the ease of the keyframes of `fields` in the
+    /// frame at `at` on the timeline (the playhead, brought onto the clip).
+    Keyframe {
+        sequence: SequenceId,
+        clip: ClipId,
+        at: Time,
+        fields: Vec<LookField>,
+        change: KeyframeChange,
+    },
+    /// Puts `fields` of `clip`'s look back as they come and takes their
+    /// keyframes away: a section's Reset.
+    ResetLook {
+        sequence: SequenceId,
+        clip: ClipId,
+        fields: Vec<LookField>,
     },
     /// Sets how each of `sounds`' clips sounds: its volume, pan and fades.
     /// One step for all of them, so a picture's linked sound streams (game,
@@ -323,26 +354,26 @@ impl Command {
             }
             Command::SetLook { sequence, clip, look } => {
                 look.check()?;
-                let seq = sequence_mut(&mut p, *sequence)?;
-                let found = seq
-                    .video_tracks
-                    .iter_mut()
-                    .flat_map(|track| track.clips.iter_mut())
-                    .find(|c| c.id == *clip);
-                match found {
-                    Some(c) => c.look = *look,
-                    None if seq
-                        .audio_tracks
-                        .iter()
-                        .any(|t| t.clips.iter().any(|c| c.id == *clip)) =>
-                    {
-                        return Err(AppError::new("Sound has no picture to place")
-                            .why("Transform, Crop and Quick color belong to clips on video tracks.")
-                            .fix("Select the clip's picture on a video track."));
-                    }
-                    None => return Err(missing("clip")),
-                }
+                crate::animate::picture_clip(&mut p, *sequence, *clip)?.0.look = *look;
             }
+            Command::SetLookAt {
+                sequence,
+                clip,
+                at,
+                look,
+            } => crate::animate::set_look_at(&mut p, *sequence, *clip, *at, look)?,
+            Command::Keyframe {
+                sequence,
+                clip,
+                at,
+                fields,
+                change,
+            } => crate::animate::keyframe(&mut p, *sequence, *clip, *at, fields, *change)?,
+            Command::ResetLook {
+                sequence,
+                clip,
+                fields,
+            } => crate::animate::reset_look(&mut p, *sequence, *clip, fields)?,
             Command::SetSound { sequence, sounds } => set_sound(&mut p, *sequence, sounds)?,
             Command::Restore { project } => {
                 if project.active().is_none() {
@@ -869,6 +900,7 @@ fn place_media(
         speed: Speed::NORMAL,
         look: Look::PLAIN,
         sound: Default::default(),
+        keyframes: Default::default(),
     };
 
     if let Some(v) = video {
@@ -947,18 +979,23 @@ pub(crate) fn split(
                 // Volume and pan stay on both halves; the fade in stays at
                 // the start, on the left half, and the fade out at the end,
                 // on the right (each cut to fit its half after the change).
+                // Each half keeps the keyframes of its own part of the
+                // file, and one at the cut holding the value there.
+                let cut = left.source_at(at);
                 let right = Clip {
                     id: *right_id,
                     start: at,
-                    source_in: left.source_in + left.speed.scale(first),
+                    source_in: cut,
                     duration: left.duration - first,
                     link: *right_link,
                     sound: left.sound.without_fade_in(),
+                    keyframes: left.keyframes.cut_to(cut, left.source_at(left.end())),
                     ..left.clone()
                 };
                 track.clips[i] = Clip {
                     duration: first,
                     sound: left.sound.without_fade_out(),
+                    keyframes: left.keyframes.cut_to(left.source_in, cut),
                     ..left
                 };
                 track.clips.insert(i + 1, right);
@@ -1106,6 +1143,7 @@ mod tests {
             speed: Default::default(),
             look: Default::default(),
             sound: Default::default(),
+            keyframes: Default::default(),
         }
     }
 
