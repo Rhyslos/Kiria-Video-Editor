@@ -7,6 +7,7 @@
 //! - [`file`]: the versioned project file, atomic saves and migrations.
 //! - [`command`]: every change is a `Command` applied to a snapshot.
 //! - [`tracks`]: adding, removing, renaming and hiding tracks.
+//! - `layers`: laying a file over a track and moving a clip between tracks, with sound that finds a free place.
 //! - [`history`]: unlimited undo and redo over snapshots.
 //! - [`document`]: an open project on disk, with the autosave journal and crash recovery.
 //! - [`versions`]: named copies of a project to go back to.
@@ -19,6 +20,7 @@ mod edits;
 pub mod file;
 pub mod history;
 pub mod ids;
+mod layers;
 pub mod look;
 pub mod model;
 pub mod side_files;

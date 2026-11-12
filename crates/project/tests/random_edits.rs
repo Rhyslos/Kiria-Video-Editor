@@ -62,6 +62,19 @@ enum Action {
         track: Option<usize>,
         insert: bool,
     },
+    /// Lays the recording over a track: its sound finds a free place.
+    Lay {
+        at: i64,
+        track: Option<usize>,
+    },
+    /// Moves a clip to a track, or to a new one when `track` is `None`:
+    /// linked sound finds a free place.
+    MoveBetween {
+        pick: usize,
+        video: bool,
+        track: Option<usize>,
+        by: i64,
+    },
     AddLabel {
         at: i64,
     },
@@ -103,6 +116,9 @@ fn action() -> impl Strategy<Value = Action> {
             .prop_map(|(pick, video, track, by)| Action::MoveToTrack { pick, video, track, by }),
         2 => (-5i64..120, prop::option::of(0usize..4), any::<bool>())
             .prop_map(|(at, track, insert)| Action::Drop { at, track, insert }),
+        3 => (-5i64..120, prop::option::of(0usize..4)).prop_map(|(at, track)| Action::Lay { at, track }),
+        3 => (any::<usize>(), any::<bool>(), prop::option::weighted(0.8, 0usize..4), -40i64..40)
+            .prop_map(|(pick, video, track, by)| Action::MoveBetween { pick, video, track, by }),
         1 => t.clone().prop_map(|at| Action::AddLabel { at }),
         1 => any::<usize>().prop_map(|pick| Action::RemoveLabel { pick }),
         1 => (t.clone(), t.clone()).prop_map(|(a, b)| Action::Region { a, b }),
@@ -224,6 +240,33 @@ fn command_for(action: &Action, p: &Project, media: MediaId, recording: MediaId)
                 insert,
             }
         }
+        // On any track: an audio track is refused.
+        Action::Lay { at, track } => {
+            let all: Vec<_> = seq.tracks().map(|t| t.id).collect();
+            Command::LayMedia {
+                sequence,
+                media: recording,
+                at: Time::seconds(at),
+                track: match track {
+                    Some(track) => Some(*all.get(track % all.len())?),
+                    None => None,
+                },
+            }
+        }
+        Action::MoveBetween {
+            pick,
+            video,
+            track,
+            by,
+        } => Command::MoveBetweenTracks {
+            sequence,
+            clip: pick_clip(pick)?,
+            track: match track {
+                Some(track) => Some(tracks(video).get(track % tracks(video).len())?.id),
+                None => None,
+            },
+            by: Time::seconds(by),
+        },
         Action::AddLabel { at } => Command::AddLabel {
             sequence,
             label: TimelineLabel {
