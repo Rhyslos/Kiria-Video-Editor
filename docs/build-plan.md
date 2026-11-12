@@ -381,7 +381,7 @@ Phase 5 turns the simple media list from phase 4 into the full Library page and 
 - [ ] Relink: by fingerprint, automatically when files moved inside a known folder.
 - [ ] Package project: copy the project plus only the media it uses into one folder (with progress and size shown first) that opens on the other person's machine.
 
-**5.4 Highlight finder** (research workflow)
+**5.4 Highlight finder** (research workflow; note and spike in `docs/research/highlights.md`, measured on synthetic clips, waiting for the owner's recordings with picked moments before the choice)
 
 - [ ] Background analysis on import of long recordings: mic loudness bursts, game-audio spikes, scene changes, sudden motion.
 - [ ] Results become suggested timeline labels on the clip, shown faded until accepted; accept or dismiss one by one or all at once.
