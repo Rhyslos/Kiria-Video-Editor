@@ -132,6 +132,79 @@ fn a_stretch_of_the_timeline_becomes_a_file_that_matches_it() {
 }
 
 #[test]
+fn an_exported_fade_and_pan_are_in_the_file() {
+    let Some(devices) = devices() else {
+        eprintln!("no graphics device here: exporting isn't checked");
+        return;
+    };
+    // Every sound stream all to the left, fading in over the first second.
+    let (mut project, seq) = recording();
+    let sounds = project
+        .active()
+        .unwrap()
+        .audio_tracks
+        .iter()
+        .flat_map(|t| t.clips.iter())
+        .map(|c| {
+            let sound = project::Sound {
+                pan: -project::Sound::SIDE,
+                fade_in: Time::seconds(1),
+                ..project::Sound::PLAIN
+            };
+            (c.id, sound)
+        })
+        .collect();
+    project = Command::SetSound {
+        sequence: seq,
+        sounds,
+    }
+    .apply(&project)
+    .unwrap();
+    let rate = project.active().unwrap().settings.sample_rate;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("faded.mp4");
+    let settings = ExportSettings {
+        path: path.clone(),
+        range: Some((Time::ZERO, Time::seconds(1))),
+        quality: Quality::Small,
+        software: true,
+    };
+    let export = Export::start(project.clone(), seq, settings, devices, || {});
+    let Outcome::Done(_) = wait(&export) else {
+        panic!("the export did not finish well");
+    };
+    let made = media::describe(&path).unwrap();
+    let mut sound = media::AudioDecoder::open(&path, made.info.audio[0].index, rate).unwrap();
+    let mut heard = vec![0.0f32; rate as usize * 2];
+    let got = sound.read(&mut heard);
+    assert!(got > rate as usize * 9 / 10, "about a second: {got}");
+    let side = |which: usize, from: f64, to: f64| {
+        let (a, b) = ((from * f64::from(rate)) as usize, (to * f64::from(rate)) as usize);
+        let s: Vec<f32> = heard
+            .iter()
+            .skip(which)
+            .step_by(2)
+            .skip(a)
+            .take(b - a)
+            .copied()
+            .collect();
+        (s.iter().map(|v| v * v).sum::<f32>() / s.len().max(1) as f32).sqrt()
+    };
+    let (left, right) = (side(0, 0.1, 0.9), side(1, 0.1, 0.9));
+    assert!(left > 0.01, "the left has the sound: {left}");
+    assert!(right < left / 50.0, "the right is silent: {right} against {left}");
+    // Rising: the start of the second is much quieter than its end.
+    let (early, late) = (side(0, 0.05, 0.2), side(0, 0.8, 0.95));
+    assert!(early < late * 0.5, "fading in: {early} then {late}");
+    // And as loud as the mix says, a stretch at a time.
+    let mut mixed = vec![0.0f32; rate as usize / 5 * 2];
+    Mixer::new(rate).mix(&project, project.active().unwrap(), 0.75, &mut mixed);
+    let was = (mixed.iter().step_by(2).map(|v| v * v).sum::<f32>() / (mixed.len() / 2) as f32).sqrt();
+    let is = side(0, 0.75, 0.95);
+    assert!((is / was - 1.0).abs() < 0.25, "mixed {was}, exported {is}");
+}
+
+#[test]
 fn a_cancelled_export_leaves_nothing_behind() {
     let Some(devices) = devices() else { return };
     let (project, seq) = recording();
