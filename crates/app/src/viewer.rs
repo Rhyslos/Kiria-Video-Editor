@@ -38,6 +38,7 @@ use engine::{Composing, Convert, Preview};
 use media::{Decoded, Decoding};
 use project::{Project, Rate, SequenceId, Time};
 use std::sync::Arc;
+use ui_kit::viewer::ZoomPick;
 use ui_kit::{Action, PreviewQuality, Slot, Theme, TransportClick, VideoPicture};
 
 /// The picture on show.
@@ -153,6 +154,13 @@ pub struct Viewer {
     /// A jump in a file without a proxy shows the key frame before it first
     /// (handed to the worker, again when it is restarted).
     key_frame_first: bool,
+    /// How the picture is zoomed (Fit until changed; not kept).
+    zoom: ui_kit::viewer::Zoom,
+    /// Where the picture was last drawn (the viewer's room, the timeline's
+    /// size and the pixels per point), for zoom commands.
+    zoom_place: Option<(egui::Rect, (u32, u32), f32)>,
+    /// A zoom asked for before the picture was first drawn: done then.
+    zoom_waiting: Option<ZoomPick>,
 }
 
 impl Viewer {
@@ -192,6 +200,38 @@ impl Viewer {
             frame_interval: None,
             proxies: None,
             key_frame_first: true,
+            zoom: ui_kit::viewer::Zoom::FIT,
+            zoom_place: None,
+            zoom_waiting: None,
+        }
+    }
+
+    /// Zooms as the zoom menu or a zoom command says: in or out a step
+    /// about the middle, to fit, or to a scale.
+    pub fn zoom_to(&mut self, pick: ZoomPick) {
+        use ui_kit::viewer::Zoom;
+        let Some((room, timeline, ppp)) = self.zoom_place else {
+            self.zoom_waiting = Some(pick);
+            return;
+        };
+        let middle = room.center();
+        match pick {
+            ZoomPick::Command(Action::ViewerZoomIn) => self.zoom.step(true, room, timeline, ppp),
+            ZoomPick::Command(Action::ViewerZoomOut) => self.zoom.step(false, room, timeline, ppp),
+            ZoomPick::Command(Action::ViewerZoom100) => {
+                self.zoom.zoom_to_at(1.0, middle, room, timeline, ppp)
+            }
+            ZoomPick::Command(_) => self.zoom = Zoom::FIT,
+            ZoomPick::Scale(scale) => self.zoom.zoom_to_at(scale, middle, room, timeline, ppp),
+        }
+        self.ctx.request_repaint();
+    }
+
+    /// The zoom in words, for the menu: "Fit" or "200 %".
+    fn zoom_readout(&self) -> String {
+        match self.zoom_place {
+            Some((room, timeline, ppp)) => self.zoom.readout(room, timeline, ppp, false),
+            None => "Fit".to_owned(),
         }
     }
 
@@ -522,7 +562,7 @@ impl Viewer {
         let half = egui::vec2(((size.x - SPLIT_GAP) / 2.0).max(60.0), size.y);
         let own = if split { half } else { size };
         let mut command = None;
-        let (frame, playing) = (
+        let ((frame, seen), playing) = (
             ui.horizontal_top(|ui| {
                 ui.spacing_mut().item_spacing.x = SPLIT_GAP;
                 if let Some(source) = source {
@@ -542,21 +582,24 @@ impl Viewer {
                     {
                         command = Some(Action::ViewerWindow);
                     }
-                    area.shrink(8.0)
+                    (area.shrink(8.0), area.shrink(8.0))
                 } else {
-                    let (frame, response) = self.picture_ui(ui, theme, own, timeline, &self.note.clone());
+                    let (frame, response) =
+                        self.zoomed_picture_ui(ui, theme, own, timeline, &self.note.clone());
+                    // The handles line up with the whole frame, zoomed or not.
                     over_picture(ui, frame, &response);
+                    let seen = ui_kit::viewer::seen(frame, response.rect);
                     // Over the handles, so it can always be read.
                     if split {
-                        ui_kit::viewer::caption(ui, theme, frame, "Program");
+                        ui_kit::viewer::caption(ui, theme, seen, "Program");
                     }
-                    frame
+                    (frame, seen)
                 }
             })
             .inner,
             self.frame_interval.is_some(),
         );
-        let click = ui_kit::transport::transport(ui, theme, frame, playing, shortcuts);
+        let click = ui_kit::transport::transport(ui, theme, seen, playing, shortcuts);
         command = command.or(click.map(|click| match click {
             TransportClick::FrameBack => Action::PreviousFrame,
             TransportClick::FrameForward => Action::NextFrame,
@@ -585,6 +628,15 @@ impl Viewer {
                             ui.selectable_value(quality, q, q.label());
                         }
                     });
+                if away.is_none() {
+                    let readout = self.zoom_readout();
+                    if let Some(pick) = ui_kit::viewer::zoom_menu(ui, &self.zoom, &readout, shortcuts) {
+                        match pick {
+                            ZoomPick::Command(action) => command = Some(action),
+                            ZoomPick::Scale(_) => self.zoom_to(pick),
+                        }
+                    }
+                }
                 if let Some(picked) = ui_kit::viewer::display_menu(ui, display, shortcuts) {
                     command = Some(picked);
                 }
@@ -614,6 +666,33 @@ impl Viewer {
         self.mark_drawn(ui.ctx());
         let picture = self.shown.as_deref().map(Shown::picture);
         ui_kit::viewer::viewer(ui, theme, size, timeline, picture, note)
+    }
+
+    /// [`Viewer::picture_ui`] zoomed as the viewer's zoom says, reading the
+    /// hand's zooming and panning: the Program's picture.
+    fn zoomed_picture_ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        theme: &Theme,
+        size: egui::Vec2,
+        timeline: (u32, u32),
+        note: &str,
+    ) -> (egui::Rect, egui::Response) {
+        self.count_drawn();
+        self.mark_drawn(ui.ctx());
+        let picture = self.shown.as_deref().map(Shown::picture);
+        let mut zoom = self.zoom;
+        let drawn = ui_kit::viewer::zoomed_viewer(ui, theme, size, timeline, picture, note, &mut zoom);
+        self.zoom = zoom;
+        self.zoom_place = Some((
+            ui_kit::viewer::room(drawn.1.rect),
+            timeline,
+            ui.ctx().pixels_per_point(),
+        ));
+        if let Some(pick) = self.zoom_waiting.take() {
+            self.zoom_to(pick);
+        }
+        drawn
     }
 
     /// The picture on show is drawn this frame (here, or in the viewer's

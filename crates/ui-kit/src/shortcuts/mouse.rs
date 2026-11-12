@@ -72,6 +72,16 @@ pub const MOUSE: &[MouseAction] = &[
     ),
     on(
         Context::Viewer,
+        "Ctrl+wheel over the picture",
+        "Zoom in or out at the pointer; zooming out stops at Fit on the way",
+    ),
+    on(
+        Context::Viewer,
+        "Drag the picture with the middle button",
+        "Move around a zoomed-in picture",
+    ),
+    on(
+        Context::Viewer,
         "Double-click the picture in the viewer's own window",
         "Fill that screen with it, or give the screen back",
     ),

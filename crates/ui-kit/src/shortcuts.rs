@@ -207,6 +207,9 @@ const USUAL: &[(Action, Shortcut)] = &[
     (Action::RemoveSilence, Shortcut::ctrl_shift(Key::R)),
     (Action::FullScreenViewer, Shortcut::key(Key::F)),
     (Action::PictureHandles, Shortcut::key(Key::Q)),
+    // Zooming the picture: Fit only. Ctrl with = and - zooms the whole
+    // interface (egui's own), and = and - are the timeline's.
+    (Action::ViewerZoomFit, Shortcut::shift(Key::Z)),
     (Action::Versions, Shortcut::ctrl_shift(Key::V)),
     (Action::Templates, Shortcut::ctrl(Key::T)),
     (Action::SaveTemplate, Shortcut::ctrl_shift(Key::S)),

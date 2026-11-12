@@ -493,6 +493,10 @@ impl Editor {
                 self.settings.save(&self.data_dir)
             }
             Action::ViewerWindow => self.switch_viewer_window(),
+            Action::ViewerZoomFit | Action::ViewerZoom100 | Action::ViewerZoomIn | Action::ViewerZoomOut => {
+                self.viewer.zoom_to(ui_kit::viewer::ZoomPick::Command(action));
+                Ok(())
+            }
             Action::NewTimeline => self.new_timeline(false),
             Action::DuplicateTimeline => self.new_timeline(true),
             Action::NestSelection => self.nest_selection(),

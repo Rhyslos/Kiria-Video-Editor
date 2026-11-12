@@ -1,10 +1,13 @@
-// Shows a composed frame: one rectangle over the whole viewport, the frame's
-// values turned into what the target expects.
+// Shows a composed frame, or the part of it that is seen: one rectangle over
+// the whole viewport, the frame's values turned into what the target expects.
 
 struct Show {
     // 1 when the frame is in linear light (x); 1 when the target stores
     // sRGB itself and so wants linear values handed to it (y).
     flags: vec4<f32>,
+    // The part of the frame shown: left and top (xy), right and bottom
+    // (zw), 0 to 1 across and down. The whole frame is 0, 0, 1, 1.
+    part: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> it: Show;
@@ -22,7 +25,7 @@ fn whole(@builtin(vertex_index) index: u32) -> Corner {
     let down = f32(index >> 1u);
     var out: Corner;
     out.position = vec4<f32>(across * 2.0 - 1.0, 1.0 - down * 2.0, 0.0, 1.0);
-    out.at = vec2<f32>(across, down);
+    out.at = mix(it.part.xy, it.part.zw, vec2<f32>(across, down));
     return out;
 }
 

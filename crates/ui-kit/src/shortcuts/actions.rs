@@ -107,6 +107,10 @@ actions! {
     SplitView, Viewer, "Split view: the selected clip's own picture beside the timeline's";
     ViewerWindow, Viewer, "Viewer in its own window, for another screen or monitor";
     SaveFrame, Viewer, "Save this frame as a picture…";
+    ViewerZoomFit, Viewer, "Fit the picture in the viewer";
+    ViewerZoom100, Viewer, "Picture at 100 %: one pixel of the timeline on one of the screen";
+    ViewerZoomIn, Viewer, "Zoom in on the picture";
+    ViewerZoomOut, Viewer, "Zoom out of the picture";
     Split, Timeline, "Split at the edit needle";
     Delete, Timeline, "Delete the selected clip";
     RippleDelete, Timeline, "Delete and close the gap";
