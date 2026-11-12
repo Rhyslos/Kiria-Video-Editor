@@ -123,6 +123,7 @@ fn whole(pixels: Pixels<'_>, frame: (u32, u32)) -> Drawn<'_> {
         part: Part::WHOLE,
         opacity: 1.0,
         colour: Colour::NEUTRAL,
+        blend: None,
     }
 }
 
@@ -601,4 +602,35 @@ fn a_part_of_a_turned_picture_is_a_part_of_what_is_seen() {
         shown.at(16, 28)
     );
     assert!(near(shown.at(2, 28), [255; 3], 1), "the same all the way across");
+}
+
+#[test]
+fn two_frames_blend_as_light_mixes_in_both_working_formats() {
+    let Some(gpu) = gpu() else { return };
+    let size = (16, 16);
+    let black = Planes::flat(&gpu, size, [16, 128, 128]);
+    let white = Planes::flat(&gpu, size, WHITE);
+    let blended = Drawn {
+        blend: Some((white.two(), 0.5)),
+        ..whole(black.two(), size)
+    };
+    // Half the light of white: 0.5^(1/2.4) = 0.749 of the way up.
+    for working in BOTH {
+        let shown = compose(&gpu, working, EIGHT, size, &[blended]).at(8, 8);
+        assert!(near(shown, [191; 3], 1), "{working:?}: {shown:?}");
+    }
+    // A share of nothing leaves the first picture as it is.
+    let none = Drawn {
+        blend: Some((black.two(), 0.0)),
+        ..whole(white.two(), size)
+    };
+    let shown = compose(&gpu, Working::Linear, EIGHT, size, &[none]).at(8, 8);
+    assert!(near(shown, [255; 3], 1), "{shown:?}");
+    // A second picture stored another way is left out.
+    let mismatched = Drawn {
+        blend: Some((white.three(), 1.0)),
+        ..whole(black.two(), size)
+    };
+    let shown = compose(&gpu, Working::Linear, EIGHT, size, &[mismatched]).at(8, 8);
+    assert!(near(shown, [0; 3], 1), "{shown:?}");
 }

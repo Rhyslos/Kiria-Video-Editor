@@ -57,6 +57,7 @@ impl SilencePanel {
                 peaks: &p.values,
                 per_second: p.per_second,
                 speed: c.speed.as_f64(),
+                ramp: (!c.ramp.is_empty()).then_some(&c.ramp),
             })
             .collect();
         self.found = silence::find(&clips, self.settings);

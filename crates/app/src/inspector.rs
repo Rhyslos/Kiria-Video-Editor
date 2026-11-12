@@ -23,13 +23,12 @@
 
 use project::animate::KeyframeChange;
 use project::look::ONE;
-use project::{ClipId, Command, Ease, Look, LookField, Project, Rate, Sound, Speed, Time, TrackKind};
+use project::{ClipId, Command, Ease, Look, LookField, Project, Rate, Sound, Time, TrackKind};
 use ui_kit::Theme;
 use ui_kit::inspector::{self, Keyed, Number, Touched, Words};
 use ui_kit::keyframe::{KeyClicks, KeyState, Keys};
 
-/// The speeds offered as buttons, as fractions.
-const SPEEDS: [(u32, u32); 5] = [(1, 4), (1, 2), (1, 1), (2, 1), (4, 1)];
+mod speed;
 
 /// A look being set and not yet an undo step: whose, at which moment of
 /// the timeline (where it began), and what.
@@ -322,32 +321,20 @@ impl Inspector {
             );
         }
 
-        inspector::section(ui, theme, "Speed", &clip.speed.percent(), false, |ui| {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 4.0;
-                for (num, den) in SPEEDS {
-                    let Ok(speed) = Speed::new(num, den) else { continue };
-                    if ui
-                        .selectable_label(clip.speed == speed, speed.percent())
-                        .clicked()
-                        && clip.speed != speed
-                    {
-                        commands.push(Command::SetSpeed {
-                            sequence,
-                            clip: clip.id,
-                            speed,
-                        });
-                    }
-                }
-            });
-            ui.label(
-                egui::RichText::new(
-                    "The clip gets longer or shorter, with its sound, and what follows moves along.",
-                )
-                .color(theme.muted)
-                .size(12.0),
-            );
-        });
+        let speed = speed::section(
+            ui,
+            theme,
+            &speed::Subject {
+                sequence,
+                clip,
+                kind: track.kind,
+                rate,
+                recorded: media.and_then(|m| m.info.video.as_ref()).map(|v| v.frame_rate),
+                playhead,
+            },
+        );
+        commands.extend(speed.commands);
+        self.seek = speed.seek.or(self.seek);
 
         commands.extend(self.audio_section(ui, theme, seq, clip));
 

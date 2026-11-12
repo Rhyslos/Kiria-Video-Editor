@@ -7,7 +7,7 @@
 
 use media::AudioDecoder;
 use media::audio::CHANNELS;
-use project::{Clip, MediaId, Project, Sequence, Sound};
+use project::{Clip, ClipId, MediaId, Project, Sequence, Sound};
 use std::f64::consts::FRAC_PI_2;
 
 /// How far a decoder may be from where it is needed before it seeks (seconds).
@@ -23,6 +23,21 @@ pub struct Mixer {
     scratch: Vec<f32>,
     /// Files that failed to open, so the log isn't flooded.
     failed: Vec<(MediaId, u32, u32)>,
+    /// What ramped clips read last, to carry on from (see `Mixer::ramped`),
+    /// most recent first.
+    carries: Vec<Carry>,
+    /// The file's samples a ramped clip reads, kept between calls.
+    ramp_read: Vec<f32>,
+}
+
+/// Where a ramped clip's reading stopped: its decoder's next sample (in
+/// samples from the file's start) and the sample before it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Carry {
+    clip: ClipId,
+    key: (MediaId, u32, u32),
+    next: i64,
+    last: [f32; CHANNELS],
 }
 
 impl std::fmt::Debug for Mixer {
@@ -39,6 +54,8 @@ impl Mixer {
             decoders: Vec::new(),
             scratch: Vec::new(),
             failed: Vec::new(),
+            carries: Vec::new(),
+            ramp_read: Vec::new(),
         }
     }
 
@@ -78,28 +95,32 @@ impl Mixer {
                 if count == 0 {
                     continue;
                 }
-                // At half speed the file is read at twice the rate, so each
-                // second of the timeline plays half a second of it (lower,
-                // like tape).
-                let speed = clip.speed.as_f64();
-                let source = clip.source_in.as_secs_f64() + (a - cs) * speed;
-                let read_rate = ((rate / speed).round() as u32).max(1);
-                let key = (media.id, clip.stream, read_rate);
                 let mut scratch = std::mem::take(&mut self.scratch);
                 scratch.resize(count * CHANNELS, 0.0);
-                let got = match self.decoder(key, &media.path) {
-                    Some(decoder) => {
-                        if (decoder.position() - source).abs() > SEEK_SLACK {
-                            decoder.seek(source);
+                let from = start + first as f64 / rate;
+                let got = if clip.ramp.is_empty() {
+                    // At half speed the file is read at twice the rate, so
+                    // each second of the timeline plays half a second of it
+                    // (lower, like tape).
+                    let speed = clip.speed.as_f64();
+                    let source = clip.source_in.as_secs_f64() + (a - cs) * speed;
+                    let read_rate = ((rate / speed).round() as u32).max(1);
+                    let key = (media.id, clip.stream, read_rate);
+                    match self.decoder(key, &media.path) {
+                        Some(decoder) => {
+                            if (decoder.position() - source).abs() > SEEK_SLACK {
+                                decoder.seek(source);
+                            }
+                            decoder.read(&mut scratch)
                         }
-                        decoder.read(&mut scratch)
+                        None => 0,
                     }
-                    None => 0,
+                } else {
+                    self.ramped(clip, &media.path, from, &mut scratch)
                 };
                 if let Some(shape) = Shape::of(clip) {
                     // Seconds into the clip of the first sample read.
-                    let from = start + first as f64 / rate - cs;
-                    shape.apply(&mut scratch[..got * CHANNELS], from, rate);
+                    shape.apply(&mut scratch[..got * CHANNELS], from - cs, rate);
                 }
                 for (o, s) in out[first * CHANNELS..(first + got) * CHANNELS]
                     .iter_mut()
@@ -116,6 +137,84 @@ impl Mixer {
                 *s *= master;
             }
         }
+    }
+
+    /// Fills `out` with a ramped clip's sound from `from` seconds on the
+    /// timeline: tape-style, the pitch following the speed as it changes.
+    /// The file is read at the mixer's own rate and each sample taken from
+    /// where the ramp says the clip is in its file then, between two read
+    /// samples by their distance. Reading carries on from one call to the
+    /// next (the last sample read is kept for the step between them), so
+    /// the decoder only seeks when the clip doesn't continue. Returns the
+    /// sample frames written.
+    fn ramped(&mut self, clip: &Clip, path: &std::path::Path, from: f64, out: &mut [f32]) -> usize {
+        let count = out.len() / CHANNELS;
+        let rate = f64::from(self.rate);
+        let key = (clip.media, clip.stream, self.rate);
+        // Where in the file (in samples) each sample written comes from.
+        let place = |i: usize| clip.source_at_f64(from + i as f64 / rate).max(0.0) * rate;
+        let (first, last) = (place(0), place(count.saturating_sub(1)));
+        let low = first.floor() as i64;
+        let high = last.floor() as i64 + 1;
+        let carried = self
+            .carries
+            .iter()
+            .position(|c| c.clip == clip.id && c.key == key)
+            .map(|i| self.carries.remove(i));
+        let mut read = std::mem::take(&mut self.ramp_read);
+        read.clear();
+        let Some(decoder) = self.decoder(key, path) else {
+            self.ramp_read = read;
+            return 0;
+        };
+        let next = (decoder.position() * rate).round() as i64;
+        // Carry on where the decoder is when that is this clip's last
+        // sample read and close enough; seek otherwise.
+        let base = match carried {
+            Some(c) if c.next == next && low >= next - 1 && low <= next + (SEEK_SLACK * rate) as i64 => {
+                read.extend_from_slice(&c.last);
+                next - 1
+            }
+            _ => {
+                decoder.seek(low as f64 / rate);
+                low
+            }
+        };
+        let already = (read.len() / CHANNELS) as i64;
+        let wanted = (high + 1 - (base + already)).max(0) as usize;
+        let start = read.len();
+        read.resize(start + wanted * CHANNELS, 0.0);
+        let got = decoder.read(&mut read[start..]);
+        read.truncate(start + got * CHANNELS);
+        let have = read.len() / CHANNELS;
+        if have == 0 {
+            self.ramp_read = read;
+            return 0;
+        }
+        for (i, frame) in out.chunks_exact_mut(CHANNELS).enumerate() {
+            let x = (place(i) - base as f64).max(0.0);
+            let k = (x.floor() as usize).min(have - 1);
+            let share = (x - k as f64).clamp(0.0, 1.0) as f32;
+            let k2 = (k + 1).min(have - 1);
+            for (channel, sample) in frame.iter_mut().enumerate() {
+                let (a, b) = (read[k * CHANNELS + channel], read[k2 * CHANNELS + channel]);
+                *sample = a + (b - a) * share;
+            }
+        }
+        let mut last = [0.0; CHANNELS];
+        last.copy_from_slice(&read[(have - 1) * CHANNELS..have * CHANNELS]);
+        self.carries.insert(
+            0,
+            Carry {
+                clip: clip.id,
+                key,
+                next: base + have as i64,
+                last,
+            },
+        );
+        self.carries.truncate(OPEN_DECODERS);
+        self.ramp_read = read;
+        count
     }
 
     fn decoder(&mut self, key: (MediaId, u32, u32), path: &std::path::Path) -> Option<&mut AudioDecoder> {
@@ -487,5 +586,87 @@ mod tests {
         .unwrap();
         mixer.mix(&slow, slow.active().unwrap(), 3.0, &mut buf);
         assert!(loudness(&buf) > 0.01, "half speed: still sounding");
+    }
+
+    /// The fixture's first sound track alone, its clips given `ramp`.
+    fn first_track_ramped(ramp: project::Ramp) -> Project {
+        let p = first_track_with(Sound::PLAIN, None);
+        let clip = p.active().unwrap().video_tracks[0].clips[0].id;
+        Command::SetRamp {
+            sequence: p.active_sequence,
+            clip,
+            ramp,
+        }
+        .apply(&p)
+        .unwrap()
+    }
+
+    /// How many times a channel crosses zero going up: its pitch, roughly.
+    fn rises(samples: &[f32]) -> usize {
+        samples
+            .windows(2)
+            .filter(|pair| pair[0] < 0.0 && pair[1] >= 0.0)
+            .count()
+    }
+
+    fn key(at: project::Time, speed: project::Speed) -> project::SpeedKey {
+        project::SpeedKey {
+            at,
+            speed,
+            ease: project::Ease::Linear,
+        }
+    }
+
+    #[test]
+    fn a_ramp_at_one_speed_sounds_like_that_speed_and_carries_on_between_calls() {
+        let half = project::Speed::new(1, 2).unwrap();
+        let ramped = first_track_ramped(project::Ramp::new([key(project::Time::ZERO, half)]));
+        let slowed = first_track_with(Sound::PLAIN, Some(half));
+        let mut whole = vec![0f32; 24_000 * CHANNELS];
+        Mixer::new(48_000).mix(&ramped, ramped.active().unwrap(), 0.25, &mut whole);
+        let mut plain = vec![0f32; 24_000 * CHANNELS];
+        Mixer::new(48_000).mix(&slowed, slowed.active().unwrap(), 0.25, &mut plain);
+        let (a, b) = (channel(&whole, 0), channel(&plain, 0));
+        assert!(loudness(&a) > 0.01, "it sounds");
+        assert!((loudness(&a) / loudness(&b) - 1.0).abs() < 0.05);
+        let (ra, rb) = (rises(&a) as f64, rises(&b) as f64);
+        assert!((ra / rb - 1.0).abs() < 0.03, "the same pitch: {ra} and {rb}");
+        // Mixed a little at a time, as playback does: the same sound.
+        let mut mixer = Mixer::new(48_000);
+        let mut pieces = Vec::new();
+        for i in 0..50 {
+            let mut block = vec![0f32; 480 * CHANNELS];
+            mixer.mix(
+                &ramped,
+                ramped.active().unwrap(),
+                0.25 + i as f64 * 0.01,
+                &mut block,
+            );
+            pieces.extend(block);
+        }
+        let largest = pieces
+            .iter()
+            .zip(&whole)
+            .map(|(x, y)| (x - y).abs())
+            .fold(0f32, f32::max);
+        assert!(largest < 1e-3, "pieces differ by up to {largest}");
+    }
+
+    #[test]
+    fn a_ramp_down_to_half_speed_drops_the_pitch_an_octave() {
+        let ramp = project::Ramp::new([
+            key(project::Time::from_ratio(1, 2).unwrap(), project::Speed::NORMAL),
+            key(project::Time::seconds(1), project::Speed::new(1, 2).unwrap()),
+        ]);
+        let ramped = first_track_ramped(ramp);
+        let mut buf = vec![0f32; 96_000 * CHANNELS];
+        Mixer::new(48_000).mix(&ramped, ramped.active().unwrap(), 0.0, &mut buf);
+        let left = channel(&buf, 0);
+        let (before, after) = (
+            rises(&left[0..19_200]) as f64,
+            rises(&left[57_600..76_800]) as f64,
+        );
+        assert!(before > 20.0, "a tone: {before}");
+        assert!((before / after - 2.0).abs() < 0.1, "{before} then {after}");
     }
 }
