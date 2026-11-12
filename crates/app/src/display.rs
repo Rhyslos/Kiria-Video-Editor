@@ -79,6 +79,8 @@ impl ViewerDisplay {
             split: self.split(),
             own_window: self.window.is_some(),
             full_screen: full_screen || self.window.as_ref().is_some_and(ViewerWindow::full_screen),
+            // The timeline's lines are the editor's settings; it fills them in.
+            ..Default::default()
         }
     }
 

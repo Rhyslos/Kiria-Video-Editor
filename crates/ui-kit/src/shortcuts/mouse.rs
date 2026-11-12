@@ -58,7 +58,7 @@ pub const MOUSE: &[MouseAction] = &[
     on(
         Context::Timeline,
         "Wheel",
-        "Scroll the tracks under the pointer; pan over the ruler and the scroll bar",
+        "Scroll the tracks under the pointer (all of them with the divider off); pan over the ruler and the scroll bar",
     ),
     on(
         Context::Timeline,
@@ -73,7 +73,7 @@ pub const MOUSE: &[MouseAction] = &[
     on(
         Context::Timeline,
         "Alt+wheel",
-        "Taller or shorter tracks in the area under the pointer",
+        "Taller or shorter tracks in the area under the pointer (not with compact tracks)",
     ),
     on(
         Context::Timeline,
@@ -155,12 +155,12 @@ pub const MOUSE: &[MouseAction] = &[
     on(
         Context::Timeline,
         "Drag the edge of a track's name",
-        "That track's height; double-click for the usual height",
+        "That track's height; double-click for the usual height (not with compact tracks)",
     ),
     on(
         Context::Timeline,
         "Drag the line between video and audio",
-        "Share the timeline's height between them; the video area still grows for a track that is added",
+        "Share the timeline's height between them; the video area still grows for a track that is added (the Display menu can take the line away)",
     ),
     on(
         Context::Timeline,

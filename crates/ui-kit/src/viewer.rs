@@ -171,6 +171,10 @@ pub struct Display {
     pub own_window: bool,
     /// The picture fills the screen.
     pub full_screen: bool,
+    /// The timeline's tracks are thin strips.
+    pub compact_tracks: bool,
+    /// The timeline has its divider between video and audio tracks.
+    pub track_divider: bool,
 }
 
 /// The Display menu's lines: the command each runs, its words, and whether
@@ -187,24 +191,46 @@ pub fn display_lines(display: Display) -> [(Action, &'static str, bool); 3] {
     ]
 }
 
+/// The Display menu's lines under its Timeline heading: how the timeline's
+/// tracks are looked at.
+pub fn timeline_lines(display: Display) -> [(Action, &'static str, bool); 2] {
+    [
+        (Action::CompactTracks, "Compact tracks", display.compact_tracks),
+        (
+            Action::TrackDivider,
+            "Divider between video and audio",
+            display.track_divider,
+        ),
+    ]
+}
+
 /// The Display menu: a small button in the viewer's bottom row that opens
-/// the ways to show the picture, each with the keys it has in `shortcuts`.
-/// Returns the command picked; the page runs it like the same command
-/// from the keyboard or search.
+/// the ways to show the picture and, under a Timeline heading, the ways to
+/// look at the timeline's tracks, each with the keys it has in
+/// `shortcuts`. Returns the command picked; the page runs it like the same
+/// command from the keyboard or search.
 pub fn display_menu(ui: &mut Ui, display: Display, shortcuts: &ShortcutTable) -> Option<Action> {
     let mut picked = None;
+    let mut line = |ui: &mut Ui, (action, words, on): (Action, &str, bool)| {
+        let line = egui::Button::selectable(on, words).shortcut_text(shortcuts.keys_for(action));
+        if ui.add(line).on_hover_text(action.label()).clicked() {
+            picked = Some(action);
+            ui.close();
+        }
+    };
     ui.menu_button("Display", |ui| {
-        ui.set_min_width(240.0);
-        for (action, words, on) in display_lines(display) {
-            let line = egui::Button::selectable(on, words).shortcut_text(shortcuts.keys_for(action));
-            if ui.add(line).on_hover_text(action.label()).clicked() {
-                picked = Some(action);
-                ui.close();
-            }
+        ui.set_min_width(260.0);
+        for each in display_lines(display) {
+            line(ui, each);
+        }
+        ui.separator();
+        ui.label(egui::RichText::new("Timeline").small().weak());
+        for each in timeline_lines(display) {
+            line(ui, each);
         }
     })
     .response
-    .on_hover_text("How the picture is shown: split, in its own window, full screen");
+    .on_hover_text("How the picture is shown (split, in its own window, full screen) and how the timeline's tracks are looked at");
     picked
 }
 
@@ -230,8 +256,7 @@ mod tests {
     fn the_display_menu_runs_the_commands_and_shows_what_is_on() {
         let lines = display_lines(Display {
             split: true,
-            own_window: false,
-            full_screen: false,
+            ..Display::default()
         });
         let actions: Vec<Action> = lines.iter().map(|(a, _, _)| *a).collect();
         assert_eq!(
@@ -239,9 +264,18 @@ mod tests {
             [Action::SplitView, Action::ViewerWindow, Action::FullScreenViewer]
         );
         assert_eq!(lines.map(|(_, _, on)| on), [true, false, false]);
+        let timeline = timeline_lines(Display {
+            compact_tracks: true,
+            track_divider: false,
+            ..Display::default()
+        });
+        assert_eq!(
+            timeline.map(|(a, _, on)| (a, on)),
+            [(Action::CompactTracks, true), (Action::TrackDivider, false)]
+        );
         // Each line's words are in its command's name, so the menu, search
         // and the shortcuts page say the same thing.
-        for (action, words, _) in lines {
+        for (action, words, _) in lines.into_iter().chain(timeline) {
             assert!(
                 action.label().to_lowercase().contains(&words.to_lowercase()),
                 "{words} / {}",

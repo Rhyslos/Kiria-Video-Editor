@@ -36,6 +36,11 @@
 //! ([`TimelineView::fit_video`]). So a track that is added shows without
 //! the divider being dragged, and a removed one gives its room back.
 //!
+//! Two ways of looking at the tracks can be switched ([`track_views`]):
+//! compact tracks ([`TimelineView::compact`], every track a thin strip for
+//! an overview of many) and the divider off ([`TimelineView::divider`]:
+//! video and audio tracks as one list that scrolls as one).
+//!
 //! The top edge of the labels row is the cache bar ([`cache_bar`]): a thin
 //! strip that shows which stretches are prepared ahead of time, being
 //! prepared or waiting, from ranges the page passes in.
@@ -58,15 +63,18 @@ mod headers;
 pub mod level;
 mod loading;
 mod rows;
+mod track_views;
 
 pub use cache_bar::{CacheBar, CacheRange, CacheState};
 pub use fades::ClipSound;
 pub use loading::{LoadKind, LoadState, Loading};
 pub use rows::{MAX_TRACK, MIN_TRACK, TrackHeights};
+pub use track_views::COMPACT_TRACK;
 
 use crate::Theme;
 use egui::{Align2, Color32, CursorIcon, FontId, Pos2, Rect, Sense, Shape, Stroke, Ui, Vec2, pos2, vec2};
 use rows::Rows;
+use track_views::OneList;
 
 /// One clip as the timeline shows it.
 #[derive(Debug, Clone, PartialEq)]
@@ -456,6 +464,16 @@ pub struct TimelineView {
     pub snapping: bool,
     /// The rough cut view: taller video rows, each clip's sound drawn inside it.
     pub rough_cut: bool,
+    /// Compact tracks: every track [`COMPACT_TRACK`] tall, with no pictures,
+    /// waveforms or level lines, whatever height it was given. The heights
+    /// are kept and come back when it is off. A way of looking: view state.
+    pub compact: bool,
+    /// The divider between the video and the audio area. Off, both kinds
+    /// of track are one list that scrolls as one; `split` and `fit_video`
+    /// wait for it to come back.
+    pub divider: bool,
+    /// How far the one list (the divider off) is scrolled down, in points.
+    list_scroll: f32,
 }
 
 impl Default for TimelineView {
@@ -488,6 +506,9 @@ impl Default for TimelineView {
             tool: Tool::Select,
             snapping: true,
             rough_cut: false,
+            compact: false,
+            divider: true,
+            list_scroll: 0.0,
         }
     }
 }
@@ -586,7 +607,24 @@ struct Layout {
 }
 
 impl Layout {
+    /// The areas with the divider at `split` (the share of the body above it).
     fn new(rect: Rect, split: f32) -> Layout {
+        let video_h = (Layout::body_height(rect) * split.clamp(0.1, 0.9)).round();
+        Layout::with(rect, video_h, DIVIDER)
+    }
+
+    /// The areas with no divider: the video area `video_h` tall at the top
+    /// of the body and the audio area under it, touching.
+    fn one_list(rect: Rect, video_h: f32) -> Layout {
+        Layout::with(rect, video_h, 0.0)
+    }
+
+    /// The height of the body with no divider in it.
+    fn list_height(rect: Rect) -> f32 {
+        Layout::body_height(rect) + DIVIDER
+    }
+
+    fn with(rect: Rect, video_h: f32, divider_h: f32) -> Layout {
         let left = rect.left() + HEADER_WIDTH;
         let ruler = Rect::from_min_max(pos2(left, rect.top()), pos2(rect.right(), rect.top() + RULER));
         let labels = Rect::from_min_max(
@@ -595,19 +633,17 @@ impl Layout {
         );
         let scrollbar = Rect::from_min_max(pos2(left, rect.bottom() - SCROLLBAR), rect.right_bottom());
         let body_top = labels.bottom();
-        let body_h = (scrollbar.top() - body_top - DIVIDER).max(20.0);
-        let video_h = (body_h * split.clamp(0.1, 0.9)).round();
         let video = Rect::from_min_max(
             pos2(rect.left(), body_top),
-            pos2(rect.right(), body_top + video_h),
+            pos2(rect.right(), body_top + video_h.max(0.0)),
         );
         let divider = Rect::from_min_max(
             pos2(rect.left(), video.bottom()),
-            pos2(rect.right(), video.bottom() + DIVIDER),
+            pos2(rect.right(), video.bottom() + divider_h),
         );
         let audio = Rect::from_min_max(
             pos2(rect.left(), divider.bottom()),
-            pos2(rect.right(), scrollbar.top()),
+            pos2(rect.right(), scrollbar.top().max(divider.bottom())),
         );
         Layout {
             ruler,
@@ -764,6 +800,8 @@ impl TimelineView {
                         self.scale_tracks(half, 1.0 / HEIGHT_STEP, None, layout, data);
                     }
                 }
+                // Compact tracks are all one height; the heights given wait.
+                ViewStep::UsualTrackHeights if self.compact => {}
                 ViewStep::UsualTrackHeights => {
                     for half in halves {
                         for track in tracks_of(half, data) {
@@ -784,25 +822,75 @@ impl TimelineView {
         }
     }
 
+    /// How tall `track` of `half` is drawn: its own height, or the compact
+    /// height for every track while compact tracks are on.
+    fn track_height(&self, half: Half, track: u64) -> f32 {
+        if self.compact {
+            COMPACT_TRACK
+        } else {
+            self.heights.height(track, self.usual_height(half))
+        }
+    }
+
     /// The rows of `half`, each track with its own height.
     fn rows(&self, half: Half, layout: &Layout, data: &TimelineData) -> Rows {
-        let usual = self.usual_height(half);
         let heights = tracks_of(half, data)
             .iter()
-            .map(|t| self.heights.height(t.id, usual));
+            .map(|t| self.track_height(half, t.id));
+        let (video_scroll, audio_scroll) = self.area_scrolls(layout, data);
         match half {
-            Half::Video => Rows::new(layout.video, heights, self.video_scroll, true),
-            Half::Audio => Rows::new(layout.audio, heights, self.audio_scroll, false),
+            Half::Video => Rows::new(layout.video, heights, video_scroll, true),
+            Half::Audio => Rows::new(layout.audio, heights, audio_scroll, false),
         }
     }
 
     /// The height every track of `half` takes together.
     fn content_height(&self, half: Half, data: &TimelineData) -> f32 {
-        let usual = self.usual_height(half);
         tracks_of(half, data)
             .iter()
-            .map(|t| self.heights.height(t.id, usual))
+            .map(|t| self.track_height(half, t.id))
             .sum()
+    }
+
+    /// The video and audio tracks as one list (the divider off) in a body
+    /// `body` tall.
+    fn one_list(&self, body: f32, data: &TimelineData) -> OneList {
+        OneList {
+            video: self.content_height(Half::Video, data),
+            audio: self.content_height(Half::Audio, data),
+            body,
+            scroll: self.list_scroll,
+        }
+    }
+
+    /// The areas of a timeline drawn in `rect`: with the divider, at its
+    /// place (or lower, for the video tracks); without it, as far as each
+    /// kind's rows of the one list are in view.
+    fn layout(&self, rect: Rect, data: &TimelineData) -> Layout {
+        if self.divider {
+            Layout::new(rect, self.shown_split(Layout::body_height(rect), data))
+        } else {
+            let list = self.one_list(Layout::list_height(rect), data);
+            Layout::one_list(rect, list.video_area())
+        }
+    }
+
+    /// The scrolls the video and the audio rows are drawn with: each area's
+    /// own, or with the divider off the ones that lay both kinds end to end.
+    fn area_scrolls(&self, layout: &Layout, data: &TimelineData) -> (f32, f32) {
+        if self.divider {
+            return (self.video_scroll, self.audio_scroll);
+        }
+        let body = layout.video.height() + layout.audio.height();
+        // From where the areas are now (the scroll may have changed since
+        // they were laid out this frame), so the rows are always in place.
+        self.one_list(body, data).area_scrolls(layout.video.height())
+    }
+
+    /// The tracks of both areas, from the top of the video area to the
+    /// bottom of the audio area.
+    fn body(layout: &Layout) -> Rect {
+        Rect::from_min_max(layout.video.min, layout.audio.max)
     }
 
     /// The share of a body `body` tall that shows every video track, or as
@@ -840,9 +928,10 @@ impl TimelineView {
         if new_video.is_some() {
             self.fit_video = true;
         }
-        let layout = Layout::new(rect, self.shown_split(Layout::body_height(rect), data));
+        let layout = self.layout(rect, data);
         for (half, new) in [(Half::Video, new_video), (Half::Audio, newest(data.audio))] {
             let area = match half {
+                _ if !self.divider => TimelineView::body(&layout),
                 Half::Video => layout.video,
                 Half::Audio => layout.audio,
             };
@@ -867,6 +956,10 @@ impl TimelineView {
         layout: &Layout,
         data: &TimelineData,
     ) {
+        // Compact tracks are all one height; the heights given wait.
+        if self.compact {
+            return;
+        }
         let before = self.rows(half, layout, data);
         let usual = self.usual_height(half);
         self.heights
@@ -879,6 +972,7 @@ impl TimelineView {
         // How far down the spot went; scroll it back.
         let moved = now.top() + share * now.height() - y;
         match half {
+            _ if !self.divider => self.list_scroll += moved,
             Half::Video => self.video_scroll -= moved,
             Half::Audio => self.audio_scroll += moved,
         }
@@ -886,6 +980,11 @@ impl TimelineView {
 
     /// Never scrolled past the first track or further than the last one needs.
     fn keep_scrolls_in_range(&mut self, layout: &Layout, data: &TimelineData) {
+        if !self.divider {
+            let body = layout.video.height() + layout.audio.height();
+            self.list_scroll = self.one_list(body, data).in_range().scroll;
+            return;
+        }
         let most = self
             .rows(Half::Video, layout, data)
             .max_scroll(layout.video.height());
@@ -945,7 +1044,7 @@ impl TimelineView {
         let mut events = Vec::new();
         let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
         self.notice_new_tracks(rect, data);
-        let layout = Layout::new(rect, self.shown_split(Layout::body_height(rect), data));
+        let layout = self.layout(rect, data);
         let left = layout.time_left();
         let visible = (self.time_at(left, left), self.time_at(left, rect.right()));
 
@@ -966,6 +1065,9 @@ impl TimelineView {
         self.wheel(ui, &layout, data);
         let panning = self.middle_pan(ui, &layout);
         self.keep_scrolls_in_range(&layout, data);
+        // With the divider off the areas follow the list's scroll, which
+        // the wheel or a command may just have changed.
+        let layout = self.layout(rect, data);
         // Body: video tracks bottom-up above the divider, audio top-down below it.
         let video_rows = self.rows(Half::Video, &layout, data);
         let audio_rows = self.rows(Half::Audio, &layout, data);
@@ -979,6 +1081,10 @@ impl TimelineView {
         painter.rect_filled(rect, 0.0, theme.panel);
 
         let mut renaming_shown = false;
+        // Compact rows keep almost all their height for the clip, and show
+        // only its colour and name: pictures and waveforms would not read.
+        let inset = track_views::clip_inset(self.compact);
+        let full = !self.compact;
         for (area, tracks, rows, half) in [
             (layout.video, data.video, &video_rows, Half::Video),
             (layout.audio, data.audio, &audio_rows, Half::Audio),
@@ -1045,7 +1151,7 @@ impl TimelineView {
                 if audio {
                     self.track_controls(ui, theme, track, header, &mut events);
                 } else {
-                    headers::eye(ui, theme, track, header, &mut events);
+                    headers::eye(ui, theme, track, header, self.compact, &mut events);
                 }
                 let colour = if audio {
                     AUDIO_COLOURS[i % AUDIO_COLOURS.len()]
@@ -1059,7 +1165,7 @@ impl TimelineView {
                     _ => track.gain_db,
                 };
                 let track_gain = 10f32.powf(track_gain / 20.0);
-                let level_line = audio && self.level_line(track.id);
+                let level_line = audio && full && self.level_line(track.id);
                 // Clips a few pixels wide can't be told apart: neighbours
                 // merge into one shape, so zooming far out stays cheap.
                 let mut merged: Option<Rect> = None;
@@ -1080,7 +1186,7 @@ impl TimelineView {
                     }
                     let x0 = self.x_of(left, start);
                     let x1 = self.x_of(left, start + duration).max(x0 + 1.0);
-                    let r = Rect::from_min_max(pos2(x0, row.top() + 3.0), pos2(x1, row.bottom() - 3.0));
+                    let r = Rect::from_min_max(pos2(x0, row.top() + inset), pos2(x1, row.bottom() - inset));
                     if r.width() < 4.0 && !clip.selected && !clip.missing {
                         merged = match merged {
                             Some(m) if r.left() - m.right() < 2.0 => Some(m.union(r)),
@@ -1098,7 +1204,11 @@ impl TimelineView {
                     draw_clip_body(&clip_painter, theme, r, colour, audio);
                     // With both (the rough cut view), pictures fill the top
                     // and the sound the bottom of the clip.
-                    let (pic_r, wave_r) = match (&clip.pictures, &clip.waveform) {
+                    let (pictures, waveform) = match full {
+                        true => (clip.pictures.as_ref(), clip.waveform.as_ref()),
+                        false => (None, None),
+                    };
+                    let (pic_r, wave_r) = match (pictures, waveform) {
                         (Some(_), Some(_)) => {
                             let split = r.top() + r.height() * 0.62;
                             (
@@ -1108,13 +1218,13 @@ impl TimelineView {
                         }
                         _ => (r, r),
                     };
-                    if let Some(pictures) = &clip.pictures {
+                    if let Some(pictures) = pictures {
                         self.draw_pictures(&clip_painter, pic_r, clip, start, pictures);
                     }
                     // The clip's volume: the one its level line is being dragged to.
                     let dragged_db = self.level_drag.filter(|d| d.clip == clip.id).map(|d| d.db);
                     let clip_gain = dragged_db.map_or(clip.sound.gain, level::gain_of_db);
-                    if let Some(w) = &clip.waveform {
+                    if let Some(w) = waveform {
                         let wave_colour = if audio { colour } else { AUDIO_COLOURS[0] };
                         let look = WaveLook {
                             colour: wave_colour,
@@ -1123,7 +1233,9 @@ impl TimelineView {
                         };
                         self.draw_waveform(&clip_painter, wave_r, clip, start, w, look);
                     }
-                    fades::draw(&clip_painter, wave_r, &clip.sound, self.zoom);
+                    if full {
+                        fades::draw(&clip_painter, wave_r, &clip.sound, self.zoom);
+                    }
                     if level_line {
                         let db = dragged_db.unwrap_or_else(|| level::db_of_gain(clip.sound.gain));
                         let hovered = self.level_drag.is_none()
@@ -1137,7 +1249,7 @@ impl TimelineView {
                             .map(|p| p.x);
                         level::draw(&clip_painter, r, db, hovered || dragged_db.is_some(), label_x);
                     }
-                    draw_clip_marks(&clip_painter, theme, r, clip);
+                    draw_clip_marks(&clip_painter, theme, r, clip, pictures.is_some());
                     if let Some(loading) = &clip.loading {
                         loading::draw_on_clip(&clip_painter, theme, r, loading);
                     }
@@ -1158,7 +1270,11 @@ impl TimelineView {
             if let Some((drag, Landing::NewTrack)) = elsewhere
                 && let Some(clip) = tracks.iter().flat_map(|t| &t.clips).find(|c| c.id == drag.clip)
             {
-                let strip = new_track_strip(area, rows, self.usual_height(half), half);
+                let usual = match self.compact {
+                    true => COMPACT_TRACK,
+                    false => self.usual_height(half),
+                };
+                let strip = new_track_strip(area, rows, usual, half);
                 let mark = ui.visuals().selection.stroke.color;
                 let lit = Rect::from_min_max(pos2(left, strip.top()), strip.max);
                 clip_painter.rect_filled(lit, 0.0, mark.gamma_multiply(0.3));
@@ -1183,14 +1299,14 @@ impl TimelineView {
                 let (start, duration) = drag.shown(clip);
                 let x0 = self.x_of(left, start);
                 let x1 = self.x_of(left, start + duration).max(x0 + 1.0);
-                let r = Rect::from_min_max(pos2(x0, strip.top() + 3.0), pos2(x1, strip.bottom() - 3.0));
+                let r = Rect::from_min_max(pos2(x0, strip.top() + inset), pos2(x1, strip.bottom() - inset));
                 let colour = if audio {
                     AUDIO_COLOURS[0]
                 } else {
                     theme.line_strong
                 };
                 draw_clip_body(&clip_painter, theme, r, colour, audio);
-                draw_clip_marks(&clip_painter, theme, r, clip);
+                draw_clip_marks(&clip_painter, theme, r, clip, false);
             }
         }
         if !renaming_shown {
@@ -1220,7 +1336,18 @@ impl TimelineView {
             ],
             Stroke::new(1.0, theme.line),
         );
-        painter.rect_filled(layout.divider, 0.0, theme.line);
+        if self.divider {
+            painter.rect_filled(layout.divider, 0.0, theme.line);
+        } else if let Some(first) = audio_rows.rects().first()
+            && TimelineView::body(&layout).y_range().contains(first.top())
+        {
+            // One list: a hairline where the video tracks end and the audio
+            // tracks begin, nothing to drag.
+            painter.line_segment(
+                [pos2(rect.left(), first.top()), pos2(rect.right(), first.top())],
+                Stroke::new(1.0, theme.line_strong),
+            );
+        }
 
         // Ruler and labels row.
         painter.rect_filled(
@@ -1353,14 +1480,25 @@ impl TimelineView {
         header: Rect,
         events: &mut Vec<TimelineEvent>,
     ) {
-        if header.height() < 20.0 {
+        if header.height() < headers::least_for_buttons(self.compact) {
             return;
         }
         let id = ui.scope_id().with(("track", track.id));
         let button = |i: f32| headers::button_rect(header, i);
-        // The level button, left of M and S: the level line on its clips.
-        let on = self.level_line(track.id);
-        let rect = button(-1.0);
+        if !self.compact {
+            self.level_button(ui, theme, track.id, button(-1.0), id);
+        }
+        self.mute_and_solo(ui, theme, track, header, id, events);
+        // The fader, in a header with room for it under the buttons.
+        if !self.compact {
+            self.fader(ui, theme, track, header, id, events);
+        }
+    }
+
+    /// The level button, left of M and S: the level line on the clips of
+    /// track `track`.
+    fn level_button(&mut self, ui: &mut Ui, theme: &Theme, track: u64, rect: Rect, id: egui::Id) {
+        let on = self.level_line(track);
         let r = ui
             .interact(rect, id.with("level"), Sense::click())
             .on_hover_text(if on {
@@ -1380,8 +1518,21 @@ impl TimelineView {
             if on { theme.bg } else { theme.text },
         );
         if r.clicked() {
-            self.set_level_line(track.id, !on);
+            self.set_level_line(track, !on);
         }
+    }
+
+    /// M (mute) and S (solo), the two buttons at the right of an audio
+    /// track's header.
+    fn mute_and_solo(
+        &mut self,
+        ui: &mut Ui,
+        theme: &Theme,
+        track: &TimelineTrack,
+        header: Rect,
+        id: egui::Id,
+        events: &mut Vec<TimelineEvent>,
+    ) {
         for (i, (label, on, tip)) in [
             ("M", track.muted, "Mute"),
             ("S", track.solo, "Solo: hear only soloed tracks"),
@@ -1389,7 +1540,7 @@ impl TimelineView {
         .into_iter()
         .enumerate()
         {
-            let rect = button(i as f32);
+            let rect = headers::button_rect(header, i as f32);
             let r = ui
                 .interact(rect, id.with(label), Sense::click())
                 .on_hover_text(tip);
@@ -1422,7 +1573,20 @@ impl TimelineView {
                 });
             }
         }
-        // Volume: -60 dB at the left, +12 dB at the right; double-click resets to 0.
+    }
+
+    /// The track's volume fader under its buttons: -60 dB at the left,
+    /// +12 dB at the right; double-click resets to 0. Only in a header with
+    /// room for it.
+    fn fader(
+        &mut self,
+        ui: &mut Ui,
+        theme: &Theme,
+        track: &TimelineTrack,
+        header: Rect,
+        id: egui::Id,
+        events: &mut Vec<TimelineEvent>,
+    ) {
         let bar = Rect::from_min_size(
             pos2(header.left() + 12.0, header.bottom() - 12.0),
             vec2(HEADER_WIDTH - 30.0, 5.0),
@@ -1619,6 +1783,8 @@ impl TimelineView {
     /// ([`Self::keep_scrolls_in_range`] stops it at the ends).
     fn scroll_half(&mut self, half: Half, pixels: f32) {
         match half {
+            // One list: both kinds shift together.
+            _ if !self.divider => self.list_scroll -= pixels,
             // Video tracks stack upward: shifting them down shows higher ones.
             Half::Video => self.video_scroll += pixels,
             Half::Audio => self.audio_scroll -= pixels,
@@ -1650,6 +1816,11 @@ impl TimelineView {
         // been dragged out of the area and can't be pointed at any more.
         if !ui.input(|i| i.pointer.primary_down()) {
             self.height_drag = None;
+        }
+        // Compact tracks are all one height: nothing to drag.
+        if self.compact {
+            self.height_drag = None;
+            return;
         }
         let r = handle.is_positive().then(|| {
             ui.interact(
@@ -1879,25 +2050,9 @@ impl TimelineView {
             ));
         }
 
-        // Divider.
-        let divider = ui
-            .interact(
-                layout.divider.expand2(vec2(0.0, 2.0)),
-                id.with("divider"),
-                Sense::drag(),
-            )
-            .on_hover_cursor(CursorIcon::ResizeVertical);
-        if divider.drag_started() {
-            // From where the divider is drawn, which the video tracks may
-            // have pushed past the place it was last dragged to.
-            self.split = layout.video_share();
-        }
-        if divider.dragged() {
-            let body = layout.video.height() + layout.audio.height();
-            self.split = (self.split + divider.drag_delta().y / body.max(1.0)).clamp(0.1, 0.9);
-            // Dragged to where the video tracks don't all show, it stays
-            // there: that was asked for.
-            self.fit_video = self.split + 0.5 / body.max(1.0) >= self.share_for_video_tracks(body, data);
+        // Divider (none in the one list).
+        if self.divider {
+            self.divider_input(ui, layout, data, id);
         }
 
         // Scroll bar: drag the thumb.
@@ -2019,6 +2174,7 @@ impl TimelineView {
             let on_line = match (hit, hit_track, rows.at(p.y).and_then(|row| row_rects.get(row))) {
                 (Some(c), Some(track), Some(row))
                     if !from_bottom
+                        && !self.compact
                         && self.level_line(track.id)
                         && zone == Some(DragKind::Move)
                         && self.clip_drag.is_none() =>
@@ -2113,7 +2269,8 @@ impl TimelineView {
                         Landing::NewTrack
                     }
                     DragKind::Move => {
-                        let y = p.y.clamp(time_area.top(), time_area.bottom() - 1.0);
+                        // (`max` last: an area scrolled out of the one list has no height.)
+                        let y = p.y.min(time_area.bottom() - 1.0).max(time_area.top());
                         landing_track(tracks, rows, y, drag.track).map_or(drag.over, Landing::Track)
                     }
                     _ => Landing::Track(drag.track),
@@ -2216,6 +2373,30 @@ impl TimelineView {
                     (_, None) => TimelineEvent::ClearSelection,
                 });
             }
+        }
+    }
+
+    /// The divider between the video and the audio area: drag it to share
+    /// the body between them.
+    fn divider_input(&mut self, ui: &Ui, layout: &Layout, data: &TimelineData, id: egui::Id) {
+        let divider = ui
+            .interact(
+                layout.divider.expand2(vec2(0.0, 2.0)),
+                id.with("divider"),
+                Sense::drag(),
+            )
+            .on_hover_cursor(CursorIcon::ResizeVertical);
+        if divider.drag_started() {
+            // From where the divider is drawn, which the video tracks may
+            // have pushed past the place it was last dragged to.
+            self.split = layout.video_share();
+        }
+        if divider.dragged() {
+            let body = layout.video.height() + layout.audio.height();
+            self.split = (self.split + divider.drag_delta().y / body.max(1.0)).clamp(0.1, 0.9);
+            // Dragged to where the video tracks don't all show, it stays
+            // there: that was asked for.
+            self.fit_video = self.split + 0.5 / body.max(1.0) >= self.share_for_video_tracks(body, data);
         }
     }
 
@@ -2524,23 +2705,25 @@ fn landing_track(tracks: &[TimelineTrack], rows: &Rows, y: f32, own: u64) -> Opt
 /// track usually is where `area` has that much room, and over the edge of
 /// the area where it has none.
 fn new_track_strip(area: Rect, rows: &Rows, usual: f32, half: Half) -> Rect {
+    // Never taller than a track usually is (compact tracks are shorter).
+    let least = NEW_TRACK_STRIP.min(usual);
     let (top, bottom) = match (half, rows.rects().last()) {
         (Half::Video, last) => {
             let edge = last.map_or(area.bottom(), |row| row.top());
             let top = (edge - usual).max(area.top());
-            if edge - top >= NEW_TRACK_STRIP {
+            if edge - top >= least {
                 (top, edge)
             } else {
-                (area.top(), area.top() + NEW_TRACK_STRIP)
+                (area.top(), area.top() + least)
             }
         }
         (Half::Audio, last) => {
             let edge = last.map_or(area.top(), |row| row.bottom());
             let bottom = (edge + usual).min(area.bottom());
-            if bottom - edge >= NEW_TRACK_STRIP {
+            if bottom - edge >= least {
                 (edge, bottom)
             } else {
-                (area.bottom() - NEW_TRACK_STRIP, area.bottom())
+                (area.bottom() - least, area.bottom())
             }
         }
     };
@@ -2591,8 +2774,10 @@ fn draw_clip_body(p: &egui::Painter, theme: &Theme, r: Rect, colour: Color32, au
     }
 }
 
-/// What goes over a clip's contents: missing and selected outlines, and its name.
-fn draw_clip_marks(p: &egui::Painter, theme: &Theme, r: Rect, clip: &TimelineClip) {
+/// What goes over a clip's contents: missing and selected outlines, and its
+/// name (on a dark pill over `pictures`). In a short clip (compact tracks)
+/// the name is centred from top to bottom.
+fn draw_clip_marks(p: &egui::Painter, theme: &Theme, r: Rect, clip: &TimelineClip, pictures: bool) {
     if clip.missing {
         p.rect_stroke(
             r,
@@ -2611,9 +2796,12 @@ fn draw_clip_marks(p: &egui::Painter, theme: &Theme, r: Rect, clip: &TimelineCli
             clip.name.clone()
         };
         let galley = p.layout_no_wrap(text, FontId::proportional(11.0), theme.text);
-        let pos = pos2(r.left() + 6.0, r.top() + 6.0);
-        let inside = p.with_clip_rect(r.shrink(2.0));
-        if clip.pictures.is_some() {
+        let pos = match r.height() < 24.0 {
+            true => pos2(r.left() + 6.0, r.center().y - galley.size().y / 2.0),
+            false => pos2(r.left() + 6.0, r.top() + 6.0),
+        };
+        let inside = p.with_clip_rect(r.shrink2(vec2(2.0, 0.0)));
+        if pictures {
             // A dark pill keeps the name readable over the pictures.
             let pill = Rect::from_min_size(pos - vec2(3.0, 1.0), galley.size() + vec2(6.0, 2.0));
             inside.rect_filled(pill, 3.0, Color32::from_black_alpha(150));
@@ -4319,5 +4507,168 @@ mod tests {
             matches!(events[..], [TimelineEvent::Move { clip: 100, .. }]),
             "{events:?}"
         );
+    }
+
+    impl Rig {
+        /// Where the rows of `half` are drawn now, in the 1000×400 timeline.
+        fn rows_of(&self, half: Half) -> Vec<Rect> {
+            let data = TimelineData {
+                video: &self.video,
+                audio: &self.audio,
+                length: 60.0,
+                fps: self.fps,
+                playhead: 2.0,
+                needle: None,
+                region: None,
+                markers: &[],
+                highlights: &[],
+                follow: false,
+                cache: CacheBar {
+                    ranges: &[],
+                    about: "",
+                },
+            };
+            let rect = Rect::from_min_size(Pos2::ZERO, vec2(1000.0, 400.0));
+            let layout = self.view.layout(rect, &data);
+            self.view.rows(half, &layout, &data).rects().to_vec()
+        }
+    }
+
+    #[test]
+    fn compact_tracks_are_thin_strips_and_the_heights_given_come_back() {
+        let mut rig = Rig::new(3, 3);
+        rig.view.heights.set(0, VIDEO_TRACK, 120.0);
+        rig.view.heights.set(101, AUDIO_TRACK, 90.0);
+        let saved = rig.view.heights.to_save();
+        rig.view.compact = true;
+        rig.frame(Vec::new());
+        for half in [Half::Video, Half::Audio] {
+            let heights: Vec<f32> = rig.rows_of(half).iter().map(Rect::height).collect();
+            assert_eq!(heights, [COMPACT_TRACK; 3], "{half:?}");
+        }
+        // Alt+wheel and the height commands leave the heights as they were.
+        rig.wheel(OVER_VIDEO, vec2(0.0, 60.0), egui::Modifiers::ALT);
+        rig.view.step(ViewStep::TallerTracks);
+        rig.view.step(ViewStep::UsualTrackHeights);
+        rig.frame(Vec::new());
+        assert_eq!(rig.view.heights.to_save(), saved, "nothing was stored or lost");
+        rig.view.compact = false;
+        rig.frame(Vec::new());
+        assert_eq!(rig.rows_of(Half::Video)[0].height(), 120.0, "back as they were");
+        assert_eq!(rig.rows_of(Half::Audio)[1].height(), 90.0);
+    }
+
+    #[test]
+    fn twenty_compact_tracks_of_each_kind_show_together() {
+        // A timeline 400 tall shows 336 of body: in a taller one (as on a
+        // large screen) the same sums show all forty.
+        let mut rig = Rig::new(20, 20);
+        rig.view.compact = true;
+        rig.view.divider = false;
+        rig.frame(Vec::new());
+        let video = rig.rows_of(Half::Video);
+        let audio = rig.rows_of(Half::Audio);
+        assert_eq!(
+            video[19].top(),
+            44.0,
+            "the top video track at the top of the body"
+        );
+        assert_eq!(video[0].bottom(), audio[0].top(), "audio right under V1");
+        assert_eq!(audio[19].bottom() - video[19].top(), 40.0 * COMPACT_TRACK);
+    }
+
+    #[test]
+    fn clips_on_compact_tracks_are_still_picked_moved_and_trimmed() {
+        // Three tracks of each kind, the divider in the middle (y = 212):
+        // V1 is 194 to 212, V2 176 to 194; A1 218 to 236. Clips run from
+        // x = 200 to 440.
+        let mut rig = Rig::new(3, 3);
+        rig.view.compact = true;
+        let primary = egui::PointerButton::Primary;
+        let events = click(&mut rig, pos2(300.0, 203.0), primary);
+        assert_eq!(events, [TimelineEvent::Select { clip: 0, add: false }]);
+        let events = drag(&mut rig, pos2(300.0, 203.0), pos2(360.0, 203.0));
+        assert_eq!(events, moved(0, 1.0, None));
+        let events = drag(&mut rig, pos2(300.0, 203.0), pos2(300.0, 185.0));
+        assert_eq!(events, moved(0, 0.0, Some(1)), "up onto V2");
+        let events = drag(&mut rig, pos2(438.0, 227.0), pos2(498.0, 227.0));
+        assert_eq!(
+            events,
+            [TimelineEvent::Trim {
+                clip: 100,
+                edge: ClipEdge::End,
+                to: 6.0
+            }]
+        );
+    }
+
+    #[test]
+    fn with_the_divider_off_video_and_audio_tracks_scroll_as_one_list() {
+        // Eight tracks of each kind: 432 of video and 464 of audio in a
+        // body 342 tall (no divider takes room).
+        let mut rig = Rig::new(8, 8);
+        rig.view.split = 0.4;
+        rig.view.divider = false;
+        rig.frame(Vec::new());
+        assert_eq!(
+            rig.rows_of(Half::Video)[7].top(),
+            44.0,
+            "the list starts at the top"
+        );
+        assert_eq!(rig.rows_of(Half::Video)[0].bottom(), 476.0);
+        assert_eq!(rig.rows_of(Half::Audio)[0].top(), 476.0, "audio follows V1");
+
+        // The wheel over either kind scrolls both.
+        rig.wheel(OVER_VIDEO, vec2(0.0, -6.0), egui::Modifiers::NONE);
+        assert_eq!(rig.rows_of(Half::Audio)[0].top(), 470.0);
+        rig.wheel(OVER_AUDIO, vec2(0.0, -6.0), egui::Modifiers::NONE);
+        assert_eq!(rig.rows_of(Half::Audio)[0].top(), 464.0);
+        assert_eq!(rig.rows_of(Half::Video)[0].bottom(), 464.0);
+        assert_eq!(
+            (rig.view.video_scroll, rig.view.audio_scroll),
+            (0.0, 0.0),
+            "each area's own scroll waits for the divider"
+        );
+        // To the end: the last audio track at the bottom, no further.
+        rig.view.list_scroll = 10_000.0;
+        rig.frame(Vec::new());
+        assert_eq!(rig.rows_of(Half::Audio)[7].bottom(), 386.0);
+        // The last audio clip (A8, 328 to 386) is picked, though every
+        // video track has left the view.
+        let events = click(&mut rig, pos2(300.0, 357.0), egui::PointerButton::Primary);
+        assert_eq!(
+            events,
+            [TimelineEvent::Select {
+                clip: 107,
+                add: false
+            }]
+        );
+        // Back at the top, a video clip dragged down lands on the video track under the pointer.
+        rig.view.list_scroll = 0.0;
+        rig.frame(Vec::new());
+        // (V3 is 314 to 368, V2 368 to 422.)
+        let events = drag(&mut rig, pos2(300.0, 340.0), pos2(360.0, 380.0));
+        assert!(
+            matches!(
+                events[..],
+                [TimelineEvent::Move {
+                    clip: 2,
+                    track: Some(1),
+                    ..
+                }]
+            ),
+            "{events:?}"
+        );
+
+        // Nothing to drag where the divider was.
+        let events = drag(&mut rig, pos2(640.0, 188.0), pos2(640.0, 260.0));
+        assert!(events.is_empty() || matches!(events[..], [TimelineEvent::ClearSelection]));
+        assert_eq!(rig.view.split, 0.4);
+
+        // Back on: the divider where it was, each area scrolled as before.
+        rig.view.divider = true;
+        rig.frame(Vec::new());
+        assert_eq!(rig.view.split, 0.4);
+        assert!(rig.rows_of(Half::Audio)[0].top() > rig.rows_of(Half::Video)[0].bottom());
     }
 }

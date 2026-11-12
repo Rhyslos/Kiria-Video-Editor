@@ -17,6 +17,13 @@ pub struct Settings {
     pub preview_quality: ui_kit::PreviewQuality,
     /// The timeline in the rough cut view (sound folded into the pictures).
     pub rough_cut: bool,
+    /// Every track of the timeline a thin strip (the Display menu's
+    /// Compact tracks). The heights tracks were given are kept per project
+    /// and come back when it is off.
+    pub compact_tracks: bool,
+    /// No divider between the timeline's video and audio tracks: one list
+    /// that scrolls together (the Display menu's divider line, off).
+    pub one_track_list: bool,
     /// How the height is shared between the viewer and the timeline (the
     /// handle between them), on every page that has both.
     pub viewer_split: ui_kit::splitter::Split,
@@ -74,6 +81,26 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_ways_of_looking_at_tracks_are_off_until_turned_on_and_kept() {
+        let usual = Settings::default();
+        assert!(
+            !usual.compact_tracks && !usual.one_track_list,
+            "usual tracks, with the divider"
+        );
+        // Settings written before they existed read them as off.
+        let old: Settings = ron::from_str("(rough_cut: true)").unwrap();
+        assert!(!old.compact_tracks && !old.one_track_list);
+        let tmp = tempfile::tempdir().unwrap();
+        let settings = Settings {
+            compact_tracks: true,
+            one_track_list: true,
+            ..Settings::default()
+        };
+        settings.save(tmp.path()).unwrap();
+        assert_eq!(Settings::load(tmp.path()).0, settings);
+    }
 
     #[test]
     fn handles_on_the_picture_are_off_unless_switched_on() {

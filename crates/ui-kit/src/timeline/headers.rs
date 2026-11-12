@@ -45,13 +45,23 @@ pub(super) enum Typed {
     Dropped,
 }
 
+/// A header shorter than this has no buttons (a row partly scrolled out
+/// of view); compact rows are shorter, so less is enough there.
+pub(super) fn least_for_buttons(compact: bool) -> f32 {
+    if compact { 14.0 } else { 20.0 }
+}
+
 /// The place of the `i`-th small button of a header, from the left: two fit
-/// side by side at its right edge (mute and solo, or the eye in the second place).
+/// side by side at its right edge (mute and solo, or the eye in the second
+/// place). In a short header (compact tracks) they are shorter, in its middle.
 pub(super) fn button_rect(header: Rect, i: f32) -> Rect {
-    Rect::from_min_size(
-        pos2(header.right() - 50.0 + i * 24.0, header.top() + 6.0),
-        vec2(20.0, 16.0),
-    )
+    let x = header.right() - 50.0 + i * 24.0;
+    if header.height() < 28.0 {
+        let height = (header.height() - 4.0).clamp(10.0, 16.0);
+        Rect::from_min_size(pos2(x, header.center().y - height / 2.0), vec2(20.0, height))
+    } else {
+        Rect::from_min_size(pos2(x, header.top() + 6.0), vec2(20.0, 16.0))
+    }
 }
 
 /// The right-click menu of the track names, for the spot that was clicked.
@@ -157,9 +167,10 @@ pub(super) fn eye(
     theme: &Theme,
     track: &TimelineTrack,
     header: Rect,
+    compact: bool,
     events: &mut Vec<TimelineEvent>,
 ) {
-    if header.height() < 20.0 {
+    if header.height() < least_for_buttons(compact) {
         return;
     }
     let rect = button_rect(header, 1.0);
