@@ -115,6 +115,7 @@ pub fn file_alone(media: &MediaRef) -> Option<Project> {
         keyframes: Default::default(),
         ramp: Default::default(),
         blend: Default::default(),
+        kind: Default::default(),
     };
     let sequence = project.sequences.iter_mut().next()?;
     let track = sequence

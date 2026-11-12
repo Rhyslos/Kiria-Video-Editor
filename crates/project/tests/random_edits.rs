@@ -137,6 +137,35 @@ enum Action {
         by: i64,
         how: u8,
     },
+    /// Adds a timeline, or copies the open one with `copy`.
+    NewTimeline {
+        copy: bool,
+    },
+    RenameTimeline {
+        pick: usize,
+    },
+    RemoveTimeline {
+        pick: usize,
+    },
+    /// Opens another timeline: not an edit, nothing in the journal.
+    OpenTimeline {
+        pick: usize,
+    },
+    /// Nests a clip, and with `with` a second one, into a new timeline.
+    Nest {
+        pick: usize,
+        with: Option<usize>,
+    },
+    /// Places a timeline in the open one at `at` (at its end when `None`).
+    PlaceTimeline {
+        pick: usize,
+        at: Option<i64>,
+    },
+    /// Lays an adjustment layer at `at` from the video track `track` up.
+    Adjust {
+        at: i64,
+        track: usize,
+    },
     Undo,
     Redo,
 }
@@ -175,6 +204,13 @@ fn action() -> impl Strategy<Value = Action> {
         1 => (any::<usize>(), 0u8..4).prop_map(|(pick, which)| Action::Speed { pick, which }),
         1 => (any::<usize>(), any::<bool>()).prop_map(|(pick, on)| Action::Blend { pick, on }),
         3 => (any::<usize>(), -300i64..300, 0u8..3).prop_map(|(pick, by, how)| Action::Trim { pick, by, how }),
+        1 => any::<bool>().prop_map(|copy| Action::NewTimeline { copy }),
+        1 => any::<usize>().prop_map(|pick| Action::RenameTimeline { pick }),
+        1 => any::<usize>().prop_map(|pick| Action::RemoveTimeline { pick }),
+        2 => any::<usize>().prop_map(|pick| Action::OpenTimeline { pick }),
+        2 => (any::<usize>(), prop::option::of(any::<usize>())).prop_map(|(pick, with)| Action::Nest { pick, with }),
+        2 => (any::<usize>(), prop::option::of(0i64..120)).prop_map(|(pick, at)| Action::PlaceTimeline { pick, at }),
+        2 => (0i64..120, 0usize..4).prop_map(|(at, track)| Action::Adjust { at, track }),
         2 => Just(Action::Undo),
         1 => Just(Action::Redo),
     ]
@@ -222,9 +258,47 @@ fn command_for(action: &Action, p: &Project, media: MediaId, recording: MediaId)
                     keyframes: Default::default(),
                     ramp: Default::default(),
                     blend: Default::default(),
+                    kind: Default::default(),
                 },
             }
         }
+        Action::NewTimeline { copy: false } => Command::AddSequence {
+            name: p.free_sequence_name("Timeline"),
+            settings: seq.settings,
+        },
+        Action::NewTimeline { copy: true } => Command::DuplicateSequence {
+            sequence,
+            name: p.free_sequence_name(&format!("{} copy", seq.name)),
+        },
+        Action::RenameTimeline { pick } => Command::RenameSequence {
+            sequence: p.sequences[pick % p.sequences.len()].id,
+            name: p.free_sequence_name("Renamed"),
+        },
+        Action::RemoveTimeline { pick } => Command::RemoveSequence {
+            sequence: p.sequences[pick % p.sequences.len()].id,
+        },
+        Action::OpenTimeline { .. } | Action::Undo | Action::Redo => return None,
+        Action::Nest { pick, with } => Command::NestClips {
+            sequence,
+            clips: [Some(pick), with]
+                .into_iter()
+                .flatten()
+                .filter_map(pick_clip)
+                .collect(),
+            name: p.free_sequence_name("Nested"),
+        },
+        Action::PlaceTimeline { pick, at } => Command::PlaceSequence {
+            sequence,
+            nested: p.sequences[pick % p.sequences.len()].id,
+            at: at.map(Time::seconds),
+            track: None,
+        },
+        Action::Adjust { at, track } => Command::AddAdjustment {
+            sequence,
+            at: Time::seconds(at),
+            length: project::timelines::ADJUSTMENT_LENGTH,
+            track: seq.video_tracks.get(track).map(|t| t.id),
+        },
         Action::Remove { pick, ripple } => Command::RemoveClip {
             sequence,
             clip: pick_clip(pick)?,
@@ -480,7 +554,6 @@ fn command_for(action: &Action, p: &Project, media: MediaId, recording: MediaId)
                 },
             }
         }
-        Action::Undo | Action::Redo => return None,
     })
 }
 
@@ -543,6 +616,11 @@ proptest! {
             match action {
                 Action::Undo => { doc.undo().unwrap(); }
                 Action::Redo => { doc.redo().unwrap(); }
+                Action::OpenTimeline { pick } => {
+                    let sequences = &doc.project().sequences;
+                    let id = sequences[pick % sequences.len()].id;
+                    prop_assert!(doc.open_sequence(id));
+                }
                 other => {
                     if let Some(command) = command_for(other, doc.project(), media_id, recording_id) {
                         // Refused commands are fine; they must just change nothing.
@@ -560,6 +638,11 @@ proptest! {
         let expected = doc.project().clone();
         drop(doc); // crash without saving
         let recovered = Document::open(&path, Recovery::Recover).unwrap();
-        prop_assert_eq!(recovered.project(), &expected);
+        // Which timeline is open is not in the journal (the editor keeps it
+        // with the layout); everything else is replayed exactly.
+        let mut replayed = recovered.project().clone();
+        prop_assert!(replayed.sequence(expected.active_sequence).is_some());
+        replayed.active_sequence = expected.active_sequence;
+        prop_assert_eq!(&replayed, &expected);
     }
 }

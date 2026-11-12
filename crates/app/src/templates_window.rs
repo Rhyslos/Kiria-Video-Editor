@@ -528,6 +528,7 @@ mod tests {
             keyframes: Default::default(),
             ramp: Default::default(),
             blend: Default::default(),
+            kind: Default::default(),
         };
         let mut placed = p.clone();
         for start in [0, 4] {

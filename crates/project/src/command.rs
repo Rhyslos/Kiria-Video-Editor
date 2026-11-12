@@ -360,6 +360,61 @@ pub enum Command {
         sequence: SequenceId,
         settings: SequenceSettings,
     },
+    /// Adds an empty timeline (one video and one audio track) with these
+    /// settings, and opens it (format 12). Names are 1 to 40 characters and
+    /// no two timelines share one, whatever their capitals.
+    AddSequence {
+        name: String,
+        settings: SequenceSettings,
+    },
+    /// Adds a copy of a timeline under a new name, and opens it. Every track,
+    /// clip, link and label of the copy has an id of its own; nested
+    /// timelines in it stay the same timelines.
+    DuplicateSequence {
+        sequence: SequenceId,
+        name: String,
+    },
+    RenameSequence {
+        sequence: SequenceId,
+        name: String,
+    },
+    /// Removes a timeline. Refused for the last one, and for one that clips
+    /// in another timeline play. When it was open, the first one left opens.
+    RemoveSequence {
+        sequence: SequenceId,
+    },
+    /// Moves `clips` (with their linked clips) into a new timeline called
+    /// `name`, with the same settings, each on the track of the same kind
+    /// and place, from its start; one clip playing that timeline takes their
+    /// place on the lowest video track they left, and one for its sound on
+    /// the lowest audio track they left, linked. Refused when a clip that
+    /// isn't moved lies between them on one of those two tracks.
+    NestClips {
+        sequence: SequenceId,
+        clips: Vec<ClipId>,
+        name: String,
+    },
+    /// Places the timeline `nested` in `sequence` at `at` (its end when
+    /// `None`) as one piece: its picture on the video track `track` (the
+    /// first when `None`), refused when that stretch isn't free there, and
+    /// its sound on the first audio track free for its length (one is made
+    /// when none is), linked. Refused when `nested` is `sequence` or plays
+    /// it, directly or through other timelines.
+    PlaceSequence {
+        sequence: SequenceId,
+        nested: SequenceId,
+        at: Option<Time>,
+        track: Option<TrackId>,
+    },
+    /// Lays an adjustment layer from `at` for `length` on the first video
+    /// track from `track` up (from the first when `None`) that is free for
+    /// that stretch, or on a new video track on top.
+    AddAdjustment {
+        sequence: SequenceId,
+        at: Time,
+        length: Time,
+        track: Option<TrackId>,
+    },
 }
 
 impl Command {
@@ -493,10 +548,11 @@ impl Command {
                 track,
                 clip,
             } => {
-                if !p.media.contains_key(&clip.media) {
+                if clip.is_file() && !p.media.contains_key(&clip.media) {
                     return Err(missing("media file"));
                 }
-                if clip.duration <= Time::ZERO || clip.start.is_negative() || clip.source_in.is_negative() {
+                if clip.duration <= Time::ZERO || clip.start.is_negative() || clip.starts_before_its_source()
+                {
                     return Err(AppError::new("The clip can't be placed there")
                         .why("It would start before the timeline or have no length."));
                 }
@@ -652,10 +708,7 @@ impl Command {
                 t.gain_db = *gain_db;
             }
             Command::SetSettings { sequence, settings } => {
-                if settings.width == 0 || settings.height == 0 || settings.sample_rate == 0 {
-                    return Err(AppError::new("Those timeline settings can't be used")
-                        .why("The picture size and sound rate must be above zero."));
-                }
+                crate::timelines::check_settings(settings)?;
                 let seq = sequence_mut(&mut p, *sequence)?;
                 seq.settings = *settings;
                 seq.automatic = false;
@@ -663,6 +716,29 @@ impl Command {
             Command::SetEditNeedle { sequence, at } => {
                 sequence_mut(&mut p, *sequence)?.edit_needle = (*at).max(Time::ZERO);
             }
+            Command::AddSequence { name, settings } => crate::timelines::add(&mut p, name, *settings)?,
+            Command::DuplicateSequence { sequence, name } => {
+                crate::timelines::duplicate(&mut p, *sequence, name)?
+            }
+            Command::RenameSequence { sequence, name } => crate::timelines::rename(&mut p, *sequence, name)?,
+            Command::RemoveSequence { sequence } => crate::timelines::remove(&mut p, *sequence)?,
+            Command::NestClips {
+                sequence,
+                clips,
+                name,
+            } => crate::timelines::nest(&mut p, *sequence, clips, name)?,
+            Command::PlaceSequence {
+                sequence,
+                nested,
+                at,
+                track,
+            } => crate::timelines::place(&mut p, *sequence, *nested, *at, *track)?,
+            Command::AddAdjustment {
+                sequence,
+                at,
+                length,
+                track,
+            } => crate::timelines::add_adjustment(&mut p, *sequence, *at, *length, *track)?,
         }
         // A clip made shorter keeps its fades within it.
         p.fit_fades();
@@ -750,9 +826,11 @@ pub(crate) fn wrong_kind_of_track() -> AppError {
 }
 
 fn trim(p: &mut Project, sequence: SequenceId, clip: ClipId, edge: Edge, to: Time) -> diag::Result<()> {
-    let media_lengths: Vec<(MediaId, Time)> = p.media.values().map(|m| (m.id, m.duration)).collect();
-    let still = |id: MediaId| p.media.get(&id).is_some_and(|m| m.kind == MediaKind::Image);
-    let stills: Vec<MediaId> = p.media.keys().copied().filter(|id| still(*id)).collect();
+    let lengths: Vec<(ClipId, Option<Time>)> = sequence_ref(p, sequence)?
+        .tracks()
+        .flat_map(|t| t.clips.iter())
+        .map(|c| (c.id, p.source_length(c)))
+        .collect();
     let seq = sequence_mut(p, sequence)?;
     let reference = seq
         .tracks()
@@ -782,17 +860,12 @@ fn trim(p: &mut Project, sequence: SequenceId, clip: ClipId, edge: Edge, to: Tim
                     .why("It would have no length left.")
                     .fix("Delete the clip instead."));
             }
-            if t.source_in.is_negative() || t.start.is_negative() {
+            if t.starts_before_its_source() || t.start.is_negative() {
                 return Err(AppError::new("The clip can't be trimmed that far")
                     .why("Its file has nothing earlier to show."));
             }
-            let length = media_lengths
-                .iter()
-                .find(|(id, _)| *id == c.media)
-                .map(|(_, l)| *l);
-            if !stills.contains(&c.media)
-                && let Some(length) = length
-                && length > Time::ZERO
+            let length = lengths.iter().find(|(id, _)| *id == c.id).and_then(|(_, l)| *l);
+            if let Some(length) = length
                 && t.source_in + t.source_len() > length
             {
                 return Err(
@@ -961,6 +1034,7 @@ fn place_media(
         keyframes: Default::default(),
         ramp: Default::default(),
         blend: Default::default(),
+        kind: Default::default(),
     };
 
     if let Some(v) = video {
@@ -1208,6 +1282,7 @@ mod tests {
             keyframes: Default::default(),
             ramp: Default::default(),
             blend: Default::default(),
+            kind: Default::default(),
         }
     }
 

@@ -309,6 +309,102 @@ fn an_animated_place_and_opacity_change_across_the_exported_frames() {
     );
 }
 
+/// Exports the first second of `project`'s timeline `seq`, returning the
+/// file's path (kept in `dir`).
+fn export_second(project: Project, seq: SequenceId, devices: Devices, dir: &Path, name: &str) -> PathBuf {
+    let path = dir.join(name);
+    let settings = ExportSettings {
+        path: path.clone(),
+        range: Some((Time::ZERO, Time::seconds(1))),
+        quality: Quality::Small,
+        software: true,
+    };
+    let export = Export::start(project, seq, settings, devices, || {});
+    let Outcome::Done(_) = wait(&export) else {
+        panic!("the export did not finish well");
+    };
+    path
+}
+
+#[test]
+fn a_nested_timeline_and_an_adjustment_layer_are_in_the_exported_file() {
+    let Some(devices) = devices() else {
+        eprintln!("no graphics device here: exporting isn't checked");
+        return;
+    };
+    // The recording nested in a timeline of its own, picture and sound,
+    // and its picture there at half size on the left.
+    let (project, seq) = recording();
+    let clip = project.active().unwrap().video_tracks[0].clips[0].id;
+    let project = Command::NestClips {
+        sequence: seq,
+        clips: vec![clip],
+        name: "Nested".into(),
+    }
+    .apply(&project)
+    .unwrap();
+    let nested = project.active().unwrap().video_tracks[0].clips[0].clone();
+    assert!(nested.nested().is_some());
+    let project = Command::SetLook {
+        sequence: seq,
+        clip: nested.id,
+        look: project::Look {
+            x: -250_000,
+            scale: 500_000,
+            ..project::Look::PLAIN
+        },
+    }
+    .apply(&project)
+    .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let plain = export_second(project.clone(), seq, devices.clone(), dir.path(), "nested.mp4");
+    let (luma, width) = luma_at(&plain, 0.5);
+    let (left, right) = thirds(&luma, width);
+    assert!(
+        left > right + 10.0,
+        "the nested picture on the left: {left} against {right}"
+    );
+    assert!(right < 20.0, "black on the right: {right}");
+    // The nested timeline's sound is the file's.
+    let made = media::describe(&plain).unwrap();
+    let rate = project.active().unwrap().settings.sample_rate;
+    let mut sound = media::AudioDecoder::open(&plain, made.info.audio[0].index, rate).unwrap();
+    let mut heard = vec![0.0f32; rate as usize];
+    sound.seek(0.25);
+    let got = sound.read(&mut heard);
+    let loud = (heard[..got * 2].iter().map(|v| v * v).sum::<f32>() / (got * 2).max(1) as f32).sqrt();
+    assert!(loud > 0.001, "the nested sound is heard: {loud}");
+
+    // An adjustment layer two stops darker over the whole second darkens
+    // what is below it, the nested picture.
+    let project = Command::AddAdjustment {
+        sequence: seq,
+        at: Time::ZERO,
+        length: Time::seconds(2),
+        track: None,
+    }
+    .apply(&project)
+    .unwrap();
+    let layer = project.active().unwrap().video_tracks[1].clips[0].id;
+    let project = Command::SetLook {
+        sequence: seq,
+        clip: layer,
+        look: project::Look {
+            exposure: -2 * ONE,
+            ..project::Look::PLAIN
+        },
+    }
+    .apply(&project)
+    .unwrap();
+    let darker = export_second(project, seq, devices, dir.path(), "adjusted.mp4");
+    let (luma, width) = luma_at(&darker, 0.5);
+    let (dark_left, _) = thirds(&luma, width);
+    assert!(
+        dark_left < left * 0.8,
+        "darker under the adjustment layer: {dark_left} against {left}"
+    );
+}
+
 #[test]
 fn a_cancelled_export_leaves_nothing_behind() {
     let Some(devices) = devices() else { return };

@@ -6,6 +6,10 @@ use engine::silence::{self, ClipSound, Settings};
 use project::{Project, Rate, Region, Time, TrackId};
 use ui_kit::Theme;
 
+/// The peaks of sound that counts as never silent: one at full level, read
+/// wherever the clip is (`per_second` 0).
+static LOUD: [f32; 1] = [1.0];
+
 #[derive(Default)]
 pub struct SilencePanel {
     pub open: bool,
@@ -39,7 +43,14 @@ impl SilencePanel {
         let Some(track) = track else { return true };
         self.track = Some(track.id);
         let mut read = Vec::new();
+        let mut nested = Vec::new();
         for clip in &track.clips {
+            // A nested timeline's sound has no waveform of its own: it
+            // counts as sound throughout, so it is never cut as silence.
+            if clip.nested().is_some() {
+                nested.push(clip);
+                continue;
+            }
             let Some(media) = project.media.get(&clip.media) else {
                 continue;
             };
@@ -59,6 +70,16 @@ impl SilencePanel {
                 speed: c.speed.as_f64(),
                 ramp: (!c.ramp.is_empty()).then_some(&c.ramp),
             })
+            .chain(nested.iter().map(|c| ClipSound {
+                start: c.start.as_secs_f64(),
+                duration: c.duration.as_secs_f64(),
+                source_in: 0.0,
+                // One peak at full level, read wherever the clip is.
+                peaks: &LOUD,
+                per_second: 0,
+                speed: 1.0,
+                ramp: None,
+            }))
             .collect();
         self.found = silence::find(&clips, self.settings);
         true

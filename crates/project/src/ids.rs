@@ -52,3 +52,9 @@ id_type!(
     /// Ties clips that move together, such as a video clip and its own audio.
     LinkId, "link#"
 );
+
+impl MediaId {
+    /// No file: the `media` of a clip that plays none (a nested timeline,
+    /// an adjustment layer). Ids are handed out from 1, so no file has it.
+    pub const NONE: MediaId = MediaId(0);
+}

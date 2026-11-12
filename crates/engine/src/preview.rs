@@ -728,16 +728,14 @@ impl Worker {
             }
             let (pictures, came) = self.quick_layers(&targets)?;
             quick = came;
-            let layers = description
-                .layers
-                .iter()
-                .cloned()
-                .zip(pictures)
-                .map(|(layer, picture)| (layer, picture, None))
+            let pictures = pictures
+                .into_iter()
+                .enumerate()
+                .map(|(index, picture)| (index, picture, None))
                 .collect();
             let composing = self.composing.clone()?;
             let composer = self.composer.get_or_insert_with(|| Composer::new(composing));
-            out.composed = Some(composer.compose(size, layers).ok()?);
+            out.composed = Some(composer.compose(&description, pictures).ok()?);
         } else {
             let showing = video_at(&r.project, sequence, r.at)?;
             let target = Target {
@@ -937,13 +935,9 @@ impl Worker {
             out.took = started.elapsed();
             return Some(out);
         }
-        let layers = pictures
-            .into_iter()
-            .map(|(index, decoded, next)| (description.layers[index].clone(), decoded, next))
-            .collect();
         let composing = self.composing.clone()?;
         let composer = self.composer.get_or_insert_with(|| Composer::new(composing));
-        match composer.compose(size, layers) {
+        match composer.compose(&description, pictures) {
             Ok(composed) => out.composed = Some(composed),
             Err(_) => out.refused = true,
         }

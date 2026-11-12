@@ -133,6 +133,10 @@ actions! {
     ClickMovesNeedle, Timeline, "Clicking the timeline moves the edit needle (the playhead by its handle), or the playhead";
     AddVideoTrack, Timeline, "Add a video track (on top)";
     AddAudioTrack, Timeline, "Add an audio track (at the bottom)";
+    NewTimeline, Timeline, "New timeline, the same size and rate as the open one";
+    DuplicateTimeline, Timeline, "Duplicate the open timeline";
+    NestSelection, Timeline, "Nest the selected clips: move them into a timeline of their own";
+    AddAdjustmentLayer, Timeline, "Add an adjustment layer at the playhead: its colour changes everything below it";
 }
 
 impl Action {

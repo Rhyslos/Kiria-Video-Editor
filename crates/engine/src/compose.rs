@@ -5,9 +5,9 @@
 //! frame to show and never does more than draw a rectangle (the choice and
 //! its measurements: docs/research/rendering.md).
 
-use crate::frame::Layer;
+use crate::frame::{Adjust, FrameDescription, Layer, Step};
 use media::{Decoded, GpuFrame, Layout};
-use render::{Compositor, Drawn, Frame, Pixels, Working};
+use render::{Area, Background, Colour, Compositor, Drawn, Frame, Part, Pixels, Working};
 use std::sync::Arc;
 
 /// Turns a picture decoded on the window's device into the two textures it
@@ -75,6 +75,9 @@ pub(crate) struct Composer {
     frames: Vec<Arc<Frame>>,
     /// By layer: the textures planes in memory were last written into.
     uploads: Vec<Option<Upload>>,
+    /// Pictures of nested timelines, and of what is below adjustment
+    /// layers, from the last frame: drawn into again for the next.
+    spare: Vec<Frame>,
 }
 
 impl Composer {
@@ -85,25 +88,36 @@ impl Composer {
             composing,
             frames: Vec::new(),
             uploads: Vec::new(),
+            spare: Vec::new(),
         }
     }
 
-    /// Draws `layers` (bottom first, each with its decoded picture, and
-    /// with frame blending the next recorded frame too) into a frame of
-    /// `size` pixels. An empty list is a black frame.
+    /// Draws the picture `description` describes into a frame of its size,
+    /// with `pictures`: for some of its layers (by number) the decoded
+    /// picture and, with frame blending, the next recorded frame too. A
+    /// layer without its picture is left out; nothing at all is a black frame.
+    ///
+    /// A nested timeline is put together first into a picture of its own
+    /// (see-through where nothing is) and drawn as one layer; an adjustment
+    /// layer has what is below it put together first and drawn again,
+    /// coloured, over itself (see `Drawing`).
     pub fn compose(
         &mut self,
-        size: (u32, u32),
-        layers: Vec<(Layer, Decoded, Option<Decoded>)>,
+        description: &FrameDescription,
+        pictures: Vec<(usize, Decoded, Option<Decoded>)>,
     ) -> Result<Composed, Refused> {
         let (device, queue) = (&self.composing.device.clone(), &self.composing.queue.clone());
         // Every layer's pixels as textures on the device: two slots a
         // layer, the second for the frame blended in.
         let mut on_device = false;
-        let mut placed = Vec::with_capacity(layers.len());
+        let mut placed: Vec<Option<Placed>> = Vec::new();
+        placed.resize_with(description.layers.len(), || None);
         self.uploads
-            .resize_with(self.uploads.len().max(layers.len() * 2), || None);
-        for (index, (layer, decoded, next)) in layers.into_iter().enumerate() {
+            .resize_with(self.uploads.len().max(description.layers.len() * 2), || None);
+        for (index, decoded, next) in pictures {
+            if index >= placed.len() {
+                continue;
+            }
             let (views, to_rgb, rotation) = self.textures(decoded, index * 2, &mut on_device)?;
             // The next frame counts only when it is stored as this one is.
             let next = match next {
@@ -112,40 +126,40 @@ impl Composer {
             }
             .filter(|(_, next_rgb, next_rotation)| *next_rgb == to_rgb && *next_rotation == rotation)
             .map(|(views, ..)| views);
-            placed.push((layer, views, next, to_rgb, rotation));
+            placed[index] = Some(Placed {
+                views,
+                next,
+                to_rgb,
+                rotation,
+            });
         }
-        let drawn: Vec<Drawn<'_>> = placed
-            .iter()
-            .map(|(layer, views, next, to_rgb, rotation)| Drawn {
-                pixels: views.pixels(),
-                to_rgb: *to_rgb,
-                rotation: *rotation,
-                area: layer.area,
-                part: layer.part,
-                opacity: layer.opacity,
-                colour: layer.colour,
-                blend: next
-                    .as_ref()
-                    .zip(layer.blend)
-                    .map(|(next, blend)| (next.pixels(), blend.weight)),
-            })
-            .collect();
 
-        let mut frame = self.frame_to_draw_into(size);
+        let mut frame = self.frame_to_draw_into(description.size);
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("the timeline's picture"),
         });
+        let mut drawing = Drawing {
+            compositor: &self.compositor,
+            device,
+            queue,
+            layers: &description.layers,
+            placed: &placed,
+            spare: std::mem::take(&mut self.spare),
+            used: Vec::new(),
+        };
         match Arc::get_mut(&mut frame) {
-            Some(target) => self.compositor.draw(device, queue, &mut encoder, target, &drawn),
+            Some(target) => drawing.steps(&mut encoder, &description.steps, target, Background::Black),
             // Not reached: the frame was just found unshared or made new.
             None => {
-                let mut fresh = self.compositor.frame(device, size);
-                self.compositor
-                    .draw(device, queue, &mut encoder, &mut fresh, &drawn);
+                let mut fresh = self.compositor.frame(device, description.size);
+                drawing.steps(&mut encoder, &description.steps, &mut fresh, Background::Black);
                 frame = Arc::new(fresh);
             }
         }
+        // The pictures put together on the way are kept for the next frame.
+        let used = std::mem::take(&mut drawing.used);
         queue.submit([encoder.finish()]);
+        self.spare = used;
         self.frames.push(frame.clone());
         Ok(Composed { frame, on_device })
     }
@@ -210,6 +224,169 @@ impl Composer {
             self.frames.remove(0);
         }
         Arc::new(self.compositor.frame(&self.composing.device, size))
+    }
+}
+
+/// One layer's decoded picture on the device, ready to draw.
+struct Placed {
+    views: Views,
+    /// The next recorded frame, for frame blending.
+    next: Option<Views>,
+    to_rgb: [[f32; 4]; 3],
+    rotation: u16,
+}
+
+/// Putting one frame together: the steps of the timeline, and of every
+/// timeline nested in it, drawn into frames in one command encoder.
+///
+/// Why an adjustment layer is drawn this way: its colour must apply to the
+/// picture below it as a whole, in linear light, exactly as a clip's own
+/// quick colour does. Colouring each layer below on its own would be wrong
+/// wherever layers are see-through or overlap (the colour would be applied
+/// to each before they are mixed, and twice where one shows through
+/// another), and could not reach the inside of a nested timeline drawn as
+/// one picture. So what is below it is put together into a picture of its
+/// own, which is drawn as it is and then again, coloured, at the
+/// adjustment layer's opacity: where it is fully opaque the result is the
+/// picture below, coloured; at half, halfway between.
+struct Drawing<'a> {
+    compositor: &'a Compositor,
+    device: &'a wgpu::Device,
+    queue: &'a wgpu::Queue,
+    layers: &'a [Layer],
+    placed: &'a [Option<Placed>],
+    /// Frames from the last time, to draw into again.
+    spare: Vec<Frame>,
+    /// Frames drawn into this time: each only once, as its numbers are
+    /// written when the encoder is submitted.
+    used: Vec<Frame>,
+}
+
+impl Drawing<'_> {
+    /// A frame of `size` to draw into, kept from last time or new.
+    fn take(&mut self, size: (u32, u32)) -> Frame {
+        match self.spare.iter().position(|frame| frame.size() == size) {
+            Some(found) => self.spare.swap_remove(found),
+            None => self.compositor.frame(self.device, size),
+        }
+    }
+
+    /// Draws `steps` into `target` over `background`.
+    fn steps(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        steps: &[Step],
+        target: &mut Frame,
+        background: Background,
+    ) {
+        let (layers, placed) = (self.layers, self.placed);
+        // Cut at each adjustment layer: what comes before it is put
+        // together first, then drawn again coloured under what follows.
+        let mut below: Option<(Frame, Adjust)> = None;
+        let mut rest = steps;
+        loop {
+            let cut = rest.iter().position(|step| matches!(step, Step::Adjust(_)));
+            let (stretch, adjust) = match cut {
+                Some(at) => (&rest[..at], rest.get(at)),
+                None => (rest, None),
+            };
+            // Nested timelines in this stretch, each into a picture of its own.
+            let mut nested = Vec::new();
+            for step in stretch {
+                if let Step::Timeline(group) = step {
+                    let mut picture = self.take(group.size);
+                    self.steps(encoder, &group.steps, &mut picture, Background::Clear);
+                    nested.push(picture);
+                }
+            }
+            let mut drawn = Vec::with_capacity(stretch.len() + 2);
+            if let Some((picture, adjust)) = &below {
+                let whole = Area::fitted(target.size(), target.size());
+                drawn.push(made(picture, whole, Part::WHOLE, 1.0, Colour::NEUTRAL));
+                drawn.push(made(picture, whole, Part::WHOLE, adjust.opacity, adjust.colour));
+            }
+            let mut pictures = nested.iter();
+            for step in stretch {
+                match step {
+                    Step::Picture(index) => {
+                        if let (Some(layer), Some(Some(placed))) = (layers.get(*index), placed.get(*index)) {
+                            drawn.push(placed.drawn(layer));
+                        }
+                    }
+                    Step::Timeline(group) => {
+                        if let Some(picture) = pictures.next() {
+                            drawn.push(made(picture, group.area, group.part, group.opacity, group.colour));
+                        }
+                    }
+                    Step::Adjust(_) => {}
+                }
+            }
+            let next = match adjust {
+                Some(Step::Adjust(adjust)) => {
+                    let mut picture = self.take(target.size());
+                    self.draw(encoder, &mut picture, &drawn, background);
+                    Some((picture, *adjust))
+                }
+                _ => {
+                    self.draw(encoder, target, &drawn, background);
+                    None
+                }
+            };
+            drop(drawn);
+            self.used.extend(nested);
+            self.used.extend(below.take().map(|(picture, _)| picture));
+            match (next, cut) {
+                (Some(next), Some(at)) => {
+                    below = Some(next);
+                    rest = &rest[at + 1..];
+                }
+                _ => return,
+            }
+        }
+    }
+
+    fn draw(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        frame: &mut Frame,
+        drawn: &[Drawn<'_>],
+        background: Background,
+    ) {
+        self.compositor
+            .draw_over(self.device, self.queue, encoder, frame, drawn, background);
+    }
+}
+
+/// A picture the compositor made, drawn again where `area` says.
+fn made<'a>(picture: &'a Frame, area: Area, part: Part, opacity: f32, colour: Colour) -> Drawn<'a> {
+    Drawn {
+        pixels: Pixels::Made(picture.view()),
+        to_rgb: [[0.0; 4]; 3],
+        rotation: 0,
+        area,
+        part,
+        opacity,
+        colour,
+        blend: None,
+    }
+}
+
+impl Placed {
+    fn drawn<'a>(&'a self, layer: &Layer) -> Drawn<'a> {
+        Drawn {
+            pixels: self.views.pixels(),
+            to_rgb: self.to_rgb,
+            rotation: self.rotation,
+            area: layer.area,
+            part: layer.part,
+            opacity: layer.opacity,
+            colour: layer.colour,
+            blend: self
+                .next
+                .as_ref()
+                .zip(layer.blend)
+                .map(|(next, blend)| (next.pixels(), blend.weight)),
+        }
     }
 }
 

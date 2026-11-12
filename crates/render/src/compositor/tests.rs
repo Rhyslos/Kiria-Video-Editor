@@ -634,3 +634,54 @@ fn two_frames_blend_as_light_mixes_in_both_working_formats() {
     let shown = compose(&gpu, Working::Linear, EIGHT, size, &[mismatched]).at(8, 8);
     assert!(near(shown, [0; 3], 1), "{shown:?}");
 }
+
+#[test]
+fn a_picture_the_compositor_made_is_drawn_again_as_it_was_and_coloured() {
+    let Some(gpu) = gpu() else { return };
+    let size = (16, 16);
+    let grey = Planes::flat(&gpu, size, GREY);
+    for working in BOTH {
+        // Grey over the left half of a see-through picture (a nested
+        // timeline's, where nothing covers the right half).
+        let (device, queue) = &gpu;
+        let compositor = Compositor::new(device, working);
+        let mut made = compositor.frame(device, size);
+        let left = Drawn {
+            area: Area::fitted((8, 16), (8, 16)),
+            ..whole(grey.two(), size)
+        };
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        compositor.draw_over(device, queue, &mut encoder, &mut made, &[left], Background::Clear);
+        queue.submit([encoder.finish()]);
+        let again = |colour: Colour| Drawn {
+            pixels: Pixels::Made(made.view()),
+            to_rgb: [[0.0; 4]; 3],
+            colour,
+            ..whole(grey.two(), size)
+        };
+        let shown = compose(&gpu, working, EIGHT, size, &[again(Colour::NEUTRAL)]);
+        assert!(
+            near(shown.at(4, 8), [128; 3], 1),
+            "{working:?}: {:?}",
+            shown.at(4, 8)
+        );
+        assert!(
+            near(shown.at(12, 8), [0; 3], 0),
+            "see-through shows black: {:?}",
+            shown.at(12, 8)
+        );
+        // A stop brighter, worked on light as a clip's own colour is.
+        let brighter = compose(
+            &gpu,
+            working,
+            EIGHT,
+            size,
+            &[again(Colour::from_sliders(1.0, 0.0, 0.0, 0.0, 0.0))],
+        );
+        assert!(
+            near(brighter.at(4, 8), [171; 3], 2),
+            "{working:?}: {:?}",
+            brighter.at(4, 8)
+        );
+    }
+}

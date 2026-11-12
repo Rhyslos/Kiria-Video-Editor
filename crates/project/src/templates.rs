@@ -63,7 +63,13 @@ impl Template {
             let mut kept: Vec<Track> = tracks
                 .iter()
                 .map(|t| Track {
-                    clips: t.clips.iter().filter_map(|c| cut_to(c, range)).collect(),
+                    // A nested timeline belongs to its project: it is left out.
+                    clips: t
+                        .clips
+                        .iter()
+                        .filter(|c| c.nested().is_none())
+                        .filter_map(|c| cut_to(c, range))
+                        .collect(),
                     // Switches are how the track was being worked on, not part of the stretch.
                     muted: false,
                     solo: false,
@@ -192,13 +198,16 @@ impl Template {
                 let mut previous_end = Time::ZERO;
                 for clip in &track.clips {
                     let place = format!("{} › {}", track.name, clip.id);
-                    if !self.media.iter().any(|m| m.id == clip.media) {
+                    if clip.is_file() && !self.media.iter().any(|m| m.id == clip.media) {
                         problems.push(format!("{place} uses missing media {}", clip.media));
+                    }
+                    if clip.nested().is_some() {
+                        problems.push(format!("{place} plays a timeline of a project"));
                     }
                     if clip.duration <= Time::ZERO {
                         problems.push(format!("{place} has no length"));
                     }
-                    if clip.start.is_negative() || clip.source_in.is_negative() {
+                    if clip.start.is_negative() || clip.starts_before_its_source() {
                         problems.push(format!("{place} starts before zero"));
                     }
                     if clip.start < previous_end {
@@ -331,11 +340,14 @@ pub(crate) fn insert(
             for clip in &from.clips {
                 let placed = Clip {
                     id: p.allocate_id(),
-                    media: media
-                        .iter()
-                        .find(|(old, _)| *old == clip.media)
-                        .map(|(_, new)| *new)
-                        .ok_or_else(|| missing("media file"))?,
+                    media: match clip.is_file() {
+                        true => media
+                            .iter()
+                            .find(|(old, _)| *old == clip.media)
+                            .map(|(_, new)| *new)
+                            .ok_or_else(|| missing("media file"))?,
+                        false => clip.media,
+                    },
                     start: clip.start + at,
                     link: clip.link.map(|old| mapped(&mut links, old, || p.allocate_id())),
                     ..clip.clone()
@@ -712,6 +724,7 @@ mod tests {
             keyframes: Default::default(),
             ramp: Default::default(),
             blend: Default::default(),
+            kind: Default::default(),
         };
         for (track, clip) in [
             (v1, clip(video, 0, 0, 0, 10, Some(title_link), Speed::NORMAL)),

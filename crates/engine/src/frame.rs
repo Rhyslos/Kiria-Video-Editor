@@ -3,7 +3,9 @@
 //! card, so it can be tested anywhere and read by the viewer, by export and
 //! by anything else that needs the picture.
 
-use project::{Clip, ClipId, FrameBlend, Look, MediaId, MediaRef, Project, Rate, Sequence, Time};
+use project::{
+    Clip, ClipId, ClipKind, FrameBlend, Look, MediaId, MediaRef, Project, Rate, Sequence, SequenceId, Time,
+};
 use render::{Area, Colour, Part, Placement};
 
 /// What to draw for one moment of a timeline.
@@ -11,21 +13,85 @@ use render::{Area, Colour, Part, Placement};
 pub struct FrameDescription {
     /// The timeline's picture size.
     pub size: (u32, u32),
-    /// What is seen, bottom layer first. Empty in a gap: the frame is black.
+    /// Every picture of a file that is seen, in the order they are drawn
+    /// (the top one last), whether in the timeline itself or in a timeline
+    /// nested in it: what has to be decoded. Empty in a gap: the frame is
+    /// black.
     pub layers: Vec<Layer>,
+    /// How they are put together, bottom first.
+    pub steps: Vec<Step>,
+}
+
+/// One thing drawn over what is below it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Step {
+    /// The picture `layers[i]`.
+    Picture(usize),
+    /// A nested timeline: its own steps put together into a picture of its
+    /// own (see-through where nothing is), then placed as one picture.
+    Timeline(Group),
+    /// An adjustment layer: everything below it in the same picture,
+    /// coloured.
+    Adjust(Adjust),
+}
+
+/// A nested timeline's picture in the frame.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Group {
+    pub clip: ClipId,
+    /// The size it is put together at: the nested timeline's own, scaled
+    /// as the frame is (`at_size`).
+    pub size: (u32, u32),
+    /// What it is made of, bottom first; areas are in its own picture.
+    pub steps: Vec<Step>,
+    /// Where the shown part of its picture lands in the frame.
+    pub area: Area,
+    pub part: Part,
+    pub opacity: f32,
+    pub colour: Colour,
+}
+
+/// What an adjustment layer does to everything below it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Adjust {
+    pub clip: ClipId,
+    /// How much of the coloured picture shows over the picture as it was.
+    pub opacity: f32,
+    pub colour: Colour,
 }
 
 impl FrameDescription {
     /// The same picture drawn at another size (a preview smaller than the
-    /// timeline's): everything keeps its place in the frame.
+    /// timeline's): everything keeps its place in the frame, and nested
+    /// timelines are put together at the same scale.
     pub fn at_size(mut self, size: (u32, u32)) -> FrameDescription {
         let x = size.0 as f32 / self.size.0.max(1) as f32;
         let y = size.1 as f32 / self.size.1.max(1) as f32;
         for layer in &mut self.layers {
             layer.area = layer.area.scaled(x, y);
         }
+        scale_groups(&mut self.steps, x, y);
         self.size = size;
         self
+    }
+
+    /// Whether anything is drawn that has to come from a nested timeline
+    /// or be coloured by an adjustment layer.
+    pub fn is_flat(&self) -> bool {
+        self.steps.iter().all(|step| matches!(step, Step::Picture(_)))
+    }
+}
+
+fn scale_groups(steps: &mut [Step], x: f32, y: f32) {
+    for step in steps {
+        if let Step::Timeline(group) = step {
+            group.area = group.area.scaled(x, y);
+            group.size = (
+                ((group.size.0 as f32 * x).round() as u32).max(1),
+                ((group.size.1 as f32 * y).round() as u32).max(1),
+            );
+            scale_groups(&mut group.steps, x, y);
+        }
     }
 }
 
@@ -89,12 +155,32 @@ impl Layer {
 }
 
 /// What is seen at `at`: every video track that isn't hidden contributes the
-/// clip it has there, lower tracks first. Layers that can't be seen, because
-/// one above them fills the frame, are left out, so nothing is decoded only
-/// to be painted over.
+/// clip it has there, lower tracks first. A nested timeline contributes
+/// what is seen in it at its moment, put together and placed as one
+/// picture; an adjustment layer colours what is below it. Layers that can't
+/// be seen, because one above them fills the frame, are left out, so
+/// nothing is decoded only to be painted over.
 pub fn describe(project: &Project, sequence: &Sequence, at: Time) -> FrameDescription {
     let size = (sequence.settings.width, sequence.settings.height);
+    let (nodes, _) = seen(project, sequence, at, 0);
     let mut layers = Vec::new();
+    let steps = flatten(nodes, &mut layers);
+    FrameDescription { size, layers, steps }
+}
+
+/// What is seen in a timeline before it is numbered: a tree.
+enum Node {
+    Picture(Layer),
+    Timeline(Group, Vec<Node>),
+    Adjust(Adjust),
+}
+
+/// What is seen in `sequence` at `at`, bottom first, and whether it fills
+/// its whole frame with nothing see-through.
+fn seen(project: &Project, sequence: &Sequence, at: Time, depth: usize) -> (Vec<Node>, bool) {
+    let size = (sequence.settings.width, sequence.settings.height);
+    let mut nodes = Vec::new();
+    let mut opaque = false;
     // From the top down, stopping at the first layer that hides the rest.
     for track in sequence.video_tracks.iter().rev().filter(|track| !track.hidden) {
         let Some(clip) = track
@@ -104,24 +190,111 @@ pub fn describe(project: &Project, sequence: &Sequence, at: Time) -> FrameDescri
         else {
             continue;
         };
-        let Some(layer) = project
-            .media
-            .get(&clip.media)
-            .and_then(|media| layer(clip, media, size, at))
-        else {
-            continue;
+        let hides = match clip.kind {
+            ClipKind::File => {
+                let Some(layer) = project
+                    .media
+                    .get(&clip.media)
+                    .and_then(|media| layer(clip, media, size, at))
+                else {
+                    continue;
+                };
+                if layer.opacity <= 0.0 {
+                    continue;
+                }
+                let hides = layer.hides_what_is_below(size);
+                nodes.push(Node::Picture(layer));
+                hides
+            }
+            ClipKind::Timeline(id) => {
+                let Some((group, inner, inner_opaque)) = nested(project, clip, id, size, at, depth) else {
+                    continue;
+                };
+                let hides = inner_opaque && group.opacity >= 1.0 && group.area.covers(size);
+                nodes.push(Node::Timeline(group, inner));
+                hides
+            }
+            ClipKind::Adjustment => {
+                let look = clip.look_at(at);
+                let adjust = Adjust {
+                    clip: clip.id,
+                    opacity: fraction(look.opacity),
+                    colour: colour(&look),
+                };
+                if adjust.opacity > 0.0 && !adjust.colour.is_neutral() {
+                    nodes.push(Node::Adjust(adjust));
+                }
+                false
+            }
         };
-        if layer.opacity <= 0.0 {
-            continue;
-        }
-        let last = layer.hides_what_is_below(size);
-        layers.push(layer);
-        if last {
+        if hides {
+            opaque = true;
             break;
         }
     }
-    layers.reverse();
-    FrameDescription { size, layers }
+    nodes.reverse();
+    // An adjustment layer with nothing below it has nothing to colour.
+    let first_picture = nodes
+        .iter()
+        .position(|node| !matches!(node, Node::Adjust(_)))
+        .unwrap_or(nodes.len());
+    nodes.drain(..first_picture);
+    (nodes, opaque)
+}
+
+/// A nested timeline's clip at `at`: its group (without steps yet), what is
+/// seen in it at its moment, and whether that fills its frame. Nothing
+/// when nothing of it is seen, or it is nested deeper than is followed.
+fn nested(
+    project: &Project,
+    clip: &Clip,
+    id: SequenceId,
+    frame: (u32, u32),
+    at: Time,
+    depth: usize,
+) -> Option<(Group, Vec<Node>, bool)> {
+    if depth >= crate::timeline::DEEPEST {
+        return None;
+    }
+    let inner = project.sequence(id)?;
+    let look = clip.look_at(at);
+    let opacity = fraction(look.opacity);
+    if opacity <= 0.0 {
+        return None;
+    }
+    let (nodes, opaque) = seen(project, inner, clip.source_at(at), depth + 1);
+    if nodes.is_empty() {
+        return None;
+    }
+    let size = (inner.settings.width.max(1), inner.settings.height.max(1));
+    let group = Group {
+        clip: clip.id,
+        size,
+        steps: Vec::new(),
+        area: shown_area(&look, size, frame),
+        part: shown_part(&look),
+        opacity,
+        colour: colour(&look),
+    };
+    Some((group, nodes, opaque))
+}
+
+/// Numbers the pictures in drawing order and turns the tree into steps.
+fn flatten(nodes: Vec<Node>, layers: &mut Vec<Layer>) -> Vec<Step> {
+    nodes
+        .into_iter()
+        .map(|node| match node {
+            Node::Picture(layer) => {
+                layers.push(layer);
+                Step::Picture(layers.len() - 1)
+            }
+            Node::Timeline(group, inner) => Step::Timeline(Group {
+                steps: flatten(inner, layers),
+                ..group
+            }),
+            Node::Adjust(adjust) => Step::Adjust(adjust),
+        })
+        .collect()
 }
 
 /// `clip`'s picture at `at`, or nothing when its file has no picture.
@@ -512,5 +685,91 @@ mod tests {
             }));
         }
         assert!(blend_at(Time::from_ratio(1, 240).unwrap(), Rate::FPS_120).is_some());
+    }
+
+    #[test]
+    fn a_nested_timeline_is_one_picture_made_of_its_own_layers() {
+        let project = import(
+            &Project::new("T", SequenceSettings::GAME_CLIP),
+            media("a.mkv", (1920, 1080), 0),
+        );
+        let outer = project.active_sequence;
+        let clip = project.active().unwrap().video_tracks[0].clips[0].id;
+        let project = Command::NestClips {
+            sequence: outer,
+            clips: vec![clip],
+            name: "Inner".into(),
+        }
+        .apply(&project)
+        .unwrap();
+        let nested = project.active().unwrap().video_tracks[0].clips[0].id;
+        // Half size: what is below would show around it.
+        let project = with_look(
+            &project,
+            Look {
+                scale: 500_000,
+                ..Look::PLAIN
+            },
+        );
+        let frame = describe(&project, project.active().unwrap(), Time::seconds(3));
+        assert_eq!(frame.layers.len(), 1, "the file's picture is decoded");
+        assert_eq!(frame.layers[0].source_time, Time::seconds(3));
+        assert!(!frame.is_flat());
+        let [Step::Timeline(group)] = frame.steps.as_slice() else {
+            panic!("one nested timeline: {:?}", frame.steps);
+        };
+        assert_eq!(group.clip, nested);
+        assert_eq!(group.size, (1920, 1080));
+        assert_eq!(group.steps, vec![Step::Picture(0)]);
+        assert!(near(group.area.across, (960.0, 0.0)), "{:?}", group.area);
+        // A smaller preview puts the nested timeline together smaller too.
+        let small = frame.at_size((960, 540));
+        let Step::Timeline(group) = &small.steps[0] else {
+            panic!("still nested");
+        };
+        assert_eq!(group.size, (960, 540));
+        assert!(near(small.layers[0].area.across, (960.0, 0.0)));
+    }
+
+    #[test]
+    fn an_adjustment_layer_colours_what_is_below_it() {
+        let project = import(
+            &Project::new("T", SequenceSettings::GAME_CLIP),
+            media("a.mkv", (1920, 1080), 0),
+        );
+        let sequence = project.active_sequence;
+        let project = Command::AddAdjustment {
+            sequence,
+            at: Time::seconds(2),
+            length: Time::seconds(20),
+            track: None,
+        }
+        .apply(&project)
+        .unwrap();
+        let layer = project.active().unwrap().video_tracks[1].clips[0].id;
+        // As it comes it changes nothing, so it is left out.
+        let frame = describe(&project, project.active().unwrap(), Time::seconds(3));
+        assert_eq!(frame.steps, vec![Step::Picture(0)]);
+        let warm = Command::SetLook {
+            sequence,
+            clip: layer,
+            look: Look {
+                temperature: 500_000,
+                opacity: 750_000,
+                ..Look::PLAIN
+            },
+        }
+        .apply(&project)
+        .unwrap();
+        let frame = describe(&warm, warm.active().unwrap(), Time::seconds(3));
+        let [Step::Picture(0), Step::Adjust(adjust)] = frame.steps.as_slice() else {
+            panic!("the picture, then the adjustment: {:?}", frame.steps);
+        };
+        assert_eq!(adjust.clip, layer);
+        assert_eq!(adjust.opacity, 0.75);
+        assert!(adjust.colour.gains[0] > adjust.colour.gains[2], "warmer");
+        // Over a gap it has nothing to colour.
+        let frame = describe(&warm, warm.active().unwrap(), Time::seconds(15));
+        assert!(frame.steps.is_empty() && frame.layers.is_empty());
     }
 }

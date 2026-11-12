@@ -135,7 +135,7 @@ impl Inspector {
         if track.kind != TrackKind::Video {
             return None;
         }
-        let video = project.media.get(&clip.media)?.info.video.as_ref()?;
+        let picture = picture_size(project, clip)?;
         let at = clip.moment(playhead, seq.settings.frame_rate);
         let look = match self.pending {
             Some(pending) if pending.clip == clip.id => pending.look,
@@ -145,7 +145,7 @@ impl Inspector {
             clip: clip.id,
             at,
             look,
-            picture: video.display_size(),
+            picture,
             frame: (seq.settings.width, seq.settings.height),
             start: clip.start,
             end: clip.end(),
@@ -242,15 +242,21 @@ impl Inspector {
             return commands;
         };
         let frame = (seq.settings.width, seq.settings.height);
-        let media = project.media.get(&clip.media);
-        let picture = media
-            .and_then(|media| media.info.video.as_ref())
-            .map_or(frame, |video| video.display_size());
+        let media = project.media.get(&clip.media).filter(|_| clip.is_file());
+        let picture = picture_size(project, clip).unwrap_or(frame);
+        let adjustment = clip.is_adjustment();
 
         // What it is.
-        let name = media
-            .and_then(|media| media.path.file_name())
-            .map_or_else(|| "Clip".to_owned(), |name| name.to_string_lossy().into_owned());
+        let name = match clip.kind {
+            project::ClipKind::Adjustment => project::timelines::ADJUSTMENT_NAME.to_owned(),
+            project::ClipKind::Timeline(id) => project.sequence(id).map_or_else(
+                || "A missing timeline".to_owned(),
+                |s| format!("{} (nested timeline)", s.name),
+            ),
+            project::ClipKind::File => media
+                .and_then(|media| media.path.file_name())
+                .map_or_else(|| "Clip".to_owned(), |name| name.to_string_lossy().into_owned()),
+        };
         ui.add(
             egui::Label::new(
                 egui::RichText::new(name)
@@ -308,6 +314,15 @@ impl Inspector {
         let keys = KeyTable::at(clip, playhead, rate, on_clip);
         if track.kind == TrackKind::Video {
             let on_picture = (&mut self.on_picture, self.on_picture_tip.as_str());
+            if adjustment {
+                ui.label(
+                    egui::RichText::new(
+                        "Its colour, at its opacity, changes everything below it in the picture while it lasts.",
+                    )
+                    .color(theme.muted)
+                    .size(12.0),
+                );
+            }
             asks = picture_sections(
                 ui,
                 theme,
@@ -315,24 +330,29 @@ impl Inspector {
                 frame,
                 picture,
                 on_picture,
+                adjustment,
                 &keys,
                 &mut values,
                 &mut touched,
             );
         }
 
-        let speed = speed::section(
-            ui,
-            theme,
-            &speed::Subject {
-                sequence,
-                clip,
-                kind: track.kind,
-                rate,
-                recorded: media.and_then(|m| m.info.video.as_ref()).map(|v| v.frame_rate),
-                playhead,
-            },
-        );
+        let speed = match adjustment {
+            // It plays nothing, so it has no speed.
+            true => speed::Asked::default(),
+            false => speed::section(
+                ui,
+                theme,
+                &speed::Subject {
+                    sequence,
+                    clip,
+                    kind: track.kind,
+                    rate,
+                    recorded: media.and_then(|m| m.info.video.as_ref()).map(|v| v.frame_rate),
+                    playhead,
+                },
+            ),
+        };
         commands.extend(speed.commands);
         self.seek = speed.seek.or(self.seek);
 
@@ -544,6 +564,8 @@ const CROP_FIELDS: [LookField; 4] = [
     LookField::CropRight,
     LookField::CropBottom,
 ];
+/// An adjustment layer's one number besides its colour.
+const OPACITY: [LookField; 1] = [LookField::Opacity];
 const COLOUR: [LookField; 5] = [
     LookField::Exposure,
     LookField::Contrast,
@@ -674,6 +696,7 @@ fn picture_sections(
     frame: (u32, u32),
     picture: (u32, u32),
     on_picture: (&mut bool, &str),
+    adjustment: bool,
     keys: &KeyTable,
     values: &mut Values,
     touched: &mut Touched,
@@ -682,6 +705,38 @@ fn picture_sections(
     let mut asks = Asks::default();
     let eases = Ease::ALL.map(Ease::label);
     let k = |field| keys.keys(field, &eases);
+    if adjustment {
+        // An adjustment layer has no picture to place or cut: only how
+        // strongly its colour shows.
+        let clicks = inspector::animated_section(
+            ui,
+            theme,
+            "Opacity",
+            &format!(
+                "{}{}",
+                over_time(keys, &OPACITY),
+                short(f64::from(before.opacity) / f64::from(ONE) * 100.0, 0) + " %"
+            ),
+            before.opacity != ONE,
+            keys.animates(&OPACITY),
+            |ui| {
+                let keyed = inspector::keyed_slider(
+                    ui,
+                    theme,
+                    "Opacity",
+                    &mut values.opacity,
+                    PERCENT_FULL,
+                    &k(LookField::Opacity),
+                );
+                asks.row(touched, LookField::Opacity, keyed);
+            },
+        );
+        if clicks.reset {
+            asks.resets.push(&OPACITY);
+        }
+        colour_section(ui, theme, &before, keys, values, touched, &mut asks);
+        return asks;
+    }
     let clicks = inspector::animated_section(
         ui,
         theme,
@@ -807,11 +862,27 @@ fn picture_sections(
         asks.resets.push(&CROP_FIELDS);
     }
 
+    colour_section(ui, theme, &before, keys, values, touched, &mut asks);
+    asks
+}
+
+/// The Quick color section.
+fn colour_section(
+    ui: &mut egui::Ui,
+    theme: &Theme,
+    before: &Look,
+    keys: &KeyTable,
+    values: &mut Values,
+    touched: &mut Touched,
+    asks: &mut Asks,
+) {
+    let eases = Ease::ALL.map(Ease::label);
+    let k = |field| keys.keys(field, &eases);
     let clicks = inspector::animated_section(
         ui,
         theme,
         "Quick color",
-        &format!("{}{}", over_time(keys, &COLOUR), colour_summary(&before)),
+        &format!("{}{}", over_time(keys, &COLOUR), colour_summary(before)),
         before.is_coloured(),
         keys.animates(&COLOUR),
         |ui| {
@@ -838,7 +909,25 @@ fn picture_sections(
     if clicks.reset {
         asks.resets.push(&COLOUR);
     }
-    asks
+}
+
+/// The size of the picture a clip shows: its file's, upright, or the
+/// nested timeline's. `None` for an adjustment layer, or a file with no
+/// picture.
+fn picture_size(project: &Project, clip: &project::Clip) -> Option<(u32, u32)> {
+    match clip.kind {
+        project::ClipKind::File => project
+            .media
+            .get(&clip.media)?
+            .info
+            .video
+            .as_ref()
+            .map(|video| video.display_size()),
+        project::ClipKind::Timeline(id) => project
+            .sequence(id)
+            .map(|s| (s.settings.width, s.settings.height)),
+        project::ClipKind::Adjustment => None,
+    }
 }
 
 /// Whether `pending` changes its clip's look at its moment.

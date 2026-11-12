@@ -94,6 +94,7 @@ fn rich_project() -> Project {
         keyframes: Default::default(),
         ramp: Default::default(),
         blend: Default::default(),
+        kind: Default::default(),
     };
     // The picture in a corner, cut a little, slightly see-through and warmer.
     let look = project::Look {
@@ -168,6 +169,59 @@ fn rich_project() -> Project {
     });
     seq.region = Region::between(Time::seconds(20), Time::seconds(50));
     seq.edit_needle = Time::seconds(81);
+
+    // A second timeline holding a copy of the picture, played in the first
+    // from 30 s on a track of its own, and an adjustment layer above
+    // that warms everything from 21 s for 3 s (format 12).
+    let main = p.active_sequence;
+    let mut short = p.new_sequence("Short cut", SequenceSettings::VERTICAL_SHORT);
+    let inner_clip = p.allocate_id();
+    short.video_tracks[0].clips.push_back(Clip {
+        start: Time::ZERO,
+        duration: Time::seconds(4),
+        link: None,
+        ..clip(inner_clip, 0)
+    });
+    let (nested_id, nested_clip, adjustment) = (short.id, p.allocate_id(), p.allocate_id());
+    let (mut v2, mut v3) = (
+        p.new_track(project::TrackKind::Video, "V2"),
+        p.new_track(project::TrackKind::Video, "V3"),
+    );
+    v2.clips.push_back(Clip {
+        media: project::MediaId::NONE,
+        start: Time::seconds(30),
+        source_in: Time::seconds(1),
+        duration: Time::seconds(3),
+        link: None,
+        look: project::Look {
+            scale: 500_000,
+            ..project::Look::PLAIN
+        },
+        kind: project::ClipKind::Timeline(nested_id),
+        ..clip(nested_clip, 0)
+    });
+    v3.clips.push_back(Clip {
+        media: project::MediaId::NONE,
+        start: Time::seconds(21),
+        source_in: Time::ZERO,
+        duration: Time::seconds(3),
+        link: None,
+        look: project::Look {
+            temperature: 300_000,
+            saturation: 1_200_000,
+            ..project::Look::PLAIN
+        },
+        kind: project::ClipKind::Adjustment,
+        ..clip(adjustment, 0)
+    });
+    p.sequences.push_back(short);
+    let seq = p
+        .sequences
+        .iter_mut()
+        .find(|s| s.id == main)
+        .expect("the first timeline");
+    seq.video_tracks.push_back(v2);
+    seq.video_tracks.push_back(v3);
     p
 }
 
@@ -248,6 +302,34 @@ fn version_10_sample_opens_without_ramps() {
             "so a clip plays at its one speed"
         );
     }
+}
+
+#[test]
+fn version_11_sample_opens_with_one_timeline_of_file_clips() {
+    let project = file::load(&sample_path(11)).expect("the version 11 sample opens");
+    assert_eq!(project.sequences.len(), 1);
+    for clip in project.sequences[0].tracks().flat_map(|t| t.clips.iter()) {
+        assert_eq!(
+            clip.kind,
+            project::ClipKind::File,
+            "format 11 clips all play files"
+        );
+    }
+}
+
+#[test]
+fn the_current_sample_has_a_nested_timeline_and_an_adjustment_layer() {
+    let project = file::load(&sample_path(FORMAT_VERSION)).expect("the sample opens");
+    assert_eq!(project.sequences.len(), 2);
+    let main = project.active().expect("an open timeline");
+    let kinds: Vec<project::ClipKind> = main
+        .video_tracks
+        .iter()
+        .flat_map(|t| t.clips.iter())
+        .map(|c| c.kind)
+        .collect();
+    assert!(kinds.contains(&project::ClipKind::Timeline(project.sequences[1].id)));
+    assert!(kinds.contains(&project::ClipKind::Adjustment));
 }
 
 #[test]
