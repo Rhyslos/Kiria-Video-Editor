@@ -1268,6 +1268,7 @@ impl Editor {
             let result = match read {
                 Read::Ready(media) => {
                     let line = import::summary(&media);
+                    let end_missing = media::end_missing_words(&media);
                     let mut settled = None;
                     self.with_document(|d| {
                         let sequence = d.project().active_sequence;
@@ -1289,11 +1290,24 @@ impl Editor {
                             ),
                             None => format!("Imported {line}"),
                         };
+                        if let Some(words) = end_missing {
+                            self.status = format!("{}. {words}", self.status.trim_end_matches('.'));
+                        }
                     })
                 }
                 Read::Failed { path, refused, alone } => {
                     tracing::info!(path = %path.display(), "import refused: {}", refused.error.report());
-                    if alone { Err(refused.error) } else { Ok(()) }
+                    match (alone, refused.refusal) {
+                        // The person chooses: what is there, or skip it.
+                        (true, media::Refusal::CutShort) => {
+                            let id = self.importer.set_aside(vec![path]);
+                            Err(refused
+                                .error
+                                .action(import::whats_there_action("Import what's there", id)))
+                        }
+                        (true, _) => Err(refused.error),
+                        (false, _) => Ok(()),
+                    }
                 }
             };
             if let Err(err) = result {
@@ -1303,7 +1317,9 @@ impl Editor {
             // one message for those refused.
             if let Some(batch) = batch.filter(|b| b.files > 1) {
                 self.status = format!("Imported {} of {} files", batch.imported(), batch.files);
-                if let Some(err) = batch.summary() {
+                let whats_there =
+                    (!batch.cut_short.is_empty()).then(|| self.importer.set_aside(batch.cut_short.clone()));
+                if let Some(err) = batch.summary(whats_there) {
                     self.errors.push(&err);
                 }
             }
@@ -1990,7 +2006,14 @@ impl Editor {
         if let Some(response) = self.errors.show_inline(ui, &self.theme) {
             match response {
                 ErrorResponse::OpenDiagnostics => self.show_diagnostics = true,
-                ErrorResponse::Fix(action) => self.status = format!("No handler for {} yet.", action.command),
+                ErrorResponse::Fix(action) => match import::whats_there_id(&action.command) {
+                    Some(id) => {
+                        if self.importer.whats_there(&self.jobs, ui.ctx(), id) {
+                            self.status = "Importing what is there…".into();
+                        }
+                    }
+                    None => self.status = format!("No handler for {} yet.", action.command),
+                },
             }
             ui.add_space(8.0);
         }

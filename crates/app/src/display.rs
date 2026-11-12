@@ -222,6 +222,7 @@ mod tests {
                 container: String::new(),
                 video: None,
                 audio: Vec::new(),
+                stated_length: None,
             },
         };
         assert_eq!(caption(&media), "Source · match 3.mkv");

@@ -96,7 +96,12 @@ impl ErrorCenter {
                 ui.horizontal(|ui| {
                     let (bar, _) = ui.allocate_exact_size(egui::vec2(4.0, 36.0), egui::Sense::hover());
                     ui.painter().rect_filled(bar, 2.0, status::ERROR);
+                    // Room for the buttons on the right, so long text wraps
+                    // before them instead of running under them.
+                    let buttons = if error.action.is_some() { 340.0 } else { 170.0 };
+                    let text_width = (ui.available_width() - buttons).max(200.0);
                     ui.vertical(|ui| {
+                        ui.set_max_width(text_width);
                         ui.label(RichText::new(&error.what).family(crate::fonts::semibold()));
                         if let Some(why) = &error.why {
                             ui.label(RichText::new(why).color(theme.text_secondary));
@@ -104,7 +109,12 @@ impl ErrorCenter {
                         ui.label(RichText::new(format!("Fix: {}", error.fix)).color(theme.muted));
                     });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("Dismiss").clicked() {
+                        let dismiss = error
+                            .action
+                            .as_ref()
+                            .and_then(|a| a.decline.as_deref())
+                            .unwrap_or("Dismiss");
+                        if ui.button(dismiss).clicked() {
                             error.dismissed = true;
                         }
                         if ui.button("Details").clicked() {

@@ -362,7 +362,7 @@ Phase 5 turns the simple media list from phase 4 into the full Library page; the
 **5.1 Index and search (`library`)**
 
 - [x] SQLite tables: media, types, labels, custom lists, notes, usage in timelines; full-text search across names, labels and notes. Labels, lists and notes are project data (format 13, undoable commands); the index is built from the project in memory on a worker, so it is never the truth and needs no file. Labels can also be offered in every project (names and colours in `labels.ron` in the app's data folder; using one copies it into the project). The drawer's "Find a file" and the search palette ask it; 10 000 files answer every query in a few milliseconds (`crates/library/tests/index.rs`).
-- [x] Import checks every file first and explains anything unsupported (codec, damaged, too new) before it reaches a timeline. `media::check`: unknown codec ("too new"), no decoder ("not supported"), first picture or sound unreadable ("damaged"), end missing; a refused file is not added. Several files at once are summed up in one message; files go into the project 2 ms' worth a frame.
+- [x] Import checks every file first and explains anything unsupported (codec, damaged, too new) before it reaches a timeline. `media::check`: unknown codec ("too new"), no decoder ("not supported"), first picture or sound unreadable ("damaged"), end missing; a refused file is not added, except that for a recording whose end is missing the person chooses "Import what's there" (at the length really in it, marked "End missing", format 14) or "Skip". Several files at once are summed up in one message; files go into the project 2 ms' worth a frame.
 - [ ] Media folders from the launcher are watched; new recordings show up on their own.
 
 **5.2 Page layout (as in the mockup)**
@@ -532,6 +532,7 @@ Phase 10 adds no big features: it polishes, settles the two open decisions, and 
 - [ ] Media corpus: every file in `test-media/` imports, plays and exports, or fails with a clear explained error.
 - [ ] Memory: a 4-hour editing session on both machines with no growth beyond the cache budgets.
 - [ ] Every error message read through once for plain wording and a working fix button.
+- [ ] Autosave journal writes move to a worker. Today every edit writes its journal line and waits for the disk (`Document::apply` → `record`, with `sync_data`) on the interface thread; a slow disk can make one edit take longer than 2 ms. Imports already spread this over frames (2 ms of adds a frame); the journal itself should be written by a worker in order, with crash recovery unchanged.
 
 **Release checklist**
 

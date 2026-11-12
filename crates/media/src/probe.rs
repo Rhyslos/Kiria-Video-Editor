@@ -73,6 +73,7 @@ pub fn probe(path: &Path) -> diag::Result<Probe> {
             container,
             video,
             audio,
+            stated_length: None,
         },
     })
 }

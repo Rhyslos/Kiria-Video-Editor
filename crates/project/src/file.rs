@@ -22,7 +22,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
 /// The format this build writes.
-pub const FORMAT_VERSION: u32 = 13;
+pub const FORMAT_VERSION: u32 = 14;
 
 /// Turns the text of a version `n` file into the text of a version `n + 1` file.
 pub type Migration = fn(&str) -> diag::Result<String>;
@@ -30,7 +30,7 @@ pub type Migration = fn(&str) -> diag::Result<String>;
 /// `MIGRATIONS[i]` upgrades version `i + 1` to `i + 2`.
 pub const MIGRATIONS: &[Migration] = &[
     v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8, v8_to_v9, v9_to_v10, v10_to_v11,
-    v11_to_v12, v12_to_v13,
+    v11_to_v12, v12_to_v13, v13_to_v14,
 ];
 
 /// Format 2 adds `info` (the file's streams) to each media entry. The field
@@ -112,6 +112,13 @@ fn v11_to_v12(text: &str) -> diag::Result<String> {
 /// project could have.
 fn v12_to_v13(text: &str) -> diag::Result<String> {
     set_format_version(text, 12, 13)
+}
+
+/// Format 14 adds `stated_length` to a media file's streams: the length a
+/// file whose end is missing says it has, when it was imported anyway. It
+/// defaults to none: every older file was imported whole.
+fn v13_to_v14(text: &str) -> diag::Result<String> {
+    set_format_version(text, 13, 14)
 }
 
 /// Rewrites the `format_version` number at the top of the file.

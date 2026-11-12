@@ -119,6 +119,11 @@ pub struct MediaInfo {
     /// Every sound stream, in file order. A game recording often has several
     /// (game, microphone, voice chat).
     pub audio: Vec<AudioStream>,
+    /// Set when the file's end is missing and it was imported anyway (format
+    /// 14): the length the file says it has. The media's `duration` is
+    /// what is really there.
+    #[serde(default)]
+    pub stated_length: Option<Time>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

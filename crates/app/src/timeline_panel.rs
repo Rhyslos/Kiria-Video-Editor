@@ -1071,6 +1071,7 @@ mod tests {
                         name: format!("Stream {index}"),
                     })
                     .collect(),
+                stated_length: None,
             },
         }
     }

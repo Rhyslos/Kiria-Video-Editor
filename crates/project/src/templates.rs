@@ -661,6 +661,7 @@ mod tests {
                     sample_rate: 44_100,
                     name: "Voice".into(),
                 }],
+                stated_length: None,
             },
         }
     }

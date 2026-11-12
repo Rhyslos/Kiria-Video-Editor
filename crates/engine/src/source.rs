@@ -159,6 +159,7 @@ mod tests {
                     sample_rate: 48_000,
                     name: String::new(),
                 }],
+                stated_length: None,
             },
         }
     }

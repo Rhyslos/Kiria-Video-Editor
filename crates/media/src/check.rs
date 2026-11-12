@@ -160,14 +160,73 @@ pub fn check(path: &Path) -> Result<MediaRef, Refused> {
                 };
                 return Err(Refused {
                     refusal: Refusal::CutShort,
-                    error: AppError::new(format!("{name} can't be imported: its end is missing"))
+                    error: AppError::new(format!("{name}: its end is missing"))
                         .why(why)
-                        .fix("If the copy was interrupted, copy the file again. Otherwise save a repaired copy by copying its streams into a new file without re-encoding (a remux; most recorders and converters can), and import that."),
+                        .fix("Import what's there to use the part it holds. Or skip it and repair it: copy the file again if a copy was interrupted, else copy its streams into a new file without re-encoding (a remux), and import that."),
                 });
             }
         }
     }
     Ok(media)
+}
+
+/// A file whose end is missing, as far as it goes: its length is what is
+/// really in it (to the frame after its last picture, or its last sound
+/// packet), and `stated_length` keeps the length it says it has. When the
+/// end can't be found near where it should be, the whole file is read
+/// (packets only, nothing decoded), which takes a while for a long
+/// recording: call it from a worker, and only when asked.
+pub fn salvage(path: &Path) -> diag::Result<MediaRef> {
+    let mut media = crate::describe(path)?;
+    let name = crate::probe::file_name(path);
+    let input = Input::open(path).map_err(|e| {
+        AppError::new("The file can't be opened")
+            .why(format!("{}: {}.", path.display(), e.text))
+            .fix("Check that the file still exists and that the drive is connected.")
+    })?;
+    let stated = media.duration;
+    let duration = stated.as_secs_f64();
+    let video = media.info.video.as_ref().map(|v| (v.index, v.frame_rate));
+    let Some(stream) = video
+        .map(|(index, _)| index)
+        .or_else(|| media.info.audio.first().map(|a| a.index))
+    else {
+        return Ok(media);
+    };
+    let latest = |times: Vec<f64>| times.into_iter().fold(f64::NEG_INFINITY, f64::max);
+    let from = (duration - 6.0).max(0.0);
+    let mut last = latest(input.packet_times(stream, from, 10.0));
+    if !(last.is_finite() && last > from) {
+        last = latest(input.packet_times(stream, 0.0, f64::MAX));
+    }
+    if !last.is_finite() || last <= 0.0 {
+        return Err(
+            AppError::new(format!("{name} can't be imported: nothing in it can be read"))
+                .why("Its end is missing, and no picture or sound was found in what is there.")
+                .fix("Copy the file again from where it came from."),
+        );
+    }
+    let real = match video {
+        // To the end of the last picture's frame.
+        Some((_, rate)) => rate.frame_start((last * rate.as_f64()).round() as i64 + 1),
+        None => project::Time::from_ratio((last * 1_000_000.0).round() as i64, 1_000_000).unwrap_or(stated),
+    };
+    if real < stated {
+        media.duration = real;
+        media.info.stated_length = Some(stated);
+    }
+    Ok(media)
+}
+
+/// "Its end is missing: it is 0:41 long, though it says 2:00", for a file
+/// imported with its end missing; `None` for a whole file.
+pub fn end_missing_words(media: &MediaRef) -> Option<String> {
+    let stated = media.info.stated_length?;
+    Some(format!(
+        "Its end is missing: it is {} long, though it says {}",
+        clock(media.duration.as_secs_f64()),
+        clock(stated.as_secs_f64())
+    ))
 }
 
 fn damaged(name: &str, part: &str) -> Refused {

@@ -297,6 +297,7 @@ mod tests {
                     rotation: 0,
                 }),
                 audio: Vec::new(),
+                stated_length: None,
             },
         };
         p = Command::AddMedia { media }.apply(&p).unwrap();

@@ -72,6 +72,8 @@ fn rich_project() -> Project {
                         name: "Mic".into(),
                     },
                 ],
+                // Its end was missing; imported as far as it goes (format 14).
+                stated_length: Some(Time::seconds(660)),
             },
         },
     );
@@ -363,6 +365,21 @@ fn version_12_sample_opens_with_no_labels_lists_or_notes() {
 }
 
 #[test]
+fn version_13_sample_opens_with_whole_files() {
+    let project = file::load(&sample_path(13)).expect("the version 13 sample opens");
+    assert!(project.media.values().all(|m| m.info.stated_length.is_none()));
+    assert!(!project.library.is_empty(), "and keeps its labels");
+}
+
+#[test]
+fn the_current_sample_has_a_file_imported_with_its_end_missing() {
+    let project = file::load(&sample_path(FORMAT_VERSION)).expect("the sample opens");
+    let media = project.media.values().next().expect("a file");
+    assert_eq!(media.info.stated_length, Some(Time::seconds(660)));
+    assert_eq!(media.duration, Time::seconds(600));
+}
+
+#[test]
 fn the_current_sample_has_labels_a_list_and_a_note() {
     let project = file::load(&sample_path(FORMAT_VERSION)).expect("the sample opens");
     let media = *project.media.keys().next().expect("a file");
@@ -432,7 +449,8 @@ fn template_version_1_sample_opens() {
 }
 
 /// The version 1 sample was written before clips had a `look`, a `sound`,
-/// `keyframes`, a `ramp` or `blend`. Apart from
+/// `keyframes`, a `ramp` or `blend`, and before media had a
+/// `stated_length`. Apart from
 /// that, it is the template the model gives today.
 #[test]
 fn the_stored_template_matches_the_model_but_for_what_came_later() {
@@ -460,6 +478,9 @@ fn the_stored_template_matches_the_model_but_for_what_came_later() {
         clip.keyframes = project::Keyframes::default();
         clip.ramp = project::Ramp::default();
         clip.blend = project::FrameBlend::Off;
+    }
+    for media in expected.media.iter_mut() {
+        media.info.stated_length = None;
     }
     assert_eq!(read_template(1), expected);
 }

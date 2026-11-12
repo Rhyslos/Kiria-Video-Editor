@@ -44,6 +44,9 @@ struct Inner {
 pub struct FixAction {
     pub label: String,
     pub command: String,
+    /// The button that turns the fix down, when "Dismiss" isn't the right
+    /// word for it (for example "Skip" beside "Import what's there").
+    pub decline: Option<String>,
 }
 
 impl FixAction {
@@ -51,7 +54,14 @@ impl FixAction {
         Self {
             label: label.into(),
             command: command.into(),
+            decline: None,
         }
+    }
+
+    /// Names the button that turns the fix down (it dismisses the message).
+    pub fn declined_with(mut self, label: impl Into<String>) -> Self {
+        self.decline = Some(label.into());
+        self
     }
 }
 

@@ -57,6 +57,24 @@ fn a_recording_cut_short_is_refused() {
     let (refusal, report) = refusal(&cut);
     assert_eq!(refusal, Refusal::CutShort, "{report}");
     assert!(report.contains("end is missing"), "{report}");
+
+    // Imported anyway, it is as long as what is really there.
+    let whole = media::describe(&fixture("game-3-audio.mkv")).unwrap();
+    let kept = media::salvage(&cut).unwrap();
+    let (real, says) = (kept.duration.as_secs_f64(), kept.info.stated_length.unwrap());
+    assert_eq!(says, whole.duration, "it keeps the length the file says it has");
+    assert!(
+        (0.9..1.2).contains(&real),
+        "about the first second is there: {real}"
+    );
+    let words = media::end_missing_words(&kept).unwrap();
+    assert!(words.contains("2.0 s"), "{words}");
+    assert!(media::end_missing_words(&whole).is_none());
+    assert_eq!(
+        media::salvage(&fixture("voice.mp3")).unwrap().info.stated_length,
+        None,
+        "a whole file stays whole"
+    );
 }
 
 #[test]
