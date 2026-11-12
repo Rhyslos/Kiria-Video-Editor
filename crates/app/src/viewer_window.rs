@@ -56,6 +56,11 @@ impl WindowPlace {
         let builder = ui_kit::icon::with_window_icon(
             egui::ViewportBuilder::default()
                 .with_title(format!("{} · Viewer", brand::APP_NAME))
+                // On top of the main window. On Windows a window only gets
+                // its turn to draw while no window above it wants to: the
+                // main window, which draws every frame while playing, would
+                // otherwise keep this one on its first picture.
+                .with_window_level(egui::WindowLevel::AlwaysOnTop)
                 .with_min_inner_size(WindowPlace::LEAST),
         );
         match place {
@@ -318,6 +323,11 @@ mod tests {
 
     #[test]
     fn the_window_opens_where_it_was_and_never_too_small() {
+        assert_eq!(
+            WindowPlace::builder(None).window_level,
+            Some(egui::WindowLevel::AlwaysOnTop),
+            "above the main window, so Windows lets it draw"
+        );
         let place = WindowPlace {
             x: 1920.0,
             y: 40.0,

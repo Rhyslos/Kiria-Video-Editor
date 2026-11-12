@@ -981,8 +981,9 @@ impl Editor {
             .as_ref()
             .and_then(|d| d.project().active())
             .map(|s| 1.0 / s.settings.frame_rate.as_f64());
-        self.viewer
-            .set_playing(if self.playing { interval } else { None });
+        let interval = if self.playing { interval } else { None };
+        self.viewer.set_playing(interval);
+        self.display.set_playing(interval);
     }
 
     /// `at` on a frame of the open timeline.
@@ -1859,9 +1860,9 @@ impl Editor {
                 self.display.split(),
                 self.display.away(),
             );
-            let (display, playing) = (&mut self.display, self.playback.is_some());
+            let display = &mut self.display;
             let mut source = |ui: &mut egui::Ui, size: egui::Vec2| {
-                display.source_ui(ui, theme, size, p, selected, playhead, quality_before, playing);
+                display.source_ui(ui, theme, size, p, selected, playhead, quality_before);
             };
             let stage = crate::viewer::Stage {
                 source: split.then_some(&mut source as &mut crate::viewer::DrawSource),
