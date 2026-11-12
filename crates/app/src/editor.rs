@@ -2681,6 +2681,9 @@ impl eframe::App for Editor {
         // sound card's, a decoder's or the graphics driver's code when the
         // window's graphics go away and the program ends.
         self.playback = None;
+        // Background work held back while playing (a save under way among
+        // it) runs now: closing waits for that save below.
+        self.jobs.closing();
         // An export under way is given up: its worker decodes and draws on
         // the window's graphics device too.
         self.export_page.stop();

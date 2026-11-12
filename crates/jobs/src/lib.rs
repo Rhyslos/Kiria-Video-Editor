@@ -205,6 +205,16 @@ impl JobSystem {
         self.update(|a| a.idle = idle);
     }
 
+    /// The app is closing: background work waiting for playback to stop or
+    /// for the app to be idle runs now, so closing can wait for what it
+    /// needs (a save under way) without waiting for ever.
+    pub fn closing(&self) {
+        self.update(|a| {
+            a.playing = false;
+            a.idle = true;
+        });
+    }
+
     /// Threads per pool: decode, render, analysis, export.
     pub fn threads(&self) -> [usize; 4] {
         [
@@ -332,6 +342,22 @@ mod tests {
         urgent.wait().unwrap();
         jobs.set_playing(false);
         bg.wait().unwrap();
+    }
+
+    #[test]
+    fn closing_runs_background_work_that_was_waiting() {
+        for policy in [
+            BackgroundPolicy::PauseWhilePlaying,
+            BackgroundPolicy::OnlyWhenIdle,
+        ] {
+            let jobs = system(2, policy);
+            jobs.set_playing(true);
+            let bg = jobs.submit(PoolKind::Export, Priority::Background, "save", |_| Ok(()));
+            std::thread::sleep(Duration::from_millis(50));
+            assert!(bg.try_result().is_none(), "held back while playing");
+            jobs.closing();
+            bg.wait().unwrap();
+        }
     }
 
     #[test]
