@@ -793,7 +793,8 @@ mod tests {
         let mut page = ShortcutsPage::default();
         assert!(page.lit(&table).is_empty(), "nothing searched, nothing lit");
 
-        page.search = "split".into();
+        // ("split" alone finds Split view too.)
+        page.search = "split at".into();
         assert_eq!(page.listed(&table), [line(&table, Action::Split)]);
         assert_eq!(page.lit(&table), [Key::S]);
         // The search follows a changed shortcut.

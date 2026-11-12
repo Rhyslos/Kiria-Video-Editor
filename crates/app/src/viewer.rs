@@ -15,6 +15,13 @@
 //! visible layer together there into one frame of the timeline's shape
 //! (`engine::compose`), and this only shows that frame.
 //!
+//! The same viewer, made a second time ([`Viewer::second`]), is the Source
+//! half of the split view: a worker of its own, asked for one file at a
+//! moment ([`Viewer::source_ui`]), drawn from a picture slot of its own so
+//! both pictures show at once. And what is on show can be handed to the
+//! viewer's own window ([`Viewer::on_show`]), which draws it on the same
+//! graphics device.
+//!
 //! Preview quality sets the size asked for. Planes come at the nearest
 //! halving of the file's size that still fills it (less to copy and upload,
 //! and a cleaner picture than the GPU shrinking a big one in one go); RGBA
@@ -29,11 +36,12 @@ use crate::video_picture;
 use eframe::wgpu;
 use engine::{Composing, Convert, Preview};
 use media::{Decoded, Decoding};
-use project::{Project, Rate, Time};
-use ui_kit::{PreviewQuality, Theme, TransportClick, VideoPicture};
+use project::{Project, Rate, SequenceId, Time};
+use std::sync::Arc;
+use ui_kit::{Action, PreviewQuality, Slot, Theme, TransportClick, VideoPicture};
 
 /// The picture on show.
-enum Shown {
+pub enum Shown {
     /// RGBA, converted on the CPU.
     Texture(egui::TextureHandle),
     /// YUV planes, converted by the GPU while drawing.
@@ -58,8 +66,64 @@ enum Drawn {
     LastFrame,
 }
 
+/// What the viewer has on show, for drawing somewhere else (the viewer's
+/// own window): the picture, held for as long as this is, and the
+/// timeline's size. Cheap to clone, and can be handed to another window.
+#[derive(Clone, Default)]
+pub struct OnShow {
+    pub shown: Option<Arc<Shown>>,
+    pub timeline: (u32, u32),
+}
+
+impl OnShow {
+    pub fn picture(&self) -> Option<ui_kit::viewer::Picture<'_>> {
+        self.shown.as_deref().map(Shown::picture)
+    }
+
+    /// Whether this is the same picture as `other` (nothing new to draw).
+    pub fn same(&self, other: &OnShow) -> bool {
+        self.timeline == other.timeline
+            && match (&self.shown, &other.shown) {
+                (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                (None, None) => true,
+                _ => false,
+            }
+    }
+}
+
+impl Shown {
+    fn picture(&self) -> ui_kit::viewer::Picture<'_> {
+        match self {
+            Shown::Texture(texture) => ui_kit::viewer::Picture::Texture(texture),
+            Shown::Video(video) | Shown::Whole { picture: video, .. } => {
+                ui_kit::viewer::Picture::Video(video)
+            }
+        }
+    }
+}
+
+/// Draws the split view's Source in a place of the given size.
+pub type DrawSource<'a> = dyn FnMut(&mut egui::Ui, egui::Vec2) + 'a;
+
+/// Where the viewer's picture goes besides its own place.
+#[derive(Default)]
+pub struct Stage<'a> {
+    /// Split view: draws the Source in the left half, given its size. The
+    /// picture (the Program) takes the right half.
+    pub source: Option<&'a mut DrawSource<'a>>,
+    /// The picture is in the viewer's own window, which shows it this many
+    /// pixels big (when known): a quiet note is in its place here, with the
+    /// transport still under it.
+    pub away: Option<Option<(u32, u32)>>,
+}
+
+/// Room between the two halves of a split viewer.
+const SPLIT_GAP: f32 = 8.0;
+
 pub struct Viewer {
     preview: Preview,
+    /// Which picture slot it draws from: the viewer's, or the Source's.
+    slot: Slot,
     ctx: egui::Context,
     convert: Convert,
     /// Decoding on the window's graphics device, while it is in use.
@@ -68,7 +132,9 @@ pub struct Viewer {
     /// the timeline's picture together there.
     renderer: Option<(wgpu::Device, wgpu::Queue)>,
     drawn: Drawn,
-    shown: Option<Shown>,
+    shown: Option<Arc<Shown>>,
+    /// The size of the timeline whose picture is on show.
+    timeline: (u32, u32),
     note: String,
     /// The last few pictures that took long, for Diagnostics.
     slow: crate::slow_pictures::SlowPictures,
@@ -101,12 +167,14 @@ impl Viewer {
         let renderer = renderer.filter(|_| matches!(convert, Convert::WhileDrawing { .. }));
         Viewer {
             preview: start_preview(ctx, convert, decoding.as_ref(), renderer.as_ref()),
+            slot: Slot::MAIN,
             ctx: ctx.clone(),
             convert,
             decoding,
             renderer,
             drawn: Drawn::No,
             shown: None,
+            timeline: (16, 9),
             note: String::new(),
             slow: crate::slow_pictures::SlowPictures::default(),
             playhead: start_at
@@ -117,6 +185,24 @@ impl Viewer {
             last_error: None,
             play_scale: 1,
             frame_interval: None,
+        }
+    }
+
+    /// A second viewer beside this one, with a worker of its own on the
+    /// same devices, drawing from `slot`: the split view's Source. Its
+    /// worker keeps a quarter of the frames this one's may keep on the card.
+    pub fn second(&self, slot: Slot) -> Viewer {
+        let decoding = self.decoding.as_ref().map(|d| d.sharing(4));
+        let mut viewer = Viewer::new(&self.ctx, None, self.convert, decoding, self.renderer.clone());
+        viewer.slot = slot;
+        viewer
+    }
+
+    /// What is on show, for the viewer's own window to draw.
+    pub fn on_show(&self) -> OnShow {
+        OnShow {
+            shown: self.shown.clone(),
+            timeline: self.timeline,
         }
     }
 
@@ -199,7 +285,8 @@ impl Viewer {
                 frame: frame.view().clone(),
                 working: frame.working(),
                 size,
-            });
+            })
+            .in_slot(self.slot);
             let colour = if converted_on_cpu {
                 "put together on the GPU · colour on the CPU"
             } else {
@@ -220,7 +307,7 @@ impl Viewer {
         let frame = match picture.frame {
             Some(Decoded::Gpu(frame)) => match self.decoding.as_ref().and_then(|d| d.picture(&frame)) {
                 Some(video) => Some((
-                    Shown::Video(video),
+                    Shown::Video(video.in_slot(self.slot)),
                     "colour on the GPU",
                     frame.upright_size(),
                     true,
@@ -232,7 +319,7 @@ impl Viewer {
             },
             Some(Decoded::Yuv(planes)) => {
                 let size = planes.upright_size();
-                let video = VideoPicture::new(video_picture::image(planes));
+                let video = VideoPicture::new(video_picture::image(planes)).in_slot(self.slot);
                 Some((Shown::Video(video), "colour on the GPU", size, false))
             }
             Some(Decoded::Rgba(frame)) => {
@@ -262,7 +349,7 @@ impl Viewer {
                     picture.took.as_millis(),
                     picture.method.unwrap_or_default()
                 );
-                self.shown = Some(shown);
+                self.shown = Some(Arc::new(shown));
                 if on_device {
                     self.drawn = Drawn::Waiting;
                 }
@@ -344,8 +431,10 @@ impl Viewer {
             .map(|p| egui::Color32::from_rgb(p[0], p[1], p[2]))
             .collect();
         let image = egui::ColorImage::new([frame.width as usize, frame.height as usize], pixels);
-        match self.shown.take() {
-            Some(Shown::Texture(mut texture)) => {
+        // The handle names one texture: a copy of it writes into the one on show.
+        match self.shown.as_deref() {
+            Some(Shown::Texture(texture)) => {
+                let mut texture = texture.clone();
                 texture.set(image, egui::TextureOptions::LINEAR);
                 texture
             }
@@ -366,14 +455,17 @@ impl Viewer {
     }
 
     /// Draws the viewer, its transport and the timecodes in `height`, and asks
-    /// for the picture it needs. Returns a transport button pressed. The
-    /// transport's tooltips name the keys in `shortcuts`.
+    /// for the picture it needs. Returns a command given on the viewer: a
+    /// transport button, or a line of the Display menu (`display` says
+    /// what is on). The tooltips and the menu name the keys in `shortcuts`.
     ///
-    /// `over_picture` draws what lies on the picture and under the
-    /// transport (the handles on a selected clip's picture): it is given
-    /// the frame's rectangle on screen and the viewer's own response, and
-    /// since the transport comes after it, the transport's buttons keep
-    /// their clicks.
+    /// `stage` puts the Source beside the picture (split view), or says the
+    /// picture is in its own window. `over_picture` draws what lies on the
+    /// picture and under the transport (the handles on a selected clip's
+    /// picture): it is given the frame's rectangle on screen and the
+    /// viewer's own response, and since the transport comes after it, the
+    /// transport's buttons keep their clicks. Not called while the picture
+    /// is in its own window.
     #[allow(clippy::too_many_arguments)]
     pub fn ui(
         &mut self,
@@ -384,27 +476,60 @@ impl Viewer {
         needle: Option<Time>,
         height: f32,
         shortcuts: &ui_kit::ShortcutTable,
+        display: ui_kit::viewer::Display,
+        stage: Stage<'_>,
         over_picture: impl FnOnce(&mut egui::Ui, egui::Rect, &egui::Response),
-    ) -> Option<TransportClick> {
+    ) -> Option<Action> {
         let seq = project.active()?;
         let rate = seq.settings.frame_rate;
         let timeline = (seq.settings.width, seq.settings.height);
         let size = egui::vec2(ui.available_width(), (height - 34.0).max(120.0));
-        self.count_drawn();
-        if self.drawn == Drawn::Waiting {
-            // Drawn below, in this frame; counted in the next.
-            self.drawn = Drawn::LastFrame;
-            ui.ctx().request_repaint();
-        }
-        let picture = self.shown.as_ref().map(|shown| match shown {
-            Shown::Texture(texture) => ui_kit::viewer::Picture::Texture(texture),
-            Shown::Video(video) | Shown::Whole { picture: video, .. } => {
-                ui_kit::viewer::Picture::Video(video)
-            }
-        });
-        let (frame, response) = ui_kit::viewer::viewer(ui, theme, size, timeline, picture, &self.note);
-        over_picture(ui, frame, &response);
-        let click = ui_kit::transport::transport(ui, theme, frame, self.frame_interval.is_some(), shortcuts);
+        let Stage { source, away } = stage;
+        let split = source.is_some();
+        let half = egui::vec2(((size.x - SPLIT_GAP) / 2.0).max(60.0), size.y);
+        let own = if split { half } else { size };
+        let mut command = None;
+        let (frame, playing) = (
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = SPLIT_GAP;
+                if let Some(source) = source {
+                    source(ui, half);
+                }
+                if away.is_some() {
+                    let (area, _) = ui_kit::viewer::empty(ui, theme, own, "The viewer is in its own window");
+                    let button = egui::Rect::from_center_size(
+                        area.center() + egui::vec2(0.0, 30.0),
+                        egui::vec2(140.0, 26.0),
+                    );
+                    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(button));
+                    if child
+                        .add_sized(button.size(), egui::Button::new("Bring it back"))
+                        .on_hover_text(shortcuts.tip(Action::ViewerWindow))
+                        .clicked()
+                    {
+                        command = Some(Action::ViewerWindow);
+                    }
+                    area.shrink(8.0)
+                } else {
+                    let (frame, response) = self.picture_ui(ui, theme, own, timeline, &self.note.clone());
+                    over_picture(ui, frame, &response);
+                    // Over the handles, so it can always be read.
+                    if split {
+                        ui_kit::viewer::caption(ui, theme, frame, "Program");
+                    }
+                    frame
+                }
+            })
+            .inner,
+            self.frame_interval.is_some(),
+        );
+        let click = ui_kit::transport::transport(ui, theme, frame, playing, shortcuts);
+        command = command.or(click.map(|click| match click {
+            TransportClick::FrameBack => Action::PreviousFrame,
+            TransportClick::FrameForward => Action::NextFrame,
+            TransportClick::PlayPause => Action::PlayPause,
+            TransportClick::Stop => Action::Stop,
+        }));
 
         ui.add_space(6.0);
         ui.horizontal(|ui| {
@@ -427,24 +552,92 @@ impl Viewer {
                             ui.selectable_value(quality, q, q.label());
                         }
                     });
+                if let Some(picked) = ui_kit::viewer::display_menu(ui, display, shortcuts) {
+                    command = Some(picked);
+                }
             });
         });
 
-        // Ask for the picture this needs, if it isn't the one already asked for.
+        // Ask for the picture this needs, sized for where it is shown.
+        let ppp = ui.ctx().pixels_per_point();
+        let here = ((frame.width() * ppp) as u32, (frame.height() * ppp) as u32);
+        let on_screen = away.flatten().unwrap_or(here);
+        self.ask(project, seq.id, self.playhead, timeline, on_screen, *quality);
+        command
+    }
+
+    /// Draws the picture on show in `size`, in a frame of `timeline`'s
+    /// shape, with `note` in the corner. Counts a picture decoded on the
+    /// window's device as drawn.
+    fn picture_ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        theme: &Theme,
+        size: egui::Vec2,
+        timeline: (u32, u32),
+        note: &str,
+    ) -> (egui::Rect, egui::Response) {
+        self.count_drawn();
+        self.mark_drawn(ui.ctx());
+        let picture = self.shown.as_deref().map(Shown::picture);
+        ui_kit::viewer::viewer(ui, theme, size, timeline, picture, note)
+    }
+
+    /// The picture on show is drawn this frame (here, or in the viewer's
+    /// own window): a picture decoded on the window's device counts in the next.
+    pub fn mark_drawn(&mut self, ctx: &egui::Context) {
+        if self.drawn == Drawn::Waiting {
+            self.drawn = Drawn::LastFrame;
+            ctx.request_repaint();
+        }
+    }
+
+    /// The split view's Source: the file of `alone` (a project of one file,
+    /// `engine::source::file_alone`) at `at`, a time in the file, drawn in
+    /// `size` in the file's own shape with `caption` over it.
+    #[allow(clippy::too_many_arguments)]
+    pub fn source_ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        theme: &Theme,
+        size: egui::Vec2,
+        alone: &Project,
+        at: Time,
+        quality: PreviewQuality,
+        caption: &str,
+    ) {
+        let Some(seq) = alone.active() else { return };
+        let shape = (seq.settings.width, seq.settings.height);
+        let (frame, _) = self.picture_ui(ui, theme, size, shape, "");
+        ui_kit::viewer::caption(ui, theme, frame, caption);
         let ppp = ui.ctx().pixels_per_point();
         let on_screen = ((frame.width() * ppp) as u32, (frame.height() * ppp) as u32);
+        self.ask(alone, seq.id, at, shape, on_screen, quality);
+    }
+
+    /// Asks for the picture at `at` on `sequence` of `project`, for a frame
+    /// `on_screen` pixels big, unless that is what was asked for last.
+    fn ask(
+        &mut self,
+        project: &Project,
+        sequence: SequenceId,
+        at: Time,
+        timeline: (u32, u32),
+        on_screen: (u32, u32),
+        quality: PreviewQuality,
+    ) {
+        self.timeline = timeline;
         let (w, h) = quality.picture_size(timeline, on_screen);
         let want = ((w / self.play_scale).max(2), (h / self.play_scale).max(2));
         let same = self
             .requested
             .as_ref()
-            .is_some_and(|(p, at, size)| *at == self.playhead && *size == want && p == project);
+            .is_some_and(|(p, asked, size)| *asked == at && *size == want && p == project);
         if !same {
-            self.preview.show(project, seq.id, self.playhead, want.0, want.1);
-            self.requested = Some((project.clone(), self.playhead, want));
+            self.preview.show(project, sequence, at, want.0, want.1);
+            self.requested = Some((project.clone(), at, want));
             self.answered = None;
         }
-        click
     }
 }
 

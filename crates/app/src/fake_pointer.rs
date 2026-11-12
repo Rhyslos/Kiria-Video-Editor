@@ -4,7 +4,8 @@
 //! something looks like on a machine with no mouse to move. `--release`
 //! lets go at the end of the drag, so what the drag did can be seen;
 //! `--right-click` clicks the right button where the pointer was put, for
-//! screenshots of menus, and `--double-click` the left button twice.
+//! screenshots of menus, `--double-click` the left button twice and
+//! `--click` once (a button, or a menu that opens on a click).
 
 use egui::{Event, PointerButton, Pos2};
 
@@ -27,6 +28,8 @@ pub struct FakePointer {
     pub double_click: bool,
     /// Points the wheel turns, down, with the pointer resting there.
     pub scroll: f32,
+    /// Click the left button once at `at` (when nothing is dragged).
+    pub click: bool,
 }
 
 impl FakePointer {
@@ -45,6 +48,7 @@ impl FakePointer {
             right_click: false,
             double_click: false,
             scroll: 0.0,
+            click: false,
         }
     }
 
@@ -87,6 +91,9 @@ impl FakePointer {
                     (f - PRESSES).is_multiple_of(2),
                 )]
             }
+            (f, None) if self.click && (PRESSES..PRESSES + 2).contains(&f) => {
+                vec![button(self.at, PointerButton::Primary, f == PRESSES)]
+            }
             _ => Vec::new(),
         }
     }
@@ -113,6 +120,7 @@ impl FakePointer {
             None if self.double_click => PRESSES + 5,
             // Scrolling glides for a while.
             None if self.scroll != 0.0 => PRESSES + 30,
+            None if self.click => PRESSES + 3,
             None => APPEARS + 2,
         }
     }
@@ -244,6 +252,24 @@ mod tests {
                 (PointerButton::Secondary, false)
             ]
         );
+        assert!((pointer.settled_at()..500).all(|frame| pointer.events(frame).is_empty()));
+    }
+
+    #[test]
+    fn a_click_is_one_press_and_release_of_the_left_button() {
+        let pointer = FakePointer {
+            click: true,
+            ..FakePointer::resting(pos2(40.0, 300.0))
+        };
+        let buttons: Vec<(PointerButton, bool)> = (0..pointer.settled_at())
+            .flat_map(|frame| pointer.events(frame))
+            .filter_map(|e| match e {
+                Event::PointerButton { button, pressed, .. } => Some((button, pressed)),
+                _ => None,
+            })
+            .collect();
+        let primary = PointerButton::Primary;
+        assert_eq!(buttons, [(primary, true), (primary, false)]);
         assert!((pointer.settled_at()..500).all(|frame| pointer.events(frame).is_empty()));
     }
 

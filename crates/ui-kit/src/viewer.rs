@@ -1,6 +1,7 @@
 //! The viewer: the picture of the timeline, the same on every page that shows one.
 
 use crate::Theme;
+use crate::shortcuts::{Action, ShortcutTable};
 use crate::video_picture::VideoPicture;
 use egui::{Align2, Color32, FontId, Rect, Sense, Ui, Vec2, pos2, vec2};
 use serde::{Deserialize, Serialize};
@@ -133,6 +134,80 @@ pub fn viewer(
     (frame, response)
 }
 
+/// Writes `text` small in the top left corner of a picture in `frame`, on
+/// a dark pill so it reads over any picture: which picture a split
+/// viewer's half shows ("Source · match.mkv", "Program").
+pub fn caption(ui: &Ui, theme: &Theme, frame: Rect, text: &str) {
+    let painter = ui.painter_at(frame);
+    let galley = painter.layout_no_wrap(text.to_owned(), FontId::proportional(11.0), theme.text_secondary);
+    let pill = Rect::from_min_size(frame.min + vec2(6.0, 6.0), galley.size() + vec2(12.0, 6.0));
+    painter.rect_filled(pill, pill.height() / 2.0, theme.viewport.gamma_multiply(0.85));
+    painter.galley(pill.min + vec2(6.0, 3.0), galley, theme.text_secondary);
+}
+
+/// The viewer's place with no picture in it, filling `size`: the viewer's
+/// background and a quiet line in the middle (for example "Select a clip",
+/// or where the picture went). Returns the area and its response.
+pub fn empty(ui: &mut Ui, theme: &Theme, size: Vec2, message: &str) -> (Rect, egui::Response) {
+    let (area, response) = ui.allocate_exact_size(size, Sense::click());
+    let painter = ui.painter_at(area);
+    painter.rect_filled(area, 6.0, theme.viewport);
+    painter.text(
+        area.center(),
+        Align2::CENTER_CENTER,
+        message,
+        FontId::proportional(13.0),
+        theme.muted,
+    );
+    (area, response)
+}
+
+/// What the Display menu switches, as it is now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Display {
+    /// Source beside Program.
+    pub split: bool,
+    /// The picture is in a window of its own.
+    pub own_window: bool,
+    /// The picture fills the screen.
+    pub full_screen: bool,
+}
+
+/// The Display menu's lines: the command each runs, its words, and whether
+/// it is on.
+pub fn display_lines(display: Display) -> [(Action, &'static str, bool); 3] {
+    [
+        (Action::SplitView, "Split view", display.split),
+        (
+            Action::ViewerWindow,
+            "Viewer in its own window",
+            display.own_window,
+        ),
+        (Action::FullScreenViewer, "Full screen", display.full_screen),
+    ]
+}
+
+/// The Display menu: a small button in the viewer's bottom row that opens
+/// the ways to show the picture, each with the keys it has in `shortcuts`.
+/// Returns the command picked; the page runs it like the same command
+/// from the keyboard or search.
+pub fn display_menu(ui: &mut Ui, display: Display, shortcuts: &ShortcutTable) -> Option<Action> {
+    let mut picked = None;
+    ui.menu_button("Display", |ui| {
+        ui.set_min_width(240.0);
+        for (action, words, on) in display_lines(display) {
+            let line = egui::Button::selectable(on, words).shortcut_text(shortcuts.keys_for(action));
+            if ui.add(line).on_hover_text(action.label()).clicked() {
+                picked = Some(action);
+                ui.close();
+            }
+        }
+    })
+    .response
+    .on_hover_text("How the picture is shown: split, in its own window, full screen");
+    picked
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -149,6 +224,30 @@ mod tests {
             (2560, 1440),
             "never above full"
         );
+    }
+
+    #[test]
+    fn the_display_menu_runs_the_commands_and_shows_what_is_on() {
+        let lines = display_lines(Display {
+            split: true,
+            own_window: false,
+            full_screen: false,
+        });
+        let actions: Vec<Action> = lines.iter().map(|(a, _, _)| *a).collect();
+        assert_eq!(
+            actions,
+            [Action::SplitView, Action::ViewerWindow, Action::FullScreenViewer]
+        );
+        assert_eq!(lines.map(|(_, _, on)| on), [true, false, false]);
+        // Each line's words are in its command's name, so the menu, search
+        // and the shortcuts page say the same thing.
+        for (action, words, _) in lines {
+            assert!(
+                action.label().to_lowercase().contains(&words.to_lowercase()),
+                "{words} / {}",
+                action.label()
+            );
+        }
     }
 
     #[test]

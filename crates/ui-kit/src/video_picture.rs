@@ -17,6 +17,14 @@
 //!
 //! [`install`] sets this up once per window. Without it (the window isn't
 //! drawn with wgpu) pages keep showing RGBA textures.
+//!
+//! Every window of the app is drawn by one renderer on one graphics device
+//! (egui-wgpu shares its painter, and so its device, queue and callback
+//! resources, between all of them), so what is set up here serves the
+//! viewer in its own window too. More than one picture can be on show at
+//! once (a split viewer's Source and Program): each is drawn from a
+//! [`Slot`] of its own, which keeps its own textures, so one never takes
+//! the other's place.
 
 use crate::yuv_renderer::YuvRenderer;
 use egui_wgpu::wgpu;
@@ -128,7 +136,18 @@ pub struct ComposedPicture {
     pub size: (u32, u32),
 }
 
-/// The renderers kept with the window, and which picture they hold.
+/// Which of the pictures on show at once a picture is: each slot keeps the
+/// textures of the one picture it shows. A page with one viewer uses
+/// [`Slot::MAIN`]; a second picture beside it takes another.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Slot(pub u8);
+
+impl Slot {
+    /// The viewer's own picture.
+    pub const MAIN: Slot = Slot(0);
+}
+
+/// The renderers kept for one slot, and which picture they hold.
 struct Shown {
     renderer: YuvRenderer,
     /// Draws finished frames.
@@ -138,17 +157,56 @@ struct Shown {
     picture: Option<u64>,
 }
 
-/// Sets up drawing video pictures in a window. Returns the largest plane
-/// side the graphics device takes, or `None` when the window isn't drawn
-/// with wgpu: then pages show RGBA textures instead.
+impl Shown {
+    fn new(device: &wgpu::Device, target: wgpu::TextureFormat) -> Shown {
+        Shown {
+            renderer: YuvRenderer::new(device, target),
+            shower: render::Shower::new(device, target),
+            composed: None,
+            picture: None,
+        }
+    }
+}
+
+/// What the window's renderer keeps for drawing video: the slots made so
+/// far (the main one at once, others the first time they are drawn) and
+/// the format they draw into.
+struct Slots {
+    target: wgpu::TextureFormat,
+    shown: Vec<(Slot, Shown)>,
+}
+
+impl Slots {
+    fn get(&self, slot: Slot) -> Option<&Shown> {
+        self.shown
+            .iter()
+            .find(|(s, _)| *s == slot)
+            .map(|(_, shown)| shown)
+    }
+
+    /// The slot's renderers, made now if this is its first picture.
+    fn get_or_make(&mut self, slot: Slot, device: &wgpu::Device) -> &mut Shown {
+        let index = match self.shown.iter().position(|(s, _)| *s == slot) {
+            Some(index) => index,
+            None => {
+                self.shown.push((slot, Shown::new(device, self.target)));
+                self.shown.len() - 1
+            }
+        };
+        &mut self.shown[index].1
+    }
+}
+
+/// Sets up drawing video pictures in a window (and every other window of
+/// the app: they share the renderer). Returns the largest plane side the
+/// graphics device takes, or `None` when the window isn't drawn with wgpu:
+/// then pages show RGBA textures instead.
 pub fn install(render_state: Option<&egui_wgpu::RenderState>) -> Option<u32> {
     let state = render_state?;
-    let renderer = YuvRenderer::new(&state.device, state.target_format);
-    state.renderer.write().callback_resources.insert(Shown {
-        renderer,
-        shower: render::Shower::new(&state.device, state.target_format),
-        composed: None,
-        picture: None,
+    let main = Shown::new(&state.device, state.target_format);
+    state.renderer.write().callback_resources.insert(Slots {
+        target: state.target_format,
+        shown: vec![(Slot::MAIN, main)],
     });
     Some(state.device.limits().max_texture_dimension_2d)
 }
@@ -158,6 +216,7 @@ pub fn install(render_state: Option<&egui_wgpu::RenderState>) -> Option<u32> {
 pub struct VideoPicture {
     id: u64,
     size: (u32, u32),
+    slot: Slot,
     /// The planes, until the renderer has them.
     fresh: Arc<Mutex<Option<Fresh>>>,
 }
@@ -189,8 +248,21 @@ impl VideoPicture {
         VideoPicture {
             id: NEXT.fetch_add(1, Ordering::Relaxed),
             size,
+            slot: Slot::MAIN,
             fresh: Arc::new(Mutex::new(Some(fresh))),
         }
+    }
+
+    /// The same picture, drawn from `slot`: for a second picture on show
+    /// at the same time as the main one.
+    pub fn in_slot(mut self, slot: Slot) -> VideoPicture {
+        self.slot = slot;
+        self
+    }
+
+    /// The slot it is drawn from.
+    pub fn slot(&self) -> Slot {
+        self.slot
     }
 
     /// The size on screen, upright.
@@ -202,6 +274,7 @@ impl VideoPicture {
     pub(crate) fn shape(&self, rect: egui::Rect) -> egui::Shape {
         let draw = Draw {
             id: self.id,
+            slot: self.slot,
             fresh: Arc::clone(&self.fresh),
         };
         egui::Shape::Callback(egui_wgpu::Callback::new_paint_callback(rect, draw))
@@ -212,6 +285,7 @@ impl VideoPicture {
 /// then draws it.
 struct Draw {
     id: u64,
+    slot: Slot,
     fresh: Arc<Mutex<Option<Fresh>>>,
 }
 
@@ -225,7 +299,8 @@ impl egui_wgpu::CallbackTrait for Draw {
         resources: &mut egui_wgpu::CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
         let fresh = self.fresh.lock().ok().and_then(|mut fresh| fresh.take());
-        if let (Some(fresh), Some(shown)) = (fresh, resources.get_mut::<Shown>()) {
+        if let (Some(fresh), Some(slots)) = (fresh, resources.get_mut::<Slots>()) {
+            let shown = slots.get_or_make(self.slot, device);
             let started = std::time::Instant::now();
             shown.composed = None;
             let (taken, bytes) = match &fresh {
@@ -260,7 +335,7 @@ impl egui_wgpu::CallbackTrait for Draw {
         resources: &egui_wgpu::CallbackResources,
     ) {
         // Only this picture: never another one's planes in this one's place.
-        if let Some(shown) = resources.get::<Shown>()
+        if let Some(shown) = resources.get::<Slots>().and_then(|slots| slots.get(self.slot))
             && shown.picture == Some(self.id)
         {
             match &shown.composed {
@@ -325,5 +400,19 @@ mod tests {
         assert_eq!(image((320, 180), 270).upright_size(), (180, 320));
         assert_eq!(VideoPicture::new(image((320, 180), 90)).size(), (180, 320));
         assert_eq!(VideoPicture::new(image((320, 180), 180)).size(), (320, 180));
+    }
+
+    #[test]
+    fn a_picture_is_drawn_from_the_main_slot_unless_given_another() {
+        let image = YuvImage {
+            luma_size: (4, 4),
+            layout: ChromaLayout::Planar,
+            planes: Box::new(Vec::new()),
+            to_rgb: [[0.0; 4]; 3],
+            rotation: 0,
+        };
+        let picture = VideoPicture::new(image);
+        assert_eq!(picture.slot(), Slot::MAIN);
+        assert_eq!(picture.in_slot(Slot(1)).slot(), Slot(1));
     }
 }

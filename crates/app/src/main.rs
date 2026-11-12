@@ -9,6 +9,7 @@
 mod cheat_sheet;
 mod clip_pictures;
 mod device_decoding;
+mod display;
 mod editor;
 mod export_page;
 mod fake_pointer;
@@ -32,6 +33,7 @@ mod versions_window;
 mod video_picture;
 mod view_state;
 mod viewer;
+mod viewer_window;
 mod waveforms;
 
 use editor::{Editor, ProjectToOpen, RunReport};
