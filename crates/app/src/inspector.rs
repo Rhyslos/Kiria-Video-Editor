@@ -28,6 +28,10 @@ pub struct Inspector {
     /// Sound being set and not yet an undo step: each sound clip's new
     /// settings (a picture's linked sound clips change together).
     pending_sound: Option<Vec<(ClipId, Sound)>>,
+    /// A sound clip's volume (thousandths of a decibel) being dragged on
+    /// the timeline, by its level line: shown as it moves. The timeline
+    /// makes the undo step when it is let go, not the panel.
+    pub volume_from_timeline: Option<(ClipId, i32)>,
     /// A hand outside the panel (on the picture in the viewer) is still on
     /// the look being set: the panel leaves finishing it to that hand.
     held: bool,
@@ -323,10 +327,15 @@ impl Inspector {
         let first = targets.first()?;
         let rate = seq.settings.frame_rate;
         let pending = self.pending_sound.as_ref();
+        let from_timeline = self.volume_from_timeline;
         let now = |c: &project::Clip| {
-            pending
+            let sound = pending
                 .and_then(|sounds| sounds.iter().find(|(id, _)| *id == c.id))
-                .map_or(c.sound, |(_, sound)| *sound)
+                .map_or(c.sound, |(_, sound)| *sound);
+            match from_timeline {
+                Some((id, gain_mdb)) if id == c.id => Sound { gain_mdb, ..sound },
+                _ => sound,
+            }
         };
         let before = now(first);
         let length = first.duration;
@@ -740,14 +749,8 @@ impl SoundValues {
 
 /// "−3.0 dB", "+2.5 dB", "0.0 dB", or "Off" at the bottom of the range.
 fn volume_text(db: f64) -> String {
-    if db * 1000.0 <= f64::from(Sound::SILENT) {
-        "Off".to_owned()
-    } else if db.abs() < 0.05 {
-        "0.0 dB".to_owned()
-    } else {
-        let sign = if db < 0.0 { "−" } else { "+" };
-        format!("{sign}{:.1} dB", db.abs())
-    }
+    // Written as the timeline's level line writes it.
+    ui_kit::timeline::level::words(db)
 }
 
 /// What was typed as a volume: "-3", "-3 dB", "+2.5dB", or "off".

@@ -1,9 +1,11 @@
 //! The column of track names: its right-click menu (add, rename, hide and
-//! remove tracks), the eye that hides a video track, and typing a track's
+//! remove tracks, show an audio track's level lines), the eye that hides a video track, and typing a track's
 //! name in place.
 
 use super::{Half, TimelineData, TimelineEvent, TimelineTrack, tracks_of};
 use crate::Theme;
+use std::collections::BTreeSet;
+
 use egui::{Align2, FontId, Pos2, Rect, Sense, Shape, Stroke, Ui, pos2, vec2};
 
 /// The longest name that can be typed for a track, in characters.
@@ -60,6 +62,7 @@ pub(super) fn menu(
     spot: Option<MenuSpot>,
     data: &TimelineData,
     rename: &mut Option<Rename>,
+    level_lines: &mut BTreeSet<u64>,
     events: &mut Vec<TimelineEvent>,
 ) {
     r.context_menu(|ui| {
@@ -81,6 +84,21 @@ pub(super) fn menu(
                         track: track.id,
                         hidden: !track.hidden,
                     });
+                    ui.close();
+                }
+            } else {
+                let on = level_lines.contains(&track.id);
+                let text = if on {
+                    "Hide the level lines"
+                } else {
+                    "Show the level lines"
+                };
+                if ui.button(text).clicked() {
+                    if on {
+                        level_lines.remove(&track.id);
+                    } else {
+                        level_lines.insert(track.id);
+                    }
                     ui.close();
                 }
             }

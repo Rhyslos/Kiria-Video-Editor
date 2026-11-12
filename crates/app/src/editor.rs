@@ -877,6 +877,18 @@ impl Editor {
                     self.errors.push(&err);
                 }
             }
+            E::ClipVolume { clip, gain_db } => {
+                let result = self.with_document(|d| {
+                    let command = d.project().active().and_then(|seq| {
+                        timeline_panel::clip_volume_command(seq, project::ClipId(clip), gain_db)
+                    });
+                    command.map_or(Ok(()), |command| d.apply(command))
+                });
+                if let Err(err) = result {
+                    self.errors.push(&err);
+                }
+                self.play_on_with_new_mix();
+            }
             E::SetSpeed { clip, num, den } => {
                 let result = project::Speed::new(num, den).and_then(|speed| {
                     self.with_document(|d| {
@@ -1549,6 +1561,11 @@ impl Editor {
             self.timeline_details(ui);
         }
         self.inspector.on_picture = self.settings.picture_handles;
+        // A clip's level line being dragged on the timeline shows here as it moves.
+        self.inspector.volume_from_timeline = self
+            .timeline
+            .level_being_set()
+            .map(|(clip, db)| (project::ClipId(clip), timeline_panel::gain_mdb(db)));
         self.inspector.on_picture_tip = format!(
             "Show the clip's outline in the viewer, to move it and drag its corners to resize it.{}",
             match self.shortcuts.keys_for(Action::PictureHandles) {

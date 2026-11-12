@@ -40,6 +40,11 @@
 //! strip that shows which stretches are prepared ahead of time, being
 //! prepared or waiting, from ranges the page passes in.
 //!
+//! An audio track's level button shows a line across each of its clips at
+//! the clip's volume ([`level`]): drag it up or down for that clip's
+//! volume, double-click it for 0 dB. Waveforms are drawn as loud as the
+//! clip and its track are set, and follow the track's fader while it moves.
+//!
 //! Clips whose waveform or pictures are still being read in the background
 //! say so ([`Loading`]): a slim bar with a percentage on the clip, and a
 //! short line by the track's name while any of its clips is being read.
@@ -50,6 +55,7 @@
 pub mod cache_bar;
 mod fades;
 mod headers;
+pub mod level;
 mod loading;
 mod rows;
 
@@ -196,6 +202,9 @@ pub enum TimelineEvent {
     Slip { clip: u64, by: f64 },
     /// The slide tool moved `clip` by `by` between its neighbours.
     Slide { clip: u64, by: f64 },
+    /// A clip's level line was dragged (or double-clicked, for 0 dB):
+    /// that clip's volume in decibels, [`level::SILENT_DB`] being silence.
+    ClipVolume { clip: u64, gain_db: f32 },
     /// A track's mute, solo or volume changed.
     TrackMix {
         track: u64,
@@ -420,6 +429,11 @@ pub struct TimelineView {
     clip_drag: Option<ClipDrag>,
     /// A track volume being dragged: track and its value so far.
     fader_drag: Option<(u64, f32)>,
+    /// Audio tracks whose clips show their level line. View state: the
+    /// page keeps and saves it.
+    level_lines: std::collections::BTreeSet<u64>,
+    /// A clip's level line being dragged.
+    level_drag: Option<level::LevelDrag>,
     region_drag: Option<(RegionDrag, (f64, f64))>,
     /// Where the right-click menu was opened: time, and the clip under it.
     menu_at: Option<MenuSpot>,
@@ -461,6 +475,8 @@ impl Default for TimelineView {
             scrollbar_drag: None,
             clip_drag: None,
             fader_drag: None,
+            level_lines: Default::default(),
+            level_drag: None,
             region_drag: None,
             menu_at: None,
             names_menu: None,
@@ -534,6 +550,16 @@ pub enum ViewStep {
     ShorterTracks,
     /// Those tracks back to their usual height.
     UsualTrackHeights,
+}
+
+/// How a waveform is drawn: its track's colour, dimmed when the track is
+/// muted, and how much louder or quieter than recorded (the clip's volume
+/// times its track's).
+#[derive(Debug, Clone, Copy)]
+struct WaveLook {
+    colour: Color32,
+    muted: bool,
+    gain: f32,
 }
 
 /// Colours of audio tracks, one per track in turn.
@@ -870,6 +896,36 @@ impl TimelineView {
         self.audio_scroll = self.audio_scroll.clamp(0.0, most);
     }
 
+    /// Whether the clips of audio track `track` show their level line.
+    pub fn level_line(&self, track: u64) -> bool {
+        self.level_lines.contains(&track)
+    }
+
+    /// Shows or hides the level line on the clips of audio track `track`.
+    pub fn set_level_line(&mut self, track: u64, on: bool) {
+        if on {
+            self.level_lines.insert(track);
+        } else {
+            self.level_lines.remove(&track);
+        }
+    }
+
+    /// The audio tracks that show their level line, in order, for keeping.
+    pub fn level_lines(&self) -> Vec<u64> {
+        self.level_lines.iter().copied().collect()
+    }
+
+    /// Shows the level line on exactly these tracks (from what was kept).
+    pub fn set_level_lines(&mut self, tracks: impl IntoIterator<Item = u64>) {
+        self.level_lines = tracks.into_iter().collect();
+    }
+
+    /// The clip whose level line is being dragged, and the volume (dB) it
+    /// would get if let go now, for other panels to follow the drag.
+    pub fn level_being_set(&self) -> Option<(u64, f32)> {
+        self.level_drag.map(|d| (d.clip, d.db))
+    }
+
     /// Fits `length` seconds in `width` pixels.
     pub fn fit(&mut self, length: f64, width: f32) {
         if length > 0.0 && width > 0.0 {
@@ -969,8 +1025,15 @@ impl TimelineView {
                         pos2(layout.header_x + 12.0, row.center().y),
                     ),
                 }
+                // The short line about reading stops before the header's
+                // buttons; pointing at it says the whole of it.
+                let first_button = headers::button_rect(header, if audio { -1.0 } else { 1.0 });
+                let text_room =
+                    Rect::from_min_max(header.min, pos2(first_button.left() - 4.0, header.bottom()));
+                let text_painter =
+                    header_painter.with_clip_rect(header_painter.clip_rect().intersect(text_room));
                 if let Some(loading) = &track.loading
-                    && let Some(line) = loading::draw_in_header(&header_painter, theme, header, loading)
+                    && let Some(line) = loading::draw_in_header(&text_painter, theme, header, loading)
                 {
                     ui.interact(
                         line.expand(3.0).intersect(header),
@@ -989,6 +1052,14 @@ impl TimelineView {
                 } else {
                     theme.line_strong
                 };
+                // Waveforms are as loud as the track is set, following its
+                // fader while it is dragged.
+                let track_gain = match self.fader_drag {
+                    Some((t, db)) if t == track.id => db,
+                    _ => track.gain_db,
+                };
+                let track_gain = 10f32.powf(track_gain / 20.0);
+                let level_line = audio && self.level_line(track.id);
                 // Clips a few pixels wide can't be told apart: neighbours
                 // merge into one shape, so zooming far out stays cheap.
                 let mut merged: Option<Rect> = None;
@@ -1040,11 +1111,32 @@ impl TimelineView {
                     if let Some(pictures) = &clip.pictures {
                         self.draw_pictures(&clip_painter, pic_r, clip, start, pictures);
                     }
+                    // The clip's volume: the one its level line is being dragged to.
+                    let dragged_db = self.level_drag.filter(|d| d.clip == clip.id).map(|d| d.db);
+                    let clip_gain = dragged_db.map_or(clip.sound.gain, level::gain_of_db);
                     if let Some(w) = &clip.waveform {
                         let wave_colour = if audio { colour } else { AUDIO_COLOURS[0] };
-                        self.draw_waveform(&clip_painter, wave_r, clip, start, w, wave_colour, track.muted);
+                        let look = WaveLook {
+                            colour: wave_colour,
+                            muted: track.muted,
+                            gain: clip_gain * track_gain,
+                        };
+                        self.draw_waveform(&clip_painter, wave_r, clip, start, w, look);
                     }
                     fades::draw(&clip_painter, wave_r, &clip.sound, self.zoom);
+                    if level_line {
+                        let db = dragged_db.unwrap_or_else(|| level::db_of_gain(clip.sound.gain));
+                        let hovered = self.level_drag.is_none()
+                            && ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| {
+                                r.contains(p)
+                                    && clip_painter.clip_rect().contains(p)
+                                    && level::grabs(r, db, p.y)
+                            });
+                        let label_x = dragged_db
+                            .and_then(|_| ui.input(|i| i.pointer.hover_pos()))
+                            .map(|p| p.x);
+                        level::draw(&clip_painter, r, db, hovered || dragged_db.is_some(), label_x);
+                    }
                     draw_clip_marks(&clip_painter, theme, r, clip);
                     if let Some(loading) = &clip.loading {
                         loading::draw_on_clip(&clip_painter, theme, r, loading);
@@ -1266,6 +1358,30 @@ impl TimelineView {
         }
         let id = ui.scope_id().with(("track", track.id));
         let button = |i: f32| headers::button_rect(header, i);
+        // The level button, left of M and S: the level line on its clips.
+        let on = self.level_line(track.id);
+        let rect = button(-1.0);
+        let r = ui
+            .interact(rect, id.with("level"), Sense::click())
+            .on_hover_text(if on {
+                "Level lines on: drag the line across a clip to change its volume, double-click it for 0 dB. Click to hide them"
+            } else {
+                "Level lines: show a line across each clip of this track, to drag its volume up or down"
+            });
+        let fill = match on {
+            true => theme.accent,
+            false if r.hovered() => theme.line_strong,
+            false => theme.line,
+        };
+        ui.painter().rect_filled(rect, 3.0, fill);
+        level::draw_icon(
+            ui.painter(),
+            rect.center(),
+            if on { theme.bg } else { theme.text },
+        );
+        if r.clicked() {
+            self.set_level_line(track.id, !on);
+        }
         for (i, (label, on, tip)) in [
             ("M", track.muted, "Mute"),
             ("S", track.solo, "Solo: hear only soloed tracks"),
@@ -1405,8 +1521,8 @@ impl TimelineView {
         }
     }
 
-    /// The clip's loudness as one bar per pixel column, centred in the clip.
-    #[allow(clippy::too_many_arguments)]
+    /// The clip's loudness as one bar per pixel column, centred in the
+    /// clip, as loud as `look` says (never taller than the clip).
     fn draw_waveform(
         &self,
         p: &egui::Painter,
@@ -1414,9 +1530,9 @@ impl TimelineView {
         clip: &TimelineClip,
         shown_start: f64,
         w: &ClipWaveform,
-        colour: Color32,
-        muted: bool,
+        look: WaveLook,
     ) {
+        let WaveLook { colour, muted, gain } = look;
         // Below the clip's name, down to its bottom edge; in a short clip
         // there is no room under the name, so the whole clip is used.
         let top = if r.height() < SHORT_CLIP { 3.0 } else { 19.0 };
@@ -1447,7 +1563,7 @@ impl TimelineView {
             if a >= w.peaks.len() {
                 break;
             }
-            let peak = (w.peaks[a..b].iter().fold(0f32, |m, v| m.max(*v)) * clip.sound.gain).min(1.0);
+            let peak = (w.peaks[a..b].iter().fold(0f32, |m, v| m.max(*v)) * gain).min(1.0);
             let h = (peak.sqrt() * half).max(0.5);
             mesh.add_colored_rect(
                 Rect::from_min_max(pos2(x, mid - h), pos2(x + 1.0, mid + h)),
@@ -1831,6 +1947,7 @@ impl TimelineView {
                 self.names_menu.filter(|(h, _)| *h == half),
                 data,
                 &mut self.rename,
+                &mut self.level_lines,
                 events,
             );
         }
@@ -1897,7 +2014,32 @@ impl TimelineView {
                 }
             });
 
-            if r.hovered() && self.clip_drag.is_none() {
+            // The level line of an audio clip, when its track shows it: it
+            // comes before moving the clip, its edges before the line.
+            let on_line = match (hit, hit_track, rows.at(p.y).and_then(|row| row_rects.get(row))) {
+                (Some(c), Some(track), Some(row))
+                    if !from_bottom
+                        && self.level_line(track.id)
+                        && zone == Some(DragKind::Move)
+                        && self.clip_drag.is_none() =>
+                {
+                    let x0 = self.x_of(left, c.start);
+                    let x1 = self.x_of(left, c.start + c.duration).max(x0 + 1.0);
+                    let drawn = Rect::from_min_max(pos2(x0, row.top() + 3.0), pos2(x1, row.bottom() - 3.0));
+                    let db = level::db_of_gain(c.sound.gain);
+                    level::grabs(drawn, db, p.y).then_some((c, drawn, db))
+                }
+                _ => None,
+            };
+            if r.hovered() && self.clip_drag.is_none() && self.level_drag.is_none() && on_line.is_some() {
+                ui.ctx().set_cursor_icon(CursorIcon::ResizeVertical);
+                if let Some((_, _, db)) = on_line {
+                    r.clone().on_hover_text_at_pointer(format!(
+                        "Volume {}: drag up or down (Alt: finer), double-click for 0 dB",
+                        level::words(f64::from(db))
+                    ));
+                }
+            } else if r.hovered() && self.clip_drag.is_none() && self.level_drag.is_none() {
                 match (self.tool, zone) {
                     (Tool::Blade, Some(_)) => ui.ctx().set_cursor_icon(CursorIcon::Crosshair),
                     (Tool::Select | Tool::Ripple | Tool::Roll, Some(DragKind::Trim(_))) => {
@@ -1915,6 +2057,16 @@ impl TimelineView {
             }
 
             if r.drag_started_by(egui::PointerButton::Primary)
+                && let Some((c, drawn, db)) = on_line
+            {
+                self.level_drag = Some(level::LevelDrag::new(c.id, drawn, db, p.y));
+                if !c.selected {
+                    events.push(TimelineEvent::Select {
+                        clip: c.id,
+                        add: false,
+                    });
+                }
+            } else if r.drag_started_by(egui::PointerButton::Primary)
                 && let (Some(c), Some(zone), Some(track)) = (hit, zone, hit_track)
                 && let Some((c, kind)) = drag_for(self.tool, zone, c, tracks, row_rects, p.y)
             {
@@ -1974,6 +2126,35 @@ impl TimelineView {
                     DragKind::Move => CursorIcon::Grabbing,
                     DragKind::Slip | DragKind::Slide => CursorIcon::ResizeColumn,
                     _ => CursorIcon::ResizeHorizontal,
+                });
+            }
+            if let Some(drag) = &mut self.level_drag {
+                // Where the pointer is now, also on the frame the drag is
+                // noticed (when `p` is where it was pressed).
+                if r.dragged()
+                    && let Some(now) = r.interact_pointer_pos()
+                {
+                    drag.follow(now.y, ui.input(|i| i.modifiers.alt));
+                    ui.ctx().set_cursor_icon(CursorIcon::ResizeVertical);
+                }
+                if r.drag_stopped() {
+                    let drag = *drag;
+                    self.level_drag = None;
+                    if (drag.db - drag.from_db).abs() > 1e-3 {
+                        events.push(TimelineEvent::ClipVolume {
+                            clip: drag.clip,
+                            gain_db: drag.db,
+                        });
+                    }
+                }
+            }
+            if r.double_clicked()
+                && let Some((c, _, db)) = on_line
+                && db != 0.0
+            {
+                events.push(TimelineEvent::ClipVolume {
+                    clip: c.id,
+                    gain_db: 0.0,
                 });
             }
             if r.drag_stopped()
@@ -4044,5 +4225,99 @@ mod tests {
         );
         rig.frame(vec![]);
         assert_eq!(rig.view.rename, None);
+    }
+
+    #[test]
+    fn the_level_button_shows_a_line_that_drags_the_clips_volume() {
+        let mut rig = Rig::new(1, 1);
+        let primary = egui::PointerButton::Primary;
+        // The audio clip: x 200 to 440, drawn y 221 to 273; its line moves
+        // from y 269 (Off) to 225 (+12 dB), 0 dB at 247.
+        let on_line = pos2(300.0, 247.0);
+        // Without the line, a drag there moves the clip.
+        let events = drag(&mut rig, on_line, on_line + vec2(60.0, 0.0));
+        assert!(
+            matches!(events[..], [TimelineEvent::Move { clip: 100, .. }]),
+            "{events:?}"
+        );
+
+        // The level button, left of M and S, turns it on: view state, no event.
+        assert!(click(&mut rig, pos2(76.0, 232.0), primary).is_empty());
+        assert!(rig.view.level_line(100));
+        assert_eq!(rig.view.level_lines(), [100]);
+
+        // Dragging the line a quarter of the way down: -18 dB, shown while dragging.
+        rig.move_to(on_line);
+        rig.button(on_line, primary, true);
+        let mut started = rig.move_to(on_line + vec2(0.0, 6.0));
+        started.extend(rig.move_to(on_line + vec2(30.0, 11.0)));
+        assert_eq!(
+            started,
+            [TimelineEvent::Select {
+                clip: 100,
+                add: false
+            }],
+            "it is selected"
+        );
+        assert_eq!(rig.view.level_being_set(), Some((100, -18.0)));
+        let events = rig.button(on_line + vec2(30.0, 11.0), primary, false);
+        assert_eq!(
+            events,
+            [TimelineEvent::ClipVolume {
+                clip: 100,
+                gain_db: -18.0
+            }],
+            "one change, on letting go; the clip did not move"
+        );
+        assert_eq!(rig.view.level_being_set(), None);
+
+        // The project now says -18 dB: the line is drawn lower.
+        rig.audio[0].clips[0].sound.gain = level::gain_of_db(-18.0);
+
+        // Away from the line the clip still moves, and its edges still trim.
+        let events = drag(&mut rig, pos2(300.0, 230.0), pos2(360.0, 230.0));
+        assert!(
+            matches!(events[..], [TimelineEvent::Move { clip: 100, .. }]),
+            "{events:?}"
+        );
+        let events = drag(&mut rig, pos2(437.0, 258.0), pos2(500.0, 258.0));
+        assert!(
+            matches!(events[..], [TimelineEvent::Trim { clip: 100, .. }]),
+            "{events:?}"
+        );
+
+        // A drag that comes back where it began changes nothing.
+        let events = drag(&mut rig, pos2(300.0, 258.0), pos2(300.0, 258.0 + 8.0));
+        assert!(matches!(
+            events[..],
+            [TimelineEvent::ClipVolume { clip: 100, .. }]
+        ));
+        rig.move_to(pos2(300.0, 258.0));
+        rig.button(pos2(300.0, 258.0), primary, true);
+        rig.move_to(pos2(300.0, 250.0));
+        rig.move_to(pos2(300.0, 258.0));
+        assert!(rig.button(pos2(300.0, 258.0), primary, false).is_empty());
+
+        // A double-click on the line puts it back to 0 dB.
+        let mut fresh = Rig::new(1, 1);
+        fresh.view.set_level_line(100, true);
+        fresh.audio[0].clips[0].sound.gain = level::gain_of_db(-18.0);
+        let events = double_click(&mut fresh, pos2(300.0, 258.0));
+        assert!(
+            events.contains(&TimelineEvent::ClipVolume {
+                clip: 100,
+                gain_db: 0.0
+            }),
+            "{events:?}"
+        );
+
+        // Off again: the line is gone and the clip moves.
+        click(&mut rig, pos2(76.0, 232.0), primary);
+        assert!(!rig.view.level_line(100));
+        let events = drag(&mut rig, pos2(300.0, 258.0), pos2(360.0, 258.0));
+        assert!(
+            matches!(events[..], [TimelineEvent::Move { clip: 100, .. }]),
+            "{events:?}"
+        );
     }
 }
