@@ -26,7 +26,9 @@ pub const FULL_SAVE_INTERVAL: Duration = Duration::from_secs(30);
 /// One change as recorded in the journal.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum JournalEntry {
-    Do(Command),
+    /// Boxed: a command can be large (one carries a whole clip), and undo
+    /// and redo are not. Written the same as the command itself.
+    Do(Box<Command>),
     Undo,
     Redo,
 }
@@ -189,7 +191,7 @@ impl Document {
     pub fn apply(&mut self, command: Command) -> diag::Result<()> {
         self.refuse_if_read_only()?;
         self.history.apply(&command)?;
-        self.record(JournalEntry::Do(command))
+        self.record(JournalEntry::Do(Box::new(command)))
     }
 
     /// Undoes the last change. Returns false when there was nothing to undo.

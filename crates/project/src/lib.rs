@@ -3,6 +3,7 @@
 //! - [`time`]: exact time and frame rates (fractions, never floats).
 //! - [`ids`]: one id type per kind of thing.
 //! - [`look`]: how a clip's picture is placed, cut and coloured.
+//! - [`sound`]: how loud a clip is, its pan and its fades.
 //! - [`model`]: projects, timelines, tracks, clips, media, labels, the region.
 //! - [`file`]: the versioned project file, atomic saves and migrations.
 //! - [`command`]: every change is a `Command` applied to a snapshot.
@@ -24,6 +25,7 @@ mod layers;
 pub mod look;
 pub mod model;
 pub mod side_files;
+pub mod sound;
 pub mod templates;
 pub mod time;
 pub mod tracks;
@@ -39,6 +41,7 @@ pub use model::{
     SequenceSettings, TimelineLabel, Track, TrackKind, VideoStream,
 };
 pub use side_files::SideFile;
+pub use sound::Sound;
 pub use templates::Template;
 pub use time::{Rate, Speed, Time};
 

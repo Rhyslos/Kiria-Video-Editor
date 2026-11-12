@@ -90,6 +90,7 @@ fn rich_project() -> Project {
         link,
         speed: Default::default(),
         look: Default::default(),
+        sound: Default::default(),
     };
     // The picture in a corner, cut a little, slightly see-through and warmer.
     let look = project::Look {
@@ -108,7 +109,17 @@ fn rich_project() -> Project {
         look,
         ..clip(v_clip, 0)
     });
-    seq.audio_tracks[0].clips.push_back(clip(a_clip, 1));
+    // The game sound a little quieter, a little to the left, fading in and out.
+    let sound = project::Sound {
+        gain_mdb: -3_000,
+        pan: -200_000,
+        fade_in: Time::from_ratio(1, 2).expect("half a second"),
+        fade_out: Rate::NTSC_60.frame_start(45),
+    };
+    seq.audio_tracks[0].clips.push_back(Clip {
+        sound,
+        ..clip(a_clip, 1)
+    });
     seq.audio_tracks.push_back(extra_audio);
     seq.audio_tracks[1].gain_db = -3.5;
     seq.labels.push_back(TimelineLabel {
@@ -147,6 +158,21 @@ fn version_2_sample_opens_with_stream_details() {
         media.info.video.as_ref().map(|v| v.display_size()),
         Some((2560, 1440))
     );
+}
+
+#[test]
+fn version_8_sample_opens_with_plain_sound() {
+    let project = file::load(&sample_path(8)).expect("the version 8 sample opens");
+    let seq = project.active().expect("an open timeline");
+    let picture = &seq.video_tracks[0].clips[0];
+    assert_eq!(picture.look.scale, 300_000, "format 8 kept the look");
+    for clip in seq.tracks().flat_map(|t| t.clips.iter()) {
+        assert_eq!(
+            clip.sound,
+            project::Sound::PLAIN,
+            "format 8 had no sound settings"
+        );
+    }
 }
 
 #[test]
@@ -193,7 +219,8 @@ fn template_version_1_sample_opens() {
     );
 }
 
-/// The version 1 sample was written before clips had a `look`. Apart from
+/// The version 1 sample was written before clips had a `look` or a
+/// `sound`. Apart from
 /// that, it is the template the model gives today.
 #[test]
 fn the_stored_template_matches_the_model_but_for_what_came_later() {
@@ -204,6 +231,7 @@ fn the_stored_template_matches_the_model_but_for_what_came_later() {
         .chain(expected.audio_tracks.iter_mut());
     for clip in tracks.flat_map(|t| t.clips.iter_mut()) {
         clip.look = project::Look::PLAIN;
+        clip.sound = project::Sound::PLAIN;
     }
     assert_eq!(read_template(1), expected);
 }
@@ -215,6 +243,16 @@ fn a_template_saved_now_reads_back_the_same() {
         template.video_tracks[0].clips[0].look,
         project::Look::PLAIN,
         "the sample project's picture has a look, and the template keeps it"
+    );
+    let sound = template.audio_tracks[0].clips[0].sound;
+    assert_eq!(
+        (sound.gain_mdb, sound.pan),
+        (-3_000, -200_000),
+        "the sound's volume and pan are kept"
+    );
+    assert!(
+        !sound.is_faded(),
+        "the stretch cut both ends, and the fades with them"
     );
     let text = templates::to_string(&template).expect("the template becomes text");
     assert_eq!(templates::from_str(&text).expect("it reads back"), template);

@@ -167,6 +167,7 @@ fn command_for(action: &Action, p: &Project, media: MediaId, recording: MediaId)
                     link: None,
                     speed: Default::default(),
                     look: Default::default(),
+                    sound: Default::default(),
                 },
             }
         }

@@ -524,6 +524,7 @@ mod tests {
             link: None,
             speed: Default::default(),
             look: Default::default(),
+            sound: Default::default(),
         };
         let mut placed = p.clone();
         for start in [0, 4] {

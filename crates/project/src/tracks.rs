@@ -180,6 +180,7 @@ mod tests {
                 link: None,
                 speed: Default::default(),
                 look: Default::default(),
+                sound: Default::default(),
             },
         }
         .apply(p)

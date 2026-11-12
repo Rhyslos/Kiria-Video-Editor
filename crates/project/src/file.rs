@@ -22,14 +22,14 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
 /// The format this build writes.
-pub const FORMAT_VERSION: u32 = 8;
+pub const FORMAT_VERSION: u32 = 9;
 
 /// Turns the text of a version `n` file into the text of a version `n + 1` file.
 pub type Migration = fn(&str) -> diag::Result<String>;
 
 /// `MIGRATIONS[i]` upgrades version `i + 1` to `i + 2`.
 pub const MIGRATIONS: &[Migration] = &[
-    v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8,
+    v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8, v8_to_v9,
 ];
 
 /// Format 2 adds `info` (the file's streams) to each media entry. The field
@@ -75,6 +75,13 @@ fn v6_to_v7(text: &str) -> diag::Result<String> {
 /// is, which is how every older clip was shown.
 fn v7_to_v8(text: &str) -> diag::Result<String> {
     set_format_version(text, 7, 8)
+}
+
+/// Format 9 adds `sound` to each clip: its volume, pan, fade in and fade
+/// out. It defaults to the sound as it is, which is how every older clip
+/// sounded.
+fn v8_to_v9(text: &str) -> diag::Result<String> {
+    set_format_version(text, 8, 9)
 }
 
 /// Rewrites the `format_version` number at the top of the file.
