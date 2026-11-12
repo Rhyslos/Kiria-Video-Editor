@@ -503,7 +503,7 @@ impl Editor {
             Action::PictureHandles => {
                 self.settings.picture_handles = !self.settings.picture_handles;
                 self.status = if self.settings.picture_handles {
-                    "Handles on the picture: drag the selected clip to move it, a corner to resize it"
+                    "Handles on the picture: drag the selected clip to move it, a corner to resize it, a side to crop it, the round handle to turn it"
                 } else {
                     "Handles on the picture off"
                 }
@@ -1682,7 +1682,7 @@ impl Editor {
             .level_being_set()
             .map(|(clip, db)| (project::ClipId(clip), timeline_panel::gain_mdb(db)));
         self.inspector.on_picture_tip = format!(
-            "Show the clip's outline in the viewer, to move it and drag its corners to resize it.{}",
+            "Show the clip's outline in the viewer, to move it, resize it by its corners, crop it by its sides and turn it by the round handle.{}",
             match self.shortcuts.keys_for(Action::PictureHandles) {
                 keys if keys.is_empty() => String::new(),
                 keys => format!(" ({keys})"),
@@ -1999,9 +1999,15 @@ impl Editor {
             // dragged in the viewer, or keyframe marks being dragged on the
             // timeline, are seen at once.
             let being_changed = self.inspector.shown(p);
-            let being_changed =
+            let mut being_changed =
                 timeline_panel::keyframes_moved(&self.timeline, being_changed.as_ref().unwrap_or(p))
                     .or(being_changed);
+            // While a side of the picture is dragged, the whole picture is
+            // shown, the handles veiling what is cut off.
+            if let Some(clip) = self.picture_handles.cropping() {
+                let whole = crate::picture_handles::uncropped(being_changed.as_ref().unwrap_or(p), clip);
+                being_changed = whole.or(being_changed);
+            }
             let playhead = self.viewer.playhead;
             let snapping = self.timeline.snapping;
             let on_picture = self.settings.picture_handles;

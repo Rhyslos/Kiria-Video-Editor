@@ -65,7 +65,7 @@ pub struct Inspector {
     /// A hand outside the panel (on the picture in the viewer) is still on
     /// the look being set: the panel leaves finishing it to that hand.
     held: bool,
-    /// Whether the selected clip can be moved and resized on the picture in
+    /// Whether the selected clip can be moved, resized, cropped and turned on the picture in
     /// the viewer (its outline and handles are shown). Off unless asked for,
     /// so selecting a clip doesn't put a frame around it.
     pub on_picture: bool,

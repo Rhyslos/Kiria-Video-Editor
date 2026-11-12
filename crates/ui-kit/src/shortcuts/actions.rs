@@ -103,7 +103,7 @@ actions! {
     NextKeyframe, Viewer, "On to the selected clip's next keyframe";
     ToggleLoop, Viewer, "Loop playback inside the region";
     FullScreenViewer, Viewer, "Viewer full screen, and back";
-    PictureHandles, Viewer, "Move and resize the selected clip on the picture: handles on or off";
+    PictureHandles, Viewer, "Move, resize, crop and turn the selected clip on the picture: handles on or off";
     SplitView, Viewer, "Split view: the selected clip's own picture beside the timeline's";
     ViewerWindow, Viewer, "Viewer in its own window, for another screen or monitor";
     SaveFrame, Viewer, "Save this frame as a picture…";
