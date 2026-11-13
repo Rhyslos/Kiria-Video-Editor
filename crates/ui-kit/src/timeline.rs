@@ -62,6 +62,7 @@ mod fades;
 mod headers;
 mod keyframes;
 pub mod level;
+pub mod lines;
 mod loading;
 mod rows;
 mod speed;
@@ -70,6 +71,7 @@ mod track_views;
 pub use cache_bar::{CacheBar, CacheRange, CacheState};
 pub use fades::ClipSound;
 pub use keyframes::KeyframeMark;
+pub use lines::{LineBeingSet, LineKind, LineOwner, LinePoints, LinesShown};
 pub use loading::{LoadKind, LoadState, Loading, percent};
 pub use rows::{MAX_TRACK, MIN_TRACK, TrackHeights};
 pub use track_views::COMPACT_TRACK;
@@ -112,6 +114,9 @@ pub struct TimelineClip {
     /// What it plays: a file, another timeline (a double-click opens it),
     /// or nothing of its own (an adjustment layer). Each is drawn its way.
     pub shows: ClipShows,
+    /// Its own line of the kind shown ([`TimelineView::lines`]), in
+    /// seconds on the timeline: drawn inside it ([`lines`]).
+    pub line: Option<LinePoints>,
 }
 
 /// What a clip plays, as the timeline draws it.
@@ -229,6 +234,11 @@ pub struct TimelineTrack {
     /// Background reading still going on for clips of this track: shown
     /// as a short line by the track's name, gone when it is done.
     pub loading: Option<Loading>,
+    /// Its line of the kind shown ([`TimelineView::lines`]), across its row.
+    pub line: Option<LinePoints>,
+    /// Its role, an index into [`TimelineData::roles`]: a mark in its
+    /// colour by its name, and chosen in the names' right-click menu.
+    pub role: Option<usize>,
 }
 
 /// A timeline label (a named, coloured marker).
@@ -265,6 +275,9 @@ pub struct TimelineData<'a> {
     /// The ways a value can go on from a keyframe, offered by a keyframe
     /// mark's right-click menu (see [`MarksChange::Ease`]).
     pub keyframe_eases: &'a [&'a str],
+    /// The roles an audio track can have, with their colours, offered in
+    /// the names' right-click menu (empty: none offered).
+    pub roles: &'a [(&'a str, Color32)],
 }
 
 /// Something the person did on the timeline.
@@ -356,6 +369,17 @@ pub enum TimelineEvent {
         at: f64,
         track: Option<u64>,
     },
+    /// A volume or pan line's point was added, dragged or removed (or the
+    /// line cleared): every point of it now, in seconds on the timeline.
+    /// One undo step.
+    Line {
+        owner: LineOwner,
+        kind: LineKind,
+        points: Vec<(f64, f32)>,
+    },
+    /// An audio track's role was chosen in the names' menu: an index into
+    /// [`TimelineData::roles`].
+    TrackRole { track: u64, role: usize },
     /// Keyframe marks of `clip` (each the start of a frame, in seconds on
     /// the timeline) were dragged, or something was picked for them in
     /// their right-click menu. One undo step for all of them.
@@ -641,6 +665,14 @@ pub struct TimelineView {
     /// An Alt+drag in the ruler or on empty track space: the playhead
     /// follows the pointer until the button is let go.
     scrub: bool,
+    /// Which volume or pan lines are drawn with their points, and worked
+    /// by the pointer over the audio tracks (none: lines with points are
+    /// drawn faintly, and the pointer works clips). The page sets it.
+    pub lines: Option<LinesShown>,
+    /// A line's point being dragged.
+    line_drag: Option<lines::LineDrag>,
+    /// Where a line's right-click menu was opened: whose line, and the point.
+    line_menu: Option<(LineOwner, Option<usize>)>,
 }
 
 impl Default for TimelineView {
@@ -685,6 +717,9 @@ impl Default for TimelineView {
             showing: None,
             playhead_lit: false,
             scrub: false,
+            lines: None,
+            line_drag: None,
+            line_menu: None,
         }
     }
 }
@@ -1327,6 +1362,17 @@ impl TimelineView {
     }
 
     /// Fits `length` seconds in `width` pixels.
+    /// A line's point being dragged: whose line, which, and every point
+    /// as it is now (seconds on the timeline), so the page can be heard
+    /// following it before the undo step comes.
+    pub fn line_being_set(&self) -> Option<lines::LineBeingSet<'_>> {
+        self.line_drag.as_ref().map(|d| lines::LineBeingSet {
+            owner: d.owner,
+            kind: d.kind,
+            points: &d.points,
+        })
+    }
+
     pub fn fit(&mut self, length: f64, width: f32) {
         if length > 0.0 && width > 0.0 {
             self.zoom = ((width * 0.95) / length as f32).clamp(MIN_ZOOM, self.max_zoom);
@@ -1376,6 +1422,9 @@ impl TimelineView {
         // While the middle button pans, nothing else reacts to the pointer.
         if !panning {
             self.input(ui, &layout, data, [&video_rows, &audio_rows], &mut events);
+            // On top of the clips: with lines shown, the pointer over the
+            // audio tracks works their lines.
+            self.lines_input(ui, &layout, data, &audio_rows, &mut events);
         }
         let visible = (self.time_at(left, left), self.time_at(left, rect.right()));
         let painter = ui.painter_at(rect);
@@ -1432,6 +1481,14 @@ impl TimelineView {
                         pos2(layout.header_x + 12.0, row.center().y),
                     ),
                 }
+                // A track's role: a mark in its colour along the header's edge.
+                if let Some((_, colour)) = track.role.and_then(|i| data.roles.get(i)) {
+                    let mark = Rect::from_min_max(
+                        pos2(layout.header_x + 3.0, row.top() + 4.0),
+                        pos2(layout.header_x + 6.0, row.bottom() - 4.0),
+                    );
+                    header_painter.rect_filled(mark, 1.5, *colour);
+                }
                 // The short line about reading stops before the header's
                 // buttons; pointing at it says the whole of it.
                 let first_button = headers::button_rect(header, if audio { -1.0 } else { 1.0 });
@@ -1440,7 +1497,13 @@ impl TimelineView {
                 let text_painter =
                     header_painter.with_clip_rect(header_painter.clip_rect().intersect(text_room));
                 if let Some(loading) = &track.loading
-                    && let Some(line) = loading::draw_in_header(&text_painter, theme, header, loading)
+                    && let Some(line) = loading::draw_in_header(
+                        &text_painter,
+                        theme,
+                        header,
+                        text_room.right() - header.left() - 12.0,
+                        loading,
+                    )
                 {
                     ui.interact(
                         line.expand(3.0).intersect(header),
@@ -1553,6 +1616,17 @@ impl TimelineView {
                             .map(|p| p.x);
                         level::draw(&clip_painter, r, db, hovered || dragged_db.is_some(), label_x);
                     }
+                    if audio && full {
+                        let shift = start - clip.start;
+                        self.draw_line(
+                            ui,
+                            &clip_painter,
+                            LineOwner::Clip(clip.id),
+                            clip.line.as_deref(),
+                            r,
+                            |t| self.x_of(left, t + shift),
+                        );
+                    }
                     draw_clip_marks(&clip_painter, theme, r, clip, pictures.is_some());
                     if let Some(loading) = &clip.loading {
                         loading::draw_on_clip(&clip_painter, theme, r, loading);
@@ -1581,6 +1655,20 @@ impl TimelineView {
                 }
                 if let Some(m) = merged {
                     clip_painter.rect_filled(m, 1.0, tiny_fill(theme, colour, audio));
+                }
+                if audio && full {
+                    let row_band = Rect::from_min_max(
+                        pos2(left, row.top() + inset),
+                        pos2(area.right(), row.bottom() - inset),
+                    );
+                    self.draw_line(
+                        ui,
+                        &clip_painter,
+                        LineOwner::Track(track.id),
+                        track.line.as_deref(),
+                        row_band,
+                        |t| self.x_of(left, t),
+                    );
                 }
                 if track.hidden {
                     // Not in the picture: its clips are dimmed.
@@ -1788,6 +1876,238 @@ impl TimelineView {
             ));
         }
         events
+    }
+
+    /// Draws a track's or a clip's line in `rect`: with its points when
+    /// it is the kind of line shown, faintly when it has points but isn't,
+    /// not at all otherwise. A line being dragged is drawn as it is now.
+    fn draw_line(
+        &self,
+        ui: &Ui,
+        p: &egui::Painter,
+        owner: LineOwner,
+        points: Option<&[(f64, f32)]>,
+        rect: Rect,
+        x_of: impl Fn(f64) -> f32,
+    ) {
+        let editable = self
+            .lines
+            .is_some_and(|l| l.on_clips == matches!(owner, LineOwner::Clip(_)));
+        let kind = self.lines.map_or(LineKind::Volume, |l| l.kind);
+        let drag = self.line_drag.as_ref().filter(|d| d.owner == owner);
+        let points = drag.map(|d| d.points.as_slice()).or(points).unwrap_or_default();
+        if !editable && points.is_empty() {
+            return;
+        }
+        let hover = ui
+            .input(|i| i.pointer.hover_pos())
+            .filter(|pos| rect.contains(*pos) && p.clip_rect().contains(*pos));
+        let lit = drag.map(|d| d.index).or_else(|| {
+            hover.and_then(|pos| lines::hit(points, |t, v| pos2(x_of(t), lines::y_of(kind, rect, v)), pos))
+        });
+        let look = lines::Look {
+            kind,
+            editable,
+            lit: lit.filter(|_| editable),
+            tag_x: drag
+                .and(hover.or_else(|| ui.input(|i| i.pointer.hover_pos())))
+                .map(|h| h.x),
+        };
+        lines::draw(p, rect, points, x_of, &look);
+    }
+
+    /// With lines shown, the pointer over the audio tracks works the line
+    /// of the row (or clip) under it: a click adds a point, a drag moves
+    /// one, a double-click or its menu removes it. Each change is one
+    /// [`TimelineEvent::Line`].
+    fn lines_input(
+        &mut self,
+        ui: &mut Ui,
+        layout: &Layout,
+        data: &TimelineData,
+        rows: &Rows,
+        events: &mut Vec<TimelineEvent>,
+    ) {
+        let Some(shown) = self.lines.filter(|_| !self.compact) else {
+            self.line_drag = None;
+            return;
+        };
+        let left = layout.time_left();
+        let area = Rect::from_min_max(pos2(left, layout.audio.top()), layout.audio.max);
+        let r = ui.interact(
+            area,
+            ui.scope_id().with("timeline-lines"),
+            Sense::click_and_drag(),
+        );
+        let frame = 1.0 / data.fps.max(1.0);
+        let kind = shown.kind;
+        // A point being dragged follows the pointer until let go.
+        let pointer_t = r.interact_pointer_pos().map(|p| self.time_at(left, p.x));
+        if let Some(drag) = &mut self.line_drag {
+            if let Some(p) = r.interact_pointer_pos().filter(|_| r.dragged())
+                && let Some(t) = pointer_t
+            {
+                let t = (t / frame).round() * frame;
+                let value = lines::value_at(kind, drag.rect, p.y);
+                drag.points = lines::moved(&drag.points, drag.index, (t, value), frame, drag.bounds);
+            }
+            if r.drag_stopped() || !ui.input(|i| i.pointer.primary_down()) {
+                events.push(TimelineEvent::Line {
+                    owner: drag.owner,
+                    kind: drag.kind,
+                    points: drag.points.clone(),
+                });
+                self.line_drag = None;
+            }
+            return;
+        }
+        let pointer = r.interact_pointer_pos().or(r.hover_pos());
+        let pointer = if r.drag_started() {
+            ui.input(|i| i.pointer.press_origin()).or(pointer)
+        } else {
+            pointer
+        };
+        // Whose line is under the pointer, where it is drawn and where its
+        // points may go.
+        let inset = track_views::clip_inset(self.compact);
+        let under = pointer.and_then(|p| {
+            let row = rows.at(p.y)?;
+            let (track, rect) = (data.audio.get(row)?, *rows.rects().get(row)?);
+            let band = Rect::from_min_max(
+                pos2(left, rect.top() + inset),
+                pos2(area.right(), rect.bottom() - inset),
+            );
+            if !shown.on_clips {
+                let points = track.line.as_deref().unwrap_or_default().to_vec();
+                return Some((
+                    LineOwner::Track(track.id),
+                    band,
+                    points,
+                    (0.0, data.length.max(0.0)),
+                ));
+            }
+            let t = self.time_at(left, p.x);
+            let clip = track
+                .clips
+                .iter()
+                .find(|c| c.start <= t && t < c.start + c.duration)?;
+            let (x0, x1) = (
+                self.x_of(left, clip.start),
+                self.x_of(left, clip.start + clip.duration),
+            );
+            let rect = Rect::from_min_max(pos2(x0, band.top()), pos2(x1, band.bottom()));
+            let points = clip.line.as_deref().unwrap_or_default().to_vec();
+            Some((
+                LineOwner::Clip(clip.id),
+                rect,
+                points,
+                (clip.start, clip.start + clip.duration),
+            ))
+        });
+        let point_at = |p: Pos2, rect: Rect, points: &[(f64, f32)]| {
+            lines::hit(
+                points,
+                |t, v| pos2(self.x_of(left, t), lines::y_of(kind, rect, v)),
+                p,
+            )
+        };
+        if let Some((owner, rect, points, bounds)) = &under
+            && let Some(p) = pointer
+        {
+            let hit = point_at(p, *rect, points);
+            let r = match hit {
+                Some(_) => r.clone().on_hover_cursor(CursorIcon::Grab),
+                None => r.clone().on_hover_cursor(CursorIcon::Crosshair),
+            };
+            let t = ((self.time_at(left, p.x) / frame).round() * frame).clamp(bounds.0, bounds.1);
+            if r.drag_started_by(egui::PointerButton::Primary) {
+                // A point taken, or one made where the drag began.
+                let (points, index) = match hit {
+                    Some(i) => (points.clone(), i),
+                    None => lines::added(points, t, lines::value_at(kind, *rect, p.y)),
+                };
+                self.line_drag = Some(lines::LineDrag {
+                    owner: *owner,
+                    kind,
+                    index,
+                    points,
+                    bounds: *bounds,
+                    rect: *rect,
+                });
+            } else if r.double_clicked() {
+                if let Some(i) = hit {
+                    events.push(TimelineEvent::Line {
+                        owner: *owner,
+                        kind,
+                        points: lines::removed(points, i),
+                    });
+                }
+            } else if r.clicked() && hit.is_none() {
+                let (points, _) = lines::added(points, t, lines::value_at(kind, *rect, p.y));
+                events.push(TimelineEvent::Line {
+                    owner: *owner,
+                    kind,
+                    points,
+                });
+            } else if r.secondary_clicked() {
+                self.line_menu = Some((*owner, hit));
+            }
+        }
+        // The menu: remove the point, or clear the whole line.
+        let menu = self.line_menu;
+        let mut close = false;
+        r.context_menu(|ui| {
+            let Some((owner, point)) = menu else { return };
+            let points = match owner {
+                LineOwner::Track(id) => data
+                    .audio
+                    .iter()
+                    .find(|t| t.id == id)
+                    .and_then(|t| t.line.clone()),
+                LineOwner::Clip(id) => data
+                    .audio
+                    .iter()
+                    .flat_map(|t| &t.clips)
+                    .find(|c| c.id == id)
+                    .and_then(|c| c.line.clone()),
+            }
+            .unwrap_or_else(|| Vec::new().into());
+            if let Some(i) = point
+                && ui.button("Remove this point").clicked()
+            {
+                events.push(TimelineEvent::Line {
+                    owner,
+                    kind,
+                    points: lines::removed(&points, i),
+                });
+                close = true;
+            }
+            let whose = match owner {
+                LineOwner::Track(_) => "track's",
+                LineOwner::Clip(_) => "clip's",
+            };
+            let what = match kind {
+                LineKind::Volume => "volume",
+                LineKind::Pan => "pan",
+            };
+            if ui
+                .add_enabled(
+                    !points.is_empty(),
+                    egui::Button::new(format!("Clear this {whose} {what} line")),
+                )
+                .clicked()
+            {
+                events.push(TimelineEvent::Line {
+                    owner,
+                    kind,
+                    points: Vec::new(),
+                });
+                close = true;
+            }
+            if close {
+                ui.close();
+            }
+        });
     }
 
     /// M (mute), S (solo) and a volume fader in an audio track's header.
@@ -3166,13 +3486,21 @@ pub enum ToolbarClick {
     RoughCut,
 }
 
+/// How wide [`toolbar`] is (at most): nine buttons, a gap, and the
+/// spacing between them.
+pub const TOOLBAR_WIDTH: f32 = 9.0 * TOOL_BUTTON + 10.0 + 9.0 * TOOLBAR_SPACING;
+const TOOL_BUTTON: f32 = 30.0;
+/// The toolbar's own spacing between buttons (it sets it, so the width holds).
+const TOOLBAR_SPACING: f32 = 4.0;
+
 /// The row of tools above the timeline: Select, Blade, Ripple, Roll, Slip,
 /// Slide, then Snapping, Fit and the rough cut view. `tips` gives each
 /// button's tooltip (with its shortcut), in that order.
 pub fn toolbar(ui: &mut Ui, theme: &Theme, view: &TimelineView, tips: [&str; 9]) -> Option<ToolbarClick> {
     let mut clicked = None;
     ui.horizontal(|ui| {
-        let size = vec2(30.0, 26.0);
+        ui.spacing_mut().item_spacing.x = TOOLBAR_SPACING;
+        let size = vec2(TOOL_BUTTON, 26.0);
         let items = [
             (ToolbarClick::Tool(Tool::Select), view.tool == Tool::Select, 0),
             (ToolbarClick::Tool(Tool::Blade), view.tool == Tool::Blade, 1),
@@ -3690,6 +4018,7 @@ mod tests {
             keyframes: Vec::new(),
             speed_curve: None,
             shows: ClipShows::File,
+            line: None,
         }
     }
 
@@ -3703,6 +4032,8 @@ mod tests {
             hidden: false,
             gain_db: 0.0,
             loading: None,
+            line: None,
+            role: None,
         }
     }
 
@@ -3777,6 +4108,7 @@ mod tests {
                                 about: "",
                             },
                             keyframe_eases: &["Linear", "Hold", "Smooth"],
+                            roles: &[],
                         };
                         out = self.view.show(ui, &Theme::ASH, &data, size);
                     });
@@ -3804,6 +4136,7 @@ mod tests {
                     about: "",
                 },
                 keyframe_eases: &["Linear", "Hold", "Smooth"],
+                roles: &[],
             };
             let rect = Rect::from_min_size(Pos2::ZERO, vec2(1000.0, 400.0));
             let share = self.view.shown_split(Layout::body_height(rect), &data);
@@ -4110,6 +4443,8 @@ mod tests {
             hidden: false,
             gain_db: 0.0,
             loading: None,
+            line: None,
+            role: None,
         };
         let tracks = [track];
         let rows = [Rect::from_min_max(pos2(0.0, 0.0), pos2(500.0, 50.0))];
@@ -4229,6 +4564,55 @@ mod tests {
                 other => other,
             })
             .collect()
+    }
+
+    #[test]
+    fn with_lines_shown_a_click_adds_a_point_and_a_drag_moves_it() {
+        let mut rig = Rig::new(1, 1);
+        rig.view.lines = Some(LinesShown {
+            kind: LineKind::Volume,
+            on_clips: false,
+        });
+        // The audio row runs from y 218 for 58 points; 60 points a second.
+        let middle = 218.0 + 29.0;
+        let x_at = |t: f32| HEADER_WIDTH + t * 60.0;
+        let events = click(&mut rig, pos2(x_at(2.0), middle), egui::PointerButton::Primary);
+        let Some(TimelineEvent::Line { owner, kind, points }) = events.first() else {
+            panic!("a point is added: {events:?}");
+        };
+        assert_eq!((*owner, *kind), (LineOwner::Track(100), LineKind::Volume));
+        assert_eq!(points.len(), 1);
+        assert!(
+            (points[0].0 - 2.0).abs() < 1e-9 && points[0].1 == 0.0,
+            "{points:?}"
+        );
+        assert!(
+            !events.iter().any(|e| matches!(e, TimelineEvent::Select { .. })),
+            "the clip under it stays"
+        );
+        // The page hands the line back; dragging its point moves it.
+        rig.audio[0].line = Some(vec![(2.0, 0.0)].into());
+        let events = drag(&mut rig, pos2(x_at(2.0), middle), pos2(x_at(3.0), 225.0));
+        let Some(TimelineEvent::Line { points, .. }) = events.first() else {
+            panic!("the drag makes one step: {events:?}");
+        };
+        assert_eq!(points.len(), 1);
+        assert!(
+            (points[0].0 - 3.0).abs() < 1e-9 && points[0].1 > 6.0,
+            "{points:?}"
+        );
+        assert!(rig.view.line_being_set().is_none(), "let go");
+        // On the clips: only inside a clip, and it is the clip's line.
+        rig.view.lines = Some(LinesShown {
+            kind: LineKind::Pan,
+            on_clips: true,
+        });
+        assert!(click(&mut rig, pos2(x_at(10.0), middle), egui::PointerButton::Primary).is_empty());
+        let events = click(&mut rig, pos2(x_at(4.0), middle), egui::PointerButton::Primary);
+        assert!(
+            matches!(events.first(), Some(TimelineEvent::Line { owner: LineOwner::Clip(100), kind: LineKind::Pan, points }) if points == &vec![(4.0, 0.0)]),
+            "{events:?}"
+        );
     }
 
     fn near(a: f32, b: f32) -> bool {
@@ -5509,6 +5893,7 @@ mod tests {
                     about: "",
                 },
                 keyframe_eases: &["Linear", "Hold", "Smooth"],
+                roles: &[],
             };
             let rect = Rect::from_min_size(Pos2::ZERO, vec2(1000.0, 400.0));
             let layout = self.view.layout(rect, &data);

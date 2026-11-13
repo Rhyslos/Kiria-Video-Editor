@@ -515,6 +515,7 @@ mod tests {
         .unwrap();
         let (seq, media) = (p.active().unwrap(), *p.media.keys().next().unwrap());
         let clip = |start: i64| Clip {
+            lines: Default::default(),
             id: ClipId(0),
             media,
             stream: 0,

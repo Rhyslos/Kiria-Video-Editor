@@ -8,7 +8,9 @@
 //! Turning these into gains on samples is the mixer's work (`engine::mix`).
 
 use crate::time::Time;
+use crate::track_sound::{LinePoint, TrackSound};
 use diag::AppError;
+use imbl::Vector;
 use serde::{Deserialize, Serialize};
 
 /// A clip's sound settings. The default leaves the sound as it is: as loud
@@ -131,9 +133,113 @@ impl Sound {
     }
 }
 
+/// A clip's own volume and pan lines (format 17): points at moments of its
+/// file (source time), like look keyframes, so they stay on the sound
+/// they were drawn on through moves, trims and speed changes. Straight
+/// between points and flat before the first and after the last; a cut
+/// clip's halves both keep every point, so the line goes on across the
+/// cut as it was.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ClipLines {
+    /// Added to the clip's volume, thousandths of a dB (-60 to +12 dB).
+    pub volume: Vector<LinePoint>,
+    /// While it has points, the clip's pan (millionths, all left to all right).
+    pub pan: Vector<LinePoint>,
+}
+
+impl ClipLines {
+    /// Whether neither line has a point.
+    pub fn is_empty(&self) -> bool {
+        self.volume.is_empty() && self.pan.is_empty()
+    }
+
+    /// The volume line's value at `source` (a moment of the file), in
+    /// thousandths of a dB; 0 without points.
+    pub fn volume_at(&self, source: Time) -> i32 {
+        line_value(&self.volume, source).unwrap_or(0)
+    }
+
+    /// The pan line's value at `source`, when it has points.
+    pub fn pan_at(&self, source: Time) -> Option<i32> {
+        line_value(&self.pan, source)
+    }
+
+    /// Refuses, explained, lines that can't be used.
+    pub fn check(&self) -> diag::Result<()> {
+        if crate::track_sound::check_line(&self.volume, TrackSound::LINE_QUIETEST, TrackSound::LINE_LOUDEST)
+            && crate::track_sound::check_line(&self.pan, -Sound::SIDE, Sound::SIDE)
+        {
+            return Ok(());
+        }
+        Err(AppError::new("That line can't be used")
+            .why(
+                "A line's points are in time order, never two at one moment; volume goes from -60 to +12 dB and \
+                 pan from all left to all right.",
+            )
+            .fix("Remove the line's points and draw it again."))
+    }
+}
+
+/// A line's value at `at`: straight between points (worked out in whole
+/// numbers, so preview and export agree), flat outside them.
+pub fn line_value(line: &Vector<LinePoint>, at: Time) -> Option<i32> {
+    let first = line.front()?;
+    let last = line.back()?;
+    if at <= first.at {
+        return Some(first.value);
+    }
+    if at >= last.at {
+        return Some(last.value);
+    }
+    let next = line.iter().position(|p| p.at > at)?;
+    let (a, b) = (line.get(next - 1)?, line.get(next)?);
+    let span = crate::ramp::flicks(b.at - a.at);
+    if span <= 0 {
+        return Some(b.value);
+    }
+    let into = crate::ramp::flicks(at - a.at);
+    let delta = i128::from(b.value) - i128::from(a.value);
+    let value = i128::from(a.value) + delta * into / span;
+    Some(i32::try_from(value).unwrap_or(a.value))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn point(seconds: i64, value: i32) -> LinePoint {
+        LinePoint {
+            at: Time::from_ratio(seconds, 1).unwrap(),
+            value,
+        }
+    }
+
+    #[test]
+    fn a_clip_line_is_straight_between_points_and_flat_outside() {
+        let lines = ClipLines {
+            volume: [point(2, -6_000), point(4, 0)].into_iter().collect(),
+            pan: Vector::new(),
+        };
+        let at = |s: i64, den: u64| lines.volume_at(Time::from_ratio(s, den).unwrap());
+        assert_eq!(at(0, 1), -6_000);
+        assert_eq!(at(3, 1), -3_000);
+        assert_eq!(at(7, 2), -1_500);
+        assert_eq!(at(9, 1), 0);
+        assert_eq!(lines.pan_at(Time::ZERO), None, "no pan line: the clip's pan");
+        assert_eq!(ClipLines::default().volume_at(Time::ZERO), 0);
+        assert!(lines.check().is_ok());
+        let backwards = ClipLines {
+            volume: [point(4, 0), point(2, 0)].into_iter().collect(),
+            pan: Vector::new(),
+        };
+        assert!(backwards.check().is_err());
+        let wild = ClipLines {
+            volume: Vector::new(),
+            pan: [point(1, 2 * Sound::SIDE)].into_iter().collect(),
+        };
+        assert!(wild.check().is_err());
+    }
 
     #[test]
     fn the_default_changes_nothing() {

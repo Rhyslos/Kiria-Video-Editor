@@ -102,6 +102,7 @@ pub fn file_alone(media: &MediaRef) -> Option<Project> {
     project.media.insert(media.id, media.clone());
     let id = project.allocate_id();
     let clip = Clip {
+        lines: Default::default(),
         id,
         media: media.id,
         stream: video.index,

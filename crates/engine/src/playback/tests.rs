@@ -396,6 +396,48 @@ fn tracks_taken_out_and_put_back_while_playing() {
     );
 }
 
+#[test]
+fn track_meters_follow_the_tracks_and_the_analyser_hears_the_one_chosen() {
+    let project = recording();
+    let ids: Vec<_> = project.sequences[0].audio_tracks.iter().map(|t| t.id).collect();
+    let mut fake = fake(&project, Time::from_ratio(1, 4).unwrap());
+    let meters = |fake: &Fake| {
+        fake.clock
+            .meters
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(meters(&fake), ids, "every track, in order");
+    let spectrum = fake.clock.spectrum.get().cloned().unwrap();
+    fake.play(RATE as usize / 2, 480);
+    assert!(
+        spectrum.levels().iter().all(|l| *l <= -119.0),
+        "nobody chosen: nothing shown"
+    );
+    // The meters measured something on a track that sounds.
+    let heard = fake
+        .clock
+        .meters
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|(_, m)| m.take().momentary.is_finite());
+    assert!(heard);
+    fake.send.send(Message::Analyse(Some(ids[0]))).unwrap();
+    fake.play(RATE as usize / 2, 480);
+    assert!(
+        spectrum.levels().iter().any(|l| *l > -100.0),
+        "the chosen track is shown"
+    );
+    let mut without = project.clone();
+    without.sequences[0].audio_tracks.remove(2);
+    fake.update(&without);
+    assert_eq!(meters(&fake), [ids[0], ids[1]]);
+}
+
 /// The callback never allocates or frees: mixing, the commands an edit
 /// sends, lines swapped in and the old sent back, a jump taken while
 /// silent. Counted on this thread only.

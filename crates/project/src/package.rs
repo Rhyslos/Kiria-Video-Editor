@@ -510,6 +510,7 @@ mod tests {
                 sequence: seq,
                 track,
                 clip: Clip {
+                    lines: Default::default(),
                     id: ClipId(0),
                     media: *media,
                     stream: 0,

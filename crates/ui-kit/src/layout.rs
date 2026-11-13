@@ -14,6 +14,8 @@ pub const DRAWER_WIDTH: f32 = 264.0;
 pub const EDGE_TAB_WIDTH: f32 = 22.0;
 /// Width of the master column next to the timeline.
 pub const MASTER_WIDTH: f32 = 80.0;
+/// The Audio page's tools beside the viewer.
+pub const TOOLS_WIDTH: f32 = 610.0;
 /// The gap between a page's panels and what is between them.
 pub const PANEL_GAP: f32 = 12.0;
 

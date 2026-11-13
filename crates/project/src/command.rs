@@ -14,7 +14,7 @@ use crate::model::{
     TimelineLabel, Track, TrackKind,
 };
 use crate::ramp::Ramp;
-use crate::sound::Sound;
+use crate::sound::{ClipLines, Sound};
 use crate::templates::Template;
 use crate::time::{Speed, Time};
 use crate::track_sound::{MasterSound, TrackSound};
@@ -400,6 +400,13 @@ pub enum Command {
         sequence: SequenceId,
         track: TrackId,
         sound: Box<TrackSound>,
+    },
+    /// A sound clip's own volume and pan lines (format 17), points at
+    /// moments of its file: one undo step per change on the Audio page.
+    SetClipLines {
+        sequence: SequenceId,
+        clip: ClipId,
+        lines: Box<ClipLines>,
     },
     /// The mix's compressor and true-peak limiter (format 16).
     SetMasterSound {
@@ -859,6 +866,30 @@ impl Command {
                 }
                 t.sound = (**sound).clone();
             }
+            Command::SetClipLines {
+                sequence,
+                clip,
+                lines,
+            } => {
+                lines.check()?;
+                let seq = sequence_mut(&mut p, *sequence)?;
+                if seq
+                    .video_tracks
+                    .iter()
+                    .any(|t| t.clips.iter().any(|c| c.id == *clip))
+                {
+                    return Err(AppError::new("A picture has no sound of its own")
+                        .why("Volume and pan lines are drawn on sound clips, on audio tracks.")
+                        .fix("Draw the line on the picture's linked sound clip."));
+                }
+                let found = seq
+                    .audio_tracks
+                    .iter_mut()
+                    .flat_map(|track| track.clips.iter_mut())
+                    .find(|c| c.id == *clip)
+                    .ok_or_else(|| missing("clip"))?;
+                found.lines = (**lines).clone();
+            }
             Command::SetMasterSound { sequence, sound } => {
                 sound.check()?;
                 sequence_mut(&mut p, *sequence)?.master_sound = *sound;
@@ -1177,6 +1208,7 @@ fn place_media(
         None => sequence_ref(p, sequence)?.length(),
     };
     let clip = |p: &mut Project, stream: u32| Clip {
+        lines: Default::default(),
         id: p.allocate_id(),
         media: id,
         stream,
@@ -1425,6 +1457,7 @@ mod tests {
 
     fn clip(f: &Fixture, start: i64, len: i64, link: Option<LinkId>) -> Clip {
         Clip {
+            lines: Default::default(),
             id: ClipId(0),
             media: f.media,
             stream: 0,
@@ -2005,6 +2038,41 @@ mod tests {
             sound: master,
         };
         assert!(over.apply(&f.p).is_err());
+    }
+
+    #[test]
+    fn clip_lines_are_set_on_sound_clips_only_and_checked() {
+        let f = fixture();
+        let p = place(&f, &f.p, f.a1, clip(&f, 0, 10, None)).unwrap();
+        let p = place(&f, &p, f.v1, clip(&f, 0, 10, None)).unwrap();
+        let seq = p.active().unwrap();
+        let (sound, picture) = (seq.audio_tracks[0].clips[0].id, seq.video_tracks[0].clips[0].id);
+        let point = |s: i64, value: i32| crate::track_sound::LinePoint {
+            at: Time::seconds(s),
+            value,
+        };
+        let lines = ClipLines {
+            volume: [point(1, -6_000), point(3, 0)].into_iter().collect(),
+            pan: [point(2, 500_000)].into_iter().collect(),
+        };
+        let set = |clip, lines: &ClipLines| Command::SetClipLines {
+            sequence: f.seq,
+            clip,
+            lines: Box::new(lines.clone()),
+        };
+        let after = set(sound, &lines).apply(&p).unwrap();
+        assert_eq!(after.active().unwrap().audio_tracks[0].clips[0].lines, lines);
+        assert!(
+            p.active().unwrap().audio_tracks[0].clips[0].lines.is_empty(),
+            "undo by snapshot"
+        );
+        assert!(
+            set(picture, &lines).apply(&p).is_err(),
+            "a picture has no sound of its own"
+        );
+        let mut wild = lines.clone();
+        wild.volume.push_back(point(4, 20_000));
+        assert!(set(sound, &wild).apply(&p).is_err());
     }
 
     #[test]

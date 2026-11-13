@@ -79,6 +79,7 @@ pub(crate) fn lay(
     let chosen = picture_track(sequence_ref(p, sequence)?, track)?;
     let link: Option<LinkId> = (usize::from(video.is_some()) + audio.len() > 1).then(|| p.allocate_id());
     let clip = |p: &mut Project, stream: u32| Clip {
+        lines: Default::default(),
         id: p.allocate_id(),
         media: id,
         stream,
@@ -754,6 +755,7 @@ mod tests {
             sequence: seq,
             track: a3,
             clip: Clip {
+                lines: Default::default(),
                 id: ClipId(0),
                 media: short,
                 stream: 1,

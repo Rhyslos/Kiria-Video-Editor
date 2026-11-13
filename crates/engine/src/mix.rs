@@ -161,6 +161,9 @@ impl Mixer {
                 // Seconds into the clip of the first sample read.
                 shape.apply(&mut scratch[..got * CHANNELS], from - cs, rate);
             }
+            if !clip.lines.is_empty() {
+                apply_lines(clip, &mut scratch[..got * CHANNELS], from, rate);
+            }
             for (o, s) in out[first * CHANNELS..(first + got) * CHANNELS]
                 .iter_mut()
                 .zip(&scratch)
@@ -401,6 +404,75 @@ pub fn fade(share: f64) -> f32 {
     (share.clamp(0.0, 1.0) * FRAC_PI_2).sin() as f32
 }
 
+/// Frames between two places a clip's lines are worked out at; the gain
+/// goes straight from one to the next in between.
+const LINE_STEP: usize = 64;
+
+/// A line's value at `source` seconds into the clip's file: straight
+/// between points, flat outside them.
+fn line_at<'a>(
+    line: impl IntoIterator<Item = &'a project::track_sound::LinePoint>,
+    source: f64,
+) -> Option<f64> {
+    let mut before: Option<(f64, f64)> = None;
+    for p in line {
+        let (t, v) = (p.at.as_secs_f64(), f64::from(p.value));
+        match before {
+            None if source <= t => return Some(v),
+            Some((ta, va)) if source < t => {
+                let share = if t > ta { (source - ta) / (t - ta) } else { 1.0 };
+                return Some(va + (v - va) * share);
+            }
+            _ => before = Some((t, v)),
+        }
+    }
+    before.map(|(_, v)| v)
+}
+
+/// The factors a clip's lines put on its left and right channel at `t`
+/// seconds on the timeline: its volume line (added to its volume, which
+/// [`Shape`] already applied) and its pan line (which takes the place of
+/// its pan). Lines are kept at moments of the file, so `t` is taken there.
+fn line_gains(clip: &Clip, t: f64) -> (f32, f32) {
+    let source = clip.source_at_f64(t);
+    let lines = &clip.lines;
+    let gain = line_at(&lines.volume, source).map_or(1.0, |mdb| {
+        let total = clip.sound.gain_mdb.saturating_add(mdb.round() as i32);
+        // The clip's own volume is already applied: only what the line adds.
+        if total <= Sound::SILENT {
+            0.0
+        } else {
+            10f32.powf(mdb as f32 / 20_000.0)
+        }
+    });
+    let (left, right) = line_at(&lines.pan, source).map_or((1.0, 1.0), |pan| pan_gains(pan.round() as i32));
+    (left * gain, right * gain)
+}
+
+/// Applies a clip's lines to interleaved stereo `samples` whose first
+/// frame is at `from` seconds on the timeline: worked out every
+/// [`LINE_STEP`] frames and straight between, so it never clicks.
+fn apply_lines(clip: &Clip, samples: &mut [f32], from: f64, rate: f64) {
+    let frames = samples.len() / CHANNELS;
+    let mut at = 0;
+    let mut now = line_gains(clip, from);
+    while at < frames {
+        let end = (at + LINE_STEP).min(frames);
+        let next = line_gains(clip, from + end as f64 / rate);
+        let span = (end - at) as f32;
+        for (i, frame) in samples[at * CHANNELS..end * CHANNELS]
+            .chunks_exact_mut(CHANNELS)
+            .enumerate()
+        {
+            let share = i as f32 / span;
+            frame[0] *= now.0 + (next.0 - now.0) * share;
+            frame[1] *= now.1 + (next.1 - now.1) * share;
+        }
+        now = next;
+        at = end;
+    }
+}
+
 /// What a clip's own sound does to its samples.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Shape {
@@ -415,7 +487,11 @@ struct Shape {
 impl Shape {
     /// `None` when the clip sounds as recorded: nothing to do.
     fn of(clip: &Clip) -> Option<Shape> {
-        let sound = clip.sound;
+        let mut sound = clip.sound;
+        // A pan line takes the clip's pan's place ([`apply_lines`]).
+        if !clip.lines.pan.is_empty() {
+            sound.pan = 0;
+        }
         if sound == Sound::PLAIN {
             return None;
         }
@@ -657,6 +733,50 @@ mod tests {
         );
         mixer.mix(&silent, silent.active().unwrap(), 0.5, &mut buf);
         assert_eq!(loudness(&buf), 0.0);
+    }
+
+    #[test]
+    fn a_clips_own_lines_are_heard_at_moments_of_its_file() {
+        let plain = first_track_with(Sound::PLAIN, None);
+        let mut mixer = Mixer::new(48_000);
+        let mut buf = vec![0f32; 4_800 * CHANNELS];
+        let level_at = |p: &Project, mixer: &mut Mixer, buf: &mut Vec<f32>, at: f64| {
+            mixer.mix(p, p.active().unwrap(), at, buf);
+            (loudness(&channel(buf, 0)), loudness(&channel(buf, 1)))
+        };
+        let (l, _) = level_at(&plain, &mut mixer, &mut buf, 0.5);
+        let clip = &plain.active().unwrap().audio_tracks[0].clips[0];
+        let source = |s: f64| clip.source_in + project::Time::from_ratio((s * 1000.0) as i64, 1000).unwrap();
+        let point = |s: f64, value| project::track_sound::LinePoint { at: source(s), value };
+        // -6 dB from the start of its file to 0.6 s in, then down to -12 dB
+        // at 0.7 s; the pan line all left from the start.
+        let lines = project::ClipLines {
+            volume: [point(0.0, -6_000), point(0.6, -6_000), point(0.7, -12_000)]
+                .into_iter()
+                .collect(),
+            pan: [point(0.0, -Sound::SIDE)].into_iter().collect(),
+        };
+        let lined = Command::SetClipLines {
+            sequence: plain.active_sequence,
+            clip: clip.id,
+            lines: Box::new(lines),
+        }
+        .apply(&plain)
+        .unwrap();
+        let (a, ar) = level_at(&lined, &mut mixer, &mut buf, 0.5);
+        assert!(
+            ((a / l) / std::f32::consts::SQRT_2 - 0.501).abs() < 0.01,
+            "-6 dB, all left: {}",
+            a / l
+        );
+        assert!(ar < 1e-6, "the pan line takes the clip's pan's place: {ar}");
+        let (b, _) = level_at(&lined, &mut mixer, &mut buf, 0.8);
+        let (b0, _) = level_at(&plain, &mut mixer, &mut buf, 0.8);
+        assert!(
+            ((b / b0) / std::f32::consts::SQRT_2 - 0.251).abs() < 0.01,
+            "-12 dB: {}",
+            b / b0
+        );
     }
 
     /// Sample by sample, the faded mix over the plain one: the fade's own curve.

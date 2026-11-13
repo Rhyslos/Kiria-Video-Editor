@@ -315,6 +315,7 @@ fn lay_nested(
 /// comes: no id or link yet.
 fn unfilled(kind: ClipKind, at: Time, length: Time) -> Clip {
     Clip {
+        lines: Default::default(),
         id: ClipId(0),
         media: MediaId::NONE,
         stream: 0,

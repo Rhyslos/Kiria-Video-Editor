@@ -6,6 +6,7 @@
 // Release builds on Windows open no console window next to the editor.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod audio_page;
 mod cache_cleanup;
 mod cheat_sheet;
 mod clip_pictures;
@@ -158,6 +159,7 @@ fn main() -> ExitCode {
         hold_proxy: options.hold_proxy,
         package_to: options.package_to.clone(),
         hold_package: options.hold_package,
+        audio: options.audio,
     });
     let pointer = options.pointer;
     // If this run crashes, the launcher offers to recover this project.
@@ -181,10 +183,11 @@ fn main() -> ExitCode {
     };
 
     let mut code = ExitCode::SUCCESS;
+    let window_size = options.window_size.unwrap_or([1440.0, 900.0]);
     let window = || eframe::NativeOptions {
         viewport: ui_kit::icon::with_window_icon(egui::ViewportBuilder::default())
             .with_title(brand::APP_NAME)
-            .with_inner_size([1440.0, 900.0])
+            .with_inner_size(window_size)
             .with_min_inner_size([960.0, 600.0]),
         ..Default::default()
     };

@@ -23,10 +23,11 @@
 
 use crate::mix;
 use audio::settings::{TrackSettings, lines_from_project, noise_from_project};
-use audio::{Controller, FeedWriter};
+use audio::{Controller, FeedWriter, TrackReadout};
 use diag::AppError;
 use media::audio::CHANNELS;
 use project::{Project, Sequence, SequenceId, Track, TrackId, TrackSound};
+use std::sync::Arc;
 
 /// Frames mixed at a time per track: four of the mixer's blocks.
 pub const PIECE: usize = 4 * audio::BLOCK;
@@ -45,6 +46,8 @@ struct Fed {
     clips: mix::Mixer,
     slot: usize,
     writer: FeedWriter,
+    /// Its meter and how far its effects turn it down, as the mixer measures.
+    readout: Arc<TrackReadout>,
     settings: TrackSettings,
     /// What the lines and noise were built from.
     sound: TrackSound,
@@ -114,6 +117,19 @@ impl Feeder {
         feeder.update(project, controller)?;
         feeder.live = true;
         Ok(feeder)
+    }
+
+    /// Each track's readout (its meter and effects), in the timeline's order.
+    pub fn readouts(&self) -> Vec<(TrackId, Arc<TrackReadout>)> {
+        self.tracks
+            .iter()
+            .map(|t| (t.id, Arc::clone(&t.readout)))
+            .collect()
+    }
+
+    /// The mixer's slot of a track, while the feeder has it.
+    pub fn slot_of(&self, track: TrackId) -> Option<usize> {
+        self.tracks.iter().find(|t| t.id == track).map(|t| t.slot)
     }
 
     /// Mixing goes on from timeline sample `at` (`at_secs` seconds): after
@@ -241,7 +257,7 @@ impl Feeder {
         let settings = TrackSettings::from_project(track);
         let lines = lines_from_project(&track.sound, self.rate);
         let noise = noise_from_project(&track.sound);
-        let (writer, _readout) = match first {
+        let (writer, readout) = match first {
             Some(at) => controller.add_track_at(slot, settings, lines, noise.as_ref(), self.ring, at)?,
             None => controller.add_track(slot, settings, lines, noise.as_ref(), self.ring)?,
         };
@@ -250,6 +266,7 @@ impl Feeder {
             clips: mix::Mixer::new(self.rate),
             slot,
             writer,
+            readout,
             settings,
             sound: track.sound.clone(),
             next: first.unwrap_or(self.origin.0),

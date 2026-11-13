@@ -83,6 +83,7 @@ fn rich_project() -> Project {
     let seq = p.sequences.front_mut().expect("the new project has a timeline");
     seq.settings.frame_rate = Rate::NTSC_60;
     let clip = |id, stream| Clip {
+        lines: Default::default(),
         id,
         media: video,
         stream,
@@ -156,9 +157,20 @@ fn rich_project() -> Project {
         fade_in: Time::from_ratio(1, 2).expect("half a second"),
         fade_out: Rate::NTSC_60.frame_start(45),
     };
+    // Its own volume line dips under a shout and its pan line swings
+    // right, at moments of the file (format 17).
+    let point = |s: i64, value: i32| project::track_sound::LinePoint {
+        at: Rate::NTSC_60.frame_start(90) + Time::seconds(s),
+        value,
+    };
+    let lines = project::ClipLines {
+        volume: [point(3, 0), point(4, -9_000), point(6, 0)].into_iter().collect(),
+        pan: [point(8, 0), point(10, 600_000)].into_iter().collect(),
+    };
     seq.audio_tracks[0].clips.push_back(Clip {
         sound,
         ramp,
+        lines,
         ..clip(a_clip, 1)
     });
     seq.audio_tracks.push_back(extra_audio);
@@ -432,6 +444,28 @@ fn version_15_sample_opens_with_every_effect_off() {
 }
 
 #[test]
+fn version_16_sample_opens_with_no_clip_lines() {
+    let project = file::load(&sample_path(16)).expect("the version 16 sample opens");
+    for seq in &project.sequences {
+        for track in seq.tracks() {
+            assert!(
+                track.clips.iter().all(|c| c.lines.is_empty()),
+                "format 16 had no clip lines"
+            );
+        }
+    }
+    assert!(project.active().expect("a timeline").master_sound.limiter.on);
+}
+
+#[test]
+fn the_current_sample_has_clip_volume_and_pan_lines() {
+    let project = file::load(&sample_path(FORMAT_VERSION)).expect("the sample opens");
+    let clip = &project.active().expect("a timeline").audio_tracks[0].clips[0];
+    assert_eq!((clip.lines.volume.len(), clip.lines.pan.len()), (3, 2));
+    assert!(clip.lines.check().is_ok());
+}
+
+#[test]
 fn the_current_sample_has_track_effects_lines_and_a_limiter() {
     let project = file::load(&sample_path(FORMAT_VERSION)).expect("the sample opens");
     let seq = project.active().expect("a timeline");
@@ -571,6 +605,8 @@ fn the_stored_template_matches_the_model_but_for_what_came_later() {
         clip.keyframes = project::Keyframes::default();
         clip.ramp = project::Ramp::default();
         clip.blend = project::FrameBlend::Off;
+        // Clip lines came with format 17.
+        clip.lines = project::ClipLines::default();
     }
     for media in expected.media.iter_mut() {
         media.info.stated_length = None;

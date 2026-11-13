@@ -32,13 +32,13 @@ use crate::feeder::{self, Feeder};
 use crate::meter::{Levels, MasterReadout};
 use crate::output::{Output, Shared};
 use audio::settings::{MasterSettings, sample_at};
-use audio::{Analyser, Controller};
+use audio::{Analyser, Controller, Spectrum, TrackReadout};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SizedSample};
 use project::{MasterSound, Project, SequenceId, Time, TrackId, TrackSound};
 use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 /// How far ahead the feeder mixes each track, seconds.
@@ -108,6 +108,11 @@ struct Clock {
     wall_from: AtomicU64,
     /// The master's meter, once the mixer is made.
     readout: OnceLock<Arc<MasterReadout>>,
+    /// Each track's meter, as the feeder last added and removed tracks
+    /// (the audio thread swaps the list; the interface clones it).
+    meters: Mutex<Vec<(TrackId, Arc<TrackReadout>)>>,
+    /// What the EQ's analyser shows, once the mixer is made.
+    spectrum: OnceLock<Arc<Spectrum>>,
 }
 
 impl Clock {
@@ -120,6 +125,8 @@ impl Clock {
             created: Instant::now(),
             wall_from: AtomicU64::new(0),
             readout: OnceLock::new(),
+            meters: Mutex::new(Vec::new()),
+            spectrum: OnceLock::new(),
         }
     }
 
@@ -177,6 +184,8 @@ enum Message {
     Project(Box<Project>),
     /// Go on from `at`; `number` counts jumps.
     Jump { at: Time, number: u64 },
+    /// The track the EQ's analyser listens to, if any.
+    Analyse(Option<TrackId>),
 }
 
 /// The parts of a timeline's mix that are heard at once when changed while
@@ -231,6 +240,8 @@ pub struct Playback {
     clock: Arc<Clock>,
     messages: Sender<Message>,
     mix: Option<MixShape>,
+    /// The track last sent to the analyser.
+    analysed: Option<TrackId>,
 }
 
 impl Playback {
@@ -272,6 +283,7 @@ impl Playback {
             clock,
             messages,
             mix: None,
+            analysed: None,
         }
     }
 
@@ -352,6 +364,27 @@ impl Playback {
         }
     }
 
+    /// Each track's meter and how far its effects turn it down, in the
+    /// timeline's order (empty until the mixer is made). A clone of a short
+    /// list behind a lock the audio thread holds only to swap it.
+    pub fn track_meters(&self) -> Vec<(TrackId, Arc<TrackReadout>)> {
+        self.clock.meters.lock().map(|m| m.clone()).unwrap_or_default()
+    }
+
+    /// What the EQ's analyser shows (the track [`Playback::analyse`] chose,
+    /// after its EQ), once the mixer is made.
+    pub fn spectrum(&self) -> Option<Arc<Spectrum>> {
+        self.clock.spectrum.get().cloned()
+    }
+
+    /// Which track the EQ's analyser listens to; sent only when it changes.
+    pub fn analyse(&mut self, track: Option<TrackId>) {
+        if self.analysed != track {
+            self.analysed = track;
+            let _ = self.messages.send(Message::Analyse(track));
+        }
+    }
+
     /// Whether sound is coming out (false: silent, or not ready yet).
     pub fn has_sound(&self) -> bool {
         self.clock.source.load(Ordering::Acquire) == SOUND
@@ -374,8 +407,10 @@ struct Session {
     feeder: Feeder,
     sequence: SequenceId,
     master: MasterSettings,
-    /// The EQ's analyser (the Audio page will read it).
-    _analyser: Analyser,
+    /// The EQ's analyser, stepped on this thread.
+    analyser: Analyser,
+    /// The track it listens to, sent again when tracks change slots.
+    analysed: Option<TrackId>,
 }
 
 /// Makes the mixer for `sequence` at `rate`, adds every track, sends it to
@@ -397,6 +432,7 @@ fn prepare(
     let slots = feeder::slots_for(seq);
     let (mut mixer, mut controller, analyser) = audio::mixer(rate, slots, master);
     let _ = clock.readout.set(controller.master());
+    let _ = clock.spectrum.set(analyser.spectrum());
     let at = sample_at(from, rate);
     let ring = (f64::from(rate) * AHEAD).ceil() as usize;
     let mut feeder = Feeder::new(
@@ -407,6 +443,9 @@ fn prepare(
         (at, from.as_secs_f64()),
         false,
     )?;
+    if let Ok(mut meters) = clock.meters.lock() {
+        *meters = feeder.readouts();
+    }
     controller.locate(at)?;
     mixer.idle();
     let prime = (f64::from(rate) * PRIME).ceil() as usize;
@@ -425,7 +464,8 @@ fn prepare(
             feeder,
             sequence,
             master,
-            _analyser: analyser,
+            analyser,
+            analysed: None,
         },
         output,
     ))
@@ -438,8 +478,12 @@ impl Session {
         let mut jump = None;
         loop {
             match inbox.try_recv() {
-                Ok(Message::Project(project)) => self.take(*project),
+                Ok(Message::Project(project)) => self.take(*project, clock),
                 Ok(Message::Jump { at, number }) => jump = Some((at, number)),
+                Ok(Message::Analyse(track)) => {
+                    self.analysed = track;
+                    self.send_analysed();
+                }
                 Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
             }
         }
@@ -447,11 +491,23 @@ impl Session {
             self.jump(at, number, clock);
         }
         self.controller.collect();
+        self.analyser.step();
         self.feeder.fill(&|| !clock.stopped())
     }
 
+    /// Tells the mixer which slot the analyser listens to.
+    fn send_analysed(&mut self) {
+        let slot = self
+            .analysed
+            .and_then(|t| self.feeder.slot_of(t))
+            .and_then(|s| u16::try_from(s).ok());
+        if let Err(err) = self.controller.send(audio::Command::Analyse(slot)) {
+            tracing::warn!("{}", err.report());
+        }
+    }
+
     /// The project as it is now: the tracks' and the master's changes.
-    fn take(&mut self, project: Project) {
+    fn take(&mut self, project: Project, clock: &Clock) {
         if let Some(seq) = project.sequence(self.sequence) {
             let master = MasterSettings::from_project(seq);
             for change in master.changes_from(&self.master) {
@@ -464,6 +520,11 @@ impl Session {
         if let Err(err) = self.feeder.update(project, &mut self.controller) {
             tracing::warn!("{}", err.report());
         }
+        // Tracks added or taken out: the meters and the analysed slot follow.
+        if let Ok(mut meters) = clock.meters.lock() {
+            *meters = self.feeder.readouts();
+        }
+        self.send_analysed();
     }
 
     /// Goes on from `at`: silence while the mixer jumps and the rings fill

@@ -66,6 +66,13 @@ pub struct Settings {
     /// How fast exports went on this machine (measured by the newest of
     /// each kind), for the time the Export page says one will take.
     pub export_pace: crate::export_page::Pace,
+    /// What the Audio page's bottom shows: the timeline, the mixer, or both.
+    pub audio_bottom: crate::audio_page::Bottom,
+    /// How the Audio page's Split lays them out: side by side, or stacked.
+    pub audio_split: crate::audio_page::SplitWay,
+    /// How the Audio page's loudness overview counts integrated loudness,
+    /// range and peaks: every play, until reset, or in the region.
+    pub loudness_counting: crate::audio_page::Counting,
 }
 
 /// Where the Library page keeps what is marked to add (Settings › Library).

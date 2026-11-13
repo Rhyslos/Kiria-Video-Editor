@@ -1,5 +1,6 @@
 //! The editor window.
 
+mod audio_ui;
 mod keyframe_clipboard;
 mod library_ui;
 mod timelines;
@@ -111,6 +112,21 @@ pub struct Editor {
     picture_handles: crate::picture_handles::PictureHandles,
     /// The Export page: what to export, and the export under way.
     export_page: crate::export_page::ExportPage,
+    /// The Audio page: its tool, track, filter, mixer and counting.
+    audio_page: crate::audio_page::AudioPage,
+    /// What the command line asked of the Audio page and is still to do
+    /// (its track, the demo tracks once imports are in).
+    audio_start: crate::audio_page::Start,
+    /// The frame the `--audio-tracks` demo was made on: the responsiveness
+    /// test starts counting a few frames after it, not during its set-up.
+    audio_demo_made: Option<u64>,
+    /// The master's meter as last read while playing, shown after.
+    audio_held_master: Option<audio::dsp::loudness::Measured>,
+    /// Volume and pan lines are drawn with their points and worked by the
+    /// pointer over audio tracks (the lines tool, on every timeline).
+    lines_on: bool,
+    /// Which lines: volume or pan, on tracks or on clips.
+    lines: ui_kit::LinesShown,
     frame_grab: crate::frame_grab::FrameGrab,
     silence: crate::silence_panel::SilencePanel,
     /// Sync by sound: what it found, and the comparison running.
@@ -242,6 +258,16 @@ impl Editor {
             project.as_ref().and_then(|p| p.library_select.clone()),
         );
         let full_screen = project.as_ref().is_some_and(|p| p.full_screen);
+        let audio_start = project.as_ref().map(|p| p.audio).unwrap_or_default();
+        let mut settings = settings;
+        if let Some((bottom, way)) = audio_start.view {
+            settings.audio_bottom = bottom;
+            if let Some(way) = way {
+                settings.audio_split = way;
+            }
+        }
+        let mut audio_page = crate::audio_page::AudioPage::default();
+        audio_page.tool = audio_start.tool.unwrap_or_default();
         let select_first_clip = project.as_ref().is_some_and(|p| p.select_first_clip);
         let sync_when_ready = project.as_ref().is_some_and(|p| p.sync_by_sound);
         let hold_reading = project.as_ref().and_then(|p| p.hold_reading);
@@ -407,6 +433,12 @@ impl Editor {
             inspector: crate::inspector::Inspector::default(),
             picture_handles: crate::picture_handles::PictureHandles::default(),
             export_page,
+            audio_page,
+            audio_start,
+            audio_held_master: None,
+            audio_demo_made: None,
+            lines_on: false,
+            lines: ui_kit::LinesShown::default(),
             play_when_ready,
             show_timeline_settings: false,
             show_settings: false,
@@ -517,6 +549,16 @@ impl Editor {
                 self.shortcuts_page.get_or_insert_with(Default::default);
                 Ok(())
             }
+            Action::VolumeLines => {
+                self.lines_on = !self.lines_on;
+                self.status = if self.lines_on {
+                    "Lines: click an audio track to add a point, drag one to move it, double-click it to remove it"
+                } else {
+                    "Lines off: the pointer works clips again"
+                }
+                .into();
+                Ok(())
+            }
             Action::RoughCut => {
                 self.settings.rough_cut = !self.settings.rough_cut;
                 self.timeline.rough_cut = self.settings.rough_cut;
@@ -601,6 +643,7 @@ impl Editor {
             Action::AddAudioTrack => self.add_track(project::TrackKind::Audio),
             Action::ZoomToFit => {
                 self.fitted = false;
+                self.audio_page.fitted = false;
                 Ok(())
             }
             Action::ZoomIn
@@ -614,7 +657,7 @@ impl Editor {
                         self.shortcuts.keys_or_name(Action::CompactTracks)
                     );
                 }
-                self.timeline.step(match action {
+                self.shown_view().step(match action {
                     Action::ZoomIn => ui_kit::ViewStep::ZoomIn,
                     Action::ZoomOut => ui_kit::ViewStep::ZoomOut,
                     Action::TallerTracks => ui_kit::ViewStep::TallerTracks,
@@ -624,7 +667,7 @@ impl Editor {
                 Ok(())
             }
             Action::SelectTool => {
-                self.timeline.tool = ui_kit::Tool::Select;
+                self.shown_view().tool = ui_kit::Tool::Select;
                 Ok(())
             }
             Action::BladeTool
@@ -632,7 +675,7 @@ impl Editor {
             | Action::RollTool
             | Action::SlipTool
             | Action::SlideTool => {
-                self.timeline.tool = match action {
+                self.shown_view().tool = match action {
                     Action::BladeTool => ui_kit::Tool::Blade,
                     Action::RippleTool => ui_kit::Tool::Ripple,
                     Action::RollTool => ui_kit::Tool::Roll,
@@ -655,8 +698,9 @@ impl Editor {
                 Ok(())
             }
             Action::ToggleSnapping => {
-                self.timeline.snapping = !self.timeline.snapping;
-                self.status = if self.timeline.snapping {
+                let view = self.shown_view();
+                view.snapping = !view.snapping;
+                self.status = if view.snapping {
                     "Snapping on"
                 } else {
                     "Snapping off"
@@ -736,6 +780,14 @@ impl Editor {
             String::new()
         } else {
             format!("{}.", hints.join(", "))
+        }
+    }
+
+    /// The timeline the page shown has: the Audio page's own, or the Edit page's.
+    fn shown_view(&mut self) -> &mut ui_kit::TimelineView {
+        match self.page {
+            Page::Audio => &mut self.audio_page.timeline,
+            _ => &mut self.timeline,
         }
     }
 
@@ -919,6 +971,8 @@ impl Editor {
                     self.errors.push(&err);
                 }
             }
+            E::Line { owner, kind, points } => self.line_event(owner, kind, &points),
+            E::TrackRole { track, role } => self.role_event(track, role),
             E::Select { clip, add } => timeline_panel::select(&mut self.selected, project::ClipId(clip), add),
             E::ClearSelection => self.selected.clear(),
             E::Move {
@@ -1330,8 +1384,21 @@ impl Editor {
         };
         // Mute, solo, volume and sound changes (and their undo) are heard
         // within a block: a comparison per frame, sent only when changed.
+        // What is being dragged on the Audio page (a setting, a fader, a
+        // track's line) is heard as it moves.
         if let Some(document) = &self.document {
-            playback.follow(document.project());
+            let p = document.project();
+            let shown = self.audio_page.shown(p);
+            let base = shown.as_ref().unwrap_or(p);
+            let view = if self.page == Page::Audio {
+                &self.audio_page.timeline
+            } else {
+                &self.timeline
+            };
+            let lined = view
+                .line_being_set()
+                .and_then(|line| crate::audio_page::lines::with_line_being_set(base, line));
+            playback.follow(lined.as_ref().unwrap_or(base));
         }
         let seq = self.document.as_ref().and_then(|d| d.project().active());
         let (length, rate) = seq.map_or((Time::ZERO, project::Rate::FPS_60), |s| {
@@ -2306,6 +2373,10 @@ impl Editor {
             self.library_page_ui(ui);
             return;
         }
+        if self.page == Page::Audio && self.document.is_some() {
+            self.audio_page_ui(ui);
+            return;
+        }
         if self.page == Page::Export
             && let Some(document) = &self.document
         {
@@ -2617,6 +2688,8 @@ impl Editor {
             );
             // Sound being set in the inspector shows on its clips at once.
             timeline_panel::show_sounds(&mut drawn, self.inspector.sounds_being_set());
+            crate::audio_page::lines::fill(&mut drawn.audio, seq, self.lines.kind);
+            self.timeline.lines = self.lines_on.then_some(self.lines);
             self.timeline.rough_cut = self.settings.rough_cut;
             self.timeline.compact = self.settings.compact_tracks;
             self.timeline.divider = !self.settings.one_track_list;
@@ -2633,6 +2706,7 @@ impl Editor {
                 self.timeline.fit(length, width - ui_kit::timeline::HEADER_WIDTH);
                 self.fitted = true;
             }
+            let roles = crate::audio_page::roles::offered();
             let data = ui_kit::TimelineData {
                 video: &drawn.video,
                 audio: &drawn.audio,
@@ -2649,6 +2723,7 @@ impl Editor {
                     about: timeline_panel::CACHE_BAR_ABOUT,
                 },
                 keyframe_eases: &timeline_panel::EASES,
+                roles: &roles,
             };
             let status_height = if self.status.is_empty() { 0.0 } else { 24.0 };
             let height = (ui.available_height() - status_height).max(160.0);
@@ -3124,7 +3199,14 @@ impl Editor {
             }
             RunMode::ResponsivenessTest => {
                 ctx.request_repaint();
+                // A project being made for the test (`--audio-tracks`) is
+                // set-up, not use: counting starts a few frames after it.
+                let setting_up = self.audio_start.tracks.is_some()
+                    || self.audio_demo_made.is_some_and(|made| self.frames < made + 5);
                 let probe = &mut self.probe;
+                if probe.job.is_none() && setting_up {
+                    return;
+                }
                 if probe.job.is_none() {
                     probe.started = Some(now);
                     // On the export pool, which nothing else uses here, so the
@@ -3164,13 +3246,19 @@ impl Editor {
                         .get(probe.ui_times.len() * 99 / 100)
                         .copied()
                         .unwrap_or_default();
+                    let median = probe
+                        .ui_times
+                        .get(probe.ui_times.len() / 2)
+                        .copied()
+                        .unwrap_or_default();
                     let failed =
                         p99 > Duration::from_millis(16) || probe.slowest_ui > Duration::from_millis(50);
                     let message = format!(
-                        "Responsiveness test {}: {} frames in {:.1} s ({fps:.0} per second), interface work {:.1} ms for 99 frames in 100 and {:.1} ms at most, longest gap between frames {:.1} ms.",
+                        "Responsiveness test {}: {} frames in {:.1} s ({fps:.0} per second), interface work {:.1} ms for half the frames, {:.1} ms for 99 frames in 100 and {:.1} ms at most, longest gap between frames {:.1} ms.",
                         if failed { "FAILED" } else { "passed" },
                         probe.frames,
                         elapsed.as_secs_f64(),
+                        median.as_secs_f64() * 1000.0,
                         p99.as_secs_f64() * 1000.0,
                         probe.slowest_ui.as_secs_f64() * 1000.0,
                         probe.slowest_gap.as_secs_f64() * 1000.0,
@@ -3287,7 +3375,9 @@ impl eframe::App for Editor {
         }
         self.relinking(&ctx);
         self.library_index(&ctx);
+        self.follow_audio_page();
         self.follow_library_page(&ctx);
+        self.audio_demo();
         self.frame_grabs(&ctx);
         if let Some(err) = self.viewer.poll(&ctx, self.settings.preview_quality)
             && !self.relink.explains_errors()
@@ -3536,6 +3626,8 @@ pub struct ProjectToOpen {
     pub package_to: Option<PathBuf>,
     /// Also start packaging and stop copying at this share.
     pub hold_package: Option<f32>,
+    /// What the Audio page starts with.
+    pub audio: crate::audio_page::Start,
 }
 
 /// Opens a project, or creates it if it doesn't exist.

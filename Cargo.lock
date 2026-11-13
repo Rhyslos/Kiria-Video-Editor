@@ -220,6 +220,7 @@ dependencies = [
 name = "app"
 version = "0.1.0"
 dependencies = [
+ "audio",
  "brand",
  "cache",
  "diag",
@@ -228,6 +229,7 @@ dependencies = [
  "engine",
  "graphics",
  "image",
+ "imbl",
  "jobs",
  "library",
  "media",
