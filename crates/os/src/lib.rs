@@ -11,9 +11,9 @@
 //! reports in the system's own terms, and the interface decides what that
 //! means (`ui_kit::keyboard::SystemKeyboard`).
 
-mod thread_priority;
 pub mod alloc_count;
 pub mod float;
+mod thread_priority;
 mod xkb;
 
 pub use thread_priority::lower_this_thread;
