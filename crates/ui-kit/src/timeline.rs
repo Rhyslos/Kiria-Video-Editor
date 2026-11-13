@@ -122,7 +122,8 @@ pub struct TimelineClip {
     /// Its own line of the kind shown ([`TimelineView::lines`]), in
     /// seconds on the timeline: drawn inside it ([`lines`]).
     pub line: Option<LinePoints>,
-    /// How far its picture can slip (the Slip tool), held to while dragging.
+    /// How far its picture can slip (the Slip tool) and its edges be
+    /// trimmed outwards: both drags are held to it as they go.
     pub slip_room: Option<SlipRoom>,
     /// Where what it plays ends, in seconds on the timeline, when that is
     /// before the clip ends (a nested timeline that got shorter): the rest
@@ -3363,13 +3364,24 @@ impl TimelineView {
                 } else {
                     raw
                 };
+                // Held to the file there is, as it goes, so letting go is
+                // never refused because the file ends.
+                // (A trim changes the clip and the clips linked to it only.)
+                let room = || {
+                    slip::room_of(data, |c| {
+                        c.id == drag.clip || (drag.link.is_some() && c.link == drag.link)
+                    })
+                };
                 let delta = match drag.kind {
-                    DragKind::Move | DragKind::Slide | DragKind::Trim(ClipEdge::Start) => {
-                        delta.max(-drag.start)
+                    DragKind::Move | DragKind::Slide => delta.max(-drag.start),
+                    DragKind::Trim(ClipEdge::Start) => {
+                        slip::trim_held(delta, room(), data.fps, true).max(-drag.start)
                     }
-                    // Held to the file there is, as it goes.
-                    DragKind::Slip => slip::held(delta, slip::room_of(data, |c| drag.moves(c)), data.fps),
-                    _ => delta,
+                    DragKind::RippleTrim(ClipEdge::Start) => slip::trim_held(delta, room(), data.fps, true),
+                    DragKind::Trim(ClipEdge::End) | DragKind::RippleTrim(ClipEdge::End) | DragKind::Roll => {
+                        slip::trim_held(delta, room(), data.fps, false)
+                    }
+                    DragKind::Slip => slip::held(delta, room(), data.fps),
                 };
                 // A move also follows the pointer to another track of this
                 // area, and past the last one to a track of its own.
