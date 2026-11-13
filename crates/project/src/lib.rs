@@ -31,6 +31,7 @@ pub mod file;
 pub mod global_labels;
 pub mod history;
 pub mod ids;
+mod journal_sync;
 pub mod keyframes;
 mod layers;
 pub mod library;
