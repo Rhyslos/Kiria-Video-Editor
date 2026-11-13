@@ -439,7 +439,9 @@ Built (`crates/audio`, pure and tested without a device): every track effect (hi
 
 **8.2 Clarity check**
 
-- [ ] Worker-thread analysis of where tracks share frequencies at the playhead and over the region.
+Built (`engine::clarity`, see its README): on the jobs' Analysis pool, cancellable with progress, at the playhead (a second either side) or over a stretch. Each heard track goes through the audio crate's own strip in the mixer's order (dialogue first as the ducking key), so effects count and a fix shows in the next check as it will be heard. Per track, power in 18 third-octave bands (160 Hz to 8 kHz) every 1024 samples. Covering the voice: per band from 315 Hz to 4 kHz, clear 6 dB under the dialogue, covered 6 dB over it, weighted by the published Speech Intelligibility Index band importance. Muddy: three or more tracks within 10 dB of each other between 200 and 500 Hz, rated by how far the mix's low middle stands over its presence. Findings are smoothed and joined stretches with the tracks, the band, a severity and a plain sentence, each with fixes that are ordinary undoable `SetTrackSound` edits: lower under the dialogue (ducking -10 dB), cut around 300 Hz (-3.5 dB, Q 1), make room for the voice (-2.5 dB at 2.5 kHz, Q 1). Tested on made-up tracks: found in the right band and time, nothing for a clean mix, the pile-up found, every fix makes its problem smaller when checked again, cancel. Not yet done: drawing it on the Audio page (its middle band) and the buttons.
+
+- [x] Worker-thread analysis of where tracks share frequencies at the playhead and over the region.
 - [ ] Muddy zones highlighted, explained in plain words, with one-click fixes (lower music under dialogue, cut music around 300 Hz).
 
 **8.3 Sync by sound**

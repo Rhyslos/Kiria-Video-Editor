@@ -17,9 +17,11 @@ audio = { path = "../audio" }
 # Proxies: the preview shows their frames first.
 cache = { path = "../cache" }
 diag = { path = "../diag" }
-# Sync by sound compares sounds by their frequencies (MIT or Apache-2.0,
-# pure Rust; the audio engine uses the same).
+# Sync by sound and the clarity check measure sounds by their frequencies
+# (MIT or Apache-2.0, pure Rust; the audio engine uses the same).
 realfft = "3.5"
+# The clarity check runs on the Analysis pool.
+jobs = { path = "../jobs" }
 image = { version = "0.25", default-features = false, features = ["png"] }
 media = { path = "../media" }
 # Very small numbers as zero on the sound card's thread; the counting

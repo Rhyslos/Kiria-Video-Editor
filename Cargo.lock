@@ -1404,6 +1404,7 @@ dependencies = [
  "cpal",
  "diag",
  "image",
+ "jobs",
  "media",
  "os",
  "pollster",
