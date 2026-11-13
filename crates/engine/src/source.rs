@@ -24,7 +24,20 @@ pub enum Source<'a> {
         media: &'a MediaRef,
         at: Time,
     },
+    /// A nested clip: its timeline's own picture at `at` (time in that
+    /// timeline), shown by asking for the project with it open.
+    Nested {
+        clip: &'a Clip,
+        sequence: project::SequenceId,
+        at: Time,
+    },
+    /// An adjustment layer: it has no picture of its own.
+    Adjustment,
 }
+
+/// What the Source says for an adjustment layer.
+pub const NO_PICTURE_OF_ITS_OWN: &str =
+    "An adjustment layer has no picture of its own: it changes the picture below it";
 
 /// What the Source half shows: the first selected clip whose file has a
 /// picture (a selected sound clip stands for the picture clip linked to
@@ -39,25 +52,47 @@ pub fn source<'a>(
     let Some(clip) = picture_clip(project, sequence, selected) else {
         return Source::NothingSelected;
     };
-    let Some(media) = project.media.get(&clip.media) else {
-        return Source::NothingSelected;
-    };
-    Source::Shot {
-        clip,
-        media,
-        at: clip.source_at(within(clip, playhead, sequence.settings.frame_rate)),
+    let at = clip.source_at(within(clip, playhead, sequence.settings.frame_rate));
+    match clip.kind {
+        project::ClipKind::Adjustment => Source::Adjustment,
+        project::ClipKind::Timeline(inner) => Source::Nested {
+            clip,
+            sequence: inner,
+            at,
+        },
+        project::ClipKind::File => match project.media.get(&clip.media) {
+            // A still is the same at every moment.
+            Some(media) if media.kind == project::MediaKind::Image => Source::Shot {
+                clip,
+                media,
+                at: Time::ZERO,
+            },
+            Some(media) => Source::Shot { clip, media, at },
+            None => Source::NothingSelected,
+        },
     }
+}
+
+/// `project` with the timeline `sequence` open: asked for at a time in
+/// that timeline, a preview worker shows its picture there.
+pub fn timeline_alone(project: &Project, sequence: project::SequenceId) -> Option<Project> {
+    project.sequence(sequence)?;
+    let mut alone = project.clone();
+    alone.active_sequence = sequence;
+    Some(alone)
 }
 
 /// The selected clip whose picture the Source shows: the first selected
 /// one on a video track whose file has a picture, else the picture clip
 /// linked to a selected sound clip.
 fn picture_clip<'a>(project: &Project, sequence: &'a Sequence, selected: &[ClipId]) -> Option<&'a Clip> {
-    let has_picture = |clip: &Clip| {
-        project
+    let has_picture = |clip: &Clip| match clip.kind {
+        // Said in words or shown as their timeline.
+        project::ClipKind::Adjustment | project::ClipKind::Timeline(_) => true,
+        project::ClipKind::File => project
             .media
             .get(&clip.media)
-            .is_some_and(|media| media.info.video.is_some())
+            .is_some_and(|media| media.info.video.is_some()),
     };
     let pictures = || sequence.video_tracks.iter().flat_map(|track| track.clips.iter());
     for id in selected {
@@ -91,6 +126,11 @@ pub fn within(clip: &Clip, playhead: Time, rate: Rate) -> Time {
 /// file has no picture.
 pub fn file_alone(media: &MediaRef) -> Option<Project> {
     let video = media.info.video.as_ref()?;
+    // A still has no length of its own: a second of it, asked for at its start.
+    let duration = match media.kind {
+        project::MediaKind::Image => Time::seconds(1),
+        _ => media.duration,
+    };
     let (width, height) = video.display_size();
     let settings = SequenceSettings {
         width,
@@ -108,7 +148,7 @@ pub fn file_alone(media: &MediaRef) -> Option<Project> {
         stream: video.index,
         start: Time::ZERO,
         source_in: Time::ZERO,
-        duration: media.duration,
+        duration,
         link: None,
         speed: project::Speed::NORMAL,
         look: project::Look::default(),
@@ -202,8 +242,79 @@ mod tests {
     fn shown_at(project: &Project, selected: &[ClipId], playhead: Time) -> Option<Time> {
         match source(project, project.active().unwrap(), selected, playhead) {
             Source::Shot { at, .. } => Some(at),
-            Source::NothingSelected => None,
+            _ => None,
         }
+    }
+
+    #[test]
+    fn a_still_is_shown_from_its_start_whatever_the_playhead() {
+        let mut still = media("photo.jpg", (320, 180), 0);
+        still.kind = project::MediaKind::Image;
+        still.duration = Time::ZERO;
+        still.info.audio.clear();
+        let p = Project::new("T", SequenceSettings::GAME_CLIP);
+        let p = Command::Import {
+            sequence: p.active_sequence,
+            media: still.clone(),
+        }
+        .apply(&p)
+        .unwrap();
+        let clip = first_clip(&p, TrackKind::Video);
+        let Source::Shot { at, media, .. } = source(&p, p.active().unwrap(), &[clip], Time::seconds(2))
+        else {
+            panic!("the still");
+        };
+        assert_eq!(at, Time::ZERO);
+        let alone = file_alone(media).unwrap();
+        let shown = &alone.active().unwrap().video_tracks[0].clips[0];
+        assert!(
+            shown.duration > Time::ZERO,
+            "a still alone has a length to be shown at"
+        );
+    }
+
+    #[test]
+    fn a_nested_clip_shows_its_timeline_and_an_adjustment_layer_says_it_has_no_picture() {
+        let p = project();
+        let main = p.active_sequence;
+        let p = Command::DuplicateSequence {
+            sequence: main,
+            name: "Inner".into(),
+        }
+        .apply(&p)
+        .unwrap();
+        let inner = p.sequences.iter().find(|s| s.name == "Inner").unwrap().id;
+        let p = Command::PlaceSequence {
+            sequence: main,
+            nested: inner,
+            at: Some(Time::seconds(20)),
+            track: None,
+        }
+        .apply(&p)
+        .unwrap();
+        let p = Command::AddAdjustment {
+            sequence: main,
+            at: Time::seconds(30),
+            length: Time::seconds(2),
+            track: None,
+        }
+        .apply(&p)
+        .unwrap();
+        let seq = p.sequence(main).unwrap();
+        let clips: Vec<&Clip> = seq.video_tracks.iter().flat_map(|t| t.clips.iter()).collect();
+        let nested = clips.iter().find(|c| c.nested() == Some(inner)).unwrap();
+        let layer = clips.iter().find(|c| c.is_adjustment()).unwrap();
+        match source(&p, seq, &[nested.id], Time::seconds(20)) {
+            Source::Nested { sequence, at, .. } => {
+                assert_eq!((sequence, at), (inner, Time::ZERO));
+                assert_eq!(timeline_alone(&p, sequence).unwrap().active_sequence, inner);
+            }
+            other => panic!("the nested timeline: {other:?}"),
+        }
+        assert_eq!(
+            source(&p, seq, &[layer.id], Time::seconds(31)),
+            Source::Adjustment
+        );
     }
 
     #[test]
