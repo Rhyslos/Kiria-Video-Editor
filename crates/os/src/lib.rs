@@ -1,6 +1,6 @@
 //! Small questions to the operating system that the interface needs and
-//! the windowing crate does not answer: today, which keyboard layout is in
-//! use.
+//! the windowing crate does not answer: which keyboard layout is in use,
+//! and lowering a worker thread's priority below the interface's.
 //!
 //! This is the one crate besides the FFmpeg and GPU wrappers where `unsafe`
 //! may appear (working rule 6), and only for foreign calls into the system,
@@ -8,7 +8,12 @@
 //! reports in the system's own terms, and the interface decides what that
 //! means (`ui_kit::keyboard::SystemKeyboard`).
 
+mod thread_priority;
 mod xkb;
+
+pub use thread_priority::lower_this_thread;
+#[cfg(target_os = "linux")]
+pub use thread_priority::this_thread_nice;
 
 #[cfg(windows)]
 mod windows;

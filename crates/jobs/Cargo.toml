@@ -9,6 +9,7 @@ publish = false
 
 [dependencies]
 diag = { path = "../diag" }
+os = { path = "../os" }
 serde = { version = "1", features = ["derive"] }
 sysinfo = { version = "0.40", default-features = false, features = ["system", "disk"] }
 tracing = "0.1"

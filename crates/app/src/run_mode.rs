@@ -9,7 +9,8 @@ pub struct Options {
     /// Open the project as last saved, setting aside unsaved work from a crash
     /// (the launcher's "Open last save"). Normally that work is recovered.
     pub open_last_save: bool,
-    /// Media files to import into the project at start (`--import <file>`, repeatable).
+    /// Media files to import into the project at start (`--import <file>`,
+    /// repeatable; a folder stands for every file in it, see [`expand_folders`]).
     pub import: Vec<PathBuf>,
     /// Where the playhead starts, in seconds (`--playhead <seconds>`, for screenshots).
     pub playhead: Option<f64>,
@@ -93,7 +94,8 @@ pub enum RunMode {
     /// Draw the window, save a PNG of it, close.
     Screenshot(PathBuf),
     /// Run an 8-second background job and measure how long the interface
-    /// takes per frame meanwhile (Gate 0).
+    /// takes per frame meanwhile (Gate 0); with `--import`, until the
+    /// imports are in too (Gate 5).
     ResponsivenessTest,
 }
 
@@ -244,9 +246,48 @@ impl Options {
     }
 }
 
+/// The files to import, with each folder among them replaced by the files
+/// directly in it, by name, hidden ones left out (`--import <folder>`: for
+/// importing hundreds of files at once in a check, which would not fit on a
+/// command line one by one). Files are kept as given, so a damaged or
+/// unreadable one is refused by the import like any other; a folder that
+/// can't be listed is kept as it is, for the import to say why.
+pub fn expand_folders(paths: &[PathBuf]) -> Vec<PathBuf> {
+    let mut out = Vec::with_capacity(paths.len());
+    for path in paths {
+        let listed = path.is_dir().then(|| std::fs::read_dir(path).ok()).flatten();
+        let Some(entries) = listed else {
+            out.push(path.clone());
+            continue;
+        };
+        let mut files: Vec<PathBuf> = entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+            .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
+            .map(|e| e.path())
+            .collect();
+        files.sort();
+        out.extend(files);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_folder_to_import_stands_for_its_files() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["b.mp4", "a.wav", ".hidden.png"] {
+            std::fs::write(dir.path().join(name), b"x").unwrap();
+        }
+        std::fs::create_dir(dir.path().join("inner")).unwrap();
+        std::fs::write(dir.path().join("inner").join("c.mp4"), b"x").unwrap();
+        let single = PathBuf::from("single.mkv");
+        let got = expand_folders(&[single.clone(), dir.path().to_path_buf()]);
+        assert_eq!(got, [single, dir.path().join("a.wav"), dir.path().join("b.mp4")]);
+    }
 
     fn parse(args: &[&str]) -> Result<Options, String> {
         Options::parse(args.iter().map(|s| s.to_string()))

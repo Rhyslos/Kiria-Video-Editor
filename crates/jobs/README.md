@@ -24,7 +24,7 @@ if let Some(result) = handle.try_result() { /* ... */ }
 
 | Part | Behaviour |
 |---|---|
-| Pools | Decode, render, analysis and export, each with its own threads. The worker budget is split 40 / 30 / 15 / 15 %, at least one thread each |
+| Pools | Decode, render, analysis and export, each with its own threads. The worker budget is split 40 / 30 / 15 / 15 %, at least one thread each. The analysis pool's threads (import checks, waveforms, clip pictures, proxies, loudness: work nobody watches frame by frame) run below normal priority (`os::lower_this_thread`), so on a machine with few cores the interface thread is not kept waiting behind them; decode, render and export stay at normal priority, since playback and an export someone started wait for them |
 | Interface thread | Never part of a pool. Auto budgets leave one CPU thread free for it |
 | Priorities | `Playback` runs before `Interactive`, which runs before `Background`; equal priorities run oldest first |
 | Background policy | `Always`, `PauseWhilePlaying` (default) or `OnlyWhenIdle`. Tell it with `set_playing` and `set_idle`; `closing` lets everything held back run, so closing the app can wait for a save started while playing |

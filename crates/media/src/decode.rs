@@ -606,6 +606,13 @@ impl VideoDecoder {
     /// made to jump to its start.
     fn listed_key_frames(&mut self) -> KeyFrames {
         let mut times = Vec::new();
+        // A single picture is one frame, with nothing to jump to. And a jump
+        // to its start leaves the reader that opens pictures by their file
+        // name (larger JPEGs) at the end of the file, so its one picture was
+        // never read: no jump.
+        if crate::probe::is_still_image(&self.input.container()) {
+            return KeyFrames::new(times, 0.0);
+        }
         // SAFETY: the context is open and the stream index was checked when
         // it was opened; entries are read while nothing else uses the context.
         unsafe {

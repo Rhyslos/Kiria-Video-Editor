@@ -68,7 +68,9 @@ pub(crate) struct Pool {
 }
 
 impl Pool {
-    pub(crate) fn new(name: &str, threads: usize) -> Pool {
+    /// `lowered`: its threads run below the interface thread's priority
+    /// (`os::lower_this_thread`), for work nobody watches frame by frame.
+    pub(crate) fn new(name: &str, threads: usize, lowered: bool) -> Pool {
         let shared = Arc::new(Shared {
             state: Mutex::new(State::default()),
             wake: Condvar::new(),
@@ -79,7 +81,12 @@ impl Pool {
                 let shared = Arc::clone(&shared);
                 std::thread::Builder::new()
                     .name(format!("{name}-{i}"))
-                    .spawn(move || worker(&shared))
+                    .spawn(move || {
+                        if lowered && !os::lower_this_thread() {
+                            tracing::debug!("the system kept a worker at normal priority");
+                        }
+                        worker(&shared);
+                    })
                     .map_err(|err| tracing::error!("could not start a {name} worker: {err}"))
                     .ok()
             })

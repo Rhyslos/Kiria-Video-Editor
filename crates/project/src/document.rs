@@ -1,7 +1,10 @@
 //! An open project on disk: history, autosave journal and crash recovery.
 //!
 //! Every change, undo and redo is appended to a journal file next to the
-//! project (`<file>.journal`) the moment it happens, numbered in order. A
+//! project (`<file>.journal`) the moment it happens, numbered in order, so a
+//! crash of the app loses nothing; a thread of its own then asks the disk to
+//! keep it through a power cut too, so the interface never waits for the
+//! disk (`journal_sync`). A
 //! full save writes the project file together with the number of the last
 //! journal entry it includes. Full saves run on a worker thread: the
 //! interface hands out a [`SaveJob`] (a cheap snapshot), the job writes the
@@ -12,6 +15,7 @@
 use crate::command::Command;
 use crate::file;
 use crate::history::History;
+use crate::journal_sync::JournalSync;
 use crate::model::Project;
 use diag::{AppError, Explain};
 use serde::{Deserialize, Serialize};
@@ -77,6 +81,8 @@ pub struct Document {
     history: History,
     /// `None` for a read-only document: nothing is written.
     journal: Option<File>,
+    /// Puts what is written to the journal on the disk, off this thread.
+    sync: JournalSync,
     /// Number of the last journal entry written.
     seq: u64,
     unsaved_since: Option<Instant>,
@@ -92,6 +98,7 @@ impl Document {
             path: path.to_owned(),
             history: History::new(project),
             journal: Some(journal),
+            sync: JournalSync::start(),
             seq: 0,
             unsaved_since: None,
             save_in_flight: false,
@@ -124,6 +131,7 @@ impl Document {
                     project
                 }),
                 journal: None,
+                sync: JournalSync::start(),
                 seq: 0,
                 unsaved_since: None,
                 save_in_flight: false,
@@ -158,6 +166,7 @@ impl Document {
             path: path.to_owned(),
             history,
             journal: Some(open_journal(&journal_file, false)?),
+            sync: JournalSync::start(),
             seq,
             unsaved_since: None,
             save_in_flight: false,
@@ -290,7 +299,7 @@ impl Document {
         };
         let journal = self.journal.as_mut().ok_or_else(read_only)?;
         writeln!(journal, "{line}").or_explain(explain)?;
-        journal.sync_data().or_explain(explain)?;
+        self.sync.request(journal).or_explain(explain)?;
         self.seq = seq;
         self.unsaved_since.get_or_insert_with(Instant::now);
         Ok(())
@@ -441,6 +450,26 @@ mod tests {
             Project::new("Start", SequenceSettings::GAME_CLIP),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn a_burst_of_changes_reaches_the_disk_without_waiting_for_it_each_time() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("p.project");
+        let mut doc = new_doc(tmp.path());
+        for i in 0..100 {
+            doc.apply(rename(&format!("Name {i}"))).unwrap();
+        }
+        // Each line is in the journal as soon as it is applied.
+        assert_eq!(Document::check(&path).unwrap().unsaved_changes, 100);
+        let syncs = doc.sync.wait();
+        assert!((1..=100).contains(&syncs), "{syncs}");
+        let expected = doc.project().clone();
+        drop(doc);
+        assert_eq!(
+            Document::open(&path, Recovery::Recover).unwrap().project(),
+            &expected
+        );
     }
 
     #[test]

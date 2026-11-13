@@ -34,7 +34,7 @@ The platform (project file, errors, installs, safe updates) comes before any pag
 | 2 | Launcher | Project browser, folders, update panel | Create, find and open projects; manual update works | Gate passed (accepted by the owner; manual gate tests skipped) |
 | 3 | Update safety | Side-by-side installs, rollback, project migrations | A broken update rolls back by itself; old projects open | Gate passed (accepted by the owner; manual gate tests skipped) |
 | 4 | Edit page | Media pipeline, playback, timeline, editing, inspector | Cut a 20-minute game recording smoothly at 1440p 60 | Built; gate waiting for the owner's edit |
-| 5 | Library | Import, index, tabs, lists, labels, prune | 500 clips import, filter and search instantly | In progress (5.1, 5.2 done) |
+| 5 | Library | Import, index, tabs, lists, labels, prune | 500 clips import, filter and search instantly | Built; gate measured on the cloud machine (Library page passed, Edit page borderline), waiting for the owner's PC |
 | 6 | Export | Encode pipeline, presets, checks, queue | Exports match the timeline frame for frame | Not started |
 | 8 | Audio | Mixer, effects, loudness, clarity check | A noisy three-track recording mixes to −14 LUFS cleanly | Not started |
 | 9 | Effects and extras | Effects drawer, background removal, extra features | Hair edges hold, no flicker; extras pass their tests | Not started |
@@ -383,8 +383,10 @@ Phase 5 turns the simple media list from phase 4 into the full Library page; the
 
 **Gate 5**
 
-- [ ] 500 mixed files import with live progress while the UI stays smooth; filters and search answer in under 100 ms.
-- [ ] A packaged project opens on the other machine with nothing missing.
+*Measured on the cloud machine* (13 November 2026; provisional until measured on the owner's PC, so nothing below is ticked): the first line passed there on the Library page and was borderline on the Edit page, with the fixes it called for; the second needs the owner's second PC.
+
+- [ ] 500 mixed files import with live progress while the UI stays smooth; filters and search answer in under 100 ms. (On the cloud machine, two cores and software graphics: passed on the Library page, borderline on the Edit page. The files: 200 H.264 and 100 H.265 videos (MP4 and MKV, 90p to 360p, 1 to 2 s, 39 of them with two or three sound streams), six 1080p videos, 40 WAV, 40 MP3, 30 FLAC, 30 Opus, 25 PNG, 25 JPEG and four broken files, imported at once with `editor big.project --import <folder> --page library --responsiveness-test` (the test lasts until the imports are in). 496 went in and onto the timeline in 8 to 14 s; the four broken ones were refused in one message; "Checking N files…" counted down beside Import on both pages, and the Library's grid filled as they came. Interface time for 99 frames in 100: Library page 5.7 and 6.5 ms (at most 10.9 ms), Edit page 11.6, 11.7, 14.8 and 15.4 ms in four runs, 16.4 and 23.6 ms in two more, against the 16 ms the test allows; the interface's own CPU time was 4 to 5 ms for 99 frames in 100 on both pages, the rest waiting for one of the two cores. Searches on the 496-file project (`GATE_PROJECT=<file> cargo test -p library --test index -- --ignored`): indexed in 5 ms, every kind of query answered in 0.03 to 0.23 ms on the index and in about 0.3 ms asked of the worker the pages ask; the 10 000-file test: indexed in 0.2 s, queries 0.2 to 4.7 ms. Fixed on the way: larger JPEGs were refused as damaged (19 of the 25 photos); the autosave journal waited for the disk on the interface thread, up to 18 ms per imported file; and the analysis workers ran at the interface's priority, so on two cores a frame waited behind them (Edit page 22.8 ms for 99 frames in 100 before, 11.6 ms after). Worth watching on the owner's PC: drawing the Edit page with about 500 clips on the timeline takes about 1 ms of CPU and up to 6 ms at moments.)
+- [ ] A packaged project opens on the other machine with nothing missing. (Needs the owner's second PC. On one machine the package test moves a package and opens it with the originals gone, nothing missing: `crates/project/src/package.rs`.)
 
 ## Phase 6 · Export
 

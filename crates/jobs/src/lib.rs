@@ -196,10 +196,10 @@ impl JobSystem {
         let total = budgets.worker_threads.max(1);
         let share = |percent: usize| (total * percent / 100).max(1);
         let system = JobSystem {
-            decode: Pool::new("decode", share(40)),
-            render: Pool::new("render", share(30)),
-            analysis: Pool::new("analysis", share(15)),
-            export: Pool::new("export", share(15)),
+            decode: Pool::new("decode", share(40), false),
+            render: Pool::new("render", share(30), false),
+            analysis: Pool::new("analysis", share(15), true),
+            export: Pool::new("export", share(15), false),
             budgets,
             activity: Mutex::new(Activity::default()),
         };
@@ -293,6 +293,27 @@ mod tests {
             disk_cache_gb: 1,
             background,
         })
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn analysis_workers_run_below_the_interface_and_the_others_do_not() {
+        let jobs = system(4, BackgroundPolicy::Always);
+        let nice_in = |pool| {
+            jobs.submit(
+                pool,
+                Priority::Interactive,
+                "nice",
+                |_| Ok(os::this_thread_nice()),
+            )
+            .wait()
+            .unwrap()
+        };
+        let here = os::this_thread_nice().unwrap();
+        assert!(nice_in(PoolKind::Analysis).unwrap() > here.min(18));
+        for pool in [PoolKind::Decode, PoolKind::Render, PoolKind::Export] {
+            assert_eq!(nice_in(pool), Some(here), "{pool:?}");
+        }
     }
 
     #[test]
