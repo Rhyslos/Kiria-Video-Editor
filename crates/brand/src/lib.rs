@@ -54,27 +54,43 @@ mod tests {
         assert_eq!(window_title("Clip"), format!("Clip – {APP_NAME}"));
     }
 
-    /// Fails if the app's name is typed in any Rust file outside this crate.
+    /// Fails if the app's name is typed, in any capitals, in a Rust file of
+    /// the workspace outside this crate: the crates, `xtask` and `tests`.
     #[test]
     fn name_is_only_typed_in_the_brand_crate() {
-        let crates_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let this_crate = Path::new(env!("CARGO_MANIFEST_DIR"))
             .canonicalize()
             .expect("brand crate path");
+        let name = APP_NAME.to_lowercase();
         let mut offenders = Vec::new();
-        for file in rust_files(&crates_dir) {
-            if file.canonicalize().is_ok_and(|f| f.starts_with(&this_crate)) {
-                continue;
-            }
-            let text = fs::read_to_string(&file).unwrap_or_default();
-            if text.contains(APP_NAME) {
-                offenders.push(file);
+        for folder in ["crates", "xtask", "tests"] {
+            for file in rust_files(&workspace.join(folder)) {
+                if file.canonicalize().is_ok_and(|f| f.starts_with(&this_crate)) {
+                    continue;
+                }
+                let text = fs::read_to_string(&file).unwrap_or_default();
+                if text.to_lowercase().contains(&name) {
+                    offenders.push(file);
+                }
             }
         }
         assert!(
             offenders.is_empty(),
-            "the app name is typed outside crates/brand; read it from `brand::APP_NAME` instead: {offenders:?}"
+            "the app name is typed outside crates/brand; read it from `brand::APP_NAME` (or `PROJECT_FILE_EXTENSION`, `APP_ID`) instead: {offenders:?}"
         );
+    }
+
+    #[test]
+    fn the_scan_finds_the_workspace_folders() {
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        // `tests` holds no Rust files yet; it is scanned for when it does.
+        for folder in ["crates", "xtask"] {
+            assert!(
+                !rust_files(&workspace.join(folder)).is_empty(),
+                "{folder} has Rust files to scan"
+            );
+        }
     }
 
     fn rust_files(dir: &Path) -> Vec<PathBuf> {
