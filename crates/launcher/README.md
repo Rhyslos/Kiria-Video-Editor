@@ -80,7 +80,7 @@ Preferences are read from `<data folder>/updates.ron` (defaults: automatic, Stab
 | `src/cards.rs` | The project grid and its cards; search filtering |
 | `src/new_project.rs` | The New project dialog: Automatic settings by default (the first video imported decides), or one of the templates |
 | `src/updates.rs` | The version panel, the update window (Update available → download bar → Update ready), and the background check and download |
-| `src/files.rs` | Creating, renaming and moving project files; the files that belong to a project move along |
+| `src/files.rs` | Creating, renaming and moving project files; the files that belong to a project move along. Moving a packaged project's file alone (its media stays behind) first makes its relative media paths full ones, in the project and its saved versions, so they are still found |
 | `src/delete.rs` | Deleting a project: `plan` lists what would go, `run` moves it to the `Bin` (the system's recycle bin, or a folder for sample projects and tests) |
 | `src/delete_dialog.rs` | The Delete project question and its steps: look for the files, ask with the list, move them |
 | `src/editor_start.rs` | Starting the editor; showing a folder in the file manager |

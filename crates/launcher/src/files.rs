@@ -144,11 +144,36 @@ pub fn move_project(path: &Path, folder: &Path) -> diag::Result<Moved> {
             .fix("Check that the folder exists and that you can write to it.")
     };
     std::fs::create_dir_all(folder).or_explain(explain)?;
+    keep_media_found(path)?;
     move_path(path, &target).or_explain(explain)?;
     Ok(Moved {
         left_behind: carry_side_files(path, &target),
         to: target,
     })
+}
+
+/// A packaged project's media paths are relative to its folder, and its
+/// media stays behind when the project file alone moves: such paths are
+/// made full ones first (rewritten in place), in the project and in its
+/// saved versions, so the media is still found.
+fn keep_media_found(path: &Path) -> diag::Result<()> {
+    let folder = project::file::folder_of(path);
+    let relative = |p: &Project| p.media.values().any(|m| m.path.is_relative());
+    let (mut project, journal_seq) = project::file::load_with_journal_seq(path)?;
+    if relative(&project) {
+        project::file::resolve_media_paths(&mut project, folder);
+        project::file::save_with_journal_seq(&project, path, journal_seq)?;
+    }
+    for version in project::versions::list(path) {
+        let Ok(mut saved) = project::file::load(&version.path) else {
+            continue; // one that can't be read is left as it is
+        };
+        if relative(&saved) {
+            project::file::resolve_media_paths(&mut saved, folder);
+            project::file::save(&saved, &version.path)?;
+        }
+    }
+    Ok(())
 }
 
 /// Renaming or moving a project with unrecovered crash work would separate it
@@ -295,6 +320,38 @@ mod tests {
         assert!(!renamed.exists());
         assert_eq!(moved.parent().unwrap(), elsewhere);
         assert_eq!(project::file::load(&moved).unwrap().name, "Best of week");
+    }
+
+    #[test]
+    fn moving_a_packaged_project_alone_keeps_its_media_found() {
+        let tmp = tempfile::tempdir().unwrap();
+        let package = tmp.path().join("Package");
+        std::fs::create_dir_all(package.join("Media")).unwrap();
+        std::fs::write(package.join("Media/a.mkv"), b"recording").unwrap();
+        let mut p = Project::new("P", SequenceSettings::GAME_CLIP);
+        p = project::Command::AddMedia {
+            media: project::MediaRef {
+                id: project::MediaId(0),
+                path: "Media/a.mkv".into(),
+                fingerprint: project::Fingerprint {
+                    size: 9,
+                    sample_hash: "x".into(),
+                },
+                kind: project::MediaKind::Video,
+                duration: project::Time::seconds(1),
+                info: Default::default(),
+            },
+        }
+        .apply(&p)
+        .unwrap();
+        let path = package.join(format!("P.{}", ext()));
+        project::file::save(&p, &path).unwrap();
+
+        let moved = move_project(&path, &tmp.path().join("Elsewhere")).unwrap().to;
+        let media = project::file::read_summary(&moved).unwrap().unwrap().media;
+        assert_eq!(media.len(), 1);
+        assert!(media[0].exists(), "{} is found", media[0].display());
+        assert!(media[0].starts_with(&package));
     }
 
     #[test]

@@ -119,6 +119,12 @@ pub struct Editor {
     templates: crate::templates_window::TemplatesWindow,
     /// Prune: the files no timeline uses, to take out of the project.
     prune: crate::prune_window::PruneWindow,
+    /// Package project: the project and its media, copied into one folder.
+    package: crate::package_window::PackageWindow,
+    /// `--package-to`: open Package project with this folder, once.
+    package_to: Option<PathBuf>,
+    /// Package project was asked for; the folder dialog opens on the next frame.
+    package_requested: bool,
     shortcuts_page: Option<ui_kit::keyboard::ShortcutsPage>,
     /// The system's keyboard layout, followed for the shortcuts page and
     /// for writing keys in menus and tips.
@@ -234,6 +240,8 @@ impl Editor {
         let select_first_clip = project.as_ref().is_some_and(|p| p.select_first_clip);
         let hold_reading = project.as_ref().and_then(|p| p.hold_reading);
         let hold_proxy = project.as_ref().and_then(|p| p.hold_proxy);
+        let package_to = project.as_ref().and_then(|p| p.package_to.clone());
+        let hold_package = project.as_ref().and_then(|p| p.hold_package);
         let convert = crate::video_picture::conversion(
             cc.wgpu_render_state.as_ref(),
             project.as_ref().is_some_and(|p| p.cpu_colour),
@@ -359,6 +367,9 @@ impl Editor {
             versions: crate::versions_window::VersionsWindow::default(),
             templates: crate::templates_window::TemplatesWindow::default(),
             prune: crate::prune_window::PruneWindow::default(),
+            package: crate::package_window::PackageWindow::holding_at(hold_package),
+            package_to,
+            package_requested: false,
             shortcuts_page,
             system_keyboard,
             cheat_sheet: crate::cheat_sheet::CheatSheet::default(),
@@ -483,6 +494,9 @@ impl Editor {
                 self.versions.show_again();
             }),
             Action::Prune => self.with_document(|_| Ok(())).map(|()| self.prune.open()),
+            Action::PackageProject => self
+                .with_document(|_| Ok(()))
+                .map(|()| self.package_requested = true),
             Action::Templates | Action::SaveTemplate => self
                 .with_document(|_| Ok(()))
                 .map(|()| self.templates.show(action == Action::SaveTemplate)),
@@ -1613,6 +1627,32 @@ impl Editor {
                 }
                 Err(err) => self.errors.push(&err),
             }
+        }
+    }
+
+    /// Package project: the dialog, and what it says when done.
+    fn package_window(&mut self, ctx: &egui::Context) {
+        let Some(document) = &self.document else {
+            return;
+        };
+        if std::mem::take(&mut self.package_requested) {
+            self.package.open(ctx);
+        }
+        if let Some(into) = self.package_to.take() {
+            self.package
+                .open_into(&self.jobs, document.project(), document.path(), into);
+        }
+        if self.package.busy() {
+            ctx.request_repaint_after(Duration::from_millis(200));
+        }
+        use crate::package_window::Asked;
+        match self
+            .package
+            .ui(ctx, &self.theme, &self.jobs, document.project(), document.path())
+        {
+            Asked::Nothing => {}
+            Asked::Said(says) => self.status = says,
+            Asked::Failed(err) => self.errors.push(&err),
         }
     }
 
@@ -2944,7 +2984,8 @@ impl Editor {
                         || (self.library.is_current(crate::library_page::ASKER)
                             && self.library_page.settled()))
                     && self.media_folders.settled()
-                    && self.relink.settled())
+                    && self.relink.settled()
+                    && self.package.settled())
                     || now.duration_since(since) > SCREENSHOT_WAIT;
                 // A scripted pointer has done its part, and rested long
                 // enough for a tooltip to come up.
@@ -3176,6 +3217,7 @@ impl eframe::App for Editor {
         self.versions_window(&ctx);
         self.templates_window(&ctx);
         self.prune_window(&ctx);
+        self.package_window(&ctx);
         self.shortcuts_window(&ctx);
         if let Some(err) = self.graphics.show_warning(&ctx, &self.theme) {
             self.errors.push(&err);
@@ -3210,6 +3252,8 @@ impl eframe::App for Editor {
         // the window's graphics device too.
         self.export_page.stop();
         self.library_page.close();
+        // So is packaging: what it copied so far is taken away again.
+        self.package.stop();
         self.viewer.close();
         self.display.close();
         if let Some(place) = self.display.window_place() {
@@ -3362,6 +3406,10 @@ pub struct ProjectToOpen {
     pub hold_reading: Option<f32>,
     /// Stop proxy builds at this share, for screenshots of one in progress.
     pub hold_proxy: Option<f32>,
+    /// Open Package project with this folder chosen, for screenshots.
+    pub package_to: Option<PathBuf>,
+    /// Also start packaging and stop copying at this share.
+    pub hold_package: Option<f32>,
 }
 
 /// Opens a project, or creates it if it doesn't exist.

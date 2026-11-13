@@ -24,6 +24,7 @@ mod looping;
 mod media_drawer;
 mod media_folders;
 mod organise;
+mod package_window;
 mod picture_handles;
 mod proxies;
 mod prune_window;
@@ -152,6 +153,8 @@ fn main() -> ExitCode {
         cpu_colour: options.cpu_colour,
         hold_reading: options.hold_reading,
         hold_proxy: options.hold_proxy,
+        package_to: options.package_to.clone(),
+        hold_package: options.hold_package,
     });
     let pointer = options.pointer;
     // If this run crashes, the launcher offers to recover this project.
