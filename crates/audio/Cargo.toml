@@ -8,6 +8,19 @@ license.workspace = true
 publish = false
 
 [dependencies]
+diag = { path = "../diag" }
+# The settings are built from the project's track and timeline sound.
+project = { path = "../project" }
+# The noise clean-up's and the analyser's FFTs (MIT or Apache-2.0, pure Rust).
+realfft = "3.5"
+# Wait-free single-producer single-consumer rings: commands, swaps, the
+# tracks' input and the analyser's tap.
+rtrb = "0.4"
+
+[dev-dependencies]
+# The allocator that counts (the no-allocation test) and flushing very
+# small numbers to zero in the timing run, as the sound card's thread will.
+os = { path = "../os" }
 
 [lints]
 workspace = true

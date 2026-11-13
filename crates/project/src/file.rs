@@ -22,7 +22,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
 /// The format this build writes.
-pub const FORMAT_VERSION: u32 = 15;
+pub const FORMAT_VERSION: u32 = 16;
 
 /// Turns the text of a version `n` file into the text of a version `n + 1` file.
 pub type Migration = fn(&str) -> diag::Result<String>;
@@ -30,7 +30,7 @@ pub type Migration = fn(&str) -> diag::Result<String>;
 /// `MIGRATIONS[i]` upgrades version `i + 1` to `i + 2`.
 pub const MIGRATIONS: &[Migration] = &[
     v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8, v8_to_v9, v9_to_v10, v10_to_v11,
-    v11_to_v12, v12_to_v13, v13_to_v14, v14_to_v15,
+    v11_to_v12, v12_to_v13, v13_to_v14, v14_to_v15, v15_to_v16,
 ];
 
 /// Format 2 adds `info` (the file's streams) to each media entry. The field
@@ -127,6 +127,14 @@ fn v13_to_v14(text: &str) -> diag::Result<String> {
 /// defaults to none: marks were never kept before.
 fn v14_to_v15(text: &str) -> diag::Result<String> {
     set_format_version(text, 14, 15)
+}
+
+/// Format 16 adds `sound` to each track (its role, pan, effects and volume
+/// and pan lines) and `master_sound` to each timeline (the mix's
+/// compressor and limiter). Both default to every effect off, which is how
+/// older projects sounded.
+fn v15_to_v16(text: &str) -> diag::Result<String> {
+    set_format_version(text, 15, 16)
 }
 
 /// Rewrites the `format_version` number at the top of the file.

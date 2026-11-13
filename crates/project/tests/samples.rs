@@ -163,6 +163,33 @@ fn rich_project() -> Project {
     });
     seq.audio_tracks.push_back(extra_audio);
     seq.audio_tracks[1].gain_db = -3.5;
+    // The mic is dialogue, cleaned up, high-passed and compressed, with a
+    // dip in its volume line; the game sound ducks under it and the mix
+    // goes through the limiter (format 16).
+    let mut mic = project::TrackSound {
+        role: project::TrackRole::Dialogue,
+        pan: 100_000,
+        volume_line: [(0, 0), (5, -6_000), (6, 0)]
+            .into_iter()
+            .map(|(s, value)| project::track_sound::LinePoint {
+                at: Time::seconds(s),
+                value,
+            })
+            .collect(),
+        ..Default::default()
+    };
+    mic.high_pass.on = true;
+    mic.compressor.on = true;
+    mic.eq.on = true;
+    mic.eq.bands[3].gain_mdb = 2_500;
+    mic.cleanup.on = true;
+    mic.cleanup.profile = Some(project::track_sound::NoiseProfile {
+        levels_mdb: (0..64).map(|b| -95_000 + b * 250).collect(),
+    });
+    seq.audio_tracks[1].sound = mic;
+    seq.audio_tracks[0].sound.role = project::TrackRole::Effects;
+    seq.audio_tracks[0].sound.ducking.on = true;
+    seq.master_sound.limiter.on = true;
     seq.labels.push_back(TimelineLabel {
         id: label,
         name: "First kill".into(),
@@ -386,6 +413,39 @@ fn version_13_sample_opens_with_whole_files() {
 }
 
 #[test]
+fn version_15_sample_opens_with_every_effect_off() {
+    let project = file::load(&sample_path(15)).expect("the version 15 sample opens");
+    for seq in &project.sequences {
+        assert_eq!(seq.master_sound, project::MasterSound::default());
+        for track in seq.tracks() {
+            assert_eq!(
+                track.sound,
+                project::TrackSound::default(),
+                "format 15 had no track sound"
+            );
+        }
+    }
+    assert_eq!(
+        project.active().expect("a timeline").audio_tracks[1].gain_db,
+        -3.5
+    );
+}
+
+#[test]
+fn the_current_sample_has_track_effects_lines_and_a_limiter() {
+    let project = file::load(&sample_path(FORMAT_VERSION)).expect("the sample opens");
+    let seq = project.active().expect("a timeline");
+    let mic = &seq.audio_tracks[1].sound;
+    assert_eq!(mic.role, project::TrackRole::Dialogue);
+    assert!(mic.cleanup.on && mic.compressor.on && mic.high_pass.on);
+    assert_eq!(mic.cleanup.profile.as_ref().map(|p| p.levels_mdb.len()), Some(64));
+    assert_eq!(mic.volume_line.len(), 3);
+    assert!(mic.check().is_ok());
+    assert!(seq.audio_tracks[0].sound.ducking.on);
+    assert!(seq.master_sound.limiter.on);
+}
+
+#[test]
 fn the_current_sample_has_a_file_imported_with_its_end_missing() {
     let project = file::load(&sample_path(FORMAT_VERSION)).expect("the sample opens");
     let media = project.media.values().next().expect("a file");
@@ -514,6 +574,14 @@ fn the_stored_template_matches_the_model_but_for_what_came_later() {
     }
     for media in expected.media.iter_mut() {
         media.info.stated_length = None;
+    }
+    // Track sound came with format 16.
+    for track in expected
+        .video_tracks
+        .iter_mut()
+        .chain(expected.audio_tracks.iter_mut())
+    {
+        track.sound = project::TrackSound::default();
     }
     assert_eq!(read_template(1), expected);
 }

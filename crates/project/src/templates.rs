@@ -13,6 +13,7 @@ use crate::command::{insert_clip, missing, sequence_mut, sequence_ref, settle_au
 use crate::ids::{ClipId, LinkId, MediaId, SequenceId, TrackId};
 use crate::model::{Clip, MediaKind, MediaRef, Project, Region, Sequence, Track, TrackKind};
 use crate::time::Time;
+use crate::track_sound::TrackSound;
 use diag::{AppError, Explain};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -372,7 +373,8 @@ fn tracks_of(seq: &mut Sequence, kind: TrackKind) -> &mut imbl::Vector<Track> {
 
 /// Makes sure the timeline has as many tracks of `kind` as `wanted`. A new
 /// track goes after the others of its kind, as any added track does, and is
-/// as loud as the template's track in that place.
+/// as loud as the template's track in that place, with its role, pan and
+/// effects (not its lines).
 fn make_tracks(p: &mut Project, sequence: SequenceId, kind: TrackKind, wanted: &[Track]) -> diag::Result<()> {
     loop {
         let seq = sequence_mut(p, sequence)?;
@@ -381,9 +383,17 @@ fn make_tracks(p: &mut Project, sequence: SequenceId, kind: TrackKind, wanted: &
             return Ok(());
         };
         let (name, gain_db) = (new_track_name(seq, kind, &model.name), model.gain_db);
+        // Lines are in the template's timeline's time, which means nothing
+        // where it is dropped: they stay behind.
+        let sound = TrackSound {
+            volume_line: Default::default(),
+            pan_line: Default::default(),
+            ..model.sound.clone()
+        };
         crate::tracks::add(p, sequence, kind, &name)?;
         if let Some(made) = tracks_of(sequence_mut(p, sequence)?, kind).back_mut() {
             made.gain_db = gain_db;
+            made.sound = sound;
         }
     }
 }

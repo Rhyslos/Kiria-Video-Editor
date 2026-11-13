@@ -10,6 +10,7 @@ use crate::look::Look;
 use crate::ramp::Ramp;
 use crate::sound::Sound;
 use crate::time::{Rate, Speed, Time};
+use crate::track_sound::{MasterSound, TrackSound};
 use diag::AppError;
 use imbl::{OrdMap, Vector};
 use serde::{Deserialize, Serialize};
@@ -202,6 +203,9 @@ pub struct Sequence {
     /// Volume of the whole mix in decibels (format 6); 0 leaves it as it is.
     #[serde(default)]
     pub master_gain_db: f32,
+    /// The mix's compressor and true-peak limiter (format 16); off when missing.
+    #[serde(default)]
+    pub master_sound: MasterSound,
 }
 
 impl Sequence {
@@ -238,6 +242,10 @@ pub struct Track {
     pub hidden: bool,
     /// Track volume in decibels; 0 leaves it unchanged.
     pub gain_db: f32,
+    /// Its role, pan, effects and volume and pan lines (format 16; audio
+    /// tracks only). Every effect off when missing.
+    #[serde(default)]
+    pub sound: TrackSound,
 }
 
 /// A piece of a media file placed on a track.
@@ -515,6 +523,7 @@ impl Project {
             edit_needle: Time::ZERO,
             automatic: false,
             master_gain_db: 0.0,
+            master_sound: MasterSound::default(),
         }
     }
 
@@ -530,6 +539,7 @@ impl Project {
             locked: false,
             hidden: false,
             gain_db: 0.0,
+            sound: TrackSound::default(),
         }
     }
 

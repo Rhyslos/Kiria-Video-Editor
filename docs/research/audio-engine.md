@@ -2,7 +2,7 @@
 
 Turning the timeline's tracks into the sound that comes out of the speakers and into exported files, with effects on every track and on the master: high pass, EQ with an analyser, compressor, noise clean-up, ducking, loudness, a master compressor and a true-peak limiter, and volume and pan lines. Build plan step 8.1 "DSP", and everything on the Audio page (8.4) and at Gate 8 that depends on it.
 
-Status: measured on this cloud machine (2 cores) and chosen (section 4). Nothing built yet; section 5 is the plan. The owner's machine can run the same measurement (the "Audio engine spike" workflow).
+Status: measured on this cloud machine (2 cores) and chosen (section 4). Section 5 is built: `crates/audio` (every effect, the master, the mixer, its controller and rings; see its README), and the engine plays and exports through it (`engine::playback`, `output`, `feeder`, `offline`; see its README). What differs from the plan as written is under "As built" in section 5. The owner's machine can run the same measurement (the "Audio engine spike" workflow).
 
 ## 1. Problem
 
@@ -61,7 +61,7 @@ S2 and S3 combine naturally: commands for numbers, swaps for things that need me
 
 ### (d) Noise clean-up
 
-**Spectral gate.** The sound is cut into overlapping windows (1024 samples, a new one every 256), each turned into frequencies with an FFT; every frequency not clearly above the learned noise there is turned down (spectral subtraction with a floor), smoothly over time and across neighbouring frequencies, and the windows are added back together. Needs a noise profile: learned on a worker from a stretch the person picks, or from the clip's quietest stretches. Takes out hiss and hum under words, not only between them. Delays the sound by 768 samples (16 ms at 48 kHz). FFT from `realfft` (on `rustfft`), both MIT or Apache-2.0, pure Rust.
+**Spectral gate.** The sound is cut into overlapping windows (1024 samples, a new one every 256), each turned into frequencies with an FFT; every frequency not clearly above the learned noise there is turned down (spectral subtraction with a floor), smoothly over time and across neighbouring frequencies, and the windows are added back together. Needs a noise profile: learned on a worker from a stretch the person picks, or from the clip's quietest stretches. Takes out hiss and hum under words, not only between them. Delays the sound by 1024 samples (21.3 ms at 48 kHz: a sample is finished once the last of the four windows over it is put back; the spike said 768, which was wrong). FFT from `realfft` (on `rustfft`), both MIT or Apache-2.0, pure Rust.
 
 **Downward expander.** Below a threshold the sound is turned down further; no FFT, no profile, no delay. Only acts between words: noise under words stays, and the threshold must sit above the noise and below the quietest words.
 
@@ -194,13 +194,15 @@ How long from a change to the first block that uses it, and how late the thread 
 - **(c) P2, the mix in the sound card's callback; decoding on a feeder thread into one ring per track.** The paced runs show that priority is what keeps blocks on time when the machine is busy. The sound library already knows how to ask for it for its callback thread on each system (its `realtime` feature, to be turned on; its helper crate is MPL-2.0, which `deny.toml` allows), so there is no operating-system code of our own; a thread of our own (P3) would need that code and one more ring. The 32-track mix with every effect is a quarter of a block at worst, so the callback has the room. Decoding, seeking, clip volume and fades, speed, ramps and nested timelines stay where they can wait: in today's `Mixer` logic, now per track, on a feeder thread running half a second ahead.
 - **(d) The spectral gate,** with a learned profile: 13 to 14 dB of noise out of pauses against 5 to 6 for the expander, words left within 1 dB, for 0.1 ms more per block across 32 tracks; `realfft` and `rustfft` are MIT or Apache-2.0, pure Rust. The expander is not built.
 - **(e) Live sidechain ducking:** the speech band of the dialogue tracks' sound after their effects, threshold, hold, down and up speeds, a depth per ducked track; 2.3 % of a block for 24 ducked tracks. Always right after an edit and the same in export. A worked-out line that can be looked at stays a possible later addition.
-- **(f) 256-sample blocks** at the device's own rate (5.3 ms at 48 kHz): changes taken within 5.3 ms, smaller worst blocks, the same cost per sample as 512, and exactly one clean-up window per block so every block costs the same. The engine's own delay is fixed (the gate's 768 samples on every track, a plain delay when clean-up is off, plus the limiter's 71): 17.5 ms at 48 kHz, taken off the clock so the picture stays in step.
+- **(f) 256-sample blocks** at the device's own rate (5.3 ms at 48 kHz): changes taken within 5.3 ms, smaller worst blocks, the same cost per sample as 512, and exactly one clean-up window per block so every block costs the same. The engine's own delay is fixed (the gate's 1024 samples on every track, its windows passed through untouched when clean-up is off, plus the limiter's 87): 1111 frames, 23.1 ms at 48 kHz, taken off the clock so the picture stays in step.
 
 What the measurement did not cover: a real sound card (buffer sizes, the callback's own timing and priority on Windows), real decoding competing for the cores, and the owner's machines. Run the spike there before Gate 8.
 
 ## 5. The build
 
 ### `crates/audio`
+
+As built, the names moved a little: the graph is `mixer.rs` (`Mixer`), the true peak stays in `dsp/loudness.rs` beside the meter that uses it, the Loudness tool is `dsp/level.rs`, and a track's meter is `meter.rs`. The crate's README is the current map; the table below is the plan as written.
 
 Pure Rust, no sound card, no files: everything here runs the same live and offline, and is tested without a device.
 
@@ -233,6 +235,16 @@ Denormals are flushed to zero at the start of each callback (`os::denormals_as_z
 - The Audio page (8.4) holds a `Controller`: each slider movement is a command; learning a noise profile runs on a worker and its result is swapped in.
 - Export (phase 6) runs the same feeder and `Graph` on its own thread, block after block, without a device. Not touched now: export is being worked on separately.
 - The project gains per-track sound settings and volume and pan lines (a new format version with its migration and stored sample). Clip lines are kept in the clip's file time, like its keyframes; track lines in timeline time. A noise profile is stored as levels in 64 bands by frequency, so it is small and works at any rate.
+
+### As built in the engine
+
+- Nested timelines are still mixed by `engine::mix` inside the feeder (their tracks' volume, mute and solo as before); their tracks' effects are not heard yet. A `Graph` of their own per nested timeline is left for later.
+- The feeder keeps a `mix::Mixer` per track (each track its own decoders) and writes pieces of 1 024 frames; playback and export write the same pieces at the same places, so they give the same samples (tested, effects on).
+- A track added while playing is lined up by the mixer to the sample (`Controller::add_track_at`, `FeedReader::align`), rather than rebuilt by a jump.
+- The clean-up, off, is a plain delay to the bit (once its windows have passed), and fader and master volumes are worked out as the timeline's always were, so with every effect off the sound is exactly what playback mixed before (tested).
+- Jumps (dragging the playhead, looping, a clip's sound changed) keep the sound card open: the callback gives silence while the mixer takes `locate`, the feeder fills from there, sound resumes. For the 23 ms of the fixed delay after a jump what was already inside the effects plays out; the clock stays at the place jumped to meanwhile.
+- Export's normalising is the master's `trim_db` (after its compressor, before its limiter), measured through the timeline's master without its limiter; export's limiter is the master's.
+- The clock: the callback publishes the timeline sample it hands out less the adapter's leftover and the fixed delay.
 
 ### Tests
 
