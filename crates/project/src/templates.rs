@@ -338,6 +338,7 @@ pub(crate) fn insert(
                 continue;
             }
             make_tracks(p, sequence, kind, &tracks[..=index])?;
+            name_unused_track(p, sequence, kind, index, &from.name)?;
             for clip in &from.clips {
                 let placed = Clip {
                     id: p.allocate_id(),
@@ -363,6 +364,32 @@ pub(crate) fn insert(
     Ok(())
 }
 
+/// A track of the timeline nobody has used yet (empty, still with its
+/// usual name, "A1") takes the name of the template's track that lands on
+/// it when someone chose that name ("Game"), as a file placed on it does.
+fn name_unused_track(
+    p: &mut Project,
+    sequence: SequenceId,
+    kind: TrackKind,
+    index: usize,
+    wanted: &str,
+) -> diag::Result<()> {
+    let seq = sequence_mut(p, sequence)?;
+    let name = new_track_name(seq, kind, wanted);
+    let letter = match kind {
+        TrackKind::Video => 'V',
+        TrackKind::Audio => 'A',
+    };
+    if let Some(track) = tracks_of(seq, kind).get_mut(index)
+        && track.clips.is_empty()
+        && track.name == format!("{letter}{}", index + 1)
+        && name == wanted.trim()
+    {
+        track.name = name;
+    }
+    Ok(())
+}
+
 /// The timeline's tracks of one kind.
 fn tracks_of(seq: &mut Sequence, kind: TrackKind) -> &mut imbl::Vector<Track> {
     match kind {
@@ -375,7 +402,12 @@ fn tracks_of(seq: &mut Sequence, kind: TrackKind) -> &mut imbl::Vector<Track> {
 /// track goes after the others of its kind, as any added track does, and is
 /// as loud as the template's track in that place, with its role, pan and
 /// effects (not its lines).
-fn make_tracks(p: &mut Project, sequence: SequenceId, kind: TrackKind, wanted: &[Track]) -> diag::Result<()> {
+pub(crate) fn make_tracks(
+    p: &mut Project,
+    sequence: SequenceId,
+    kind: TrackKind,
+    wanted: &[Track],
+) -> diag::Result<()> {
     loop {
         let seq = sequence_mut(p, sequence)?;
         let have = tracks_of(seq, kind).len();
@@ -999,6 +1031,16 @@ mod tests {
         // A second time, the track is there already.
         let again = insert_at(&done, &intro(), 0).unwrap();
         assert_eq!(again.active().unwrap().audio_tracks.len(), 2);
+    }
+
+    #[test]
+    fn an_unused_track_takes_the_name_of_the_templates_track() {
+        let p = Project::new("Empty", SequenceSettings::GAME_CLIP);
+        let mut template = intro();
+        template.audio_tracks[0].name = "Commentary".into();
+        let wanted = template.audio_tracks[0].name.clone();
+        let done = insert_at(&p, &template, 0).unwrap();
+        assert_eq!(done.active().unwrap().audio_tracks[0].name, wanted);
     }
 
     /// The intro with a caption over the title card on a second video

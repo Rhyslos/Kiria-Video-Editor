@@ -258,7 +258,9 @@ pub enum Command {
         clip: Clip,
     },
     /// Removes a clip and the clips linked to it. With `ripple`, later clips
-    /// on the same tracks move back to close the gap.
+    /// on the same tracks move back to close the gap. The app makes
+    /// [`Command::RippleRemoveClips`] for that now; this stays for journals
+    /// written before.
     RemoveClip {
         sequence: SequenceId,
         clip: ClipId,
@@ -267,11 +269,48 @@ pub enum Command {
     /// Removes several clips and the clips linked to them, as one step: every
     /// clip is checked first, and if any no longer exists nothing changes.
     /// With `ripple`, later clips on the same tracks move back to close the
-    /// gaps, as removing them one after another would.
+    /// gaps, as removing them one after another would. The app makes it
+    /// without `ripple` only now ([`Command::RippleRemoveClips`] closes gaps);
+    /// with it, it stays for journals written before.
     RemoveClips {
         sequence: SequenceId,
         clips: Vec<ClipId>,
         ripple: bool,
+    },
+    /// Moves several clips and the clips linked to them by `by` (later is
+    /// positive) along their own tracks, keeping them in step, as one step.
+    /// Refused, with nothing changed, if any would overlap a clip that
+    /// stays or start before zero.
+    MoveClips {
+        sequence: SequenceId,
+        clips: Vec<ClipId>,
+        by: Time,
+    },
+    /// Closes the empty stretch `start`..`end` on every track: everything
+    /// after it moves back by its length, as "Delete and close the gap"
+    /// moves it. Refused, with nothing changed, when a clip on any track is
+    /// in the stretch (closing it would cut that clip).
+    CloseGap {
+        sequence: SequenceId,
+        start: Time,
+        end: Time,
+    },
+    /// Empties the stretch `range` on every track, leaving the gap (clips
+    /// crossing its edges are cut there; nothing moves).
+    LiftRange {
+        sequence: SequenceId,
+        range: Region,
+    },
+    /// Removes several clips and the clips linked to them, as one step, and
+    /// closes the gaps on every track, as a ripple trim does: each stretch
+    /// the removed clips covered (overlapping ones as one) closes, and every
+    /// clip after it on any track moves back by its length, so linked sound
+    /// streams and layers stay in step. Refused, with nothing changed, when
+    /// a clip that stays is in such a stretch (closing it would cut that
+    /// clip), or when a clip no longer exists.
+    RippleRemoveClips {
+        sequence: SequenceId,
+        clips: Vec<ClipId>,
     },
     /// Moves a clip to a new start time, and optionally to another track of the same kind.
     MoveClip {
@@ -490,6 +529,16 @@ pub enum Command {
         at: Time,
         length: Time,
         track: Option<TrackId>,
+    },
+    /// Pastes copied clips with the earliest at `at` (see
+    /// [`crate::clip_clipboard`]): each on the track of the same kind and
+    /// number (missing ones made), cutting away what it lands on there;
+    /// clips that can't go into this timeline are left out. The command
+    /// carries the clips, so the journal replays it without the clipboard.
+    PasteClips {
+        sequence: SequenceId,
+        at: Time,
+        clips: crate::clip_clipboard::CopiedClips,
     },
     /// Makes a media label (its `id` is ignored and a new one given) and
     /// puts it on `media` (format 13). Names are 1 to 40 characters and no
@@ -753,6 +802,31 @@ impl Command {
                 }
                 remove_clips(&mut p, *sequence, clips, *ripple)?
             }
+            Command::MoveClips { sequence, clips, by } => move_clips(&mut p, *sequence, clips, *by)?,
+            Command::CloseGap { sequence, start, end } => {
+                if end <= start || start.is_negative() {
+                    return Err(
+                        AppError::new("There is no gap there").why("The stretch ends before it starts.")
+                    );
+                }
+                close_stretches(&mut p, *sequence, &[(*start, *end)], &[])?
+            }
+            Command::LiftRange { sequence, range } => {
+                if range.end <= range.start || range.start.is_negative() {
+                    return Err(
+                        AppError::new("That stretch can't be removed").why("It ends before it starts.")
+                    );
+                }
+                crate::edits::clear_space(&mut p, *sequence, range.start, range.length())?
+            }
+            Command::RippleRemoveClips { sequence, clips } => {
+                if clips.is_empty() {
+                    return Err(AppError::new("No clips to remove")
+                        .why("None were selected.")
+                        .fix("Click a clip on the timeline first."));
+                }
+                ripple_remove_clips(&mut p, *sequence, clips)?
+            }
             Command::MoveClip {
                 sequence,
                 clip,
@@ -952,6 +1026,9 @@ impl Command {
                 length,
                 track,
             } => crate::timelines::add_adjustment(&mut p, *sequence, *at, *length, *track)?,
+            Command::PasteClips { sequence, at, clips } => {
+                crate::clip_clipboard::paste(&mut p, *sequence, *at, clips)?
+            }
         }
         // A clip made shorter keeps its fades within it.
         p.fit_fades();
@@ -1401,10 +1478,7 @@ pub(crate) fn with_linked(seq: &Sequence, clip: ClipId) -> diag::Result<Vec<Clip
 /// what removing the clips one at a time would do.
 fn remove_clips(p: &mut Project, sequence: SequenceId, clips: &[ClipId], ripple: bool) -> diag::Result<()> {
     let seq = sequence_mut(p, sequence)?;
-    let mut targets = Vec::new();
-    for clip in clips {
-        targets.extend(with_linked(seq, *clip)?);
-    }
+    let targets = with_all_linked(seq, clips)?;
     for track in tracks_mut(seq) {
         let removed: Vec<Clip> = track
             .clips
@@ -1417,6 +1491,107 @@ fn remove_clips(p: &mut Project, sequence: SequenceId, clips: &[ClipId], ripple:
             for gone in removed.iter().rev() {
                 close_gap(track, gone.start, gone.duration);
             }
+        }
+    }
+    Ok(())
+}
+
+/// `clips` and every clip linked to them; refused when one no longer exists.
+fn with_all_linked(seq: &Sequence, clips: &[ClipId]) -> diag::Result<Vec<ClipId>> {
+    let mut targets = Vec::new();
+    for clip in clips {
+        targets.extend(with_linked(seq, *clip)?);
+    }
+    Ok(targets)
+}
+
+/// See [`Command::RippleRemoveClips`]: the gaps close on every track, from
+/// the last back, as a ripple trim moves everything after its clip.
+fn ripple_remove_clips(p: &mut Project, sequence: SequenceId, clips: &[ClipId]) -> diag::Result<()> {
+    let seq = sequence_ref(p, sequence)?;
+    let targets = with_all_linked(seq, clips)?;
+    let mut covered: Vec<(Time, Time)> = seq
+        .tracks()
+        .flat_map(|t| t.clips.iter())
+        .filter(|c| targets.contains(&c.id))
+        .map(|c| (c.start, c.end()))
+        .collect();
+    covered.sort();
+    let mut stretches: Vec<(Time, Time)> = Vec::new();
+    for (start, end) in covered {
+        match stretches.last_mut() {
+            Some(last) if start <= last.1 => last.1 = last.1.max(end),
+            _ => stretches.push((start, end)),
+        }
+    }
+    close_stretches(p, sequence, &stretches, &targets)
+}
+
+/// Takes `going` out and closes `stretches` (in time order, apart) on
+/// every track, from the last back: every clip after one moves back by its
+/// length. Refused, with nothing changed, when a clip that stays is in one.
+fn close_stretches(
+    p: &mut Project,
+    sequence: SequenceId,
+    stretches: &[(Time, Time)],
+    going: &[ClipId],
+) -> diag::Result<()> {
+    let seq = sequence_ref(p, sequence)?;
+    for &(start, end) in stretches {
+        let staying = seq.tracks().find_map(|t| {
+            t.clips
+                .iter()
+                .find(|c| !going.contains(&c.id) && c.start < end && start < c.end())
+                .map(|c| (t.name.clone(), p.clip_name(c)))
+        });
+        if let Some((track, clip)) = staying {
+            return Err(AppError::new("The gap can't be closed")
+                .why(format!(
+                    "{clip} on {track} is in the gap. Closing the gap moves everything after it on every track, so {clip} would be cut."
+                ))
+                .fix(format!(
+                    "Remove the clip and leave the gap instead, or cut {clip} at the gap's edges (the Blade tool) and remove that part as well."
+                )));
+        }
+    }
+    let seq = sequence_mut(p, sequence)?;
+    for track in tracks_mut(seq) {
+        track.clips.retain(|c| !going.contains(&c.id));
+    }
+    for &(start, end) in stretches.iter().rev() {
+        for track in tracks_mut(seq) {
+            close_gap(track, end, end - start);
+        }
+    }
+    Ok(())
+}
+
+/// See [`Command::MoveClips`].
+fn move_clips(p: &mut Project, sequence: SequenceId, clips: &[ClipId], by: Time) -> diag::Result<()> {
+    if clips.is_empty() {
+        return Err(AppError::new("No clips to move").why("None were selected."));
+    }
+    let seq = sequence_mut(p, sequence)?;
+    let group = with_all_linked(seq, clips)?;
+    let mut moved = Vec::new();
+    for track in tracks_mut(seq) {
+        let (ours, rest): (Vec<Clip>, Vec<Clip>) =
+            track.clips.iter().cloned().partition(|c| group.contains(&c.id));
+        if ours.is_empty() {
+            continue;
+        }
+        track.clips = rest.into_iter().collect();
+        moved.push((track.id, ours));
+    }
+    for (track, clips) in moved {
+        for mut c in clips {
+            c.start = c.start + by;
+            if c.start.is_negative() {
+                return Err(
+                    AppError::new("The clips can't move there").why("One would start before the timeline.")
+                );
+            }
+            insert_clip(track_mut(seq, track)?, c)?;
         }
     }
     Ok(())
@@ -2310,6 +2485,209 @@ mod tests {
             s.video_tracks[0].clips[i].clone(),
             s.audio_tracks[0].clips[i].clone(),
         )
+    }
+
+    /// A short recording, then one with game and microphone sound and an
+    /// adjustment layer over its picture.
+    fn gap_then_streams() -> (Project, SequenceId) {
+        let p = Project::new("Test", SequenceSettings::GAME_CLIP);
+        let seq = p.active_sequence;
+        let p = Command::Import {
+            sequence: seq,
+            media: recording(&["Game"], 10),
+        }
+        .apply(&p)
+        .unwrap();
+        let p = Command::Import {
+            sequence: seq,
+            media: recording(&["Game", "Mic"], 30),
+        }
+        .apply(&p)
+        .unwrap();
+        let p = Command::AddAdjustment {
+            sequence: seq,
+            at: Time::seconds(15),
+            length: Time::seconds(5),
+            track: None,
+        }
+        .apply(&p)
+        .unwrap();
+        (p, seq)
+    }
+
+    #[test]
+    fn ripple_delete_closes_the_gap_on_every_track() {
+        let (p, seq) = gap_then_streams();
+        let s = p.active().unwrap();
+        assert_eq!(s.audio_tracks[1].clips[0].start, Time::seconds(10), "the mic");
+        assert_eq!(s.video_tracks[1].clips[0].start, Time::seconds(15), "the layer");
+        let first = first_video(&p, 0).id;
+        // Older journals' ripple removal keeps its meaning: same tracks only.
+        let old = Command::RemoveClip {
+            sequence: seq,
+            clip: first,
+            ripple: true,
+        }
+        .apply(&p)
+        .unwrap();
+        assert_eq!(
+            old.active().unwrap().audio_tracks[1].clips[0].start,
+            Time::seconds(10)
+        );
+        {
+            let q = Command::RippleRemoveClips {
+                sequence: seq,
+                clips: vec![first],
+            }
+            .apply(&p)
+            .unwrap();
+            let s = q.active().unwrap();
+            assert_eq!(s.video_tracks[0].clips[0].start, Time::ZERO);
+            assert_eq!(s.audio_tracks[0].clips[0].start, Time::ZERO, "game sound");
+            assert_eq!(
+                s.audio_tracks[1].clips[0].start,
+                Time::ZERO,
+                "the mic stays in step with its picture"
+            );
+            assert_eq!(
+                s.video_tracks[1].clips[0].start,
+                Time::seconds(5),
+                "the adjustment layer moves with the picture under it"
+            );
+        }
+    }
+
+    #[test]
+    fn ripple_delete_is_refused_when_another_track_has_something_in_the_gap() {
+        let (p, seq) = gap_then_streams();
+        // The layer at 15..20 s sits over the second recording; removing
+        // that recording would cut the layer when the gap closes.
+        let second = first_video(&p, 1).id;
+        let err = Command::RippleRemoveClips {
+            sequence: seq,
+            clips: vec![second],
+        }
+        .apply(&p)
+        .unwrap_err();
+        assert!(err.what().contains("can't be closed"), "{}", err.report());
+        assert!(err.report().contains("Adjustment layer"), "{}", err.report());
+        // Without closing the gap it goes, the layer stays.
+        let q = Command::RemoveClip {
+            sequence: seq,
+            clip: second,
+            ripple: false,
+        }
+        .apply(&p)
+        .unwrap();
+        assert_eq!(q.active().unwrap().video_tracks[1].clips.len(), 1);
+        // Taken along, both go and the gap closes.
+        let layer = p.active().unwrap().video_tracks[1].clips[0].id;
+        let both = Command::RippleRemoveClips {
+            sequence: seq,
+            clips: vec![second, layer],
+        }
+        .apply(&p)
+        .unwrap();
+        assert!(both.active().unwrap().tracks().all(|t| t.clips.len() <= 1));
+    }
+
+    #[test]
+    fn several_clips_move_together_with_their_sound() {
+        let (p, seq) = gap_then_streams();
+        let s = p.active().unwrap();
+        let picked = vec![s.video_tracks[0].clips[1].id, s.video_tracks[1].clips[0].id];
+        let q = Command::MoveClips {
+            sequence: seq,
+            clips: picked.clone(),
+            by: Time::seconds(5),
+        }
+        .apply(&p)
+        .unwrap();
+        let s = q.active().unwrap();
+        assert_eq!(s.video_tracks[0].clips[1].start, Time::seconds(15));
+        assert_eq!(
+            s.audio_tracks[1].clips[0].start,
+            Time::seconds(15),
+            "the mic came along"
+        );
+        assert_eq!(
+            s.video_tracks[1].clips[0].start,
+            Time::seconds(20),
+            "the layer too"
+        );
+        assert_eq!(s.video_tracks[0].clips[0].start, Time::ZERO, "the first stays");
+        // Into the first clip: refused, nothing changes.
+        let err = Command::MoveClips {
+            sequence: seq,
+            clips: picked,
+            by: Time::seconds(-5),
+        }
+        .apply(&p)
+        .unwrap_err();
+        assert!(err.what().contains("already a clip"), "{}", err.report());
+    }
+
+    #[test]
+    fn a_gap_closes_on_every_track_or_not_at_all() {
+        let (p, seq) = gap_then_streams();
+        let first = first_video(&p, 0).id;
+        // Leave a gap at 0..10 s, then close it.
+        let gap = Command::RemoveClips {
+            sequence: seq,
+            clips: vec![first],
+            ripple: false,
+        }
+        .apply(&p)
+        .unwrap();
+        let closed = Command::CloseGap {
+            sequence: seq,
+            start: Time::ZERO,
+            end: Time::seconds(10),
+        }
+        .apply(&gap)
+        .unwrap();
+        let s = closed.active().unwrap();
+        assert_eq!(s.video_tracks[0].clips[0].start, Time::ZERO);
+        assert_eq!(s.audio_tracks[1].clips[0].start, Time::ZERO);
+        assert_eq!(s.video_tracks[1].clips[0].start, Time::seconds(5));
+        // Something else in the stretch: refused.
+        assert!(
+            Command::CloseGap {
+                sequence: seq,
+                start: Time::seconds(12),
+                end: Time::seconds(16),
+            }
+            .apply(&closed)
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn lifting_a_range_leaves_the_gap() {
+        let (p, seq) = gap_then_streams();
+        let q = Command::LiftRange {
+            sequence: seq,
+            range: Region {
+                start: Time::seconds(12),
+                end: Time::seconds(16),
+            },
+        }
+        .apply(&p)
+        .unwrap();
+        let s = q.active().unwrap();
+        let spans: Vec<(Time, Time)> = s.video_tracks[0]
+            .clips
+            .iter()
+            .map(|c| (c.start, c.end()))
+            .collect();
+        assert_eq!(
+            spans,
+            vec![
+                (Time::ZERO, Time::seconds(10)),
+                (Time::seconds(10), Time::seconds(12)),
+                (Time::seconds(16), Time::seconds(40))
+            ]
+        );
     }
 
     #[test]

@@ -634,6 +634,24 @@ impl Project {
         self.sequences.iter().find(|s| s.id == id)
     }
 
+    /// What a clip is called in messages: its file's name, its nested
+    /// timeline's name, or "Adjustment layer".
+    pub fn clip_name(&self, clip: &Clip) -> String {
+        match clip.kind {
+            ClipKind::File => self
+                .media
+                .get(&clip.media)
+                .and_then(|m| m.path.file_name())
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "A clip".to_owned()),
+            ClipKind::Timeline(id) => self
+                .sequence(id)
+                .map(|s| s.name.clone())
+                .unwrap_or_else(|| "A nested timeline".to_owned()),
+            ClipKind::Adjustment => crate::timelines::ADJUSTMENT_NAME.to_owned(),
+        }
+    }
+
     /// How long what a clip plays is: its file's length (`None` for a still
     /// or a file whose length isn't known), the nested timeline's length,
     /// or `None` for an adjustment layer, which can be as long as wanted.
