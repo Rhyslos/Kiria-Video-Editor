@@ -4,7 +4,7 @@
 //! command by context, then the mouse.
 
 use super::layout::{Cap, HEIGHT, Layout, Spot, WIDTH};
-use crate::shortcuts::mouse::MOUSE;
+use crate::shortcuts::mouse::{MOUSE, MouseAction};
 use crate::shortcuts::{Context, Shortcut, ShortcutTable};
 use std::fmt::Write;
 
@@ -196,6 +196,15 @@ fn section(out: &mut String, context: Context, cells: &[[String; 2]]) {
 
 /// The whole sheet. `app` is the app's name and `layout_name` what the
 /// layout is called, for the heading and the note under it.
+/// A mouse line, naming keys as this sheet's keyboard prints them.
+fn mouse_says(line: &MouseAction, table: &ShortcutTable, layout: &Layout) -> String {
+    line.says_with(|action| {
+        table
+            .shortcut_for(action)
+            .map_or_else(|| action.label().to_owned(), |keys| layout.describe(keys))
+    })
+}
+
 pub fn html(table: &ShortcutTable, layout: &Layout, layout_name: &str, app: &str) -> String {
     let mut out = String::with_capacity(96 * 1024);
     let title = format!("{} keyboard shortcuts", escaped(app));
@@ -257,7 +266,7 @@ pub fn html(table: &ShortcutTable, layout: &Layout, layout_name: &str, app: &str
             .map(|line| {
                 [
                     format!("<td class=\"gesture\">{}</td>", escaped(line.gesture)),
-                    format!("<td>{}</td>", escaped(line.does)),
+                    format!("<td>{}</td>", escaped(&mouse_says(line, table, layout))),
                 ]
             })
             .collect();
@@ -382,7 +391,11 @@ mod tests {
         let mouse = &page[page.find("<h2>Mouse</h2>").unwrap()..];
         for line in MOUSE {
             assert!(mouse.contains(&escaped(line.gesture)), "{}", line.gesture);
-            assert!(mouse.contains(&escaped(line.does)), "{}", line.does);
+            assert!(
+                mouse.contains(&escaped(&line.says(&ShortcutTable::default()))),
+                "{}",
+                line.does
+            );
         }
         assert!(mouse.contains("While dragging</h3>"));
     }

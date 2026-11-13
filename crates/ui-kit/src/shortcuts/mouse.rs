@@ -3,23 +3,57 @@
 //! mouse themselves, so a line here describes one of them and is updated
 //! with it.
 
-use super::Context;
+use super::{Action, Context, ShortcutTable};
 
 /// One thing the mouse does somewhere.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MouseAction {
     /// What the hand does, for example "Ctrl+wheel".
     pub gesture: &'static str,
-    /// What happens.
+    /// What happens. `{keys}` stands for the keys of `keys`, asked of the
+    /// shortcut table when shown ([`MouseAction::says`]), since they can be changed.
     pub does: &'static str,
     pub context: Context,
+    /// The command whose keys the text names, if it names any.
+    pub keys: Option<Action>,
 }
+
+/// Where a line names a command's keys.
+const KEYS: &str = "{keys}";
 
 const fn on(context: Context, gesture: &'static str, does: &'static str) -> MouseAction {
     MouseAction {
         gesture,
         does,
         context,
+        keys: None,
+    }
+}
+
+/// A line that names the keys of `action` where its text says `{keys}`.
+const fn naming(context: Context, gesture: &'static str, does: &'static str, action: Action) -> MouseAction {
+    MouseAction {
+        gesture,
+        does,
+        context,
+        keys: Some(action),
+    }
+}
+
+impl MouseAction {
+    /// What happens, with the keys it names as they are now (or the
+    /// command's name, when it has none).
+    pub fn says(&self, table: &ShortcutTable) -> String {
+        self.says_with(|action| table.keys_or_name(action))
+    }
+
+    /// What happens, with the keys it names written by `keys` (the cheat
+    /// sheet writes them for the keyboard it was printed for).
+    pub fn says_with(&self, keys: impl FnOnce(Action) -> String) -> String {
+        match self.keys {
+            Some(action) => self.does.replace(KEYS, &keys(action)),
+            None => self.does.to_owned(),
+        }
     }
 }
 
@@ -55,10 +89,11 @@ pub const MOUSE: &[MouseAction] = &[
         "Click the buttons over the picture",
         "Play or pause, step one frame back or forward, stop",
     ),
-    on(
+    naming(
         Context::Viewer,
         "Drag the selected clip's picture",
-        "Move it in the frame, with handles on the picture switched on (Q); it snaps to the frame's centre and edges",
+        "Move it in the frame, with handles on the picture switched on ({keys}); it snaps to the frame's centre and edges",
+        Action::PictureHandles,
     ),
     on(
         Context::Viewer,
@@ -321,6 +356,36 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn keys_are_asked_of_the_table_and_never_typed() {
+        for line in MOUSE {
+            assert_eq!(
+                line.does.contains(KEYS),
+                line.keys.is_some(),
+                "{}: a line names keys only through the table",
+                line.gesture
+            );
+        }
+        let handles = MOUSE
+            .iter()
+            .find(|m| m.keys == Some(Action::PictureHandles))
+            .unwrap();
+        let mut table = ShortcutTable::default();
+        assert!(handles.says(&table).contains("switched on (Q)"));
+        let line = table
+            .lines()
+            .iter()
+            .position(|b| b.action == Action::PictureHandles)
+            .unwrap();
+        table
+            .rebind(line, super::super::Shortcut::parse("Ctrl+H").unwrap())
+            .unwrap();
+        assert!(
+            handles.says(&table).contains("switched on (Ctrl+H)"),
+            "follows a change"
+        );
     }
 
     #[test]
