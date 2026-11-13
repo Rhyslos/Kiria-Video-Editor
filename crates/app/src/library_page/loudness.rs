@@ -1,13 +1,14 @@
-//! A file's loudness and true peak, for the detail panel: its first sound
-//! stream read once, start to end, on a worker and measured as the master
-//! meter measures (`engine::loudness`: integrated loudness gated as the
-//! loudness standard says, true peak from four-times oversampling). Kept
-//! for the session; a file is measured only once someone looks at it.
+//! A file's loudness and true peak, for the detail panel: each of its
+//! sound streams (game, microphone, chat…) read once, start to end, on a
+//! worker and measured as the master meter measures (`engine::loudness`:
+//! integrated loudness gated as the loudness standard says, true peak from
+//! four-times oversampling). Kept for the session; a file is measured only
+//! once someone looks at it.
 //!
-//! What to do about it (`Advice`): the change of level that brings it to
-//! the loudness aimed for (Settings › Audio, the master column's target)
-//! without its true peak going over -1 dBTP, which "Add to timeline" can
-//! put on the clips it adds.
+//! What to do about it (`Advice`), stream by stream: the change of level
+//! that brings it to the loudness aimed for (Settings › Audio, the master
+//! column's target) without its true peak going over -1 dBTP, which "Add
+//! to timeline" puts on that stream's clips when it adds them.
 
 use jobs::{JobHandle, JobSystem, PoolKind, Priority};
 use media::AudioDecoder;
@@ -21,10 +22,10 @@ const RATE: u32 = 48_000;
 /// The highest true peak a file may reach after its level is changed.
 pub const PEAK_CEILING: f32 = -1.0;
 
-/// What was measured of a file.
+/// What was measured of a sound stream.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Reading {
-    /// Gated loudness of the whole file, LUFS (minus infinity for silence).
+    /// Gated loudness of the whole stream, LUFS (minus infinity for silence).
     pub integrated: f32,
     /// Its highest true peak, dBTP.
     pub true_peak: f32,
@@ -37,21 +38,22 @@ enum State {
 
 #[derive(Default)]
 pub struct Measurements {
-    files: HashMap<MediaId, State>,
+    /// By file and sound stream number.
+    streams: HashMap<(MediaId, u32), State>,
 }
 
 impl Measurements {
-    /// What is known of `media`'s loudness: `None` while it is measured
-    /// (started now if nobody asked before), else the reading or why there
-    /// is none. Files without sound have none.
+    /// What is known of the loudness of `media`'s sound stream `stream`:
+    /// `None` while it is measured (started now if nobody asked before),
+    /// else the reading or why there is none.
     pub fn get(
         &mut self,
         jobs: &JobSystem,
         ctx: &egui::Context,
         media: &MediaRef,
+        stream: u32,
     ) -> Option<Result<Reading, String>> {
-        let stream = media.info.audio.first()?.index;
-        let state = self.files.entry(media.id).or_insert_with(|| {
+        let state = self.streams.entry((media.id, stream)).or_insert_with(|| {
             let (path, ctx) = (media.path.clone(), ctx.clone());
             State::Measuring(jobs.submit(
                 PoolKind::Analysis,
@@ -75,21 +77,28 @@ impl Measurements {
         }
     }
 
-    /// Whether `media` is being measured now.
+    /// Whether any of `media`'s streams is being measured now.
     pub fn measuring(&self, media: MediaId) -> bool {
-        matches!(self.files.get(&media), Some(State::Measuring(_)))
+        self.streams
+            .iter()
+            .any(|((m, _), state)| *m == media && matches!(state, State::Measuring(_)))
     }
 
     /// Measures the file again next time (it was found somewhere else).
     pub fn forget(&mut self, media: MediaId) {
-        if let Some(State::Measuring(handle)) = self.files.remove(&media) {
-            handle.cancel();
-        }
+        self.streams.retain(|(m, _), state| {
+            if *m == media
+                && let State::Measuring(handle) = state
+            {
+                handle.cancel();
+            }
+            *m != media
+        });
     }
 
     /// The app is closing: measurements under way stop.
     pub fn stop(&self) {
-        for state in self.files.values() {
+        for state in self.streams.values() {
             if let State::Measuring(handle) = state {
                 handle.cancel();
             }

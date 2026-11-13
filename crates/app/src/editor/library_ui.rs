@@ -7,6 +7,7 @@
 
 use super::Editor;
 use crate::library_page::{About, Picked, Readers, placing};
+use crate::settings::LibraryMarks;
 use project::{Document, MediaRef};
 use ui_kit::{Action, Page};
 
@@ -65,7 +66,7 @@ impl Editor {
                 let at = self.edit_point();
                 let mut says = String::new();
                 let result = self.with_document(|d: &mut Document| {
-                    let command = placing::command(d.project(), adding, at)?;
+                    let command = placing::command(d.project(), adding.clone(), at)?;
                     if let Some(media) = d.project().media.get(&adding.media) {
                         says = placing::says(&library::file_name(&media.path), &adding);
                     }
@@ -85,6 +86,27 @@ impl Editor {
         }
     }
 
+    /// Settings › Library changed where marks are kept. To the project: the
+    /// marks made this session are written into it at once, as one step.
+    /// To the session: the page keeps the project's marks for the session,
+    /// and the project keeps them too (nothing is removed).
+    pub(super) fn library_marks_moved(&mut self) {
+        let saved = self.settings.library_marks == LibraryMarks::Project;
+        let Some(document) = &self.document else { return };
+        let write = saved
+            .then(|| self.library_page.uses.write_all(document.project()))
+            .flatten();
+        if let Some(command) = write {
+            match self.with_document(|d| d.apply(command)) {
+                Ok(()) => self.status = "This session's marks are saved in the project".into(),
+                Err(err) => self.errors.push(&err),
+            }
+        }
+        if let Some(document) = &self.document {
+            self.library_page.uses.follow(saved, document.project());
+        }
+    }
+
     /// Every frame: the player follows its clock (on any page), stops when
     /// the page is left, and the timeline's playback gives way to it; a
     /// `--library-tab` waiting for the project opens.
@@ -98,6 +120,17 @@ impl Editor {
         if self.library_page.player.playing() && self.playback.is_some() {
             self.playback = None;
             self.after_play_change();
+        }
+        // Marks and levels changed on the page, when they are kept in the
+        // project; then the page follows the project (undo shows at once).
+        for command in self.library_page.uses.take_outbox() {
+            if let Err(err) = self.with_document(|d| d.apply(command)) {
+                self.errors.push(&err);
+            }
+        }
+        if let Some(document) = &self.document {
+            let saved = self.settings.library_marks == LibraryMarks::Project;
+            self.library_page.uses.follow(saved, document.project());
         }
         if let Some(err) = self.library_page.poll(ctx, self.settings.preview_quality) {
             self.errors.push(&err);

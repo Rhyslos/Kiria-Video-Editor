@@ -25,13 +25,13 @@ pub enum AddAt {
 }
 
 /// What to add: a file, the part of it from `part.0` to `part.1` (seconds
-/// into the file; the whole file when `None`), with its sound changed by
-/// `gain_mdb` thousandths of a decibel.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// into the file; the whole file when `None`), with each sound stream in
+/// `levels` (its stream number) changed by so many thousandths of a decibel.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Adding {
     pub media: MediaId,
     pub part: Option<(f64, f64)>,
-    pub gain_mdb: i32,
+    pub levels: Vec<(u32, i32)>,
     pub at: AddAt,
 }
 
@@ -41,9 +41,10 @@ pub fn says(name: &str, adding: &Adding) -> String {
         Some((from, to)) => format!("{} of {name}", ui_kit::time_text::length((to - from).max(0.0))),
         None => name.to_owned(),
     };
-    let level = match adding.gain_mdb {
-        0 => String::new(),
-        mdb => format!(", its sound {:+.1} dB", f64::from(mdb) / 1000.0),
+    let level = match adding.levels.as_slice() {
+        [] => String::new(),
+        [(_, mdb)] => format!(", its sound {:+.1} dB", f64::from(*mdb) / 1000.0),
+        several => format!(", {} sound streams at their own levels", several.len()),
     };
     let place = match adding.at {
         AddAt::End => "at the end of the timeline",
@@ -60,7 +61,7 @@ pub fn command(project: &Project, adding: Adding, edit_point: Time) -> diag::Res
     })?;
     let sequence = seq.id;
     let media = adding.media;
-    if adding.part.is_none() && adding.gain_mdb == 0 {
+    if adding.part.is_none() && adding.levels.is_empty() {
         return Ok(match adding.at {
             AddAt::End => Command::PlaceMedia { sequence, media },
             AddAt::EditPoint => Command::InsertMedia {
@@ -74,7 +75,7 @@ pub fn command(project: &Project, adding: Adding, edit_point: Time) -> diag::Res
         AddAt::End => seq.length(),
         AddAt::EditPoint => edit_point,
     };
-    let template = part_template(project, adding)?;
+    let template = part_template(project, &adding)?;
     Ok(Command::InsertTemplate {
         sequence,
         template: Box::new(template),
@@ -83,7 +84,7 @@ pub fn command(project: &Project, adding: Adding, edit_point: Time) -> diag::Res
 }
 
 /// The marked part of the file, at its level, as a template (see the top of this file).
-pub fn part_template(project: &Project, adding: Adding) -> diag::Result<Template> {
+pub fn part_template(project: &Project, adding: &Adding) -> diag::Result<Template> {
     let seq = project.active().ok_or_else(|| {
         AppError::new("There is no timeline to add to").fix("Make a timeline on the Edit page first.")
     })?;
@@ -122,11 +123,11 @@ pub fn part_template(project: &Project, adding: Adding) -> diag::Result<Template
             .fix("Mark out later than in, or clear the marks to add the whole file.")
     })?;
     let mut template = Template::capture(&placed, seq.id, Some(region))?;
-    if adding.gain_mdb != 0 {
-        for track in &mut template.audio_tracks {
-            for clip in track.clips.iter_mut() {
-                clip.sound.gain_mdb =
-                    (clip.sound.gain_mdb + adding.gain_mdb).clamp(Sound::SILENT, Sound::LOUDEST);
+    // Each sound stream's clips at its own level.
+    for track in &mut template.audio_tracks {
+        for clip in track.clips.iter_mut() {
+            if let Some((_, mdb)) = adding.levels.iter().find(|(stream, _)| *stream == clip.stream) {
+                clip.sound.gain_mdb = (clip.sound.gain_mdb + mdb).clamp(Sound::SILENT, Sound::LOUDEST);
             }
         }
     }
@@ -168,11 +169,11 @@ mod tests {
         let adding = Adding {
             media,
             part: None,
-            gain_mdb: 0,
+            levels: Vec::new(),
             at: AddAt::End,
         };
         assert!(matches!(
-            command(&p, adding, Time::ZERO),
+            command(&p, adding.clone(), Time::ZERO),
             Ok(Command::PlaceMedia { .. })
         ));
         let insert = Adding {
@@ -189,10 +190,12 @@ mod tests {
     fn a_marked_part_goes_in_cut_at_its_marks_as_one_step() {
         let (p, media) = project_with(game_recording());
         let length = p.media.get(&media).unwrap().duration.as_secs_f64();
+        // The first sound stream (the game) quieter, the others as they are.
+        let game = p.media.get(&media).unwrap().info.audio[0].index;
         let adding = Adding {
             media,
             part: Some((0.5, length - 0.5)),
-            gain_mdb: -3_000,
+            levels: vec![(game, -3_000)],
             at: AddAt::End,
         };
         let command = command(&p, adding, Time::ZERO).unwrap();
@@ -207,11 +210,15 @@ mod tests {
             assert_eq!(clip.start, Time::ZERO, "first on an empty timeline");
             assert_eq!(clip.source_in, half, "from the in mark");
         }
+        let mut streams = 0;
         for track in seq.audio_tracks.iter().filter(|t| t.kind == TrackKind::Audio) {
             for clip in &track.clips {
-                assert_eq!(clip.sound.gain_mdb, -3_000, "the level goes on the sound");
+                streams += 1;
+                let wanted = if clip.stream == game { -3_000 } else { 0 };
+                assert_eq!(clip.sound.gain_mdb, wanted, "each stream at its own level");
             }
         }
+        assert_eq!(streams, 3, "game, microphone and chat");
         for track in &seq.video_tracks {
             for clip in &track.clips {
                 assert_eq!(clip.sound.gain_mdb, 0, "not on the picture");
@@ -238,16 +245,21 @@ mod tests {
         let adding = Adding {
             media: MediaId(1),
             part: Some((2.0, 7.5)),
-            gain_mdb: 3_000,
+            levels: vec![(1, 3_000)],
             at: AddAt::End,
         };
         assert_eq!(
             says("a.mkv", &adding),
             "Added 5.5 s of a.mkv at the end of the timeline, its sound +3.0 dB"
         );
+        let several = Adding {
+            levels: vec![(1, 3_000), (2, -1_000)],
+            ..adding.clone()
+        };
+        assert!(says("a.mkv", &several).ends_with(", 2 sound streams at their own levels"));
         let whole = Adding {
             part: None,
-            gain_mdb: 0,
+            levels: Vec::new(),
             at: AddAt::EditPoint,
             ..adding
         };
@@ -260,7 +272,7 @@ mod tests {
         let adding = Adding {
             media,
             part: Some((1.0, 1.0)),
-            gain_mdb: 0,
+            levels: Vec::new(),
             at: AddAt::End,
         };
         let err = command(&p, adding, Time::ZERO).unwrap_err();

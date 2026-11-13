@@ -10,6 +10,8 @@
 use crate::command::missing;
 use crate::ids::{MediaId, MediaLabelId, MediaListId};
 use crate::model::{LabelColor, Project};
+use crate::sound::Sound;
+use crate::time::Time;
 use diag::AppError;
 use imbl::{OrdMap, OrdSet, Vector};
 use serde::{Deserialize, Serialize};
@@ -31,6 +33,59 @@ pub struct Library {
     pub notes: OrdMap<MediaId, String>,
     /// The custom lists, in the order they were made.
     pub lists: Vector<MediaList>,
+    /// How each file is to be added from the Library (format 15): the part
+    /// marked with in and out, and a level per sound stream. Kept only when
+    /// the Library's marks are saved in the project (a setting); files
+    /// without any are left out.
+    #[serde(default)]
+    pub uses: OrdMap<MediaId, MediaUse>,
+}
+
+/// How a file is to be added to a timeline from the Library: the part of
+/// it marked (from `mark_in`, or its start, to `mark_out`, or its end) and
+/// the level each of its sound streams goes in at.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MediaUse {
+    #[serde(default)]
+    pub mark_in: Option<Time>,
+    #[serde(default)]
+    pub mark_out: Option<Time>,
+    /// The change of level, in thousandths of a decibel, by sound stream
+    /// number (the file's own stream numbers). Streams left out go in as they are.
+    #[serde(default)]
+    pub levels: OrdMap<u32, i32>,
+}
+
+impl MediaUse {
+    /// Nothing marked and every stream as it is.
+    pub fn is_empty(&self) -> bool {
+        self.mark_in.is_none() && self.mark_out.is_none() && self.levels.values().all(|l| *l == 0)
+    }
+
+    /// What breaks the rules, for a file `length` long.
+    fn problems(&self, length: Time) -> Vec<String> {
+        let mut problems = Vec::new();
+        for (name, mark) in [("in", self.mark_in), ("out", self.mark_out)] {
+            if let Some(at) = mark
+                && (at < Time::ZERO || at > length)
+            {
+                problems.push(format!("the {name} mark is outside the file"));
+            }
+        }
+        if let (Some(start), Some(end)) = (self.mark_in, self.mark_out)
+            && start >= end
+        {
+            problems.push("the in mark is not before the out mark".into());
+        }
+        if self
+            .levels
+            .values()
+            .any(|l| !(Sound::SILENT..=Sound::LOUDEST).contains(l))
+        {
+            problems.push("a level is outside the volume's range".into());
+        }
+        problems
+    }
 }
 
 /// A named, coloured label any number of files can have.
@@ -51,7 +106,27 @@ pub struct MediaList {
 
 impl Library {
     pub fn is_empty(&self) -> bool {
-        self.labels.is_empty() && self.tagged.is_empty() && self.notes.is_empty() && self.lists.is_empty()
+        self.labels.is_empty()
+            && self.tagged.is_empty()
+            && self.notes.is_empty()
+            && self.lists.is_empty()
+            && self.uses.is_empty()
+    }
+
+    /// How `media` is to be added (nothing marked when none is kept).
+    pub fn use_of(&self, media: MediaId) -> MediaUse {
+        self.uses.get(&media).cloned().unwrap_or_default()
+    }
+
+    /// Everything kept about `media`, for when it leaves the project: its
+    /// labels, note, place in lists and how it was to be added.
+    pub fn forget(&mut self, media: MediaId) {
+        self.tagged.remove(&media);
+        self.notes.remove(&media);
+        self.uses.remove(&media);
+        for list in self.lists.iter_mut() {
+            list.media.retain(|m| *m != media);
+        }
     }
 
     pub fn label(&self, id: MediaLabelId) -> Option<&MediaLabel> {
@@ -95,6 +170,14 @@ impl Library {
     /// What breaks the rules, in plain words, given the project's files.
     pub(crate) fn problems(&self, has_media: impl Fn(MediaId) -> bool) -> Vec<String> {
         let mut problems = Vec::new();
+        for (media, used) in &self.uses {
+            if !has_media(*media) {
+                problems.push(format!("marks are kept for missing media {media}"));
+            }
+            if used.is_empty() {
+                problems.push(format!("{media} is kept with no marks or levels"));
+            }
+        }
         let mut names = std::collections::HashSet::new();
         for label in &self.labels {
             if !names.insert(label.name.to_lowercase()) {
@@ -295,6 +378,27 @@ pub(crate) fn set_note(p: &mut Project, media: MediaId, note: &str) -> diag::Res
     Ok(())
 }
 
+/// Sets how each of these files is to be added (one step for all of
+/// them); an empty use is removed.
+pub(crate) fn set_uses(p: &mut Project, uses: &[(MediaId, MediaUse)]) -> diag::Result<()> {
+    let files: Vec<MediaId> = uses.iter().map(|(m, _)| *m).collect();
+    check_media(p, &files)?;
+    for (media, used) in uses {
+        let length = p.media.get(media).map_or(Time::ZERO, |m| m.duration);
+        if let Some(problem) = used.problems(length).into_iter().next() {
+            return Err(AppError::new("Those marks can't be kept")
+                .why(format!("For this file {problem}."))
+                .fix("Mark in before out, inside the file."));
+        }
+        if used.is_empty() {
+            p.library.uses.remove(media);
+        } else {
+            p.library.uses.insert(*media, used.clone());
+        }
+    }
+    Ok(())
+}
+
 /// Makes a list called `name` holding `media`.
 pub(crate) fn add_list(p: &mut Project, name: &str, media: &[MediaId]) -> diag::Result<()> {
     check_media(p, media)?;
@@ -376,7 +480,6 @@ mod tests {
     use super::*;
     use crate::command::Command;
     use crate::model::{Fingerprint, MediaKind, MediaRef};
-    use crate::time::Time;
 
     fn with_files(n: usize) -> (Project, Vec<MediaId>) {
         let mut p = Project::new_automatic("T");
@@ -399,6 +502,87 @@ mod tests {
         }
         let ids = p.media.keys().copied().collect();
         (p, ids)
+    }
+
+    #[test]
+    fn marks_and_levels_are_kept_checked_and_dropped_when_empty() {
+        let (p, files) = with_files(2);
+        let used = MediaUse {
+            mark_in: Some(Time::seconds(1)),
+            mark_out: Some(Time::seconds(3)),
+            levels: [(1u32, 2_500)].into_iter().collect(),
+        };
+        let p = Command::SetMediaUses {
+            uses: vec![(files[0], used.clone()), (files[1], MediaUse::default())],
+        }
+        .apply(&p)
+        .unwrap();
+        assert_eq!(p.library.use_of(files[0]), used);
+        assert_eq!(p.library.uses.len(), 1, "an empty use isn't kept");
+        assert!(p.problems().is_empty(), "{:?}", p.problems());
+        for wrong in [
+            MediaUse {
+                mark_in: Some(Time::seconds(3)),
+                mark_out: Some(Time::seconds(1)),
+                ..MediaUse::default()
+            },
+            MediaUse {
+                mark_out: Some(Time::seconds(9)),
+                ..MediaUse::default()
+            },
+            MediaUse {
+                levels: [(1u32, 99_000)].into_iter().collect(),
+                ..MediaUse::default()
+            },
+        ] {
+            let refused = Command::SetMediaUses {
+                uses: vec![(files[1], wrong)],
+            }
+            .apply(&p);
+            assert!(refused.is_err());
+        }
+        let cleared = Command::SetMediaUses {
+            uses: vec![(files[0], MediaUse::default())],
+        }
+        .apply(&p)
+        .unwrap();
+        assert!(cleared.library.uses.is_empty());
+        let missing = Command::SetMediaUses {
+            uses: vec![(MediaId(999), used)],
+        }
+        .apply(&p);
+        assert!(missing.is_err());
+    }
+
+    #[test]
+    fn a_forgotten_file_leaves_nothing_behind() {
+        let (p, files) = with_files(1);
+        let p = Command::AddMediaLabel {
+            label: label("Drone"),
+            media: files.clone(),
+        }
+        .apply(&p)
+        .unwrap();
+        let p = Command::AddMediaList {
+            name: "Opening".into(),
+            media: files.clone(),
+        }
+        .apply(&p)
+        .unwrap();
+        let mut p = Command::SetMediaUses {
+            uses: vec![(
+                files[0],
+                MediaUse {
+                    mark_in: Some(Time::seconds(1)),
+                    ..MediaUse::default()
+                },
+            )],
+        }
+        .apply(&p)
+        .unwrap();
+        p.library.forget(files[0]);
+        assert!(p.library.tagged.is_empty() && p.library.uses.is_empty());
+        assert!(p.library.lists[0].media.is_empty());
     }
 
     fn label(name: &str) -> MediaLabel {

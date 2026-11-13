@@ -26,13 +26,14 @@ pub mod player;
 mod sidebar;
 mod sound_rows;
 mod top_rows;
+pub mod uses;
 
 use crate::organise::{Everywhere, Organised, Organiser};
 use crate::proxies::Status;
 use arrange::{Arranged, Facts, Sizes};
 use library::{Query, Sort, Type};
 use project::{Command, GlobalLabels, MediaId, MediaKind, MediaLabelId, MediaListId, MediaRef, Project};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use ui_kit::scrub::Marks;
@@ -212,10 +213,9 @@ pub struct LibraryPage {
     pub view: View,
     /// The file in the detail panel.
     pub selected: Option<MediaId>,
-    /// The part of each file marked to add, for the session.
-    marks: HashMap<MediaId, Marks>,
-    /// A level chosen in the detail panel to add a file at (thousandths of a dB).
-    levels: HashMap<MediaId, i32>,
+    /// The part of each file marked to add and the level of each of its
+    /// sound streams: for the session, or in the project (a setting).
+    pub uses: uses::Uses,
     pub player: player::Player,
     loudness: loudness::Measurements,
     organiser: Organiser,
@@ -244,8 +244,7 @@ impl Default for LibraryPage {
             size: cards::USUAL_SIZE,
             view: View::default(),
             selected: None,
-            marks: HashMap::new(),
-            levels: HashMap::new(),
+            uses: uses::Uses::default(),
             player: player::Player::default(),
             loudness: loudness::Measurements::default(),
             organiser: Organiser::default(),
@@ -370,16 +369,20 @@ impl LibraryPage {
 
     /// The marked part of `media`.
     pub fn marks(&self, media: MediaId) -> Marks {
-        self.marks.get(&media).copied().unwrap_or_default()
+        self.uses.get(media).marks
     }
 
-    /// What "Add to timeline" adds for `media`: its marked part, at the level chosen for it.
+    /// What "Add to timeline" adds for `media`: its marked part, each
+    /// sound stream at the level chosen for it.
     pub fn adding(&self, media: &MediaRef, at: AddAt) -> Adding {
-        let marks = self.marks(media.id);
+        let used = self.uses.get(media.id);
         Adding {
             media: media.id,
-            part: marks.is_set().then(|| marks.part(media.duration.as_secs_f64())),
-            gain_mdb: self.levels.get(&media.id).copied().unwrap_or(0),
+            part: used
+                .marks
+                .is_set()
+                .then(|| used.marks.part(media.duration.as_secs_f64())),
+            levels: used.levels.into_iter().filter(|(_, l)| *l != 0).collect(),
             at,
         }
     }
@@ -410,8 +413,16 @@ impl LibraryPage {
             Action::NextFrame => self.player.step(1, marks),
             Action::GoToStart => self.player.go_to(0.0, marks),
             Action::GoToEnd => self.player.go_to(length, marks),
-            Action::MarkIn => self.marks.entry(media).or_default().set_in(self.player.at),
-            Action::MarkOut => self.marks.entry(media).or_default().set_out(self.player.at),
+            Action::MarkIn | Action::MarkOut => {
+                let at = self.player.at;
+                self.uses.change(media, length, |u| {
+                    if action == Action::MarkIn {
+                        u.marks.set_in(at);
+                    } else {
+                        u.marks.set_out(at);
+                    }
+                });
+            }
             _ => return false,
         }
         true
@@ -913,9 +924,11 @@ mod tests {
         assert_eq!(page.marks(media.id).part(10.0), (2.0, 6.0));
         let adding = page.adding(&media, AddAt::End);
         assert_eq!(adding.part, Some((2.0, 6.0)));
-        assert_eq!(adding.gain_mdb, 0);
-        page.levels.insert(media.id, -1_500);
-        assert_eq!(page.adding(&media, AddAt::End).gain_mdb, -1_500);
+        assert!(adding.levels.is_empty());
+        page.uses.change(media.id, 10.0, |u| {
+            u.levels.insert(2, -1_500);
+        });
+        assert_eq!(page.adding(&media, AddAt::End).levels, [(2, -1_500)]);
     }
 
     #[test]

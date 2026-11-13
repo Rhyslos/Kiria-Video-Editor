@@ -2686,6 +2686,17 @@ impl Editor {
                 });
                 ui.label(egui::RichText::new(self.settings.jump_picture.explained()).color(self.theme.muted));
                 ui.add_space(8.0);
+                ui.heading("Library");
+                ui.horizontal(|ui| {
+                    for choice in crate::settings::LibraryMarks::ALL {
+                        ui.radio_value(&mut self.settings.library_marks, choice, choice.label())
+                            .on_hover_text(choice.explained());
+                    }
+                });
+                ui.label(
+                    egui::RichText::new(self.settings.library_marks.explained()).color(self.theme.muted),
+                );
+                ui.add_space(8.0);
                 ui.heading("Cache");
                 self.cache_cleanup.rows(ui, &self.theme, has_project);
                 ui.add_space(8.0);
@@ -2721,6 +2732,9 @@ impl Editor {
                 self.theme.apply(ctx);
             }
             self.proxies.set_mode(self.settings.proxies);
+            if self.settings.library_marks != before.library_marks {
+                self.library_marks_moved();
+            }
             let key_frame_first = self.settings.jump_picture.key_frame_first();
             self.viewer.set_key_frame_first(key_frame_first);
             self.display.set_key_frame_first(key_frame_first);

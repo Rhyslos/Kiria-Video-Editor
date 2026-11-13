@@ -244,17 +244,22 @@ fn marking(page: &mut LibraryPage, ui: &mut egui::Ui, theme: &Theme, about: &Abo
                 .on_hover_text("Add the whole file again")
                 .clicked()
         {
-            page.marks.remove(&media.id);
+            page.uses.change(media.id, length, |u| u.marks = Marks::default());
         }
     });
     let marks = page.marks(media.id);
     let text = if marks.is_set() {
         let (start, end) = marks.part(length);
         format!(
-            "Marked {} to {} · {}",
+            "Marked {} to {} · {}{}",
             clock(start),
             clock(end),
-            ui_kit::time_text::length(end - start)
+            ui_kit::time_text::length(end - start),
+            if page.uses.saved() {
+                " · saved in the project"
+            } else {
+                ""
+            }
         )
     } else {
         "The whole file is added. Mark in and out to add a part of it.".to_owned()
@@ -307,16 +312,37 @@ fn adding(
     {
         picked.push(Picked::Add(page.adding(media, AddAt::EditPoint)));
     }
-    if let Some(mdb) = page.levels.get(&media.id).copied() {
+    let changed: Vec<String> = page
+        .uses
+        .get(media.id)
+        .levels
+        .iter()
+        .filter(|(_, l)| **l != 0)
+        .map(|(stream, l)| {
+            format!(
+                "{} {:+.1} dB",
+                stream_name(media, *stream),
+                f64::from(*l) / 1000.0
+            )
+        })
+        .collect();
+    if !changed.is_empty() {
         ui.horizontal(|ui| {
-            let db = f64::from(mdb) / 1000.0;
-            ui.label(
-                egui::RichText::new(format!("Its sound goes in {:+.1} dB", db))
-                    .size(11.5)
-                    .color(theme.text_secondary),
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(format!("Sound goes in: {}", changed.join(", ")))
+                        .size(11.5)
+                        .color(theme.text_secondary),
+                )
+                .truncate(),
             );
-            if ui.small_button("×").on_hover_text("Add it as it is").clicked() {
-                page.levels.remove(&media.id);
+            if ui
+                .small_button("×")
+                .on_hover_text("Add every stream as it is")
+                .clicked()
+            {
+                let length = media.duration.as_secs_f64();
+                page.uses.change(media.id, length, |u| u.levels.clear());
             }
         });
     }
@@ -335,17 +361,37 @@ fn sections(
     let mut picked = Vec::new();
     let project = about.project;
     if !media.info.audio.is_empty() {
-        let reading = page.loudness.get(about.jobs, ui.ctx(), media);
-        if reading.is_none() && page.loudness.measuring(media.id) {
+        let readings: Vec<(u32, Option<Result<Reading, String>>)> = media
+            .info
+            .audio
+            .iter()
+            .map(|a| (a.index, page.loudness.get(about.jobs, ui.ctx(), media, a.index)))
+            .collect();
+        if page.loudness.measuring(media.id) {
             page.waiting += 1;
         }
-        let summary = match &reading {
-            Some(Ok(r)) => format!("{} · {}", lufs(r.integrated), dbtp(r.true_peak)),
-            Some(Err(_)) => "Couldn't be measured".into(),
-            None => "Measuring…".into(),
+        let summary = match readings.as_slice() {
+            [(_, Some(Ok(r)))] => format!("{} · {}", lufs(r.integrated), dbtp(r.true_peak)),
+            [(_, Some(Err(_)))] => "Couldn't be measured".into(),
+            _ if readings.iter().any(|(_, r)| r.is_none()) => "Measuring…".into(),
+            several => format!("{} streams", several.len()),
         };
         ui_kit::inspector::section(ui, theme, "Sound", &summary, false, |ui| {
-            sound(page, ui, theme, about, media, reading);
+            let several = readings.len() > 1;
+            for (i, (stream, reading)) in readings.into_iter().enumerate() {
+                if several {
+                    if i > 0 {
+                        ui.add_space(6.0);
+                    }
+                    ui.label(
+                        egui::RichText::new(stream_name(media, stream))
+                            .family(ui_kit::fonts::semibold())
+                            .size(12.5)
+                            .color(theme.text),
+                    );
+                }
+                sound(page, ui, theme, about, media, stream, reading);
+            }
         });
     }
     ui_kit::inspector::section(ui, theme, "File", &super::details(media), false, |ui| {
@@ -425,13 +471,15 @@ fn sections(
     picked
 }
 
-/// The Sound section: loudness and true peak, and what to do about them.
+/// One sound stream in the Sound section: its loudness and true peak,
+/// and what to do about them (a level for that stream when it is added).
 fn sound(
     page: &mut LibraryPage,
     ui: &mut egui::Ui,
     theme: &Theme,
     about: &About<'_>,
     media: &MediaRef,
+    stream: u32,
     reading: Option<Result<Reading, String>>,
 ) {
     let reading = match reading {
@@ -486,13 +534,16 @@ fn sound(
         }
     }
     if let Some((mdb, words)) = advice.fix {
-        let chosen = page.levels.get(&media.id) == Some(&mdb);
+        let chosen = page.uses.get(media.id).levels.get(&stream) == Some(&mdb);
         let button = ui
             .add_enabled(!chosen, egui::Button::new(words))
-            .on_hover_text("Its clips go into the timeline with their volume changed this much (the file stays as it is). Change it later in the inspector's Audio section.")
+            .on_hover_text("This stream's clips go into the timeline with their volume changed this much (the file stays as it is). Change it later in the inspector's Audio section.")
             .on_disabled_hover_text("Chosen: it goes in at this level");
         if button.clicked() {
-            page.levels.insert(media.id, mdb);
+            let length = media.duration.as_secs_f64();
+            page.uses.change(media.id, length, |u| {
+                u.levels.insert(stream, mdb);
+            });
         }
     }
 }
@@ -547,6 +598,16 @@ fn file_rows(media: &MediaRef, facts: &Facts) -> Vec<(&'static str, String)> {
         },
     ));
     rows
+}
+
+/// A sound stream's name as the import named it ("Game", "Mic", or "Audio 2").
+fn stream_name(media: &MediaRef, stream: u32) -> String {
+    media
+        .info
+        .audio
+        .iter()
+        .find(|a| a.index == stream)
+        .map_or_else(|| format!("Stream {stream}"), |a| a.name.clone())
 }
 
 /// Seconds as minutes, seconds and tenths: "1:04.2".

@@ -60,6 +60,41 @@ pub struct Settings {
     pub jump_picture: JumpPicture,
     /// The loudness the master column aims at (its right-click menu).
     pub loudness_target: ui_kit::master::LoudnessTarget,
+    /// Where the Library page keeps a file's in and out marks and the
+    /// levels chosen for its sound streams.
+    pub library_marks: LibraryMarks,
+}
+
+/// Where the Library page keeps what is marked to add (Settings › Library).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum LibraryMarks {
+    /// For this session only: nothing is written to the project (the usual).
+    #[default]
+    Session,
+    /// In the project, each change an undo step.
+    Project,
+}
+
+impl LibraryMarks {
+    pub const ALL: [LibraryMarks; 2] = [LibraryMarks::Session, LibraryMarks::Project];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            LibraryMarks::Session => "Keep marks for this session",
+            LibraryMarks::Project => "Save marks in the project",
+        }
+    }
+
+    pub fn explained(self) -> &'static str {
+        match self {
+            LibraryMarks::Session => {
+                "In and out marks and the levels chosen for a file's sound last until the editor closes; the project file is not changed."
+            }
+            LibraryMarks::Project => {
+                "In and out marks and the levels chosen for a file's sound are saved in the project, each change an undo step. Marks made this session are saved when you switch."
+            }
+        }
+    }
 }
 
 /// What the viewer shows when the playhead jumps in a file that has no

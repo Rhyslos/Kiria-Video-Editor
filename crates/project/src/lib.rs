@@ -50,7 +50,7 @@ pub use global_labels::{GlobalLabel, GlobalLabels};
 pub use history::History;
 pub use ids::{ClipId, LabelId, LinkId, MediaId, MediaLabelId, MediaListId, SequenceId, TrackId};
 pub use keyframes::{Ease, Keyframe, Keyframes, LookField};
-pub use library::{Library, MediaLabel, MediaList};
+pub use library::{Library, MediaLabel, MediaList, MediaUse};
 pub use look::Look;
 pub use model::FrameBlend;
 pub use model::{
