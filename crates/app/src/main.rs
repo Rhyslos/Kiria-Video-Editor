@@ -10,6 +10,7 @@ mod audio_page;
 mod cache_cleanup;
 mod cheat_sheet;
 mod clip_pictures;
+mod close_prompt;
 mod device_decoding;
 mod display;
 mod editor;
@@ -146,6 +147,7 @@ fn main() -> ExitCode {
         watch_folders: options.watch_folders.clone(),
         export_page: options.export_page,
         export_queue: options.export_queue,
+        close_request: options.close_request,
         page: options.page,
         library_tab: options.library_tab.clone(),
         library_select: options.library_select.clone(),

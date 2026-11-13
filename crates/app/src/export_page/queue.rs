@@ -100,6 +100,14 @@ impl Job {
 /// Runs when a job's worker has news (a repaint, in the window).
 pub type Notify = Arc<dyn Fn() + Send + Sync>;
 
+/// Exports that closing the app would lose: whether one runs, and how many
+/// wait (in line, or held until Start).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Unfinished {
+    pub running: bool,
+    pub waiting: usize,
+}
+
 /// What came of a poll.
 #[derive(Debug, Default)]
 pub struct Polled {
@@ -154,6 +162,17 @@ impl Queue {
         self.jobs
             .iter()
             .any(|j| matches!(j.state, State::Running(_) | State::Next))
+    }
+
+    /// What closing the app now would stop or drop, if anything.
+    pub fn unfinished(&self) -> Option<Unfinished> {
+        let running = self.jobs.iter().any(|j| j.state.is_running());
+        let waiting = self
+            .jobs
+            .iter()
+            .filter(|j| matches!(j.state, State::Next | State::Held))
+            .count();
+        (running || waiting > 0).then_some(Unfinished { running, waiting })
     }
 
     /// Adds a job: to run as soon as nothing else does (`now`), or held
@@ -353,11 +372,26 @@ mod tests {
             matches!(queue.jobs()[2].state, State::Next),
             "waits for the first"
         );
+        assert_eq!(
+            queue.unfinished(),
+            Some(Unfinished {
+                running: true,
+                waiting: 2
+            }),
+            "the held job counts as waiting: closing would drop it too"
+        );
         let polled = until(&mut queue, |q| q.jobs()[2].state.is_over());
         assert_eq!(polled.finished.len(), 2);
         assert!(polled.failed.is_empty());
         assert!(dir.path().join("a.wav").exists() && dir.path().join("c.wav").exists());
         assert!(matches!(queue.jobs()[1].state, State::Held), "still held");
+        assert_eq!(
+            queue.unfinished(),
+            Some(Unfinished {
+                running: false,
+                waiting: 1
+            })
+        );
         assert!(!dir.path().join("b.wav").exists());
         queue.start(held);
         until(&mut queue, |q| q.jobs()[1].state.is_over());
@@ -367,6 +401,7 @@ mod tests {
         assert!(queue.remove(second).is_some());
         assert_eq!(queue.jobs().len(), 1);
         assert!(!queue.busy());
+        assert_eq!(queue.unfinished(), None, "only a finished job is left");
     }
 
     #[test]

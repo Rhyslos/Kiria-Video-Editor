@@ -112,6 +112,11 @@ pub struct Editor {
     picture_handles: crate::picture_handles::PictureHandles,
     /// The Export page: what to export, and the export under way.
     export_page: crate::export_page::ExportPage,
+    /// The question before closing while exports are unfinished.
+    close_prompt: crate::close_prompt::ClosePrompt,
+    /// Ask it as soon as an export is unfinished (`--close-request`, for
+    /// screenshots of the question).
+    close_request: bool,
     /// The Audio page: its tool, track, filter, mixer and counting.
     audio_page: crate::audio_page::AudioPage,
     /// What the command line asked of the Audio page and is still to do
@@ -248,6 +253,7 @@ impl Editor {
             .map(|p| p.watch_folders.clone())
             .unwrap_or_default();
         let export_queue = project.as_ref().is_some_and(|p| p.export_queue);
+        let close_request = project.as_ref().is_some_and(|p| p.close_request);
         let start_page = match project.as_ref() {
             Some(p) if p.export_page || p.export_queue => Page::Export,
             Some(p) => p.page.unwrap_or_default(),
@@ -433,6 +439,8 @@ impl Editor {
             inspector: crate::inspector::Inspector::default(),
             picture_handles: crate::picture_handles::PictureHandles::default(),
             export_page,
+            close_prompt: Default::default(),
+            close_request,
             audio_page,
             audio_start,
             audio_held_master: None,
@@ -505,25 +513,29 @@ impl Editor {
                     Ok(())
                 } else {
                     let ripple = action == Action::RippleDelete;
-                    let clips = std::mem::take(&mut self.selected);
-                    self.with_document(|d| {
+                    let clips = self.selected.clone();
+                    let result = self.with_document(|d| {
                         let sequence = d.project().active_sequence;
-                        for clip in clips {
-                            // A linked clip may already have gone with an earlier one.
-                            let exists = d
-                                .project()
-                                .active()
-                                .is_some_and(|s| s.tracks().any(|t| t.clips.iter().any(|c| c.id == clip)));
-                            if exists {
-                                d.apply(Command::RemoveClip {
-                                    sequence,
-                                    clip,
-                                    ripple,
-                                })?;
-                            }
-                        }
-                        Ok(())
-                    })
+                        // The selection may still name a clip an undo took away.
+                        let clips: Vec<_> = clips
+                            .into_iter()
+                            .filter(|clip| {
+                                d.project().active().is_some_and(|s| {
+                                    s.tracks().any(|t| t.clips.iter().any(|c| c.id == *clip))
+                                })
+                            })
+                            .collect();
+                        // One step: every clip is checked first, then all go or none do.
+                        d.apply(Command::RemoveClips {
+                            sequence,
+                            clips,
+                            ripple,
+                        })
+                    });
+                    if result.is_ok() {
+                        self.selected.clear();
+                    }
+                    result
                 }
             }
             Action::ClearSelection => {
@@ -756,30 +768,6 @@ impl Editor {
         };
         if let Err(err) = result {
             self.errors.push(&err);
-        }
-    }
-
-    /// The few shortcuts worth knowing first, as they are now: "M adds a
-    /// label, Ctrl+Z undoes, …". Commands without a shortcut are left out.
-    fn key_hints(&self) -> String {
-        let hints: Vec<String> = [
-            (Action::AddLabel, "adds a label"),
-            (Action::Undo, "undoes"),
-            (Action::Redo, "redoes"),
-            (Action::Save, "saves"),
-        ]
-        .iter()
-        .filter_map(|(action, does)| {
-            Some(format!(
-                "{} {does}",
-                self.shortcuts.written(self.shortcuts.shortcut_for(*action)?)
-            ))
-        })
-        .collect();
-        if hints.is_empty() {
-            String::new()
-        } else {
-            format!("{}.", hints.join(", "))
         }
     }
 
@@ -2398,13 +2386,7 @@ impl Editor {
             }
             return;
         }
-        let (title, coming) = match self.page {
-            Page::Library => ("Library", "Media, labels and custom lists arrive in Phase 5."),
-            Page::Edit => ("Edit", "The viewer and timeline arrive in Phase 4."),
-            Page::Color => ("Color", "Grading arrives in Phase 7."),
-            Page::Audio => ("Audio", "Mixing arrives in Phase 8."),
-            Page::Export => ("Export", "Exporting arrives in Phase 6."),
-        };
+        let (title, line) = placeholder(self.page, self.document.is_some());
         ui.add_space(24.0);
         ui.vertical_centered(|ui| {
             ui.label(
@@ -2412,20 +2394,9 @@ impl Editor {
                     .family(ui_kit::fonts::semibold())
                     .size(22.0),
             );
-            ui.label(egui::RichText::new(coming).color(self.theme.muted));
+            ui.label(egui::RichText::new(line).color(self.theme.muted));
         });
         ui.add_space(24.0);
-        if let Some(document) = &self.document {
-            let p = document.project();
-            if let Some(seq) = p.active() {
-                ui.label(format!(
-                    "{} timeline labels · edit needle at {}",
-                    seq.labels.len(),
-                    seq.edit_needle.timecode(seq.settings.frame_rate)
-                ));
-            }
-            ui.label(egui::RichText::new(self.key_hints()).color(self.theme.muted));
-        }
         if !self.status.is_empty() {
             ui.add_space(8.0);
             ui.label(egui::RichText::new(&self.status).color(self.theme.text_secondary));
@@ -2884,9 +2855,19 @@ impl Editor {
         let has_project = self.document.is_some();
         let mut open = self.show_settings;
         let before = self.settings.clone();
+        // Below the top bar at the right, under the gear that opens it; held
+        // to the screen, with what doesn't fit scrolling inside.
+        let area = ui_kit::layout::window_area(ctx.content_rect());
         egui::Window::new("Settings")
             .open(&mut open)
-            .default_width(420.0)
+            .collapsible(false)
+            .pivot(egui::Align2::RIGHT_TOP)
+            .default_pos(area.right_top())
+            .default_width(ui_kit::layout::SETTINGS_WIDTH)
+            .default_height(area.height())
+            .max_height(area.height())
+            .constrain_to(area)
+            .vscroll(true)
             .show(ctx, |ui| {
                 ui.heading("Look");
                 egui::ComboBox::from_label("Theme")
@@ -3280,6 +3261,7 @@ impl Editor {
             report.message = message;
         }
         drop(report);
+        self.close_prompt.allow();
         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
     }
 }
@@ -3435,6 +3417,12 @@ impl eframe::App for Editor {
         self.prune_window(&ctx);
         self.package_window(&ctx);
         self.shortcuts_window(&ctx);
+        let unfinished = self.export_page.unfinished();
+        if self.close_request && unfinished.is_some() {
+            self.close_request = false;
+            self.close_prompt.ask();
+        }
+        self.close_prompt.frame(&ctx, &self.theme, unfinished);
         if let Some(err) = self.graphics.show_warning(&ctx, &self.theme) {
             self.errors.push(&err);
         }
@@ -3547,6 +3535,23 @@ fn click_moves_row(ui: &mut egui::Ui, moves: &mut ui_kit::ClickMoves, edit_at_pl
     });
 }
 
+/// What a page shows when it has nothing to show: its name and one line.
+/// Without a project every page waits for one; with one, only the Color
+/// page, whose tools are still to come.
+fn placeholder(page: Page, has_project: bool) -> (&'static str, &'static str) {
+    if !has_project {
+        return (
+            page.label(),
+            "Open a project, or start a new one, in the launcher; then import your recordings here.",
+        );
+    }
+    match page {
+        Page::Color => ("Color", "Colour tools arrive in a later update."),
+        // The other pages always draw themselves when a project is open.
+        _ => (page.label(), ""),
+    }
+}
+
 /// What the status line says when the choice of what a click moves changes.
 fn click_moves_says(moves: ui_kit::ClickMoves, edit_at_playhead: bool) -> &'static str {
     match (moves, edit_at_playhead) {
@@ -3603,6 +3608,9 @@ pub struct ProjectToOpen {
     pub export_page: bool,
     /// Start on the Export page with its queue filled (for screenshots).
     pub export_queue: bool,
+    /// Ask about closing once an export is unfinished, as if the window's
+    /// close button had been pressed (for screenshots).
+    pub close_request: bool,
     /// Start on this page.
     pub page: Option<Page>,
     /// Open this tab of the Library page (a type or a list's name).
@@ -3656,6 +3664,19 @@ fn save_png(image: &egui::ColorImage, path: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_pages_say_what_to_do_and_never_name_plan_phases() {
+        for page in Page::ALL {
+            for has_project in [false, true] {
+                let (title, line) = placeholder(page, has_project);
+                assert!(!title.is_empty());
+                assert!(!line.contains("Phase"), "{page:?}: {line}");
+            }
+            assert!(placeholder(page, false).1.contains("Open a project"));
+        }
+        assert!(placeholder(Page::Color, true).1.contains("later update"));
+    }
 
     #[test]
     fn the_status_line_says_what_a_click_moves_now() {

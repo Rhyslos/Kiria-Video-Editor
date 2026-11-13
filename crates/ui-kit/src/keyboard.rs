@@ -159,10 +159,11 @@ impl ShortcutsPage {
     }
 
     /// The mouse actions the Mouse section shows.
-    fn listed_mouse(&self) -> Vec<&'static MouseAction> {
+    fn listed_mouse(&self, table: &ShortcutTable) -> Vec<(&'static MouseAction, String)> {
         MOUSE
             .iter()
-            .filter(|m| self.shows(m.context) && self.searched(&[m.gesture, m.does]))
+            .map(|m| (m, m.says(table)))
+            .filter(|(m, says)| self.shows(m.context) && self.searched(&[m.gesture, says]))
             .collect()
     }
 
@@ -289,7 +290,7 @@ impl ShortcutsPage {
             response.changed |= self.commands(ui, theme, table, layout.layout());
         });
         ui.scope_builder(egui::UiBuilder::new().max_rect(right), |ui| {
-            self.mouse(ui, theme);
+            self.mouse(ui, theme, table);
         });
         ui.allocate_rect(below, Sense::hover());
         response
@@ -637,7 +638,7 @@ impl ShortcutsPage {
     }
 
     /// The Mouse section: what the mouse does, by context.
-    fn mouse(&self, ui: &mut Ui, theme: &Theme) {
+    fn mouse(&self, ui: &mut Ui, theme: &Theme, table: &ShortcutTable) {
         ui.horizontal(|ui| {
             ui.label(RichText::new("Mouse").family(crate::fonts::semibold()));
             ui.label(RichText::new("shown here; it can't be changed").color(theme.muted));
@@ -646,12 +647,12 @@ impl ShortcutsPage {
             .id_salt("shortcut-mouse")
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                let listed = self.listed_mouse();
+                let listed = self.listed_mouse(table);
                 if listed.is_empty() {
                     ui.label(RichText::new("Nothing for the mouse here.").color(theme.muted));
                 }
                 let mut heading = None;
-                for action in listed {
+                for (action, says) in listed {
                     if heading != Some(action.context) {
                         heading = Some(action.context);
                         ui.add_space(2.0);
@@ -661,7 +662,7 @@ impl ShortcutsPage {
                         });
                     }
                     ui.label(action.gesture);
-                    ui.label(RichText::new(action.does).color(theme.text_secondary).size(12.0));
+                    ui.label(RichText::new(says).color(theme.text_secondary).size(12.0));
                     ui.add_space(3.0);
                 }
             });
@@ -779,7 +780,7 @@ mod tests {
         let mut page = ShortcutsPage::default();
         let everything = page.listed(&table).len();
         assert_eq!(everything, table.lines().len());
-        assert_eq!(page.listed_mouse().len(), MOUSE.len());
+        assert_eq!(page.listed_mouse(&table).len(), MOUSE.len());
 
         page.toggle(Context::Timeline);
         let listed = page.listed(&table);
@@ -789,7 +790,11 @@ mod tests {
                 .iter()
                 .all(|l| table.lines()[*l].action.context() == Context::Timeline)
         );
-        assert!(page.listed_mouse().iter().all(|m| m.context == Context::Timeline));
+        assert!(
+            page.listed_mouse(&table)
+                .iter()
+                .all(|(m, _)| m.context == Context::Timeline)
+        );
         assert_eq!(
             page.actions_of(&table, Key::S).len(),
             1,
@@ -819,7 +824,7 @@ mod tests {
         // "While dragging" has mouse actions only.
         page.toggle(Context::Dragging);
         assert!(page.listed(&table).is_empty());
-        assert!(!page.listed_mouse().is_empty());
+        assert!(!page.listed_mouse(&table).is_empty());
     }
 
     #[test]
@@ -854,8 +859,8 @@ mod tests {
             search: "wheel".into(),
             ..Default::default()
         };
-        assert!(!page.listed_mouse().is_empty());
-        assert!(page.listed_mouse().len() < MOUSE.len());
+        assert!(!page.listed_mouse(&table).is_empty());
+        assert!(page.listed_mouse(&table).len() < MOUSE.len());
     }
 
     #[test]

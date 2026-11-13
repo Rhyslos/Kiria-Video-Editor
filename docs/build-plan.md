@@ -35,8 +35,8 @@ The platform (project file, errors, installs, safe updates) comes before any pag
 | 3 | Update safety | Side-by-side installs, rollback, project migrations | A broken update rolls back by itself; old projects open | Gate passed (accepted by the owner; manual gate tests skipped) |
 | 4 | Edit page | Media pipeline, playback, timeline, editing, inspector | Cut a 20-minute game recording smoothly at 1440p 60 | Built; gate waiting for the owner's edit |
 | 5 | Library | Import, index, tabs, lists, labels, prune | 500 clips import, filter and search instantly | Built; gate measured on the cloud machine (Library page passed, Edit page borderline), waiting for the owner's PC |
-| 6 | Export | Encode pipeline, presets, checks, queue | Exports match the timeline frame for frame | Not started |
-| 8 | Audio | Mixer, effects, loudness, clarity check | A noisy three-track recording mixes to −14 LUFS cleanly | Not started |
+| 6 | Export | Encode pipeline, presets, checks, queue | Exports match the timeline frame for frame | Built; gate measured on the cloud machine, waiting for the owner's PC |
+| 8 | Audio | Mixer, effects, loudness, clarity check | A noisy three-track recording mixes to −14 LUFS cleanly | Built; gate waiting for the owner's PC |
 | 9 | Effects and extras | Effects drawer, background removal, extra features | Hair edges hold, no flicker; extras pass their tests | Not started |
 | 7 | Color | Float pipeline, wheels, curves, scopes, auto white balance | Preview and export colours match; grades copy between clips | Not started |
 | 10 | Release 1.0 | Hardening, docs, licence, first public release | Release checklist all ticked | Not started |
@@ -544,7 +544,7 @@ Phase 10 adds no big features: it polishes, settles the two open decisions, and 
 - [ ] Media corpus: every file in `test-media/` imports, plays and exports, or fails with a clear explained error.
 - [ ] Memory: a 4-hour editing session on both machines with no growth beyond the cache budgets.
 - [ ] Every error message read through once for plain wording and a working fix button.
-- [ ] Autosave journal writes move to a worker. Today every edit writes its journal line and waits for the disk (`Document::apply` → `record`, with `sync_data`) on the interface thread; a slow disk can make one edit take longer than 2 ms. Imports already spread this over frames (2 ms of adds a frame); the journal itself should be written by a worker in order, with crash recovery unchanged.
+- [ ] Autosave journal writes move to a worker. Waiting for the disk is already off the interface thread: `project::JournalSync` does `sync_data` on a thread of its own. What is left is the line itself: `Document::apply` → `record` still turns the command into text and writes it (`writeln!`) on the interface thread, which a slow disk or a very large command (a restored version, a template) can make take longer than 2 ms. That write should move to the same thread, in order, with crash recovery unchanged.
 
 **Release checklist**
 

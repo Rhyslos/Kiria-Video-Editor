@@ -7,10 +7,12 @@
 //!
 //! When the format changes, [`FORMAT_VERSION`] goes up by one and a step is
 //! added to [`MIGRATIONS`] that turns file text of the previous version into
-//! the new one. A step reads the old text into a frozen copy of the old
-//! types (kept in a `formats/vN.rs` module), converts it, and writes the new
-//! text, so enum names and every other detail survive. Old files are migrated
-//! step by step when opened; a sample of every released version lives in
+//! the new one. So far every change has only added things: new fields have
+//! defaults (`#[serde(default)]`), so each step just writes the new version
+//! number and the old text reads as it is. The first change that renames or
+//! reshapes something will need a frozen copy of the old types to read the
+//! old text into, convert and write again. Old files are migrated step by
+//! step when opened; a sample of every released version lives in
 //! `tests/samples/` and must keep opening.
 
 use crate::model::{Project, SequenceSettings};

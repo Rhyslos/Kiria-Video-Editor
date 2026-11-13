@@ -25,6 +25,7 @@ use diag::AppError;
 use engine::export::{AudioCodec, Container, Devices, Encoders, Quality, VideoCodec};
 use presets::{OwnPresets, Preset};
 use project::{MediaId, Project, Rate, SequenceId, Time};
+pub use queue::Unfinished;
 use queue::{Job, Queue, State};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -149,6 +150,11 @@ impl ExportPage {
     /// A newly measured export pace, to be saved with the settings.
     pub fn take_pace(&mut self) -> Option<Pace> {
         std::mem::take(&mut self.learned).then_some(self.pace)
+    }
+
+    /// What closing the app now would stop or drop, if anything.
+    pub fn unfinished(&self) -> Option<Unfinished> {
+        self.queue.unfinished()
     }
 
     /// Stops the export under way, if any: for closing the app.

@@ -538,7 +538,11 @@ mod tests {
     fn recordings_other_projects_use_are_shared_and_unreadable_projects_share_everything() {
         let dir = tempfile::tempdir().unwrap();
         let shelf = Shelf::new(dir.path().join("proxies"), ProxyMode::Auto);
-        let (ours_file, theirs_file) = (dir.path().join("ours.kiria"), dir.path().join("theirs.kiria"));
+        let ext = brand::PROJECT_FILE_EXTENSION;
+        let (ours_file, theirs_file) = (
+            dir.path().join(format!("ours.{ext}")),
+            dir.path().join(format!("theirs.{ext}")),
+        );
         let ours = project_using(&ours_file, 1);
         // Ours: recordings 1 (and 2, which the other project uses too).
         let mut both = ours.clone();
@@ -566,7 +570,7 @@ mod tests {
         index.record(&ours_file).unwrap();
         index.record(&theirs_file).unwrap();
         // One known project that is gone: passed over.
-        let gone = dir.path().join("gone.kiria");
+        let gone = dir.path().join(format!("gone.{}", brand::PROJECT_FILE_EXTENSION));
         project_using(&gone, 3);
         index.record(&gone).unwrap();
         std::fs::remove_file(&gone).unwrap();
