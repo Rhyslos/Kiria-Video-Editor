@@ -19,7 +19,7 @@ pub use catalogue::{Category, Place, Section, Setting, found, place_of, repeated
 pub use controls::{action, auto_number, dropdown, number, segmented, toggle, value};
 
 use crate::Theme;
-use crate::tab_strip::{StripTab, tab_strip};
+use crate::tab_strip::{StripTab, tab_rows};
 use egui::{Align, FontId, Id, Layout, Rect, Sense, Stroke, StrokeKind, Ui, UiBuilder, pos2, vec2};
 
 /// The largest Settings gets; smaller screens get the room there is.
@@ -29,6 +29,8 @@ pub const MAX_SIZE: egui::Vec2 = vec2(1080.0, 820.0);
 pub const COLUMN_WIDTH: f32 = 820.0;
 /// The search box at the end of the tabs.
 const SEARCH_WIDTH: f32 = 220.0;
+/// The height of a row of tabs.
+const TAB_ROW: f32 = 40.0;
 /// Room inside a row around its text and control.
 const ROW_PAD: egui::Vec2 = vec2(16.0, 11.0);
 /// At most this share of a row goes to its control.
@@ -173,10 +175,11 @@ impl SettingsView {
         // The tabs, and the search box at their right end.
         let found = search(categories, &self.query);
         let searching = !self.query.trim().is_empty();
-        let bar = Rect::from_min_size(pos2(whole.left(), title.bottom()), vec2(whole.width(), 40.0));
-        // Laid out by hand: the search box a fixed width at the right end,
-        // the tabs in what is left, so the two never overlap.
-        let inner = bar.shrink2(vec2(14.0, 0.0));
+        // Laid out by hand: the search box a fixed width at the right end
+        // of the first row, the tabs in what is left, in as many rows as
+        // they need, so the two never overlap and every tab is in sight.
+        let first_row = Rect::from_min_size(pos2(whole.left(), title.bottom()), vec2(whole.width(), TAB_ROW));
+        let inner = first_row.shrink2(vec2(14.0, 0.0));
         let search_rect = Rect::from_min_size(
             pos2(inner.right() - SEARCH_WIDTH, inner.center().y - 12.0),
             vec2(SEARCH_WIDTH, 30.0),
@@ -203,14 +206,23 @@ impl SettingsView {
                 selected: !searching && c == self.tab,
             })
             .collect();
-        let strip_room = Rect::from_min_max(inner.min, pos2(search_rect.left() - 16.0, inner.bottom()));
+        // A tab is 31 points tall; a row leaves room around it.
+        let strip_room = Rect::from_min_max(
+            pos2(inner.left(), inner.top() + (TAB_ROW - 31.0) / 2.0),
+            pos2(search_rect.left() - 16.0, whole.bottom()),
+        );
         let mut strip_ui = ui.new_child(
             UiBuilder::new()
                 .max_rect(strip_room)
-                .layout(Layout::left_to_right(Align::Center)),
+                .layout(Layout::left_to_right(Align::Min)),
         );
-        let strip = tab_strip(&mut strip_ui, theme, "settings-tabs", &tabs, |_| ());
-        for (&c, response) in shown.iter().zip(&strip.tabs) {
+        let responses = tab_rows(&mut strip_ui, theme, &tabs);
+        let tabs_bottom = strip_ui.min_rect().bottom() + (TAB_ROW - 31.0) / 2.0;
+        let bar = Rect::from_min_max(
+            first_row.min,
+            pos2(whole.right(), tabs_bottom.max(first_row.bottom())),
+        );
+        for (&c, response) in shown.iter().zip(&responses) {
             if response.clicked() {
                 // Searching, a tab goes to its first match; otherwise it opens.
                 match found.iter().find(|p| p.category == c) {
@@ -586,6 +598,10 @@ pub fn window(ctx: &egui::Context, theme: &Theme, open: &mut bool, add: impl FnO
     egui::Window::new("Settings")
         .id(id)
         .title_bar(false)
+        // Never faded in: egui fades a window in again whenever it missed
+        // being drawn for a pass, which showed the page through Settings
+        // for a moment, now and then.
+        .fade_in(false)
         .frame(frame)
         .fixed_rect(rect)
         .resizable(false)
