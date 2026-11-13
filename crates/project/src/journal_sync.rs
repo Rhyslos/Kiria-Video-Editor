@@ -96,8 +96,8 @@ fn run(rx: &Receiver<File>, shared: &Shared) {
     while let Ok(mut journal) = rx.recv() {
         let mut taken = 1;
         // Requests that came meanwhile go on the disk together: the newest
-        // handle is enough, since each is the same journal (or the fresh one
-        // a save started, which makes the older lines unneeded).
+        // handle is enough, since each is the same journal (or a fresh one
+        // a new session started, which makes the older lines unneeded).
         while let Ok(newer) = rx.try_recv() {
             journal = newer;
             taken += 1;

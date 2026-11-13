@@ -57,8 +57,7 @@ impl Editor {
                     self.errors.push(&err);
                 }
             }
-            Picked::Everywhere(change) => match self.global_labels.change(&self.jobs, &self.data_dir, change)
-            {
+            Picked::Everywhere(change) => match self.global_labels.change(&self.data_dir, change) {
                 Ok(line) => self.status = line,
                 Err(err) => self.errors.push(&err),
             },

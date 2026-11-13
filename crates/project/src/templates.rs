@@ -566,7 +566,7 @@ pub fn save(template: &Template, dir: &Path, name: &str) -> diag::Result<String>
     };
     fs::create_dir_all(dir).or_explain(explain)?;
     let text = to_string(template)?;
-    crate::file::write_atomic(&path_of(dir, &name), &text).or_explain(explain)?;
+    crate::disk::write_atomic(&path_of(dir, &name), text.as_bytes()).or_explain(explain)?;
     Ok(name)
 }
 

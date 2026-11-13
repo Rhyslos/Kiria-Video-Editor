@@ -95,7 +95,7 @@ impl ProjectView {
                 .fix("Nothing is lost but track heights: check that the project's folder can be written to and that the disk is not full.")
         };
         let text = ron::ser::to_string_pretty(self, ron::ser::PrettyConfig::default()).or_explain(explain)?;
-        std::fs::write(path, text).or_explain(explain)
+        project::disk::write_atomic(path, text.as_bytes()).or_explain(explain)
     }
 }
 
@@ -125,12 +125,14 @@ pub struct ViewKeeper {
     path: PathBuf,
     /// False for a project open read-only: nothing is written beside it.
     writable: bool,
-    /// What the file holds, or will once `writing` finishes.
+    /// What the file holds: set only once a write has succeeded, so a
+    /// failed one is tried again (and on closing).
     kept: ProjectView,
     /// What of the view is kept, when last looked at.
     seen: Option<Looks>,
     changed_at: Option<Instant>,
-    writing: Option<JobHandle<()>>,
+    /// The write under way, with what it writes.
+    writing: Option<(ProjectView, JobHandle<()>)>,
 }
 
 impl ViewKeeper {
@@ -156,13 +158,18 @@ impl ViewKeeper {
             self.seen = Some(looks);
             self.changed_at = Some(now);
         }
-        if let Some(handle) = &self.writing
+        if let Some((_, handle)) = &self.writing
             && let Some(result) = handle.try_result()
+            && let Some((view, _)) = self.writing.take()
         {
-            if let Err(err) = result {
-                tracing::warn!("{}", err.report());
+            match result {
+                Ok(()) => self.kept = view,
+                Err(err) => {
+                    tracing::warn!("{}", err.report());
+                    // Tried again once it has settled anew.
+                    self.changed_at = Some(now);
+                }
             }
-            self.writing = None;
         }
         let settled = self
             .changed_at
@@ -175,27 +182,30 @@ impl ViewKeeper {
         if view == self.kept || !self.writable {
             return;
         }
-        self.kept = view.clone();
         let path = self.path.clone();
-        self.writing = Some(jobs.submit(
+        let written = view.clone();
+        let handle = jobs.submit(
             PoolKind::Export,
             Priority::Background,
             "timeline layout",
-            move |_| view.save(&path),
-        ));
+            move |_| written.save(&path),
+        );
+        self.writing = Some((view, handle));
     }
 
     /// On closing: writes the view now if it differs from what is kept.
     pub fn close(&mut self, timeline: &TimelineView) {
-        if let Some(handle) = self.writing.take() {
-            let _ = handle.wait();
+        if let Some((view, handle)) = self.writing.take()
+            && handle.wait().is_ok()
+        {
+            self.kept = view;
         }
         let view = ProjectView::of(timeline);
         if view != self.kept && self.writable {
-            if let Err(err) = view.save(&self.path) {
-                tracing::warn!("{}", err.report());
+            match view.save(&self.path) {
+                Ok(()) => self.kept = view,
+                Err(err) => tracing::warn!("{}", err.report()),
             }
-            self.kept = view;
         }
     }
 }
@@ -287,7 +297,7 @@ mod tests {
         keeper.tick(start + Duration::from_millis(900), &timeline, &jobs);
         assert!(keeper.writing.is_none(), "nor right after");
         keeper.tick(start + Duration::from_millis(1400), &timeline, &jobs);
-        let handle = keeper.writing.take().expect("written once it settled");
+        let (_, handle) = keeper.writing.take().expect("written once it settled");
         handle.wait().unwrap();
         assert_eq!(ProjectView::load(&path), ProjectView::of(&timeline));
 
@@ -303,6 +313,7 @@ mod tests {
             .writing
             .take()
             .expect("written once it settled")
+            .1
             .wait()
             .unwrap();
         assert_eq!(ProjectView::load(&path).level_lines, [9]);
@@ -335,5 +346,57 @@ mod tests {
         assert!(keeper.writing.is_none());
         keeper.close(&timeline);
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn a_failed_write_is_not_taken_as_kept_and_is_tried_again() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("trip.project.view");
+        let jobs = JobSystem::new(jobs::Budgets::default().resolve(&jobs::Machine::detect()));
+        let mut timeline = TimelineView::default();
+        let mut keeper = ViewKeeper::open(path.clone(), true, &mut timeline);
+        // A folder where the file goes: the write fails.
+        std::fs::create_dir(&path).unwrap();
+        std::fs::write(path.join("x"), "").unwrap();
+        timeline.heights.set(3, 54.0, 100.0);
+        let start = Instant::now();
+        keeper.tick(start, &timeline, &jobs);
+        keeper.tick(start + Duration::from_secs(1), &timeline, &jobs);
+        assert!(keeper.writing.is_some(), "handed over");
+        // The same moment, over and over, until the failure is in.
+        while keeper.writing.is_some() {
+            std::thread::sleep(Duration::from_millis(2));
+            keeper.tick(start + Duration::from_secs(2), &timeline, &jobs);
+        }
+        assert_ne!(keeper.kept, ProjectView::of(&timeline), "not kept: it failed");
+
+        // The folder goes away: the next settled tick writes it.
+        std::fs::remove_dir_all(&path).unwrap();
+        keeper.tick(start + Duration::from_secs(4), &timeline, &jobs);
+        let (_, handle) = keeper.writing.take().expect("tried again");
+        handle.wait().unwrap();
+        assert_eq!(ProjectView::load(&path), ProjectView::of(&timeline));
+    }
+
+    #[test]
+    fn closing_after_a_failed_write_writes_again() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("trip.project.view");
+        let jobs = JobSystem::new(jobs::Budgets::default().resolve(&jobs::Machine::detect()));
+        let mut timeline = TimelineView::default();
+        let mut keeper = ViewKeeper::open(path.clone(), true, &mut timeline);
+        std::fs::create_dir(&path).unwrap();
+        std::fs::write(path.join("x"), "").unwrap();
+        timeline.heights.set(3, 54.0, 100.0);
+        let start = Instant::now();
+        keeper.tick(start, &timeline, &jobs);
+        keeper.tick(start + Duration::from_secs(1), &timeline, &jobs);
+        while keeper.writing.is_some() {
+            std::thread::sleep(Duration::from_millis(2));
+            keeper.tick(start + Duration::from_secs(1), &timeline, &jobs);
+        }
+        std::fs::remove_dir_all(&path).unwrap();
+        keeper.close(&timeline);
+        assert_eq!(ProjectView::load(&path), ProjectView::of(&timeline));
     }
 }

@@ -60,7 +60,11 @@ pub struct Editor {
     jobs: JobSystem,
     usage: UsageMonitor,
     document: Option<Document>,
-    pending_save: Option<(u64, JobHandle<()>)>,
+    /// Full saves handed to a worker: the journal entry each includes, and
+    /// whether it was asked for (Ctrl+S) rather than an autosave.
+    pending_saves: Vec<PendingSave>,
+    /// Writes `settings.ron` off this thread, once a change has settled.
+    settings_keeper: crate::settings::SettingsKeeper,
     /// The launcher's picture of the project, being written after a save.
     thumbnail: Option<JobHandle<bool>>,
     /// A save finished (or the project has no picture yet): write one.
@@ -311,6 +315,10 @@ impl Editor {
             .unwrap_or_default();
         let document = project.and_then(|p| match open_or_create(&p.path, p.recovery) {
             Ok(doc) => {
+                let undo = shortcuts.keys_or_name(Action::Undo);
+                if let Some(notice) = crate::recovered::notice(doc.opened(), &undo) {
+                    errors.push(&notice);
+                }
                 if doc.is_read_only() {
                     errors.push(
                         &AppError::new("Opened read-only")
@@ -372,6 +380,7 @@ impl Editor {
         if export_queue {
             export_page.demo_queue();
         }
+        let settings_keeper = crate::settings::SettingsKeeper::new(&data_dir, &settings, Instant::now());
         Editor {
             theme: settings.theme.theme(),
             settings,
@@ -383,7 +392,8 @@ impl Editor {
             jobs,
             usage: UsageMonitor::start(Duration::from_secs(1)),
             document,
-            pending_save: None,
+            pending_saves: Vec::new(),
+            settings_keeper,
             thumbnail: None,
             thumbnail_due: Thumbnail::IfMissing,
             importer,
@@ -475,9 +485,7 @@ impl Editor {
         let result = match action {
             Action::Undo => self.with_document(|d| d.undo().map(|_| ())),
             Action::Redo => self.with_document(|d| d.redo().map(|_| ())),
-            Action::Save => self.with_document(Document::save).map(|()| {
-                self.thumbnail_due = Thumbnail::Now;
-            }),
+            Action::Save => self.save_now(),
             Action::AddLabel => {
                 let at = self.edit_point();
                 self.add_label(at)
@@ -580,7 +588,7 @@ impl Editor {
                     "Full timeline view"
                 }
                 .into();
-                self.settings.save(&self.data_dir)
+                Ok(())
             }
             Action::CompactTracks => {
                 self.settings.compact_tracks = !self.settings.compact_tracks;
@@ -591,7 +599,7 @@ impl Editor {
                     "Tracks at their own heights again"
                 }
                 .into();
-                self.settings.save(&self.data_dir)
+                Ok(())
             }
             Action::TrackDivider => {
                 self.settings.one_track_list = !self.settings.one_track_list;
@@ -602,7 +610,7 @@ impl Editor {
                     "The divider between video and audio tracks is back where it was"
                 }
                 .into();
-                self.settings.save(&self.data_dir)
+                Ok(())
             }
             Action::ClickMovesNeedle => {
                 self.settings.click_moves = match self.settings.click_moves {
@@ -612,7 +620,7 @@ impl Editor {
                 self.timeline.click_moves = self.settings.click_moves;
                 self.status =
                     click_moves_says(self.settings.click_moves, self.settings.edit_at_playhead).into();
-                self.settings.save(&self.data_dir)
+                Ok(())
             }
             // With the viewer in its own window, that window fills its screen.
             Action::FullScreenViewer if self.display.window_open() => {
@@ -633,7 +641,7 @@ impl Editor {
                     "Split view off"
                 }
                 .into();
-                self.settings.save(&self.data_dir)
+                Ok(())
             }
             Action::ViewerWindow => self.switch_viewer_window(),
             Action::ViewerZoomFit | Action::ViewerZoom100 | Action::ViewerZoomIn | Action::ViewerZoomOut => {
@@ -704,9 +712,6 @@ impl Editor {
                     "Handles on the picture off"
                 }
                 .into();
-                if let Err(err) = self.settings.save(&self.data_dir) {
-                    self.errors.push(&err);
-                }
                 Ok(())
             }
             Action::ToggleSnapping => {
@@ -1511,30 +1516,92 @@ impl Editor {
         }
     }
 
+    /// The recovery notice's "Open last save": the project as it was last
+    /// saved before the crash, put back in one step that undo takes back.
+    fn open_last_save(&mut self) {
+        let last_save = match self.document.as_ref().map(Document::opened) {
+            Some(project::Opened::Recovered { last_save, .. }) => last_save.clone(),
+            _ => return,
+        };
+        let result = self.with_document(|d| d.apply(Command::Restore { project: last_save }));
+        match result {
+            Ok(()) => {
+                self.status = format!(
+                    "Opened the last save. {} puts the recovered changes back.",
+                    self.shortcuts.keys_or_name(Action::Undo)
+                );
+            }
+            Err(err) => self.errors.push(&err),
+        }
+    }
+
+    /// Ctrl+S: a snapshot now (cheap: the project shares its data), written
+    /// on a worker. It waits there behind an autosave under way, and an
+    /// older snapshot never replaces it (`project::document`). The top bar
+    /// says "saving…" until it is done; the status line says how it went.
+    fn save_now(&mut self) -> diag::Result<()> {
+        let mut job = None;
+        self.with_document(|d| {
+            if d.is_read_only() {
+                return d.save(); // refused, with the reason
+            }
+            job = Some(d.prepare_save());
+            Ok(())
+        })?;
+        let Some(job) = job else {
+            return Ok(());
+        };
+        self.submit_save(job, true);
+        self.status = "Saving…".into();
+        Ok(())
+    }
+
+    fn submit_save(&mut self, job: project::document::SaveJob, asked: bool) {
+        let seq = job.journal_seq();
+        // Asked for: it runs even while playing. An autosave waits.
+        let priority = if asked {
+            Priority::Interactive
+        } else {
+            Priority::Background
+        };
+        let name = if asked { "save" } else { "autosave" };
+        let handle = self
+            .jobs
+            .submit(PoolKind::Export, priority, name, move |_| job.run());
+        self.pending_saves.push(PendingSave { seq, asked, handle });
+    }
+
     /// Hands due saves to a worker and collects finished ones.
     fn autosave(&mut self, now: Instant, idle: bool) {
         let Some(document) = self.document.as_mut() else {
             return;
         };
-        if let Some((seq, handle)) = &self.pending_save
-            && let Some(result) = handle.try_result()
-        {
-            match document.finish_save(*seq, result) {
-                Ok(()) => self.thumbnail_due = Thumbnail::Now,
-                Err(err) => self.errors.push(&err),
+        let mut finished = Vec::new();
+        self.pending_saves.retain(|save| match save.handle.try_result() {
+            Some(result) => {
+                finished.push((save.seq, save.asked, result));
+                false
             }
-            self.pending_save = None;
+            None => true,
+        });
+        for (seq, asked, result) in finished {
+            match document.finish_save(seq, result) {
+                Ok(()) => {
+                    self.thumbnail_due = Thumbnail::Now;
+                    if asked {
+                        self.status = "Saved.".into();
+                    }
+                }
+                Err(err) => {
+                    if asked {
+                        self.status = "The project could not be saved.".into();
+                    }
+                    self.errors.push(&err);
+                }
+            }
         }
-        if self.pending_save.is_none()
-            && let Some(job) = document.tick(now, idle)
-        {
-            let seq = job.journal_seq();
-            let handle = self
-                .jobs
-                .submit(PoolKind::Export, Priority::Background, "autosave", move |_| {
-                    job.run()
-                });
-            self.pending_save = Some((seq, handle));
+        if let Some(job) = document.tick(now, idle) {
+            self.submit_save(job, false);
         }
     }
 
@@ -1653,9 +1720,6 @@ impl Editor {
             }
             if asked.changed {
                 self.settings.shortcuts = self.shortcuts.saved();
-                if let Err(err) = self.settings.save(&self.data_dir) {
-                    self.errors.push(&err);
-                }
             }
             if asked.cheat_sheet {
                 self.cheat_sheet
@@ -1667,9 +1731,6 @@ impl Editor {
         }
         if let Some(pace) = self.export_page.take_pace() {
             self.settings.export_pace = pace;
-            if let Err(err) = self.settings.save(&self.data_dir) {
-                self.errors.push(&err);
-            }
         }
         match self.cheat_sheet.poll(&self.jobs, ctx) {
             Some(crate::cheat_sheet::Saved::Done(path)) => {
@@ -1957,7 +2018,7 @@ impl Editor {
                 self.shortcuts.keys_or_name(Action::FullScreenViewer)
             );
         }
-        self.settings.save(&self.data_dir)
+        Ok(())
     }
 
     /// The tab on the left edge, beside the toolbar and the viewer (`tab`),
@@ -2045,7 +2106,7 @@ impl Editor {
                 None
             }
             Some(Picked::Everywhere(change)) => {
-                match self.global_labels.change(&self.jobs, &self.data_dir, change) {
+                match self.global_labels.change(&self.data_dir, change) {
                     Ok(line) => self.status = line,
                     Err(err) => self.errors.push(&err),
                 }
@@ -2307,7 +2368,9 @@ impl Editor {
             .as_ref()
             .map_or_else(|| "No project open".to_owned(), |d| d.project().name.clone());
         let subtitle = self.document.as_ref().map_or_else(String::new, |d| {
-            let saved = if d.has_unsaved_changes() {
+            let saved = if d.is_saving() {
+                "saving…"
+            } else if d.has_unsaved_changes() {
                 "saving soon"
             } else {
                 "saved"
@@ -2342,6 +2405,9 @@ impl Editor {
         if let Some(response) = self.errors.show_inline(ui, &self.theme) {
             match response {
                 ErrorResponse::OpenDiagnostics => self.show_diagnostics = true,
+                ErrorResponse::Fix(action) if action.command == crate::recovered::OPEN_LAST_SAVE => {
+                    self.open_last_save();
+                }
                 ErrorResponse::Fix(action) => match import::whats_there_id(&action.command) {
                     Some(id) => {
                         if self.importer.whats_there(&self.jobs, ui.ctx(), id) {
@@ -2596,12 +2662,9 @@ impl Editor {
             // The viewer and the inspector take their height of the page;
             // the handle and the timeline follow, across its whole width.
             ui.allocate_rect(top, egui::Sense::hover());
-            if self.settings.preview_quality != quality_before
-                && let Err(err) = self.settings.save(&self.data_dir)
-            {
-                self.errors.push(&err);
-            }
-            let handle = ui_kit::splitter::splitter(
+            // The quality and the handle's place are settings: the
+            // settings keeper writes them once the pointer is let go.
+            ui_kit::splitter::splitter(
                 ui,
                 &self.theme,
                 &mut self.settings.viewer_split,
@@ -2609,11 +2672,6 @@ impl Editor {
                 least_viewer,
                 least_timeline,
             );
-            if handle.settled
-                && let Err(err) = self.settings.save(&self.data_dir)
-            {
-                self.errors.push(&err);
-            }
             let tip = |a: Action| self.shortcuts.tip(a);
             let tips = [
                 tip(Action::SelectTool),
@@ -2732,9 +2790,6 @@ impl Editor {
         }
         if let Some(target) = master.target {
             self.settings.loudness_target = target;
-            if let Err(err) = self.settings.save(&self.data_dir) {
-                self.errors.push(&err);
-            }
         }
         if let Some(gain_db) = master.gain_db {
             let result = self.with_document(|d| {
@@ -2992,9 +3047,6 @@ impl Editor {
             let key_frame_first = self.settings.jump_picture.key_frame_first();
             self.viewer.set_key_frame_first(key_frame_first);
             self.display.set_key_frame_first(key_frame_first);
-            if let Err(err) = self.settings.save(&self.data_dir) {
-                self.errors.push(&err);
-            }
         }
     }
 
@@ -3379,6 +3431,10 @@ impl eframe::App for Editor {
             self.errors.set_fact(crate::slow_pictures::FACT, slow);
         }
         self.autosave(now, idle);
+        let pointer_held = ctx.input(|i| i.pointer.any_down());
+        if let Some(err) = self.settings_keeper.tick(&self.settings, now, pointer_held) {
+            self.errors.push(&err);
+        }
         if let Some(keeper) = &mut self.view_keeper {
             keeper.tick(now, &self.timeline, &self.jobs);
         }
@@ -3462,9 +3518,9 @@ impl eframe::App for Editor {
         self.display.close();
         if let Some(place) = self.display.window_place() {
             self.settings.viewer_window = Some(place);
-            if let Err(err) = self.settings.save(&self.data_dir) {
-                tracing::warn!("{}", err.report());
-            }
+        }
+        if let Err(err) = self.settings_keeper.close(&self.settings) {
+            tracing::warn!("{}", err.report());
         }
         if !engine::playback::wait_until_quiet(AUDIO_ENDS_WITHIN) {
             tracing::warn!("the sound did not stop before the window closed");
@@ -3477,11 +3533,15 @@ impl eframe::App for Editor {
         if let Some(keeper) = &mut self.view_keeper {
             keeper.close(&self.timeline);
         }
-        if let Some((seq, handle)) = self.pending_save.take()
-            && let Some(document) = self.document.as_mut()
-        {
-            let result = handle.wait();
-            let _ = document.finish_save(seq, result);
+        // Saves under way finish first (they write one at a time, newest
+        // last); the save below then only runs if something is still newer.
+        for save in std::mem::take(&mut self.pending_saves) {
+            let result = save.handle.wait();
+            if let Some(document) = self.document.as_mut()
+                && let Err(err) = document.finish_save(save.seq, result)
+            {
+                tracing::error!("a save under way failed on exit: {}", err.report());
+            }
         }
         if let Some(document) = self.document.as_mut()
             && document.has_unsaved_changes()
@@ -3507,6 +3567,15 @@ impl eframe::App for Editor {
 /// How long closing the app waits for the sound to let go of the sound
 /// card and its files.
 const AUDIO_ENDS_WITHIN: Duration = Duration::from_secs(2);
+
+/// A full save running on a worker.
+struct PendingSave {
+    /// The newest journal entry it includes.
+    seq: u64,
+    /// Asked for (Ctrl+S): its end is said in the status line.
+    asked: bool,
+    handle: JobHandle<()>,
+}
 
 /// Whether the launcher's picture of the project needs writing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

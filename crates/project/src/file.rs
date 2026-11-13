@@ -20,7 +20,7 @@ use crate::time::Time;
 use diag::{AppError, Explain};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 /// The format this build writes.
@@ -245,18 +245,7 @@ pub fn save_with_journal_seq(project: &Project, path: &Path, journal_seq: u64) -
             .why(format!("Writing to {} failed.", path.display()))
             .fix("Check that the disk is not full and that you can write to this folder.")
     };
-    write_atomic(path, &text).or_explain(explain_write)
-}
-
-/// Writes `text` to `path` so that a crash never leaves half a file: to a
-/// temporary file beside it, flushed to disk, then renamed over the old one.
-pub(crate) fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
-    let temp = temp_path(path);
-    let mut file = File::create(&temp)?;
-    file.write_all(text.as_bytes())?;
-    file.sync_all()?;
-    drop(file);
-    fs::rename(&temp, path)
+    crate::disk::write_atomic(path, text.as_bytes()).or_explain(explain_write)
 }
 
 /// The file text for `project` in the current format.
@@ -501,15 +490,6 @@ fn damaged() -> AppError {
         .fix("Open the latest autosave or the backup copy next to the file.")
 }
 
-/// `name.ext` → `.name.ext.saving` in the same folder, so the rename stays on one disk.
-pub(crate) fn temp_path(path: &Path) -> PathBuf {
-    let name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    path.with_file_name(format!(".{name}.saving"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -527,7 +507,8 @@ mod tests {
         let project = sample_project();
         save(&project, &path).unwrap();
         assert_eq!(load(&path).unwrap(), project);
-        assert!(!temp_path(&path).exists(), "the temporary file is renamed away");
+        let names: Vec<_> = fs::read_dir(tmp.path()).unwrap().collect();
+        assert_eq!(names.len(), 1, "the temporary file is renamed away");
     }
 
     #[test]

@@ -10,6 +10,7 @@
 //! - [`library`]: labels, custom lists and notes on the project's media.
 //! - [`global_labels`]: label names and colours offered in every project.
 //! - [`model`]: projects, timelines, tracks, clips, media, labels, the region.
+//! - [`disk`]: whole-or-nothing writes, and a keeper that writes one small file at a time, newest last.
 //! - [`file`]: the versioned project file, atomic saves and migrations.
 //! - [`animate`]: setting a clip's look at a moment, keyframes added, removed and reset.
 //! - [`command`]: every change is a `Command` applied to a snapshot.
@@ -26,6 +27,7 @@
 pub mod animate;
 pub mod clipboard;
 pub mod command;
+pub mod disk;
 pub mod document;
 mod edits;
 pub mod file;
@@ -53,7 +55,7 @@ pub mod versions;
 
 pub use clipboard::CopiedKeyframes;
 pub use command::{Command, Edge};
-pub use document::{Document, OpenCheck, Recovery, thumbnail_path, view_path};
+pub use document::{Document, OpenCheck, Opened, Recovery, thumbnail_path, view_path};
 pub use global_labels::{GlobalLabel, GlobalLabels};
 pub use history::History;
 pub use ids::{ClipId, LabelId, LinkId, MediaId, MediaLabelId, MediaListId, SequenceId, TrackId};

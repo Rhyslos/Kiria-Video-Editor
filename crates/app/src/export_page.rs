@@ -72,9 +72,9 @@ pub struct ExportPage {
     own_read_only: bool,
     /// The name being typed for a new preset.
     saving_as: Option<String>,
-    /// Own presets being saved.
-    saving: Option<Receiver<diag::Result<()>>>,
-    data_dir: PathBuf,
+    /// Writes the own presets file on a thread of its own, one write at a
+    /// time, the newest set last.
+    own_keeper: project::disk::Keeper,
     queue: Queue,
     loudness: LoudnessWatch,
     disk: DiskWatch,
@@ -124,8 +124,7 @@ impl ExportPage {
             own,
             own_read_only,
             saving_as: None,
-            saving: None,
-            data_dir: data_dir.to_path_buf(),
+            own_keeper: project::disk::Keeper::new(presets::path(data_dir), "Your export presets"),
             queue: Queue::default(),
             loudness: LoudnessWatch::default(),
             disk: DiskWatch::default(),
@@ -200,13 +199,8 @@ impl ExportPage {
                 errors.push(err);
             }
         }
-        if let Some(saving) = &self.saving
-            && let Ok(saved) = saving.try_recv()
-        {
-            self.saving = None;
-            if let Err(err) = saved {
-                errors.push(err);
-            }
+        if let Some(err) = self.own_keeper.take_failure() {
+            errors.push(err);
         }
         if let Some(finding) = &self.finding
             && let Ok(found) = finding.try_recv()
@@ -574,7 +568,7 @@ impl ExportPage {
         });
     }
 
-    /// Saves the own presets on a thread.
+    /// Saves the own presets off this thread.
     fn save_own(&mut self, asked: &mut Asked) {
         if self.own_read_only {
             asked.problem = Some(
@@ -584,17 +578,8 @@ impl ExportPage {
             );
             return;
         }
-        let (own, dir) = (self.own.clone(), self.data_dir.clone());
-        let (tell, saved) = channel();
-        let spawned = std::thread::Builder::new()
-            .name("export presets".into())
-            .spawn(move || {
-                let _ = tell.send(own.save(&dir));
-            });
-        match spawned {
-            Ok(_) => self.saving = Some(saved),
-            Err(err) => tracing::error!("saving the export presets could not start: {err}"),
-        }
+        let own = self.own.clone();
+        self.own_keeper.keep(move || own.to_text());
     }
 
     /// File name, folder and range, in one row.
@@ -1461,4 +1446,35 @@ fn show_folder(folder: &Path) -> diag::Result<()> {
                 .source(err)
         })?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn quick_preset_changes_are_written_one_at_a_time_and_the_newest_stays() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut errors = ui_kit::ErrorCenter::default();
+        let mut page = ExportPage::new(dir.path(), Pace::default(), &mut errors);
+        let mut asked = Asked::default();
+        // Save one, save another, remove the first: three writes in a row.
+        page.own.add("First", Choice::default()).unwrap();
+        page.save_own(&mut asked);
+        page.own.add("Second", Choice::default()).unwrap();
+        page.save_own(&mut asked);
+        page.own.remove("First");
+        page.save_own(&mut asked);
+        page.own_keeper.flush().unwrap();
+        let names: Vec<String> = OwnPresets::load(dir.path())
+            .unwrap()
+            .presets
+            .into_iter()
+            .map(|p| p.name)
+            .collect();
+        assert_eq!(names, ["Second"]);
+        let files: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
+        assert_eq!(files.len(), 1, "no temporary file is left");
+        assert!(asked.problem.is_none() && errors.all().is_empty());
+    }
 }

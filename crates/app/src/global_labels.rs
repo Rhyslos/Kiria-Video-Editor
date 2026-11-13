@@ -1,19 +1,21 @@
 //! The labels offered in every project ("everywhere"), as the editor keeps
 //! them: read once at start (a few hundred bytes), changed from a file's
-//! Labels menu in the media drawer ("Every project"), and saved on a worker.
+//! Labels menu in the media drawer ("Every project"), and saved off the
+//! interface thread by a `project::disk::Keeper` (one write at a time, the
+//! newest set last).
 //! Not project edits, so they make no undo step; see
 //! `project::global_labels` for the file and the rules.
 
 use crate::organise::Everywhere as Change;
-use jobs::{JobHandle, JobSystem, PoolKind, Priority};
 use project::GlobalLabels;
+use project::disk::Keeper;
 use std::path::Path;
 
 #[derive(Debug, Default)]
 pub struct Everywhere {
     pub labels: GlobalLabels,
-    /// The newest save, while it runs.
-    saving: Option<JobHandle<()>>,
+    /// Writes the file; made at the first change.
+    keeper: Option<Keeper>,
     /// The file couldn't be read (newer or damaged): it is never written
     /// over, so nothing in it is lost.
     read_only: bool,
@@ -38,9 +40,9 @@ impl Everywhere {
         }
     }
 
-    /// Offers a label everywhere or stops offering one, and saves the set on
-    /// a worker. Returns the status line.
-    pub fn change(&mut self, jobs: &JobSystem, data_dir: &Path, change: Change) -> diag::Result<String> {
+    /// Offers a label everywhere or stops offering one, and saves the set
+    /// off this thread. Returns the status line.
+    pub fn change(&mut self, data_dir: &Path, change: Change) -> diag::Result<String> {
         if self.read_only {
             return Err(diag::AppError::new("Labels for every project can't be changed")
                 .why("Their file couldn't be read when the app started, so it is left as it is.")
@@ -56,21 +58,18 @@ impl Everywhere {
                 format!("\"{name}\" is no longer offered everywhere; projects that use it keep it")
             }
         };
-        let (labels, dir) = (self.labels.clone(), data_dir.to_path_buf());
-        self.saving = Some(jobs.submit(
-            PoolKind::Analysis,
-            Priority::Interactive,
-            "save labels for every project",
-            move |_| labels.save(&dir),
-        ));
+        let labels = self.labels.clone();
+        self.keeper
+            .get_or_insert_with(|| {
+                Keeper::new(project::global_labels::path(data_dir), "Labels for every project")
+            })
+            .keep(move || labels.to_string());
         Ok(line)
     }
 
     /// Why the last save failed, once it has.
     pub fn poll(&mut self) -> Option<diag::AppError> {
-        let result = self.saving.as_ref()?.try_result()?;
-        self.saving = None;
-        result.err()
+        self.keeper.as_ref()?.take_failure()
     }
 }
 
@@ -82,20 +81,24 @@ mod tests {
     #[test]
     fn changes_are_saved_and_a_file_that_cant_be_read_is_never_written() {
         let dir = tempfile::tempdir().unwrap();
-        let jobs = JobSystem::new(jobs::Budgets::default().resolve(&jobs::Machine::detect()));
         let mut errors = ui_kit::ErrorCenter::default();
         let mut set = Everywhere::load(dir.path(), &mut errors);
-        set.change(
-            &jobs,
-            dir.path(),
-            Change::Offer("Drone".into(), LabelColor::Green),
-        )
-        .unwrap();
-        while set.saving.is_some() {
-            assert!(set.poll().is_none());
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        assert_eq!(GlobalLabels::load(dir.path()).unwrap().labels.len(), 1);
+        set.change(dir.path(), Change::Offer("Drone".into(), LabelColor::Green))
+            .unwrap();
+        // Quick changes one after another: the newest set is what stays.
+        set.change(dir.path(), Change::Offer("Race".into(), LabelColor::Red))
+            .unwrap();
+        set.change(dir.path(), Change::StopOffering("Drone".into()))
+            .unwrap();
+        set.keeper.as_ref().unwrap().flush().unwrap();
+        assert!(set.poll().is_none());
+        let names: Vec<String> = GlobalLabels::load(dir.path())
+            .unwrap()
+            .labels
+            .into_iter()
+            .map(|l| l.name)
+            .collect();
+        assert_eq!(names, ["Race"]);
 
         std::fs::write(
             project::global_labels::path(dir.path()),
@@ -106,7 +109,7 @@ mod tests {
         assert_eq!(errors.all().len(), 1, "explained");
         assert!(
             newer
-                .change(&jobs, dir.path(), Change::StopOffering("Drone".into()))
+                .change(dir.path(), Change::StopOffering("Race".into()))
                 .is_err()
         );
     }

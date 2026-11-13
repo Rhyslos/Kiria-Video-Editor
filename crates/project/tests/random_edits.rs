@@ -749,3 +749,126 @@ proptest! {
         prop_assert_eq!(&replayed, &expected);
     }
 }
+
+/// A step of a session that saves and crashes along the way.
+#[derive(Debug, Clone)]
+enum Step {
+    Edit(Action),
+    Undo,
+    Redo,
+    /// A full save on the spot (Ctrl+S, or the save on closing).
+    Save,
+    /// A save handed to a worker (the idle autosave, or Ctrl+S): its
+    /// snapshot is taken now, it writes later.
+    StartSave,
+    /// One of the saves under way writes (`write`) or fails, and reports.
+    FinishSave {
+        pick: usize,
+        write: bool,
+    },
+    /// The app stops dead. Each save under way had written or not
+    /// (`written`, one per save, in the order they were started).
+    Crash {
+        written: Vec<bool>,
+    },
+}
+
+fn step() -> impl Strategy<Value = Step> {
+    prop_oneof![
+        8 => action().prop_map(Step::Edit),
+        4 => Just(Step::Undo),
+        2 => Just(Step::Redo),
+        2 => Just(Step::Save),
+        2 => Just(Step::StartSave),
+        2 => (any::<usize>(), prop::bool::weighted(0.85)).prop_map(|(pick, write)| Step::FinishSave { pick, write }),
+        1 => prop::collection::vec(any::<bool>(), 4).prop_map(|written| Step::Crash { written }),
+    ]
+}
+
+/// The project as recovery must rebuild it: which timeline is open is not
+/// in the journal (the editor keeps it with the layout), so it is set aside,
+/// and media paths are compared as opening makes them: full, from `folder`.
+fn same_but_open_timeline(recovered: &Project, expected: &Project, folder: &std::path::Path) -> Project {
+    let mut recovered = recovered.clone();
+    project::file::resolve_media_paths(&mut recovered, folder);
+    assert!(recovered.sequence(expected.active_sequence).is_some());
+    recovered.active_sequence = expected.active_sequence;
+    recovered
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+
+    /// Edits, undos, redos and saves (on the spot, and on workers finishing
+    /// in any order, or failing), with crashes at random points: recovery
+    /// always rebuilds exactly the project at the crash (with the same undo
+    /// and redo when there was unsaved work to recover), and the session
+    /// goes on from there.
+    #[test]
+    fn a_crash_at_any_point_recovers_exactly_what_was_there(steps in prop::collection::vec(step(), 1..80)) {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("random.project");
+        let mut doc = Document::create(&path, Project::new("Random", SequenceSettings::GAME_CLIP)).unwrap();
+        doc.apply(Command::AddMedia { media: media() }).unwrap();
+        doc.apply(Command::AddMedia { media: recording() }).unwrap();
+        let mut ids = doc.project().media.keys().copied();
+        let (media_id, recording_id) = (ids.next().unwrap(), ids.next().unwrap());
+        let mut saves: Vec<project::document::SaveJob> = Vec::new();
+
+        for step in steps.iter().chain(std::iter::once(&Step::Crash { written: vec![false; 4] })) {
+            match step {
+                Step::Undo => { doc.undo().unwrap(); }
+                Step::Redo => { doc.redo().unwrap(); }
+                Step::Edit(Action::OpenTimeline { pick }) => {
+                    let sequences = &doc.project().sequences;
+                    let id = sequences[pick % sequences.len()].id;
+                    prop_assert!(doc.open_sequence(id));
+                }
+                Step::Edit(action) => {
+                    if let Some(command) = command_for(action, doc.project(), media_id, recording_id) {
+                        let _ = doc.apply(command);
+                    }
+                }
+                Step::Save => doc.save().unwrap(),
+                Step::StartSave => saves.push(doc.prepare_save()),
+                Step::FinishSave { pick, write } => {
+                    if !saves.is_empty() {
+                        let job = saves.remove(pick % saves.len());
+                        let result = if *write {
+                            job.run()
+                        } else {
+                            Err(diag::AppError::new("The disk is full"))
+                        };
+                        let failed = result.is_err();
+                        prop_assert_eq!(doc.finish_save(job.journal_seq(), result).is_err(), failed);
+                    }
+                }
+                Step::Crash { written } => {
+                    for (job, write) in saves.drain(..).zip(written.iter().cycle()) {
+                        if *write {
+                            job.run().unwrap();
+                        }
+                    }
+                    let mut expected = doc.project().clone();
+                    // Opening a file makes its relative media paths full
+                    // (from the project's folder); what was on screen did not.
+                    project::file::resolve_media_paths(&mut expected, tmp.path());
+                    let (could_undo, could_redo) = (doc.history().can_undo(), doc.history().can_redo());
+                    drop(doc);
+                    let unsaved = Document::check(&path).unwrap().unsaved_changes;
+                    doc = Document::open(&path, Recovery::Recover).unwrap();
+                    prop_assert_eq!(&same_but_open_timeline(doc.project(), &expected, tmp.path()), &expected);
+                    // Recovered work comes back with its undo and redo; with
+                    // nothing unsaved the project opens as saved, afresh.
+                    if unsaved > 0 {
+                        prop_assert_eq!(doc.history().can_undo(), could_undo);
+                        prop_assert_eq!(doc.history().can_redo(), could_redo);
+                    }
+                    prop_assert_eq!(Document::check(&path).unwrap().unsaved_changes, 0, "recovered work was saved");
+                    // The editor opens the timeline kept with the layout.
+                    doc.open_sequence(expected.active_sequence);
+                }
+            }
+        }
+    }
+}

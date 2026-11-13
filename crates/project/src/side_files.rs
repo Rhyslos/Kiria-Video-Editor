@@ -13,18 +13,25 @@
 //! line in [`existing`]); everything that moves or deletes projects then
 //! handles it.
 
-use crate::{document, file, versions};
+use crate::{disk, document, file, versions};
 use std::path::{Path, PathBuf};
 
 /// One kind of file (or folder) kept beside a project file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SideFile {
-    /// `<file>.journal`: every change since the last full save.
+    /// `<file>.journal`: every change since the project was opened.
     Journal,
-    /// `<file>.journal.discarded`: unsaved work set aside by "Open last save".
-    DiscardedJournal,
-    /// `.<file>.saving`: a save that a crash or power cut interrupted.
-    UnfinishedSave,
+    /// `<file>.journal.start`: the project as it was when the journal
+    /// started, which recovery replays the journal onto.
+    JournalStart,
+    /// `<file>.journal.discarded-<YYYYMMDD-HHMMSS>`: unsaved work set aside
+    /// by "Open last save", one file each time, named by when (UTC; the
+    /// number is the stamp's digits). `None` is the single name earlier
+    /// versions used, `<file>.journal.discarded`.
+    DiscardedJournal(Option<u64>),
+    /// `.<file>.<number>.saving`: a save that a crash or power cut
+    /// interrupted (`None`: `.<file>.saving`, the name earlier versions used).
+    UnfinishedSave(Option<u64>),
     /// `<file>.backup-v<N>`: the file as it was before an upgrade from format `N`.
     Backup(u32),
     /// `<file>.thumbnail.png`: the picture on the project's card.
@@ -40,8 +47,9 @@ impl SideFile {
     pub fn path(self, project_file: &Path) -> PathBuf {
         match self {
             SideFile::Journal => document::journal_path(project_file),
-            SideFile::DiscardedJournal => document::discarded_journal_path(project_file),
-            SideFile::UnfinishedSave => file::temp_path(project_file),
+            SideFile::JournalStart => document::journal_start_path(project_file),
+            SideFile::DiscardedJournal(stamp) => document::discarded_journal_path(project_file, stamp),
+            SideFile::UnfinishedSave(number) => disk::temp_path(project_file, number),
             SideFile::Backup(format) => file::backup_path(project_file, format),
             SideFile::Thumbnail => document::thumbnail_path(project_file),
             SideFile::View => document::view_path(project_file),
@@ -53,8 +61,9 @@ impl SideFile {
     pub fn label(self) -> &'static str {
         match self {
             SideFile::Journal => "Autosave file",
-            SideFile::DiscardedJournal => "Unsaved work set aside after a crash",
-            SideFile::UnfinishedSave => "Unfinished save",
+            SideFile::JournalStart => "Autosave starting point",
+            SideFile::DiscardedJournal(_) => "Unsaved work set aside after a crash",
+            SideFile::UnfinishedSave(_) => "Unfinished save",
             SideFile::Backup(_) => "Backup from before an upgrade",
             SideFile::Thumbnail => "Picture for the project list",
             SideFile::View => "Timeline layout",
@@ -75,13 +84,13 @@ pub struct Found {
 /// folder and opens nothing; still, run it on a worker for a folder on a
 /// slow disk.
 pub fn existing(project_file: &Path) -> Vec<Found> {
-    let mut kinds = vec![
-        SideFile::Journal,
-        SideFile::DiscardedJournal,
-        SideFile::UnfinishedSave,
-    ];
-    kinds.extend(backups(project_file).into_iter().map(SideFile::Backup));
+    let mut kinds = vec![SideFile::Journal, SideFile::JournalStart];
+    let mut numbered = numbered(project_file);
+    numbered.sort_unstable();
+    numbered.dedup();
+    kinds.extend(numbered);
     kinds.extend([SideFile::Thumbnail, SideFile::View, SideFile::Versions]);
+    kinds.sort_unstable();
     kinds
         .into_iter()
         .map(|kind| Found {
@@ -93,9 +102,9 @@ pub fn existing(project_file: &Path) -> Vec<Found> {
         .collect()
 }
 
-/// The formats there is a backup copy for, oldest first. Their names hold a
-/// number, so the folder is listed to find them.
-fn backups(project_file: &Path) -> Vec<u32> {
+/// The side files whose names hold a number (set-aside journals,
+/// unfinished saves, backups), found by listing the folder.
+fn numbered(project_file: &Path) -> Vec<SideFile> {
     let (Some(folder), Some(name)) = (project_file.parent(), project_file.file_name()) else {
         return Vec::new();
     };
@@ -108,30 +117,29 @@ fn backups(project_file: &Path) -> Vec<u32> {
         return Vec::new();
     };
     let name = name.to_string_lossy();
-    let mut formats: Vec<u32> = entries
+    entries
         .flatten()
-        .filter_map(|entry| backup_format(&entry.file_name().to_string_lossy(), &name))
-        .collect();
-    formats.sort_unstable();
-    formats.dedup();
-    formats
+        .filter_map(|entry| numbered_kind(&entry.file_name().to_string_lossy(), &name))
+        .collect()
+}
+
+/// What `candidate` is, when it is one of the numbered side files of the
+/// project file called `project_name`, by exactly the name its writer gives.
+fn numbered_kind(candidate: &str, project_name: &str) -> Option<SideFile> {
+    if let Some(format) = backup_format(candidate, project_name) {
+        return Some(SideFile::Backup(format));
+    }
+    if let Some(number) = disk::temp_number(candidate, project_name) {
+        return Some(SideFile::UnfinishedSave(number));
+    }
+    document::discarded_stamp(candidate, project_name).map(SideFile::DiscardedJournal)
 }
 
 /// The format in `candidate` when it is `<project name>.backup-v<format>`
 /// and nothing more. Windows file names ignore case, so the match does too
 /// there.
 fn backup_format(candidate: &str, project_name: &str) -> Option<u32> {
-    let split = project_name.len();
-    if !candidate.is_char_boundary(split) {
-        return None;
-    }
-    let (start, rest) = candidate.split_at(split);
-    let same = if cfg!(windows) {
-        start.eq_ignore_ascii_case(project_name)
-    } else {
-        start == project_name
-    };
-    let digits = rest.strip_prefix(".backup-v").filter(|_| same)?;
+    let digits = disk::strip_name(candidate, project_name)?.strip_prefix(".backup-v")?;
     // Only the name `backup_path` writes: no sign, no leading zero.
     let format: u32 = digits.parse().ok()?;
     (format.to_string() == digits).then_some(format)
@@ -152,8 +160,15 @@ mod tests {
     /// Writes every kind of side file the way the code that owns it does.
     fn fill(project_file: &Path) {
         fs::write(document::journal_path(project_file), "").unwrap();
-        fs::write(document::discarded_journal_path(project_file), "").unwrap();
-        fs::write(file::temp_path(project_file), "half a save").unwrap();
+        fs::write(document::journal_start_path(project_file), "").unwrap();
+        fs::write(document::discarded_journal_path(project_file, None), "").unwrap();
+        fs::write(
+            document::discarded_journal_path(project_file, Some(20261113153000)),
+            "",
+        )
+        .unwrap();
+        fs::write(disk::temp_path(project_file, None), "half a save").unwrap();
+        fs::write(disk::temp_path(project_file, Some(77)), "half a save").unwrap();
         file::back_up_before_upgrade(project_file, 2).unwrap();
         file::back_up_before_upgrade(project_file, 11).unwrap();
         fs::write(document::thumbnail_path(project_file), "png").unwrap();
@@ -183,8 +198,11 @@ mod tests {
             kinds,
             [
                 SideFile::Journal,
-                SideFile::DiscardedJournal,
-                SideFile::UnfinishedSave,
+                SideFile::JournalStart,
+                SideFile::DiscardedJournal(None),
+                SideFile::DiscardedJournal(Some(20261113153000)),
+                SideFile::UnfinishedSave(None),
+                SideFile::UnfinishedSave(Some(77)),
                 SideFile::Backup(2),
                 SideFile::Backup(11),
                 SideFile::Thumbnail,
@@ -230,7 +248,12 @@ mod tests {
                 entry.display()
             );
         }
-        assert!(listed.contains(&document::discarded_journal_path(&path)));
+        assert!(
+            listed
+                .iter()
+                .any(|p| p.to_string_lossy().contains(".journal.discarded-")),
+            "{listed:?}"
+        );
     }
 
     #[test]
@@ -250,6 +273,13 @@ mod tests {
             format!("{name}.backup-v+3"),
             format!("x{name}.backup-v3"),
             format!("{name}.thumbnail.png.bak"),
+            format!("{name}.journal.discarded-2026111-090502"),
+            format!("{name}.journal.discarded-20261113-0905"),
+            format!("{name}.journal.discarded-20261113-090502.txt"),
+            format!("{name}.journal.discarded-"),
+            format!(".{name}.x.saving"),
+            format!(".{name}.007.saving"),
+            format!(".{name} 2.saving"),
         ];
         for other in &others {
             fs::write(tmp.path().join(other), "not ours").unwrap();
@@ -286,12 +316,24 @@ mod tests {
             Path::new("b").join("new.x.backup-v4")
         );
         assert_eq!(
-            SideFile::UnfinishedSave.path(&old),
+            SideFile::UnfinishedSave(None).path(&old),
             Path::new("a").join(".old.x.saving")
         );
         assert_eq!(
-            SideFile::DiscardedJournal.path(&old),
+            SideFile::UnfinishedSave(Some(9)).path(&old),
+            Path::new("a").join(".old.x.9.saving")
+        );
+        assert_eq!(
+            SideFile::DiscardedJournal(None).path(&old),
             Path::new("a").join("old.x.journal.discarded")
+        );
+        assert_eq!(
+            SideFile::DiscardedJournal(Some(20261113090502)).path(&old),
+            Path::new("a").join("old.x.journal.discarded-20261113-090502")
+        );
+        assert_eq!(
+            SideFile::JournalStart.path(&old),
+            Path::new("a").join("old.x.journal.start")
         );
     }
 }

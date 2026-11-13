@@ -123,7 +123,7 @@ impl GlobalLabels {
                 .fix("Check that the disk is not full and that the app's data folder can be written to.")
         };
         std::fs::create_dir_all(data_dir).or_explain(explain)?;
-        crate::file::write_atomic(&path(data_dir), &self.to_string()?).or_explain(explain)
+        crate::disk::write_atomic(&path(data_dir), self.to_string()?.as_bytes()).or_explain(explain)
     }
 
     /// The label with this name, whatever its capitals.

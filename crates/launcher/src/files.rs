@@ -374,8 +374,11 @@ mod tests {
     fn give_side_files(path: &Path) {
         use project::SideFile;
         for kind in [
-            SideFile::DiscardedJournal,
-            SideFile::UnfinishedSave,
+            SideFile::JournalStart,
+            SideFile::DiscardedJournal(None),
+            SideFile::DiscardedJournal(Some(20261113090000)),
+            SideFile::UnfinishedSave(None),
+            SideFile::UnfinishedSave(Some(3)),
             SideFile::Thumbnail,
             SideFile::View,
         ] {
@@ -406,10 +409,13 @@ mod tests {
         let file = format!("{stem}.{}", ext());
         let mut names = vec![
             format!(".{file}.saving"),
+            format!(".{file}.3.saving"),
             file.clone(),
             format!("{file}.backup-v3"),
             format!("{file}.journal"),
             format!("{file}.journal.discarded"),
+            format!("{file}.journal.discarded-20261113-090000"),
+            format!("{file}.journal.start"),
             format!("{file}.thumbnail.png"),
             format!("{file}.versions/"),
             format!("{file}.view"),
