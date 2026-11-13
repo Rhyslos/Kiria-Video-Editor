@@ -28,11 +28,13 @@ impl FrameGrab {
         let (tx, rx) = channel();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
-            let picked = rfd::FileDialog::new()
-                .set_title("Save this frame as a picture")
-                .set_file_name(default_name)
-                .add_filter("PNG picture", &["png"])
-                .save_file();
+            let picked = ui_kit::file_dialog::run(&ctx, || {
+                rfd::FileDialog::new()
+                    .set_title("Save this frame as a picture")
+                    .set_file_name(default_name)
+                    .add_filter("PNG picture", &["png"])
+                    .save_file()
+            });
             let _ = tx.send(picked);
             ctx.request_repaint();
         });

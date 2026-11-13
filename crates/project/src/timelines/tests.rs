@@ -426,3 +426,24 @@ fn switching_timelines_is_not_an_undo_step() {
     assert_eq!(history.current().active_sequence, first);
     assert!(history.current().sequence(second).is_none());
 }
+
+#[test]
+fn a_new_timeline_is_named_by_its_number() {
+    let p = Project::new_automatic("T");
+    assert_eq!(p.new_sequence_name(), "Timeline 2", "beside the first");
+    let settings = p.active().unwrap().settings;
+    let p = Command::AddSequence {
+        name: p.new_sequence_name(),
+        settings,
+    }
+    .apply(&p)
+    .unwrap();
+    assert_eq!(p.new_sequence_name(), "Timeline 3");
+    let p = Command::AddSequence {
+        name: "Timeline 3".into(),
+        settings,
+    }
+    .apply(&p)
+    .unwrap();
+    assert_eq!(p.new_sequence_name(), "Timeline 4", "a number taken is skipped");
+}

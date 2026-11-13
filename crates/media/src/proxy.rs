@@ -84,6 +84,17 @@ fn failed(what: &str, code: i32) -> AppError {
     cannot(format!("{what} failed: {}.", error_text(code)))
 }
 
+/// An encoder that is built in but doesn't open here (a graphics card's
+/// encoder without that card or its driver): the next one is tried.
+fn not_usable(name: &str, code: i32) -> AppError {
+    AppError::new("This encoder can't be used here")
+        .why(format!(
+            "Opening the encoder {name} failed: {}.",
+            error_text(code)
+        ))
+        .fix("Nothing to do: the next encoder is tried, ending with the processor's own.")
+}
+
 /// The error for a build that was stopped (cancelled) before the end.
 pub fn stopped() -> AppError {
     AppError::new("The proxy was not finished").why("Its build was stopped.")
@@ -118,7 +129,10 @@ pub fn write(
                 if (steps.cancelled)() {
                     return Err(stopped());
                 }
-                tracing::info!("a proxy with {name} did not work: {}", err.report());
+                tracing::info!(
+                    "a proxy with {name} did not work, trying the next encoder: {}",
+                    err.report()
+                );
                 last = err;
             }
         }
@@ -307,7 +321,7 @@ impl Encoder {
             }
             let r = ff::avcodec_open2(this.codec, codec, ptr::null_mut());
             if r < 0 {
-                return Err(failed(&format!("Opening the encoder {name}"), r));
+                return Err(not_usable(name, r));
             }
             let f = &mut *this.frame;
             f.format = ff::AVPixelFormat::AV_PIX_FMT_NV12 as i32;
@@ -540,6 +554,14 @@ impl Drop for Encoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_encoder_that_does_not_open_is_not_blamed_on_the_disk() {
+        let err = not_usable("h264_nvenc", -22);
+        assert!(err.why_text().is_some_and(|w| w.contains("h264_nvenc")));
+        assert!(!err.fix_text().contains("disk"), "{}", err.fix_text());
+        assert!(err.fix_text().contains("next encoder"));
+    }
 
     fn fixture(name: &str) -> std::path::PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))

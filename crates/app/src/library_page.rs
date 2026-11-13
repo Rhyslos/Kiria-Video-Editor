@@ -3,11 +3,14 @@
 //! panel to look at one, mark the part wanted and add it to the timeline.
 //!
 //! Layout (the same top bar and tabs as every page): the sidebar on the
-//! left (`sidebar`: Import, labels with counts, smart filters, Prune), the
+//! left (`sidebar`: Import, new files in the media folders, labels with
+//! counts, smart filters, Prune), the
 //! tab bar and filter row on top of the middle (`top_rows`), the files
 //! under them (`cards`: a thumbnail grid or rows for pictures; `sound_rows`
 //! for the Audio tab), and the detail panel on the right, as wide as the
-//! Edit page's inspector (`detail`).
+//! Edit page's inspector (`detail`). Several files can be chosen at once
+//! (`choosing`: Ctrl-click, Shift-click, Select all); what is done to them
+//! is one undo step.
 //!
 //! Finding and ordering is the library index's (`library::Live`, asked
 //! under `ASKER` on its own thread, never waited for): the words, the open
@@ -19,6 +22,7 @@
 
 mod arrange;
 mod cards;
+pub mod choosing;
 mod detail;
 pub mod loudness;
 pub mod placing;
@@ -151,10 +155,20 @@ pub enum Picked {
     Everywhere(Everywhere),
     /// Add a file, or part of it, to the open timeline.
     Add(Adding),
+    /// Add several files (each its marked part) one after another, as one step.
+    AddSeveral(Vec<Adding>, AddAt),
     BuildProxy(MediaId),
+    /// Build the proxies of these files (those that have none).
+    BuildProxies(Vec<MediaId>),
     DeleteProxy(MediaId),
-    /// Open the import dialog.
+    /// Take these files out of the project (those no timeline uses), as one step.
+    Remove(Vec<MediaId>),
+    /// Open the import dialog: files go into the project's media only.
     Import,
+    /// Add these new files from the media folders to the project's media.
+    AddFound(Vec<std::path::PathBuf>),
+    /// Hide a new file from the media folders for this session.
+    Dismiss(std::path::PathBuf),
     /// Open Prune: the files no timeline uses, to take out of the project.
     Prune,
 }
@@ -188,6 +202,8 @@ pub struct About<'a> {
     pub importing: usize,
     /// The window's status line.
     pub status: &'a str,
+    /// New files in the media folders.
+    pub new_files: crate::new_files::NewFiles<'a>,
 }
 
 /// What reading a file's pictures gives: them, once read, and how far the reading is.
@@ -215,6 +231,8 @@ pub struct LibraryPage {
     pub view: View,
     /// The file in the detail panel.
     pub selected: Option<MediaId>,
+    /// The files chosen (one or several).
+    pub chosen: choosing::Chosen,
     /// The part of each file marked to add and the level of each of its
     /// sound streams: for the session, or in the project (a setting).
     pub uses: uses::Uses,
@@ -246,6 +264,7 @@ impl Default for LibraryPage {
             size: cards::USUAL_SIZE,
             view: View::default(),
             selected: None,
+            chosen: choosing::Chosen::default(),
             uses: uses::Uses::default(),
             player: player::Player::default(),
             loudness: loudness::Measurements::default(),
@@ -367,6 +386,7 @@ impl LibraryPage {
         if self.selected.is_some_and(|m| !project.media.contains_key(&m)) {
             self.selected = None;
         }
+        self.chosen.keep_existing(project);
     }
 
     /// The marked part of `media`.
@@ -393,6 +413,10 @@ impl LibraryPage {
     /// (play, stop, frames, start and end) and marking in and out. Returns
     /// whether the page took it.
     pub fn command(&mut self, action: Action) -> bool {
+        if action == Action::SelectAll {
+            self.select_all();
+            return true;
+        }
         let Some(media) = self.player.media() else {
             return matches!(
                 action,
@@ -428,6 +452,19 @@ impl LibraryPage {
             _ => return false,
         }
         true
+    }
+
+    /// Chooses every file shown (the tab, its filters and its words).
+    pub fn select_all(&mut self) {
+        let shown = self
+            .arranged
+            .as_ref()
+            .map(|(_, a)| a.items.clone())
+            .unwrap_or_default();
+        self.chosen.all(&shown);
+        if self.selected.is_none_or(|m| !self.chosen.contains(m)) {
+            self.selected = shown.first().copied();
+        }
     }
 
     /// Whether everything in view has what it shows (for screenshots).
@@ -474,6 +511,7 @@ impl LibraryPage {
                 .find(|m| library::file_name(&m.path) == name)
         {
             self.selected = Some(media.id);
+            self.chosen.only(media.id);
             self.select_named = None;
         }
         let selected = self.selected.and_then(|id| project.media.get(&id));
@@ -509,6 +547,15 @@ impl LibraryPage {
             picked.extend(detail::ui(self, ui, theme, about, &facts, readers));
         });
         ui.allocate_rect(page, egui::Sense::hover());
+        // A new label's or list's name, asked in a dialog of its own.
+        if let Some(asked) = self.organiser.dialog(ui.ctx(), theme, project, about.global) {
+            if let Organised::Edit(command) = &asked
+                && let Command::AddMediaList { name, .. } = command.as_ref()
+            {
+                self.top.open_when_made = Some(name.clone());
+            }
+            picked.push(asked.into());
+        }
         picked
     }
 
@@ -686,15 +733,110 @@ impl LibraryPage {
         picked
     }
 
-    /// A click on a file: it shows in the detail panel. A double-click adds
-    /// it (its marked part) at the end of the timeline.
+    /// A click on a file: it shows in the detail panel, chosen alone (with
+    /// Ctrl added to the files chosen, with Shift the run from the last
+    /// one clicked). A right-click on a file not chosen chooses it alone. A
+    /// double-click adds it (its marked part) at the end of the timeline.
     fn clicked(&mut self, media: &MediaRef, response: &egui::Response) -> Option<Picked> {
-        if response.clicked() || response.secondary_clicked() {
+        if response.clicked() {
+            let modifiers = response.ctx.input(|i| i.modifiers);
+            let order = self
+                .arranged
+                .as_ref()
+                .map(|(_, a)| a.items.clone())
+                .unwrap_or_default();
+            self.selected = self
+                .chosen
+                .click(media.id, modifiers.command, modifiers.shift, &order);
+        } else if response.secondary_clicked() && !self.chosen.contains(media.id) {
+            self.chosen.only(media.id);
             self.selected = Some(media.id);
         }
         response
             .double_clicked()
             .then(|| Picked::Add(self.adding(media, AddAt::End)))
+    }
+
+    /// Whether `media` is drawn as chosen.
+    fn is_chosen(&self, media: MediaId) -> bool {
+        self.chosen.contains(media) || (self.chosen.is_empty() && self.selected == Some(media))
+    }
+
+    /// What adding the chosen files adds: each its marked part, at its levels.
+    pub fn addings(&self, project: &Project, at: AddAt) -> Vec<Adding> {
+        self.chosen
+            .files()
+            .iter()
+            .filter_map(|id| project.media.get(id))
+            .map(|m| self.adding(m, at))
+            .collect()
+    }
+
+    /// The right-click menu for the chosen files (more than one): add them,
+    /// their proxies, labels and lists, take them out of the project.
+    pub fn several_menu(&mut self, ui: &mut egui::Ui, about: &About<'_>) -> Option<Picked> {
+        let files = self.chosen.files().to_vec();
+        let count = files.len();
+        ui.label(
+            egui::RichText::new(format!("{count} files chosen"))
+                .size(12.0)
+                .color(ui.visuals().weak_text_color()),
+        );
+        let mut picked = None;
+        if ui.button(format!("Add the {count} files at the end")).clicked() {
+            picked = Some(Picked::AddSeveral(
+                self.addings(about.project, AddAt::End),
+                AddAt::End,
+            ));
+            ui.close();
+        }
+        if ui
+            .button(format!("Insert the {count} files at the edit point"))
+            .clicked()
+        {
+            picked = Some(Picked::AddSeveral(
+                self.addings(about.project, AddAt::EditPoint),
+                AddAt::EditPoint,
+            ));
+            ui.close();
+        }
+        let videos: Vec<MediaId> = files
+            .iter()
+            .copied()
+            .filter(|m| {
+                about
+                    .project
+                    .media
+                    .get(m)
+                    .is_some_and(|m| crate::proxies::video_stream(m).is_some())
+            })
+            .collect();
+        if !videos.is_empty() {
+            ui.separator();
+            if ui
+                .button(format!("Build proxies ({} video files)", videos.len()))
+                .on_hover_text("Builds a proxy for each that has none, also those cleared from the cache.")
+                .clicked()
+            {
+                picked = Some(Picked::BuildProxies(videos));
+                ui.close();
+            }
+        }
+        ui.separator();
+        if let Some(asked) = self.organiser.menus(ui, about.project, about.global, &files) {
+            picked = Some(asked.into());
+            ui.close();
+        }
+        ui.separator();
+        if ui
+            .button(format!("Remove the {count} files from the project…"))
+            .on_hover_text("Files a timeline uses stay. Nothing is deleted from disk; undo brings them back.")
+            .clicked()
+        {
+            picked = Some(Picked::Remove(files));
+            ui.close();
+        }
+        picked
     }
 
     /// A file's right-click menu: add it, its proxy, its labels, lists and note.
@@ -706,6 +848,10 @@ impl LibraryPage {
     ) -> Option<Picked> {
         let mut picked = None;
         response.context_menu(|ui| {
+            if self.chosen.several() && self.chosen.contains(media.id) {
+                picked = self.several_menu(ui, about);
+                return;
+            }
             let marked = self.marks(media.id).is_set();
             let (end, insert) = if marked {
                 (
@@ -734,7 +880,7 @@ impl LibraryPage {
                 ui.close();
             }
             ui.separator();
-            if let Some(asked) = self.organiser.menus(ui, about.project, about.global, media.id) {
+            if let Some(asked) = self.organiser.menus(ui, about.project, about.global, &[media.id]) {
                 picked = Some(asked.into());
                 ui.close();
             }

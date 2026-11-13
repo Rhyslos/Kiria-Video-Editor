@@ -13,7 +13,7 @@
 //! takes it out in one step.
 
 use diag::AppError;
-use project::{Command, MediaId, Project, Region, Sound, Template, Time};
+use project::{Command, MediaId, MediaRef, Project, Region, SequenceSettings, Sound, Template, Time};
 
 /// Where an added file goes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,15 +35,32 @@ pub struct Adding {
     pub at: AddAt,
 }
 
-/// What the status line says once `adding` is done for the file called `name`.
-pub fn says(name: &str, adding: &Adding) -> String {
+/// What the status line says once `adding` is done for `media`. A level on
+/// one stream of a file with several names that stream, so it doesn't read
+/// as if all were changed.
+pub fn says(media: &MediaRef, adding: &Adding) -> String {
+    let name = library::file_name(&media.path);
     let what = match adding.part {
         Some((from, to)) => format!("{} of {name}", ui_kit::time_text::length((to - from).max(0.0))),
-        None => name.to_owned(),
+        None => name,
     };
+    let streams = &media.info.audio;
     let level = match adding.levels.as_slice() {
         [] => String::new(),
-        [(_, mdb)] => format!(", its sound {:+.1} dB", f64::from(*mdb) / 1000.0),
+        [(_, mdb)] if streams.len() <= 1 => format!(", its sound {:+.1} dB", f64::from(*mdb) / 1000.0),
+        [(stream, mdb)] => {
+            let named = streams
+                .iter()
+                .find(|a| a.index == *stream)
+                .map(|a| a.name.trim())
+                .filter(|n| !n.is_empty())
+                .map_or_else(|| format!("stream {stream}"), |n| format!("\"{n}\""));
+            format!(
+                ", its {named} sound {:+.1} dB (the other {} as they are)",
+                f64::from(*mdb) / 1000.0,
+                if streams.len() == 2 { "stream" } else { "streams" }
+            )
+        }
         several => format!(", {} sound streams at their own levels", several.len()),
     };
     let place = match adding.at {
@@ -80,6 +97,77 @@ pub fn command(project: &Project, adding: Adding, edit_point: Time) -> diag::Res
         sequence,
         template: Box::new(template),
         at,
+    })
+}
+
+/// The command that adds several files (each its marked part, at its
+/// levels) one after another to the open timeline of `project`, as one undo
+/// step: each is added to a copy of the timeline at its end as it would be
+/// alone, all that was added is taken as one template, and that goes in
+/// where `at` says. One file is [`command`].
+pub fn command_many(
+    project: &Project,
+    addings: Vec<Adding>,
+    at: AddAt,
+    edit_point: Time,
+) -> diag::Result<Command> {
+    let [first, rest @ ..] = addings.as_slice() else {
+        return Err(AppError::new("No files were chosen").fix("Click the files to add, then add them."));
+    };
+    if rest.is_empty() {
+        return command(project, Adding { at, ..first.clone() }, edit_point);
+    }
+    let seq = project.active().ok_or_else(|| {
+        AppError::new("There is no timeline to add to").fix("Make a timeline on the Edit page first.")
+    })?;
+    let (sequence, before) = (seq.id, seq.length());
+    let mut copy = project.clone();
+    for adding in addings {
+        let one = Adding {
+            at: AddAt::End,
+            ..adding
+        };
+        copy = command(&copy, one, edit_point)?.apply(&copy)?;
+    }
+    let after = copy.sequence(sequence).map_or(before, |s| s.length());
+    let region = Region::between(before, after).ok_or_else(|| {
+        AppError::new("The files couldn't be placed")
+            .why("They have no picture or sound to put on a timeline.")
+    })?;
+    let template = Template::capture(&copy, sequence, Some(region))?;
+    Ok(Command::InsertTemplate {
+        sequence,
+        template: Box::new(template),
+        at: match at {
+            AddAt::End => before,
+            AddAt::EditPoint => edit_point,
+        },
+    })
+}
+
+/// Before several files go onto an automatic timeline: the settings most of
+/// their videos share (`SequenceSettings::most_common`), as their own step,
+/// when the first video among them would decide otherwise (a short test
+/// pattern first). `None` when nothing needs settling.
+pub fn settle_first(project: &Project, addings: &[Adding]) -> Option<Command> {
+    let seq = project.active().filter(|s| s.automatic)?;
+    let files: Vec<&MediaRef> = addings
+        .iter()
+        .filter_map(|a| project.media.get(&a.media))
+        .collect();
+    let common = SequenceSettings::most_common(&files)?;
+    let first = files
+        .iter()
+        .find(|m| m.kind == project::MediaKind::Video)
+        .and_then(|m| {
+            m.info
+                .video
+                .as_ref()
+                .map(|v| SequenceSettings::matching(v, &m.info.audio))
+        });
+    (first != Some(common)).then_some(Command::SetSettings {
+        sequence: seq.id,
+        settings: common,
     })
 }
 
@@ -137,7 +225,7 @@ pub fn part_template(project: &Project, adding: &Adding) -> diag::Result<Templat
 #[cfg(test)]
 mod tests {
     use super::*;
-    use project::{Fingerprint, MediaRef, TrackKind};
+    use project::{Fingerprint, TrackKind};
 
     fn game_recording() -> MediaRef {
         let path =
@@ -242,28 +330,41 @@ mod tests {
 
     #[test]
     fn the_status_line_says_what_went_where() {
+        let mut file = game_recording();
+        file.path = "/r/a.mkv".into();
         let adding = Adding {
             media: MediaId(1),
             part: Some((2.0, 7.5)),
-            levels: vec![(1, 3_000)],
+            levels: vec![(file.info.audio[0].index, 3_000)],
             at: AddAt::End,
         };
+        let said = says(&file, &adding);
+        assert!(
+            said.starts_with("Added 5.5 s of a.mkv at the end of the timeline, its \""),
+            "{said}"
+        );
+        assert!(
+            said.ends_with("sound +3.0 dB (the other streams as they are)"),
+            "{said}"
+        );
+        let mut one = file.clone();
+        one.info.audio.truncate(1);
         assert_eq!(
-            says("a.mkv", &adding),
+            says(&one, &adding),
             "Added 5.5 s of a.mkv at the end of the timeline, its sound +3.0 dB"
         );
         let several = Adding {
             levels: vec![(1, 3_000), (2, -1_000)],
             ..adding.clone()
         };
-        assert!(says("a.mkv", &several).ends_with(", 2 sound streams at their own levels"));
+        assert!(says(&file, &several).ends_with(", 2 sound streams at their own levels"));
         let whole = Adding {
             part: None,
             levels: Vec::new(),
             at: AddAt::EditPoint,
             ..adding
         };
-        assert_eq!(says("a.mkv", &whole), "Added a.mkv at the edit point");
+        assert_eq!(says(&file, &whole), "Added a.mkv at the edit point");
     }
 
     #[test]
@@ -277,5 +378,70 @@ mod tests {
         };
         let err = command(&p, adding, Time::ZERO).unwrap_err();
         assert_eq!(err.what(), "The marked part is empty");
+    }
+
+    #[test]
+    fn several_files_go_in_one_after_another_as_one_step() {
+        let (p, first) = project_with(game_recording());
+        let p = Command::AddMedia {
+            media: game_recording(),
+        }
+        .apply(&p)
+        .unwrap();
+        let second = *p.media.keys().find(|id| **id != first).unwrap();
+        let whole = |media| Adding {
+            media,
+            part: None,
+            levels: Vec::new(),
+            at: AddAt::End,
+        };
+        let length = p.media[&first].duration.as_secs_f64();
+        let addings = vec![
+            whole(first),
+            Adding {
+                part: Some((0.0, length / 2.0)),
+                ..whole(second)
+            },
+        ];
+        let command = command_many(&p, addings, AddAt::End, Time::ZERO).unwrap();
+        assert!(matches!(command, Command::InsertTemplate { .. }), "one step");
+        let after = command.apply(&p).unwrap();
+        let seq = after.active().unwrap();
+        let mut starts: Vec<Time> = seq.video_tracks[0].clips.iter().map(|c| c.start).collect();
+        starts.sort();
+        assert_eq!(starts.len(), 2, "both pictures");
+        assert_eq!(starts[0], Time::ZERO);
+        assert!(starts[1] > Time::ZERO, "the second after the first");
+        let only = command_many(&p, vec![whole(first)], AddAt::End, Time::ZERO).unwrap();
+        assert!(matches!(only, Command::PlaceMedia { .. }), "one file as before");
+        assert!(command_many(&p, Vec::new(), AddAt::End, Time::ZERO).is_err());
+    }
+
+    #[test]
+    fn an_automatic_timeline_settles_on_what_most_files_share_before_they_go_in() {
+        let (p, first) = project_with(game_recording());
+        let whole = |media| Adding {
+            media,
+            part: None,
+            levels: Vec::new(),
+            at: AddAt::End,
+        };
+        assert_eq!(
+            settle_first(&p, &[whole(first)]),
+            None,
+            "the first decides as it would"
+        );
+        let mut small = game_recording();
+        if let Some(v) = small.info.video.as_mut() {
+            (v.width, v.height) = (96, 32);
+        }
+        small.duration = Time::from_ratio(1, 10).unwrap();
+        let p = Command::AddMedia { media: small }.apply(&p).unwrap();
+        let tiny = *p.media.keys().find(|id| **id != first).unwrap();
+        let Some(Command::SetSettings { settings, .. }) = settle_first(&p, &[whole(tiny), whole(first)])
+        else {
+            panic!("the test pattern first would decide")
+        };
+        assert_ne!((settings.width, settings.height), (96, 32));
     }
 }

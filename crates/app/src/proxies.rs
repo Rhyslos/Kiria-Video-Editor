@@ -111,6 +111,9 @@ pub struct ProxyBuilds {
     trimmed_once: bool,
     /// `--hold-proxy`: builds stop at this share, for screenshots.
     hold_at: Option<f32>,
+    /// Counts proxies built and deleted: Settings › Cache measures again
+    /// when it changes while it is open.
+    built: u64,
 }
 
 impl ProxyBuilds {
@@ -125,7 +128,14 @@ impl ProxyBuilds {
             trim: None,
             trimmed_once: false,
             hold_at,
+            built: 0,
         }
+    }
+
+    /// How many proxies were built or deleted this session: what the cache
+    /// holds changed when it changes.
+    pub fn changes(&self) -> u64 {
+        self.built
     }
 
     /// The shelf, for the viewer's workers.
@@ -179,6 +189,45 @@ impl ProxyBuilds {
         {
             build.handle.cancel();
         }
+    }
+
+    /// Builds a proxy for every video file of the project that has none
+    /// (also those cleared on purpose, and those that failed), by hand, one
+    /// at a time, whatever the mode. Returns how many were asked for.
+    pub fn build_all(&mut self) -> usize {
+        let mut wanted: Vec<MediaId> = self
+            .files
+            .iter()
+            .filter(|(_, f)| wants_proxy(&f.state))
+            .map(|(m, _)| *m)
+            .collect();
+        wanted.sort();
+        for media in &wanted {
+            if let Some(file) = self.files.get_mut(media)
+                && matches!(file.state, State::Cleared | State::Failed(_))
+            {
+                file.state = State::Unjudged;
+            }
+            if !self.asked.contains(media) {
+                self.asked.push(*media);
+            }
+        }
+        wanted.len()
+    }
+
+    /// Proxies were switched to On: every video file is to have one, so
+    /// those cleared on purpose are built again (Auto never rebuilds them:
+    /// a cleared proxy is built again only when asked for, and switching
+    /// to On is asking). Returns how many come back.
+    pub fn switched_on(&mut self) -> usize {
+        let mut back = 0;
+        for file in self.files.values_mut() {
+            if matches!(file.state, State::Cleared) {
+                file.state = State::Unjudged;
+                back += 1;
+            }
+        }
+        back
     }
 
     /// Deletes `media`'s proxy on a worker.
@@ -362,7 +411,10 @@ impl ProxyBuilds {
                     None => {}
                 },
                 State::Deleting(handle) => match handle.try_result() {
-                    Some(Ok(_)) => file.state = State::Cleared,
+                    Some(Ok(_)) => {
+                        file.state = State::Cleared;
+                        self.built += 1;
+                    }
                     Some(Err(err)) => {
                         file.state = State::Cleared;
                         problem = Some(err);
@@ -394,6 +446,7 @@ impl ProxyBuilds {
             Ok(written) => {
                 tracing::info!(file = %file.path.display(), encoder = %written.encoder, frames = written.frames, "proxy built");
                 file.state = State::Ready;
+                self.built += 1;
                 self.asked.retain(|m| *m != media);
                 self.start_trim(jobs, project);
             }
@@ -529,6 +582,15 @@ fn build_was_stopped(state: &State) -> bool {
     matches!(state, State::Deleting(_) | State::Cleared)
 }
 
+/// Whether "Build proxies" asks for a file in `state`: it has no proxy and
+/// none is being made or taken away.
+fn wants_proxy(state: &State) -> bool {
+    matches!(
+        state,
+        State::Unjudged | State::Judged(_) | State::Cleared | State::Failed(_)
+    )
+}
+
 /// Whether a file in `state` is built next: by hand (`asked`) whatever
 /// the mode, else as the mode says.
 fn buildable(state: &State, asked: bool, mode: ProxyMode) -> bool {
@@ -567,6 +629,34 @@ pub fn label(status: &Status) -> Option<String> {
         Status::Deleting => Some("Deleting proxy".into()),
         Status::Cleared => Some("Proxy cleared · build from menu".into()),
     }
+}
+
+/// The colour a proxy's state is written in, the same in the media drawer
+/// and on the Library page.
+pub fn colour(status: &Status, theme: &ui_kit::Theme) -> egui::Color32 {
+    match status {
+        Status::Failed(_) | Status::Building(LoadState::Failed) => ui_kit::status::ERROR,
+        Status::Needed => ui_kit::status::WARNING,
+        Status::Ready => theme.accent,
+        _ => theme.text_secondary,
+    }
+}
+
+/// A proxy's state as a small badge on a Library card or row: its words
+/// (`label`, shortened where long), fill and ink. `None` when there is
+/// nothing to say (not a video, or no proxy needed).
+pub fn badge(status: &Status, theme: &ui_kit::Theme) -> Option<(String, egui::Color32, egui::Color32)> {
+    let text = match status {
+        Status::Cleared => "Proxy cleared".to_owned(),
+        _ => label(status)?,
+    };
+    let fill = colour(status, theme);
+    let ink = if *status == Status::Ready {
+        theme.accent_ink
+    } else {
+        theme.bg
+    };
+    Some((text, fill, ink))
 }
 
 /// What a status means, for the tooltip.
@@ -681,6 +771,17 @@ mod tests {
     }
 
     #[test]
+    fn the_library_shows_the_drawer_s_words_as_badges() {
+        let theme = ui_kit::ThemeName::Ash.theme();
+        let text = |s: Status| badge(&s, &theme).map(|(t, _, _)| t);
+        assert_eq!(text(Status::Ready).as_deref(), Some("Proxy"));
+        assert_eq!(text(Status::Cleared).as_deref(), Some("Proxy cleared"));
+        assert_eq!(text(Status::Needed).as_deref(), Some("Needs proxy"));
+        assert_eq!(text(Status::NotNeeded), None);
+        assert_eq!(colour(&Status::Failed("x".into()), &theme), ui_kit::status::ERROR);
+    }
+
+    #[test]
     fn video_files_only() {
         let mut media = MediaRef {
             id: MediaId(1),
@@ -696,5 +797,38 @@ mod tests {
         assert_eq!(video_stream(&media), None);
         media.kind = MediaKind::Video;
         assert_eq!(video_stream(&media), None, "no picture stream described");
+    }
+
+    #[test]
+    fn build_all_and_switching_to_on_bring_cleared_proxies_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut builds = ProxyBuilds::new(dir.path().to_path_buf(), ProxyMode::On, 1, None);
+        let file = |size: u64, state: State| File {
+            path: PathBuf::from(format!("{size}.mp4")),
+            fingerprint: Fingerprint {
+                size,
+                sample_hash: format!("{size:x}"),
+            },
+            stream: 0,
+            length: 10.0,
+            state,
+        };
+        builds.files.insert(MediaId(1), file(1, State::Cleared));
+        builds.files.insert(MediaId(2), file(2, State::Ready));
+        builds.files.insert(MediaId(3), file(3, State::Cleared));
+        builds.files.insert(MediaId(4), file(4, judged(false)));
+        assert_eq!(builds.switched_on(), 2, "the two cleared ones");
+        assert_eq!(builds.status(MediaId(1)), Status::Needed, "On: built again");
+        assert_eq!(builds.status(MediaId(2)), Status::Ready);
+        builds.files.insert(MediaId(1), file(1, State::Cleared));
+        builds
+            .files
+            .insert(MediaId(5), file(5, State::Failed("disk".into())));
+        let asked = builds.build_all();
+        assert_eq!(asked, 4, "every one without a proxy: 1, 3, 4 and 5");
+        assert_eq!(builds.asked, [MediaId(1), MediaId(3), MediaId(4), MediaId(5)]);
+        assert!(buildable(&builds.files[&MediaId(1)].state, true, ProxyMode::Off));
+        assert_eq!(builds.build_all(), 4, "asking again adds nothing twice");
+        assert_eq!(builds.asked.len(), 4);
     }
 }

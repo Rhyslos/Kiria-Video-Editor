@@ -92,6 +92,40 @@ impl Page {
     }
 }
 
+/// A folder's path written to fit in about `chars` characters: its own
+/// name first (what tells folders apart), then where it is, cut in the
+/// middle when long: "Clients — /home/ana/…/Videos/projects".
+pub fn path_text(path: &std::path::Path, chars: usize) -> String {
+    let Some(name) = path.file_name().map(|n| n.to_string_lossy().into_owned()) else {
+        return path.display().to_string();
+    };
+    let Some(parent) = path
+        .parent()
+        .map(|p| p.display().to_string())
+        .filter(|p| !p.is_empty())
+    else {
+        return name;
+    };
+    let head = format!("{name} — ");
+    let room = chars.saturating_sub(head.chars().count()).max(12);
+    format!("{head}{}", cut_middle(&parent, room))
+}
+
+/// `text` in at most `chars` characters, its middle taken out for "…".
+pub fn cut_middle(text: &str, chars: usize) -> String {
+    let all: Vec<char> = text.chars().collect();
+    if all.len() <= chars {
+        return text.to_owned();
+    }
+    let keep = chars.saturating_sub(1);
+    let front = keep / 2;
+    let back = keep - front;
+    let mut out: String = all[..front].iter().collect();
+    out.push('…');
+    out.extend(&all[all.len() - back..]);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -117,5 +151,22 @@ mod tests {
     fn tabs_sit_over_the_viewport_centre() {
         // The mockups: a 1440 px window puts the tabs at x = 574.
         assert_eq!(viewport_centre_x(1440.0), 574.0);
+    }
+
+    #[test]
+    fn a_path_shows_its_folder_first_and_is_cut_in_the_middle() {
+        let p = std::path::Path::new(
+            "/tmp/claude-0/-home-claude/3db0b6c6-1d35/scratchpad/usetest/t4/projects/Clients",
+        );
+        let text = path_text(p, 46);
+        assert!(text.starts_with("Clients — /tmp/"), "{text}");
+        assert!(text.ends_with("/t4/projects"), "{text}");
+        assert!(text.chars().count() <= 46, "{text}");
+        assert_eq!(
+            path_text(std::path::Path::new("/v/Personal"), 46),
+            "Personal — /v"
+        );
+        assert_eq!(cut_middle("abcdef", 10), "abcdef");
+        assert_eq!(cut_middle("abcdefghij", 5), "ab…ij");
     }
 }

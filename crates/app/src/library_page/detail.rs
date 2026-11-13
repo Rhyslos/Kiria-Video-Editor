@@ -27,6 +27,9 @@ pub fn ui(
     readers: &mut Readers<'_>,
 ) -> Vec<Picked> {
     let project = about.project;
+    if page.chosen.several() {
+        return several(page, ui, theme, about, facts);
+    }
     let Some(media) = page.selected.and_then(|id| project.media.get(&id)) else {
         nothing_selected(ui, theme, about, facts);
         return Vec::new();
@@ -59,6 +62,98 @@ pub fn ui(
             ui.add_space(10.0);
             picked.extend(sections(page, ui, theme, about, facts, media));
         });
+    picked
+}
+
+/// With several files chosen: how many, what they hold, and what can be
+/// done to them all at once (each one undo step).
+fn several(
+    page: &mut LibraryPage,
+    ui: &mut egui::Ui,
+    theme: &Theme,
+    about: &About<'_>,
+    facts: &Facts,
+) -> Vec<Picked> {
+    let project = about.project;
+    let files: Vec<&MediaRef> = page
+        .chosen
+        .files()
+        .iter()
+        .filter_map(|id| project.media.get(id))
+        .collect();
+    let mut picked = Vec::new();
+    ui.label(
+        egui::RichText::new(format!("{} files chosen", files.len()))
+            .family(ui_kit::fonts::semibold())
+            .size(15.0),
+    );
+    let length: f64 = files
+        .iter()
+        .filter(|m| m.kind != MediaKind::Image)
+        .map(|m| m.duration.as_secs_f64())
+        .sum();
+    let used = files.iter().filter(|m| facts.used(m.id)).count();
+    ui.label(
+        egui::RichText::new(format!(
+            "{} in all · {used} in a timeline",
+            ui_kit::time_text::duration(length.round() as u64)
+        ))
+        .size(12.0)
+        .color(theme.muted),
+    );
+    ui.add_space(8.0);
+    let width = ui.available_width();
+    if ui
+        .add(
+            egui::Button::new(egui::RichText::new("Add them to the timeline").color(theme.accent_ink))
+                .fill(theme.accent)
+                .min_size(egui::vec2(width, 28.0)),
+        )
+        .on_hover_text("One after another at the end, each its marked part; one undo step")
+        .clicked()
+    {
+        picked.push(Picked::AddSeveral(page.addings(project, AddAt::End), AddAt::End));
+    }
+    ui.add_space(4.0);
+    ui.horizontal_wrapped(|ui| {
+        ui.menu_button("Labels…", |ui| {
+            let ids = page.chosen.files().to_vec();
+            if let Some(asked) = page.organiser.labels_menu(ui, project, about.global, &ids) {
+                picked.push(asked.into());
+            }
+        });
+        ui.menu_button("Lists…", |ui| {
+            let ids = page.chosen.files().to_vec();
+            if let Some(asked) = page.organiser.lists_menu(ui, project, &ids) {
+                picked.push(asked.into());
+            }
+        });
+        let videos: Vec<project::MediaId> = files
+            .iter()
+            .filter(|m| crate::proxies::video_stream(m).is_some())
+            .map(|m| m.id)
+            .collect();
+        if !videos.is_empty()
+            && ui
+                .button("Build proxies")
+                .on_hover_text("A proxy for each video file that has none, also those cleared from the cache")
+                .clicked()
+        {
+            picked.push(Picked::BuildProxies(videos));
+        }
+        if ui
+            .button("Remove from project…")
+            .on_hover_text("Files a timeline uses stay. Nothing is deleted from disk; undo brings them back.")
+            .clicked()
+        {
+            picked.push(Picked::Remove(page.chosen.files().to_vec()));
+        }
+    });
+    ui_kit::inspector::note(
+        ui,
+        theme,
+        "Ctrl-click adds or takes away a file, Shift-click a run of them; a plain click chooses one again. Right-click a chosen file for the same.",
+    );
     picked
 }
 
@@ -425,7 +520,7 @@ fn sections(
                 }
             }
             ui.menu_button("Labels…", |ui| {
-                if let Some(asked) = page.organiser.labels_menu(ui, project, about.global, media.id) {
+                if let Some(asked) = page.organiser.labels_menu(ui, project, about.global, &[media.id]) {
                     picked.push(asked.into());
                 }
             });
@@ -442,7 +537,7 @@ fn sections(
             .join(", ")
     };
     ui_kit::inspector::section(ui, theme, "Lists", &summary, false, |ui| {
-        if let Some(asked) = page.organiser.lists_menu(ui, project, media.id) {
+        if let Some(asked) = page.organiser.lists_menu(ui, project, &[media.id]) {
             picked.push(asked.into());
         }
     });

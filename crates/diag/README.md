@@ -40,7 +40,7 @@ std::fs::read(&path).or_explain(|| {
 | `src/paths.rs` | `AppDirs`: the app's data, logs and crash-reports folders, and its cache folder (proxies; under `~/.cache` on Linux, `cache` in the data folder on Windows) |
 | `src/logging.rs` | Daily log files, 7 days kept; warnings also go to the terminal. `RUST_LOG` changes the level |
 | `src/crash.rs` | Panic hook that writes `crash-<time>.txt`: message, place, version, system, graphics card, last 200 log lines, backtrace |
-| `src/session.rs` | A marker file that reveals a run which did not close cleanly (crash, forced quit, power cut). It names the process and the open project (`note_open_project`), so the launcher can read it (`unfinished_run`), offer recovery and clear it (`forget_unfinished_run`) |
+| `src/session.rs` | A marker file per running process (`sessions/<process id>.running` in the data folder) that reveals a run which did not close cleanly (crash, forced quit, power cut), with a lock file beside it that the run holds while it lasts (the system lets go of it however the process ends): at start, a marker whose lock is free is a crash, reported once; markers of runs still going are left alone, so several editors can run at once. It names the process and the open project (`note_open_project`), so the launcher can read them (`unfinished_runs`), offer recovery and clear those of crashed runs (`forget_unfinished_runs`). The one marker older versions wrote (`session.running`) is still read |
 | `tests/logging_and_crash.rs` | Logging and a real panic in one test binary, because both are process-wide |
 
 ## Where files go
@@ -53,5 +53,4 @@ std::fs::read(&path).or_explain(|| {
 
 ## Known limits
 
-- Two editor windows at once would each think the other crashed (one shared marker file). Only one editor runs at a time until the launcher (Phase 2) handles it.
 - The graphics line in crash reports says "not detected yet" until the window is open: the `graphics` crate then calls `crash::set_gpu_info` with the graphics system and card in use.

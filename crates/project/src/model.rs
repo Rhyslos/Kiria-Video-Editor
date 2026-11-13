@@ -84,6 +84,35 @@ impl SequenceSettings {
         }
     }
 
+    /// What an automatic timeline takes from several files imported at
+    /// once: the picture size and frame rate most of the videos among them
+    /// share, as [`SequenceSettings::matching`] the first of those. Pictures
+    /// and videos shorter than a second (test patterns, stingers) don't
+    /// count unless they are all there is; ties go to the one met first.
+    /// `None` without a video.
+    pub fn most_common(files: &[&MediaRef]) -> Option<SequenceSettings> {
+        let videos: Vec<(&MediaRef, &VideoStream)> = files
+            .iter()
+            .filter(|m| m.kind == MediaKind::Video)
+            .filter_map(|m| m.info.video.as_ref().map(|v| (*m, v)))
+            .collect();
+        let long: Vec<(&MediaRef, &VideoStream)> = videos
+            .iter()
+            .copied()
+            .filter(|(m, _)| m.duration >= crate::time::Time::seconds(1))
+            .collect();
+        let counted = if long.is_empty() { videos } else { long };
+        let key = |v: &VideoStream| (v.display_size(), v.frame_rate);
+        let mut best: Option<(usize, &MediaRef, &VideoStream)> = None;
+        for (m, v) in &counted {
+            let count = counted.iter().filter(|(_, o)| key(o) == key(v)).count();
+            if best.is_none_or(|(most, _, _)| count > most) {
+                best = Some((count, m, v));
+            }
+        }
+        best.map(|(_, m, v)| SequenceSettings::matching(v, &m.info.audio))
+    }
+
     /// A short description such as "1080p 60" or "1080×1920 60" (portrait).
     pub fn short_label(&self) -> String {
         let fps = self.frame_rate.nominal_fps();

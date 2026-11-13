@@ -92,9 +92,11 @@ impl PackageWindow {
         let (tx, rx) = channel();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
-            let picked = rfd::FileDialog::new()
-                .set_title("Where should the package go?")
-                .pick_folder();
+            let picked = ui_kit::file_dialog::run(&ctx, || {
+                rfd::FileDialog::new()
+                    .set_title("Where should the package go?")
+                    .pick_folder()
+            });
             let _ = tx.send(picked);
             ctx.request_repaint();
         });

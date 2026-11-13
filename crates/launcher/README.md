@@ -29,19 +29,19 @@ A project is its file plus the files kept beside it: the autosave file and its s
 - **Delete project…** first shows what would go: the project file and each file that belongs to it, with the folder they are in. **Move to recycle bin** then moves them there (the `trash` crate: the recycle bin on Windows, the trash on Linux), so a mistake can be undone by restoring them. The project leaves the list. If nothing of the project is left on disk, it is only taken off the list.
 - **Recordings are never touched**: they are not on the list, and a file the project uses as media is left alone even if it is named like one of the project's own files. A card that stands for a file without the project extension can't be deleted, only removed from the list.
 - A file that is already gone is fine. If the recycle bin refuses a file, deleting stops there and the error says which file, how many are already in the bin, and what to do; the project file goes last, so the project is still listed and deleting can be tried again.
-- A project that is open in the editor right now is refused (rename, move and delete alike), going by the editor's session marker and whether that editor is still running.
+- A project that is open in the editor right now is refused (rename, move and delete alike), going by the editors' session markers (one per editor process) and whether that editor is still running.
 - With `--demo`, deleted samples go to a `Deleted samples` folder in the temporary folder, never to the recycle bin.
 
 `--demo 14 --delete-dialog` opens the question for a sample project, for screenshots.
 
 ## Crash recovery
 
-If the editor didn't close properly last time (its session marker is still there and no editor is running), the launcher says so at start-up:
+If an editor didn't close properly last time (its session marker is still there and its process is gone; markers of editors still running, such as one open on another project, don't count), the launcher says so at start-up:
 
 - with unsaved work in the project that was open: **Kiria closed unexpectedly** with **Recover and open**, **Open last save** (the work is kept beside the project as `<file>.journal.discarded-<YYYYMMDD-HHMMSS>`, a new file each time, and the editor says so when it opens) and **Not now**;
 - with nothing unsaved: a line under the header saying nothing was lost.
 
-The marker is then cleared so the editor doesn't mention it again. Cards of projects with unsaved crash work say so, and opening one asks the same question. `--demo 8 --demo-crash` shows the window with sample projects.
+The markers of crashed runs are then cleared so the editor doesn't mention it again. Cards of projects with unsaved crash work say so, and opening one asks the same question. `--demo 8 --demo-crash` shows the window with sample projects.
 
 ## Graphics
 
@@ -87,7 +87,7 @@ Preferences are read from `<data folder>/updates.ron` (defaults: automatic, Stab
 | `src/thumbnails.rs` | The pictures on the cards: read on a worker (four at a time) when a card first shows, and again when its project changes |
 | `src/work.rs` | `Task`: run work on a thread, pick the result up on a later frame |
 | `src/demo.rs` | Sample projects in a temporary folder for screenshots and tests; the first has every kind of file a project keeps beside it |
-| `src/recovery.rs` | Unsaved work left by a crash: reads the editor's session marker and project journals. Also whether a project is open in a running editor |
+| `src/recovery.rs` | Unsaved work left by a crash: reads the editors' session markers and project journals. Also whether a project is open in a running editor |
 | `src/prefs.rs` | `LauncherPrefs` in `launcher.ron`: the folder new projects are saved in |
 | `src/run_mode.rs` | Command-line options |
 | `src/drill.rs` | `--update-step <report file>`: one start's worth of updating without a window (install what is waiting, look for a newer version and download it, start the editor and wait for it to work), then a `key=value` report. The release workflow's update drill is made of these |

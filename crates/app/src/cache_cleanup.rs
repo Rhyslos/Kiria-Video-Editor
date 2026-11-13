@@ -393,12 +393,12 @@ pub fn question_words(scope: Scope, measured: &Measured) -> (&'static str, Strin
     match scope {
         Scope::Project => (
             "Clear the cache for this project?",
-            "Deletes the proxies of this project's recordings. Recordings and project files are not touched. Cleared proxies are not built again by themselves; \"Build proxy now\" in the media drawer makes one.".to_owned(),
+            "Deletes the proxies of this project's recordings. Recordings and project files are not touched. Cleared proxies are not built again by themselves (also under Auto): \"Build proxy now\" or \"Build proxies\" (a file's right-click menu, on the Library page or in the media drawer) makes them, and so does switching Proxies to On.".to_owned(),
         ),
         Scope::All => (
             "Clear all caches?",
             format!(
-                "Deletes {}: {}, for every project. Recordings and project files are not touched. Cleared proxies are not built again by themselves; \"Build proxy now\" in the media drawer makes one.",
+                "Deletes {}: {}, for every project. Recordings and project files are not touched. Cleared proxies are not built again by themselves (also under Auto): \"Build proxy now\" or \"Build proxies\" (a file's right-click menu, on the Library page or in the media drawer) makes them, and so does switching Proxies to On.",
                 size_text(measured.all.bytes),
                 count_text(measured.all.files)
             ),
@@ -413,7 +413,7 @@ fn cleared_says(scope: Scope, cleared: Usage) -> String {
         Scope::All => "the cache",
     };
     format!(
-        "Cleared {} from {whose} ({}). They are not built again by themselves; \"Build proxy now\" makes one.",
+        "Cleared {} from {whose} ({}). They are not built again by themselves: \"Build proxies\" or switching Proxies to On makes them again.",
         size_text(cleared.bytes),
         count_text(cleared.files)
     )

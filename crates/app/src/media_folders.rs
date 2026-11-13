@@ -2,7 +2,7 @@
 //! and `--watch-folder` for checks), watched while a project is open
 //! (`library::Watcher`, on its own thread). Files changed since the project
 //! was last saved, finished (no longer growing) and not in the project yet
-//! show in the media drawer under "New in your folders"; nothing is added
+//! show under "New in your folders" on the Library page and in the media drawer; nothing is added
 //! by itself. The status line says when one appears.
 
 use library::Found;
@@ -105,10 +105,12 @@ impl MediaFolders {
         let first = fresh.first()?;
         let text = match fresh.len() {
             1 => format!(
-                "{} is new in your media folders: it is in the media drawer, ready to add",
+                "{} is new in your media folders: it is under New in your folders (Library page, media drawer), ready to add",
                 library::file_name(&first.path)
             ),
-            n => format!("{n} new files in your media folders: they are in the media drawer, ready to add"),
+            n => format!(
+                "{n} new files in your media folders: they are under New in your folders (Library page, media drawer), ready to add"
+            ),
         };
         self.announced.extend(fresh.iter().map(|f| f.path.clone()));
         Some(text)
@@ -159,13 +161,17 @@ mod tests {
         let one = [found("/rec/a.mkv")];
         assert_eq!(
             folders.announce(&one).as_deref(),
-            Some("a.mkv is new in your media folders: it is in the media drawer, ready to add")
+            Some(
+                "a.mkv is new in your media folders: it is under New in your folders (Library page, media drawer), ready to add"
+            )
         );
         assert_eq!(folders.announce(&one), None);
         let more = [found("/rec/a.mkv"), found("/rec/b.mkv"), found("/rec/c.mkv")];
         assert_eq!(
             folders.announce(&more).as_deref(),
-            Some("2 new files in your media folders: they are in the media drawer, ready to add")
+            Some(
+                "2 new files in your media folders: they are under New in your folders (Library page, media drawer), ready to add"
+            )
         );
     }
 

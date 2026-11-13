@@ -80,7 +80,7 @@ pub fn row(
     painter.rect_filled(
         rect,
         6.0,
-        if selected {
+        if page.is_chosen(id) {
             theme.active
         } else if response.hovered() {
             theme.line
@@ -139,6 +139,7 @@ pub fn row(
     }
     if play.clicked() {
         page.selected = Some(id);
+        page.chosen.only(id);
         let marks = page.marks(id);
         page.player.show(Some(media), marks);
         page.player.play_pause(marks);

@@ -1425,7 +1425,7 @@ fn ask_folder(ctx: &egui::Context, now: &Path) -> Receiver<Option<PathBuf>> {
         if now.is_dir() {
             dialog = dialog.set_directory(now);
         }
-        let _ = tell.send(dialog.pick_folder());
+        let _ = tell.send(ui_kit::file_dialog::run(&ctx, || dialog.pick_folder()));
         ctx.request_repaint();
     });
     chosen

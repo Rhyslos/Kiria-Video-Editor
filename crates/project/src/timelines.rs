@@ -35,6 +35,16 @@ impl Project {
             .unwrap_or_else(|| base.to_owned())
     }
 
+    /// The name a new, empty timeline gets: "Timeline" and the number it
+    /// will be in the project ("Timeline 2" beside the first), or the next
+    /// number free when that is taken. It can be renamed at once.
+    pub fn new_sequence_name(&self) -> String {
+        (self.sequences.len() + 1..)
+            .map(|n| format!("Timeline {n}"))
+            .find(|name| !self.has_sequence_named(name))
+            .unwrap_or_else(|| "Timeline".to_owned())
+    }
+
     fn has_sequence_named(&self, name: &str) -> bool {
         self.sequences.iter().any(|s| s.name.eq_ignore_ascii_case(name))
     }

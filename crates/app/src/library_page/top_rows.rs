@@ -8,18 +8,16 @@
 use super::arrange::Facts;
 use super::cards::{LARGEST, SMALLEST};
 use super::{About, GroupBy, LibraryPage, Picked, Tab, View};
-use crate::organise::name_field;
 use library::{Sort, Type};
 use project::{Command, MediaListId};
 use ui_kit::Theme;
 use ui_kit::tab_strip::{StripTab, chip, tab_strip};
 
-/// What is being typed in the rows: a new list's name (and the list to
-/// open once it exists), and the new name of the list being renamed.
+/// The list to open once it exists (a new list's name is asked in a
+/// dialog, `crate::organise`), and the new name of the list being renamed.
 #[derive(Debug, Default)]
 pub struct Drafts {
-    new_list: String,
-    open_when_made: Option<String>,
+    pub open_when_made: Option<String>,
     renaming: Option<(MediaListId, String)>,
 }
 
@@ -76,29 +74,13 @@ fn tabs(
         })
         .collect();
     let mut picked = Vec::new();
-    let drafts = &mut page.top;
     let response = tab_strip(ui, theme, "library-tabs", &strip, |ui| {
-        let mut made = None;
-        ui.menu_button("+ New list", |ui| {
-            ui.label(
-                egui::RichText::new("A list of files picked by hand, in any order")
-                    .size(12.0)
-                    .color(theme.muted),
-            );
-            if let Some(name) = name_field(ui, &mut drafts.new_list, "List name") {
-                made = Some(name);
-                drafts.new_list.clear();
-                ui.close();
-            }
-        });
-        made
+        ui.button("+ New list")
+            .on_hover_text("A list of files picked by hand, in any order")
+            .clicked()
     });
-    if let Some(name) = response.trailing {
-        page.top.open_when_made = Some(name.clone());
-        picked.push(Picked::Edit(Box::new(Command::AddMediaList {
-            name,
-            media: Vec::new(),
-        })));
+    if response.trailing {
+        page.organiser.ask_list(Vec::new());
     }
     for ((tab, _, _), tab_response) in shown.iter().zip(&response.tabs) {
         if tab_response.clicked() {

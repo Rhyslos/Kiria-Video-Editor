@@ -187,6 +187,15 @@ pub enum Command {
         sequence: SequenceId,
         media: MediaRef,
     },
+    /// [`Command::Import`] of the first of several files imported at once:
+    /// an automatic timeline takes `settings` (worked out from all of them,
+    /// [`SequenceSettings::most_common`]) rather than this file's own. A
+    /// timeline whose settings are fixed keeps them, as for `Import`.
+    ImportSettled {
+        sequence: SequenceId,
+        media: MediaRef,
+        settings: SequenceSettings,
+    },
     /// Places a file of the project at `at` with its picture on the video
     /// track `track` (the first one when `None`); its sound goes on the
     /// audio tracks as for [`Command::Import`]. With `insert` everything
@@ -643,6 +652,19 @@ impl Command {
                 }
             }
             Command::Import { sequence, media } => import(&mut p, *sequence, media)?,
+            Command::ImportSettled {
+                sequence,
+                media,
+                settings,
+            } => {
+                crate::timelines::check_settings(settings)?;
+                let seq = sequence_mut(&mut p, *sequence)?;
+                if seq.automatic {
+                    seq.settings = *settings;
+                    seq.automatic = false;
+                }
+                import(&mut p, *sequence, media)?
+            }
             Command::AddMediaLabel { label, media } => crate::library::add_label(&mut p, label, media)?,
             Command::EditMediaLabel { label, name, color } => {
                 crate::library::edit_label(&mut p, *label, name, *color)?
@@ -1836,6 +1858,68 @@ mod tests {
         .apply(&p)
         .unwrap_err();
         assert!(err.what().contains("can't be placed"));
+    }
+
+    #[test]
+    fn several_files_imported_at_once_settle_on_what_most_share() {
+        let p = Project::new_automatic("Test");
+        let seq = p.active_sequence;
+        let sized = |w: u32, h: u32, rate: Rate, secs: i64| {
+            let mut m = recording(&["Audio 1"], secs);
+            if let Some(v) = m.info.video.as_mut() {
+                (v.width, v.height, v.rotation, v.frame_rate) = (w, h, 0, rate);
+            }
+            m
+        };
+        let mut still = sized(4000, 3000, Rate::FPS_60, 5);
+        still.kind = MediaKind::Image;
+        // A tiny test pattern first, then a picture, then the real clips.
+        let fixture = {
+            let mut m = sized(96, 32, Rate::NTSC_30, 1);
+            m.duration = Time::from_ratio(1, 10).unwrap();
+            m
+        };
+        let files = [
+            fixture.clone(),
+            still,
+            sized(160, 90, Rate::new(25, 1).unwrap(), 4),
+            sized(1920, 1080, Rate::FPS_60, 30),
+            sized(160, 90, Rate::new(25, 1).unwrap(), 2),
+        ];
+        let refs: Vec<&MediaRef> = files.iter().collect();
+        let chosen = SequenceSettings::most_common(&refs).unwrap();
+        assert_eq!((chosen.width, chosen.height), (160, 90));
+        assert_eq!(chosen.frame_rate, Rate::new(25, 1).unwrap());
+        assert_eq!(
+            SequenceSettings::most_common(&[&fixture]).map(|s| s.width),
+            Some(96),
+            "a short video alone still counts"
+        );
+        assert_eq!(
+            SequenceSettings::most_common(&[&files[1]]),
+            None,
+            "a picture is no video"
+        );
+
+        let p = Command::ImportSettled {
+            sequence: seq,
+            media: fixture,
+            settings: chosen,
+        }
+        .apply(&p)
+        .unwrap();
+        let s = p.active().unwrap();
+        assert!(!s.automatic);
+        assert_eq!(s.settings, chosen, "in one step with the first file");
+        assert_eq!(s.video_tracks[0].clips.len(), 1);
+        let again = Command::ImportSettled {
+            sequence: seq,
+            media: sized(1920, 1080, Rate::FPS_60, 3),
+            settings: SequenceSettings::GAME_CLIP,
+        }
+        .apply(&p)
+        .unwrap();
+        assert_eq!(again.active().unwrap().settings, chosen, "fixed settings stay");
     }
 
     #[test]

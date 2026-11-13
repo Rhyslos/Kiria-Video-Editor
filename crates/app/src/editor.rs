@@ -71,6 +71,8 @@ pub struct Editor {
     thumbnail_due: Thumbnail,
     importer: Importer,
     import_requested: bool,
+    /// What the timeline's settings settled on during the import under way.
+    import_settled: Option<String>,
     viewer: Viewer,
     /// Split view's Source and the viewer's own window (the Display menu).
     display: crate::display::ViewerDisplay,
@@ -188,6 +190,11 @@ pub struct Editor {
     show_diagnostics: bool,
     show_search: bool,
     search_text: String,
+    /// The Settings section search asked for: marked while the window is
+    /// open, and scrolled to over its first few frames (its size settles).
+    settings_found: Option<(crate::settings_sections::Section, u8)>,
+    /// The proxy changes Settings › Cache was last measured at.
+    cache_seen: u64,
     status: String,
     playing: bool,
     /// Playback loops inside the region (L).
@@ -352,6 +359,12 @@ impl Editor {
             }
         }
         let mut importer = Importer::default();
+        importer.set_automatic(
+            document
+                .as_ref()
+                .and_then(|d| d.project().active())
+                .is_some_and(|s| s.automatic),
+        );
         if !imports.is_empty() {
             importer.read(&jobs, &cc.egui_ctx, imports);
         }
@@ -398,6 +411,7 @@ impl Editor {
             thumbnail_due: Thumbnail::IfMissing,
             importer,
             import_requested: false,
+            import_settled: None,
             viewer,
             display,
             playback: None,
@@ -465,6 +479,8 @@ impl Editor {
             show_diagnostics: false,
             show_search: false,
             search_text: String::new(),
+            settings_found: None,
+            cache_seen: 0,
             status: String::new(),
             playing: false,
             looping: false,
@@ -546,6 +562,26 @@ impl Editor {
                     result
                 }
             }
+            Action::SelectAll => {
+                if let Some(seq) = self.document.as_ref().and_then(|d| d.project().active()) {
+                    self.selected = timeline_panel::all_clips(seq);
+                    let count = self.selected.len();
+                    let delete = self.shortcuts.keys_or_name(Action::Delete);
+                    self.status = match count {
+                        0 => "Nothing on this timeline to select".into(),
+                        n => format!("{n} clips selected: {delete} deletes them all as one step"),
+                    };
+                }
+                Ok(())
+            }
+            Action::BuildProxies => self.with_document(|_| Ok(())).map(|()| {
+                let count = self.proxies.build_all();
+                self.status = match count {
+                    0 => "Every video file of the project has its proxy, or one being built".into(),
+                    1 => "Building 1 proxy in the background".into(),
+                    n => format!("Building {n} proxies in the background, one at a time"),
+                };
+            }),
             Action::ClearSelection => {
                 if self.full_screen {
                     self.set_full_screen(false);
@@ -742,6 +778,10 @@ impl Editor {
                 Ok(())
             }
             Action::Search => {
+                // A fresh search each time it opens.
+                if !self.show_search {
+                    self.search_text.clear();
+                }
                 self.show_search = true;
                 Ok(())
             }
@@ -1416,8 +1456,18 @@ impl Editor {
 
     /// Starts imports asked for this frame and adds finished ones to the project.
     fn imports(&mut self, ctx: &egui::Context) {
+        // Several files going onto an automatic timeline wait for each
+        // other, so its settings come from what most of them share.
+        let automatic = self
+            .document
+            .as_ref()
+            .and_then(|d| d.project().active())
+            .is_some_and(|s| s.automatic);
+        self.importer.set_automatic(automatic);
         if std::mem::take(&mut self.import_requested) {
-            self.importer.choose_files(ctx);
+            // The Library page fills the project's media; the Edit page's
+            // import also puts each file at the end of the timeline.
+            self.importer.choose_files(ctx, self.page != Page::Library);
         }
         let dropped: Vec<PathBuf> = ctx.input(|i| {
             i.raw
@@ -1428,6 +1478,7 @@ impl Editor {
         });
         if !dropped.is_empty() {
             match self.with_document(|_| Ok(())) {
+                Ok(()) if self.page == Page::Library => self.importer.add(&self.jobs, ctx, dropped),
                 Ok(()) => self.importer.read(&self.jobs, ctx, dropped),
                 Err(err) => self.errors.push(&err),
             }
@@ -1444,21 +1495,35 @@ impl Editor {
                 ctx.request_repaint();
             }
             let result = match read {
-                Read::Ready { media, place: false } => {
+                Read::Ready {
+                    media, place: false, ..
+                } => {
                     let line = import::summary(&media);
                     let end_missing = media::end_missing_words(&media)
                         .map_or_else(String::new, |words| format!(". {words}"));
                     self.with_document(|d| d.apply(Command::AddMedia { media }))
                         .map(|()| self.status = format!("Added {line} to the project's media{end_missing}"))
                 }
-                Read::Ready { media, place: true } => {
+                Read::Ready {
+                    media,
+                    place: true,
+                    settle,
+                } => {
                     let line = import::summary(&media);
                     let end_missing = media::end_missing_words(&media);
                     let mut settled = None;
                     self.with_document(|d| {
                         let sequence = d.project().active_sequence;
                         let was_automatic = d.project().active().is_some_and(|s| s.automatic);
-                        d.apply(Command::Import { sequence, media })?;
+                        d.apply(match settle {
+                            // Several files at once: what most of them share.
+                            Some(settings) if was_automatic => Command::ImportSettled {
+                                sequence,
+                                media,
+                                settings,
+                            },
+                            _ => Command::Import { sequence, media },
+                        })?;
                         if was_automatic && let Some(s) = d.project().active().filter(|s| !s.automatic) {
                             settled = Some(s.settings);
                         }
@@ -1467,14 +1532,24 @@ impl Editor {
                     .map(|()| {
                         // Show the whole timeline again with the new file in it.
                         self.fitted = false;
-                        self.status = match settled {
-                            Some(s) => format!(
-                                "Imported {line}. The timeline is now {} at {} kHz to match it (Timeline settings to change).",
+                        let matching = if settle.is_some() {
+                            "what most of the videos imported with it share"
+                        } else {
+                            "it"
+                        };
+                        let settled = settled.map(|s| {
+                            format!(
+                                "The timeline is now {} at {} kHz to match {matching} (Timeline settings to change).",
                                 import::settings_text(&s),
                                 s.sample_rate as f32 / 1000.0
-                            ),
+                            )
+                        });
+                        self.status = match &settled {
+                            Some(said) => format!("Imported {line}. {said}"),
                             None => format!("Imported {line}"),
                         };
+                        // Said again when the batch is summed up.
+                        self.import_settled = settled.or(self.import_settled.take());
                         if let Some(words) = end_missing {
                             self.status = format!("{}. {words}", self.status.trim_end_matches('.'));
                         }
@@ -1507,6 +1582,9 @@ impl Editor {
             // one message for those refused.
             if let Some(batch) = batch.filter(|b| b.files > 1) {
                 self.status = format!("Imported {} of {} files", batch.imported(), batch.files);
+                if let Some(said) = self.import_settled.take() {
+                    self.status = format!("{}. {said}", self.status);
+                }
                 let whats_there = (!batch.cut_short.is_empty())
                     .then(|| self.importer.set_aside(batch.cut_short.clone(), batch.place));
                 if let Some(err) = batch.summary(whats_there) {
@@ -2042,10 +2120,15 @@ impl Editor {
         let rect = ui_kit::drawer::drawer_rect(page);
         let dragging_out = egui::DragAndDrop::has_payload_of_type::<ui_kit::DraggedMedia>(&ctx);
         let keep = ui_kit::drawer::keep_while_dragging(rect, tab);
-        if !ui_kit::drawer::shown(self.drawer.open, dragging_out, ctx.pointer_latest_pos(), keep) {
+        let named = self.document.as_ref().and_then(|d| {
+            self.drawer
+                .dialog(&ctx, &self.theme, d.project(), &self.global_labels.labels)
+        });
+        let shown = ui_kit::drawer::shown(self.drawer.open, dragging_out, ctx.pointer_latest_pos(), keep);
+        if !shown && named.is_none() {
             return;
         }
-        let mut picked = None;
+        let mut picked = named;
         let answer = self.library.answer(crate::media_drawer::ASKER);
         let found = answer.as_ref().map(|a| a.media.as_slice());
         let new_files = match &self.document {
@@ -2053,7 +2136,7 @@ impl Editor {
             None => Vec::new(),
         };
         let importer = &self.importer;
-        let new_files = crate::media_drawer::NewFiles {
+        let new_files = crate::new_files::NewFiles {
             files: &new_files,
             checking: &|path| importer.is_reading(path),
         };
@@ -2063,7 +2146,9 @@ impl Editor {
             status: &|media| proxies.status(media),
             mode: self.settings.proxies,
         };
-        if let Some(document) = &self.document {
+        if let Some(document) = &self.document
+            && shown
+        {
             picked = ui_kit::drawer::overlay(&ctx, theme, egui::Id::unique("media-drawer"), rect, |ui| {
                 let about = crate::media_drawer::About {
                     found,
@@ -2074,7 +2159,8 @@ impl Editor {
                 };
                 drawer.ui(ui, theme, document.project(), &about)
             })
-            .inner;
+            .inner
+            .or(picked);
         }
         use crate::media_drawer::Picked;
         let picked = match picked {
@@ -2397,7 +2483,10 @@ impl Editor {
         if let Some(page) = clicks.page {
             self.page = page;
         }
-        self.show_search |= clicks.search;
+        if clicks.search && !self.show_search {
+            self.search_text.clear();
+            self.show_search = true;
+        }
         self.show_settings |= clicks.settings || clicks.usage;
     }
 
@@ -2586,9 +2675,8 @@ impl Editor {
                     .max_rect(viewer_rect)
                     .layout(egui::Layout::top_down(egui::Align::Min)),
             );
-            let ui = &mut left;
-            ui.add_space(40.0);
-            ui.vertical_centered(|ui| {
+            left.add_space(40.0);
+            left.vertical_centered(|ui| {
                 ui.label(egui::RichText::new("Nothing here yet").family(ui_kit::fonts::semibold()).size(18.0));
                 ui.label(
                     egui::RichText::new(format!(
@@ -2601,6 +2689,16 @@ impl Editor {
                     ))
                     .color(self.theme.muted),
                 );
+            });
+            // The page's top part is taken, so the tabs (and the status
+            // line) come under it, clear of the drawer's tab: an empty
+            // timeline still shows the others, to go back to.
+            ui.allocate_rect(top, egui::Sense::hover());
+            ui.add_space(8.0);
+            let new_tip = self.shortcuts.tip(Action::NewTimeline);
+            let shown_tabs = timelines::tabs(p);
+            ui.horizontal(|ui| {
+                tabs_events = self.tabs.show(ui, &self.theme, &shown_tabs, &new_tip);
             });
         } else {
             let quality_before = self.settings.preview_quality;
@@ -2903,13 +3001,19 @@ impl Editor {
     }
 
     fn settings_window(&mut self, ctx: &egui::Context) {
-        if self.show_settings && !self.settings_were_open {
+        // Measured when Settings opens, and again while it is open as
+        // proxies are built or deleted, so the Cache line stays true.
+        let changes = self.proxies.changes();
+        if self.show_settings && (!self.settings_were_open || changes != self.cache_seen) {
+            self.cache_seen = changes;
             self.measure_cache();
         }
         self.settings_were_open = self.show_settings;
         let has_project = self.document.is_some();
         let mut open = self.show_settings;
         let before = self.settings.clone();
+        let mut found = self.settings_found.take();
+        use crate::settings_sections::Section;
         // Below the top bar at the right, under the gear that opens it; held
         // to the screen, with what doesn't fit scrolling inside.
         let area = ui_kit::layout::window_area(ctx.content_rect());
@@ -2924,7 +3028,7 @@ impl Editor {
             .constrain_to(area)
             .vscroll(true)
             .show(ctx, |ui| {
-                ui.heading("Look");
+                settings_heading(ui, &self.theme, Section::Look, &mut found);
                 egui::ComboBox::from_label("Theme")
                     .selected_text(self.settings.theme.label())
                     .show_ui(ui, |ui| {
@@ -2933,15 +3037,15 @@ impl Editor {
                         }
                     });
                 ui.add_space(8.0);
-                ui.heading("Editing");
+                settings_heading(ui, &self.theme, Section::Editing, &mut found);
                 ui.checkbox(&mut self.settings.edit_at_playhead, "Edit at the playhead")
                     .on_hover_text("Merge the red edit needle into the playhead.");
                 click_moves_row(ui, &mut self.settings.click_moves, self.settings.edit_at_playhead);
                 ui.add_space(8.0);
-                ui.heading("Audio");
+                settings_heading(ui, &self.theme, Section::Audio, &mut found);
                 ui_kit::master::target_row(ui, &mut self.settings.loudness_target);
                 ui.add_space(8.0);
-                ui.heading("Resources");
+                settings_heading(ui, &self.theme, Section::Resources, &mut found);
                 let machine = jobs::Machine::detect();
                 limit_row(
                     ui,
@@ -2977,7 +3081,7 @@ impl Editor {
                         .color(self.theme.muted),
                 );
                 ui.add_space(8.0);
-                ui.heading("Proxies");
+                settings_heading(ui, &self.theme, Section::Proxies, &mut found);
                 ui.horizontal(|ui| {
                     for mode in cache::proxy::ProxyMode::ALL {
                         ui.radio_value(&mut self.settings.proxies, mode, mode.label())
@@ -2995,7 +3099,7 @@ impl Editor {
                 });
                 ui.label(egui::RichText::new(self.settings.jump_picture.explained()).color(self.theme.muted));
                 ui.add_space(8.0);
-                ui.heading("Library");
+                settings_heading(ui, &self.theme, Section::Library, &mut found);
                 ui.horizontal(|ui| {
                     for choice in crate::settings::LibraryMarks::ALL {
                         ui.radio_value(&mut self.settings.library_marks, choice, choice.label())
@@ -3006,10 +3110,10 @@ impl Editor {
                     egui::RichText::new(self.settings.library_marks.explained()).color(self.theme.muted),
                 );
                 ui.add_space(8.0);
-                ui.heading("Cache");
+                settings_heading(ui, &self.theme, Section::Cache, &mut found);
                 self.cache_cleanup.rows(ui, &self.theme, has_project);
                 ui.add_space(8.0);
-                ui.heading("Graphics");
+                settings_heading(ui, &self.theme, Section::Graphics, &mut found);
                 if let Some(err) = self.graphics.settings_row(ui, &self.theme) {
                     self.errors.push(&err);
                 }
@@ -3027,6 +3131,7 @@ impl Editor {
                 });
             });
         self.show_settings = open;
+        self.settings_found = found.filter(|_| open);
         let project_proxies = self.project_proxies();
         let shelf = self.proxies.shelf();
         if self
@@ -3041,6 +3146,17 @@ impl Editor {
                 self.theme.apply(ctx);
             }
             self.proxies.set_mode(self.settings.proxies);
+            // On asks for a proxy for every video file: those cleared on
+            // purpose are built again (Auto leaves them cleared).
+            if self.settings.proxies == cache::proxy::ProxyMode::On && before.proxies != self.settings.proxies
+            {
+                let back = self.proxies.switched_on();
+                if back > 0 {
+                    self.status = format!(
+                        "Proxies On: building the {back} cleared from the cache again, one at a time"
+                    );
+                }
+            }
             if self.settings.library_marks != before.library_marks {
                 self.library_marks_moved();
             }
@@ -3070,7 +3186,9 @@ impl Editor {
 
     fn search_window(&mut self, ctx: &egui::Context) {
         use crate::search::Hit;
-        let mut open = self.show_search;
+        if !self.show_search {
+            return;
+        }
         let project = self.document.as_ref().map(Document::project);
         let seq = project.and_then(|p| p.active());
         let fps = seq.map_or(60.0, |s| s.settings.frame_rate.as_f64());
@@ -3088,10 +3206,21 @@ impl Editor {
                     .map(|m| (m.id, library::file_name(&m.path)))
                     .collect()
             });
+        let open_timeline = seq.map(|s| s.id);
+        let timelines: Vec<(project::SequenceId, String)> = project
+            .map(|p| {
+                p.sequences
+                    .iter()
+                    .filter(|s| Some(s.id) != open_timeline)
+                    .map(|s| (s.id, s.name.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
         let hits = crate::search::results(
             &self.search_text,
             &self.shortcuts,
             seq,
+            &timelines,
             |clip| {
                 project
                     .and_then(|p| p.media.get(&clip.media))
@@ -3100,40 +3229,13 @@ impl Editor {
             },
             files.as_deref(),
         );
-        let mut chosen = None;
-        egui::Window::new("Search")
-            .open(&mut open)
-            .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 80.0))
-            .collapsible(false)
-            .resizable(false)
-            .show(ctx, |ui| {
-                let field = ui.text_edit_singleline(&mut self.search_text);
-                field.request_focus();
-                if field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    chosen = hits.first().cloned();
-                }
-                ui.label(
-                    egui::RichText::new(
-                        "Commands, settings, timeline labels, clips and files (by name, label or note). Enter picks the first.",
-                    )
-                    .color(self.theme.muted),
-                );
-                for hit in hits.iter().take(crate::search::SHOWN) {
-                    if ui.selectable_label(false, hit.text(fps)).clicked() {
-                        chosen = Some(hit.clone());
-                    }
-                }
-                if hits.len() > crate::search::SHOWN {
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "{} more: type more of the name.",
-                            hits.len() - crate::search::SHOWN
-                        ))
-                        .color(self.theme.muted),
-                    );
-                }
-            });
-        self.show_search = open && chosen.is_none();
+        let answer = crate::search::palette(ctx, &self.theme, &mut self.search_text, &hits, fps);
+        let chosen = match answer {
+            None => return,
+            Some(crate::search::Answer::Closed) => None,
+            Some(crate::search::Answer::Chosen(hit)) => Some(hit),
+        };
+        self.show_search = false;
         match chosen {
             Some(Hit::Command { action, .. }) => self.run_action(action),
             Some(Hit::Label { at, .. }) => self.seek(at),
@@ -3148,6 +3250,14 @@ impl Editor {
                 self.drawer.filter = name;
             }
             Some(Hit::Settings) => self.show_settings = true,
+            Some(Hit::Setting(section)) => {
+                self.show_settings = true;
+                self.settings_found = Some((section, 3));
+            }
+            Some(Hit::Timeline { id, .. }) => {
+                self.page = Page::Edit;
+                self.open_timeline(id);
+            }
             Some(Hit::TimelineSettings) => self.show_timeline_settings = true,
             Some(Hit::Shortcuts) => self.run_action(Action::KeyboardShortcuts),
             None => {}
@@ -3349,6 +3459,10 @@ impl eframe::App for Editor {
         }
         // While the shortcuts page waits for new keys, what is pressed is
         // its answer, not a command.
+        // A file chooser that could not open says why.
+        if let Some(problem) = ui_kit::file_dialog::take_problem(&ctx) {
+            self.errors.push(&problem);
+        }
         let listening = self.shortcuts_page.as_ref().is_some_and(|p| p.listening());
         if !listening {
             for action in self.shortcuts.pressed(&ctx) {
@@ -3586,8 +3700,29 @@ enum Thumbnail {
     Now,
 }
 
-/// The Settings row for what a click in the timeline's ruler moves. With
-/// the needle merged into the playhead there is only the playhead to move.
+/// A section's heading in Settings; the one search asked for (`found`,
+/// with the frames left to scroll to it) is in the accent colour and
+/// scrolled to the top.
+fn settings_heading(
+    ui: &mut egui::Ui,
+    theme: &ui_kit::Theme,
+    section: crate::settings_sections::Section,
+    found: &mut Option<(crate::settings_sections::Section, u8)>,
+) {
+    let mut text = egui::RichText::new(section.name()).heading();
+    let Some((_, frames)) = found.as_mut().filter(|(s, _)| *s == section) else {
+        ui.label(text);
+        return;
+    };
+    text = text.color(theme.accent);
+    let heading = ui.label(text);
+    if *frames > 0 {
+        *frames -= 1;
+        heading.scroll_to_me(Some(egui::Align::TOP));
+        ui.ctx().request_repaint();
+    }
+}
+
 fn click_moves_row(ui: &mut egui::Ui, moves: &mut ui_kit::ClickMoves, edit_at_playhead: bool) {
     ui.horizontal(|ui| {
         ui.label("Clicking the timeline moves");

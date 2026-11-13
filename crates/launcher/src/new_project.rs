@@ -5,6 +5,9 @@ use project::SequenceSettings;
 use std::path::PathBuf;
 use ui_kit::Theme;
 
+/// About how many characters of a folder's path fit in the "Save in" box.
+const FOLDER_CHARS: usize = 46;
+
 /// One choice in the settings list.
 #[derive(Debug, Clone, Copy)]
 pub struct Preset {
@@ -64,6 +67,9 @@ pub struct NewProjectDialog {
     default_folder: Option<PathBuf>,
     remember: bool,
     focused: bool,
+    /// Why Browse… opened nothing (no file chooser on this system): what,
+    /// why and the fix.
+    problem: Option<[String; 3]>,
 }
 
 impl NewProjectDialog {
@@ -77,12 +83,24 @@ impl NewProjectDialog {
             default_folder,
             remember: false,
             focused: false,
+            problem: None,
         }
+    }
+
+    /// Browse… could not open a file chooser: said in the dialog itself,
+    /// which covers the window's error strip.
+    pub fn set_problem(&mut self, problem: &diag::AppError) {
+        self.problem = Some([
+            problem.what().to_owned(),
+            problem.why_text().unwrap_or_default().to_owned(),
+            problem.fix_text().to_owned(),
+        ]);
     }
 
     /// Sets the folder after Browse… picked one.
     pub fn set_folder(&mut self, folder: PathBuf) {
         self.folder = Some(folder);
+        self.problem = None;
     }
 
     /// Draws the dialog. `folders` are the project folders to choose from.
@@ -124,7 +142,7 @@ impl NewProjectDialog {
             ui.label(RichText::new("Save in").color(theme.text_secondary));
             let shown = self.folder.as_ref().map_or_else(
                 || "Choose a project folder".to_owned(),
-                |f| f.display().to_string(),
+                |f| ui_kit::layout::path_text(f, FOLDER_CHARS),
             );
             ui.horizontal(|ui| {
                 let browse_width = 80.0;
@@ -137,8 +155,9 @@ impl NewProjectDialog {
                             ui.selectable_value(
                                 &mut self.folder,
                                 Some(folder.clone()),
-                                folder.display().to_string(),
-                            );
+                                ui_kit::layout::path_text(folder, FOLDER_CHARS),
+                            )
+                            .on_hover_text(folder.display().to_string());
                         }
                     });
                 if ui
@@ -149,9 +168,18 @@ impl NewProjectDialog {
                     choice = Some(Choice::Browse);
                 }
             });
-            if self.folder.is_some() && self.folder != self.default_folder {
-                ui.checkbox(&mut self.remember, "Save new projects here from now on");
+            if let Some([what, why, fix]) = &self.problem {
+                ui.label(RichText::new(what).color(ui_kit::status::ERROR));
+                ui.label(RichText::new(why).size(11.5).color(theme.text_secondary));
+                ui.label(RichText::new(format!("Fix: {fix}")).size(11.5).color(theme.muted));
             }
+            // Its room is kept while it is hidden, so the buttons under it
+            // never move as a folder is picked.
+            let differs = self.folder.is_some() && self.folder != self.default_folder;
+            ui.add_visible(
+                differs,
+                egui::Checkbox::new(&mut self.remember, "Save new projects here from now on"),
+            );
             ui.add_space(14.0);
 
             let ready = self.folder.is_some() && !self.name.trim().is_empty();

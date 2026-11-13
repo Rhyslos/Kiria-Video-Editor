@@ -178,6 +178,7 @@ const USUAL: &[(Action, Shortcut)] = &[
     (Action::Copy, Shortcut::ctrl(Key::C)),
     (Action::Paste, Shortcut::ctrl(Key::V)),
     (Action::Search, Shortcut::ctrl(Key::K)),
+    (Action::SelectAll, Shortcut::ctrl(Key::A)),
     (Action::OpenSettings, Shortcut::ctrl(Key::Comma)),
     (Action::Import, Shortcut::ctrl(Key::I)),
     (Action::PreviousFrame, Shortcut::key(Key::ArrowLeft)),
@@ -328,8 +329,13 @@ impl ShortcutTable {
     }
 
     /// The actions pressed this frame. While a text field has focus only
-    /// Ctrl shortcuts count, so typing a space or an "s" never edits the timeline.
+    /// Ctrl shortcuts count, so typing a space or an "s" never edits the
+    /// timeline; while a dialog is up ([`crate::dialog`]) none do, so keys
+    /// never reach the page behind it.
     pub fn pressed(&self, ctx: &egui::Context) -> Vec<Action> {
+        if crate::dialog::is_open(ctx) {
+            return Vec::new();
+        }
         let typing = ctx.egui_wants_keyboard_input();
         ctx.input(|input| {
             input
@@ -354,6 +360,8 @@ impl ShortcutTable {
                 })
                 .filter(|(_, modifiers)| !typing || modifiers.command)
                 .flat_map(|(key, modifiers)| self.actions_for(key, modifiers).collect::<Vec<_>>())
+                // In a text field, Select all selects its text.
+                .filter(|action| !(typing && *action == Action::SelectAll))
                 .collect()
         })
     }
@@ -501,6 +509,18 @@ mod tests {
             [Action::Copy, Action::Paste]
         );
         assert!(pressed(vec![Event::Copy, Event::Paste("x".into())], true).is_empty());
+        let ctrl_a = || Event::Key {
+            key: Key::A,
+            physical_key: Some(Key::A),
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::COMMAND,
+        };
+        assert_eq!(pressed(vec![ctrl_a()], false), [Action::SelectAll]);
+        assert!(
+            pressed(vec![ctrl_a()], true).is_empty(),
+            "in a text field Ctrl+A selects its text"
+        );
     }
 
     #[test]

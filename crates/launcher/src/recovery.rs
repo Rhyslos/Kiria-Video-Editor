@@ -1,8 +1,8 @@
 //! Unsaved work left behind by a crash.
 //!
 //! Two signals, both cheap to read:
-//! - the editor's session marker ([`diag::session::unfinished_run`]) says the
-//!   last run didn't close and which project it had open;
+//! - the editors' session markers ([`diag::session::unfinished_runs`], one
+//!   per editor process) say a run didn't close and which project it had open;
 //! - a project's autosave journal with changes newer than its last save
 //!   ([`project::Document::check`]) says that project has work to recover.
 //!
@@ -22,15 +22,16 @@ pub enum LastRun {
     CrashedWithWork { project: PathBuf, unsaved: usize },
 }
 
-/// Looks at the editor's session marker in `data_dir`. Reads one small file
-/// and, for a crash, the project's journal.
+/// Looks at the editors' session markers in `data_dir`: the first run whose
+/// editor is no longer going (editors still running are fine). Reads a few
+/// small files and, for a crash, the project's journal.
 pub fn last_run(data_dir: &Path) -> LastRun {
-    let Some(run) = diag::session::unfinished_run(data_dir) else {
+    let Some(run) = diag::session::unfinished_runs(data_dir)
+        .into_iter()
+        .find(|run| !run.is_running(editor_is_running))
+    else {
         return LastRun::Fine;
     };
-    if run.pid.is_some_and(editor_is_running) {
-        return LastRun::Fine;
-    }
     match run.project {
         Some(project) => match unsaved_changes(&project) {
             0 => LastRun::CrashedNothingLost,
@@ -68,15 +69,15 @@ fn in_use(doing: &str) -> diag::AppError {
         .fix("Close the editor, then try again.")
 }
 
-/// Whether the editor's session marker names `project` and that editor is
+/// Whether an editor's session marker names `project` and that editor is
 /// still running (`is_running` answers for its process id). An editor that
 /// crashed leaves its marker too, and is not in the way.
 fn open_in_editor(data_dir: &Path, project: &Path, is_running: impl Fn(u32) -> bool) -> bool {
-    diag::session::unfinished_run(data_dir).is_some_and(|run| {
+    diag::session::unfinished_runs(data_dir).into_iter().any(|run| {
         run.project
             .as_deref()
             .is_some_and(|open| same_file(open, project))
-            && run.pid.is_some_and(is_running)
+            && run.is_running(&is_running)
     })
 }
 
@@ -88,6 +89,12 @@ fn same_file(a: &Path, b: &Path) -> bool {
             (Ok(a), Ok(b)) => a == b,
             _ => false,
         }
+}
+
+/// Removes the markers of editors that crashed, once the crash has been
+/// dealt with; those of editors still running stay.
+pub fn forget_crashed_runs(data_dir: &Path) -> diag::Result<()> {
+    diag::session::forget_unfinished_runs(data_dir, editor_is_running)
 }
 
 /// Whether a process with this id is running and is the editor.
@@ -132,7 +139,9 @@ mod tests {
         if let Some(p) = project {
             text.push_str(&format!("project {}\n", p.display()));
         }
-        std::fs::write(dir.join("session.running"), text).unwrap();
+        let markers = dir.join("sessions");
+        std::fs::create_dir_all(&markers).unwrap();
+        std::fs::write(markers.join(format!("{pid}.running")), text).unwrap();
     }
 
     /// A process id that is never in use.
