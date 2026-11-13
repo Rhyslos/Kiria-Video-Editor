@@ -130,6 +130,8 @@ pub struct Live {
     pub master_reduction: Option<(f32, f32)>,
     /// The analyser's levels for the track the EQ shows.
     pub spectrum: Option<[f32; audio::dsp::bands::COUNT]>,
+    /// Playing without a sound output: measured, not heard.
+    pub unheard: bool,
 }
 
 /// A value being dragged and not yet an undo step.
@@ -199,6 +201,17 @@ pub fn short_name(seq: &Sequence, id: TrackId) -> String {
         .position(|t| t.id == id)
         .map_or(0, |i| i + 1);
     format!("A{n}")
+}
+
+/// A track as the page lists it: its short name and its name ("A1
+/// Dialogue"), or the short name alone while that is its name ("A2").
+pub fn listed_name(seq: &Sequence, t: &Track) -> String {
+    let short = short_name(seq, t.id);
+    if short == t.name {
+        short
+    } else {
+        format!("{short} {}", t.name)
+    }
 }
 
 /// The effects that are on, as tags: their short name, their tool and
@@ -367,9 +380,7 @@ impl AudioPage {
     pub fn header(&mut self, ui: &mut Ui, theme: &Theme, seq: &Sequence) {
         let current = chosen(seq, self.track);
         ui.horizontal(|ui| {
-            let text = current.map_or("No audio track".to_owned(), |t| {
-                format!("{} {}", short_name(seq, t.id), t.name)
-            });
+            let text = current.map_or("No audio track".to_owned(), |t| listed_name(seq, t));
             let colour = current.map_or(theme.muted, |t| roles::colour(t.sound.role));
             ui.label(egui::RichText::new("●").color(colour));
             egui::ComboBox::from_id_salt("audio-track")
@@ -378,7 +389,7 @@ impl AudioPage {
                 .height(420.0)
                 .show_ui(ui, |ui| {
                     for t in &seq.audio_tracks {
-                        let label = egui::RichText::new(format!("{} {}", short_name(seq, t.id), t.name));
+                        let label = egui::RichText::new(listed_name(seq, t));
                         let row = ui.selectable_label(Some(t.id) == current.map(|c| c.id), label);
                         if row.clicked() {
                             self.track = Some(t.id);
@@ -639,7 +650,7 @@ impl AudioPage {
                 E::Role(r) => {
                     if let Some(role) = roles::at(r) {
                         let mut sound = t.sound.clone();
-                        sound.role = role;
+                        sound.set_role(role);
                         out.commands.push(Command::SetTrackSound {
                             sequence: seq.id,
                             track: t.id,
@@ -670,6 +681,7 @@ impl AudioPage {
             gain_db: seq.master_gain_db,
             target,
             tip: master_tip,
+            unheard: live.unheard,
         };
         out.master = self.master.show(ui, theme, column, mix);
         let settings_rect =

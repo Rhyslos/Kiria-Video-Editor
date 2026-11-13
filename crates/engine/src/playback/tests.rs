@@ -593,3 +593,57 @@ fn following_the_project_sends_only_when_the_mix_changed() {
     playback.follow(&sounded);
     assert!(matches!(inbox.try_recv(), Ok(Message::Project(_))));
 }
+
+/// Without a sound card the mix is still made at real-time pace and
+/// measured: the master's and the tracks' meters move, and the clock runs
+/// at the pace of the samples mixed.
+#[test]
+fn without_a_sound_card_the_meters_still_move() {
+    let project = recording();
+    let from = Time::from_ratio(1, 4).unwrap();
+    let playback = Playback::start_unheard(project.clone(), project.active_sequence, from);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut master = Levels::SILENT;
+    let mut tracks = false;
+    while Instant::now() < deadline && !(master.momentary.is_finite() && tracks) {
+        std::thread::sleep(Duration::from_millis(50));
+        master = playback.levels();
+        tracks |= playback
+            .track_meters()
+            .iter()
+            .any(|(_, m)| m.take().momentary.is_finite());
+    }
+    assert!(playback.unheard(), "nothing heard");
+    assert!(!playback.has_sound());
+    assert!(
+        master.momentary.is_finite(),
+        "the master's meter moved: {master:?}"
+    );
+    assert!(tracks, "a track's meter moved");
+    // The clock follows the samples mixed, at about real-time pace.
+    let a = playback.position();
+    std::thread::sleep(Duration::from_millis(300));
+    let moved = (playback.position() - a).as_secs_f64();
+    assert!((0.15..0.6).contains(&moved), "moved {moved} s in 0.3 s");
+}
+
+/// The thread standing in for the sound card never allocates, and waits
+/// a buffer's time between buffers.
+#[test]
+fn the_paced_thread_never_allocates() {
+    let project = with_effects();
+    let fake = fake(&project, Time::ZERO);
+    let mut paced = crate::output::Paced::new(fake.output, (RATE, 2));
+    let start = Instant::now();
+    let mut counted = 0;
+    let mut waited = Duration::ZERO;
+    for _ in 0..50 {
+        let (wait, allocations) = os::alloc_count::counted(|| paced.tick(start));
+        counted += allocations;
+        waited = wait;
+    }
+    assert_eq!(counted, 0, "allocations or frees on the paced thread");
+    // 50 buffers of 512 frames at 48 kHz are 533 ms ahead of `start`.
+    let ahead = waited.as_secs_f64();
+    assert!((0.5..0.56).contains(&ahead), "{ahead}");
+}

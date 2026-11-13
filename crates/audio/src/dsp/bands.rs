@@ -26,6 +26,12 @@ pub fn centre(i: usize) -> f32 {
     LOWEST * (HIGHEST / LOWEST).powf((i as f32 + 0.5) / COUNT as f32)
 }
 
+/// Band `i`'s width, Hz: from its lower edge to its upper.
+pub fn width(i: usize) -> f32 {
+    let edge = |e: usize| LOWEST * (HIGHEST / LOWEST).powf(e as f32 / COUNT as f32);
+    edge(i + 1) - edge(i)
+}
+
 /// The value at `freq` from per-band values, in a straight line between
 /// band centres on the musical scale (flat beyond the outer centres).
 pub fn between(values: &[f32; COUNT], freq: f32) -> f32 {

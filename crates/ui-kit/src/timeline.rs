@@ -803,6 +803,10 @@ const STAYS_ON_ITS_TRACK: f32 = 6.0;
 const NEW_TRACK_PAST: f32 = 10.0;
 /// The lit strip that shows where a new track would be is at least this tall.
 const NEW_TRACK_STRIP: f32 = MIN_TRACK;
+/// When the tracks fill their area to its far edge, so there is no room
+/// past the last one, the pointer this near that edge asks for a new
+/// track (the strip is drawn over the edge there).
+const NEW_TRACK_EDGE: f32 = 12.0;
 /// The share of the body the audio area keeps (or one usual audio track, if
 /// that is more) when the video area grows to show its tracks.
 pub const AUDIO_KEEPS: f32 = 0.3;
@@ -3680,7 +3684,9 @@ impl TimelineView {
     /// the top video track, or under the bottom audio track. Only while
     /// that track's far edge is in view, so a track scrolled out of sight is
     /// not skipped; and not for a clip alone on that last track, which a
-    /// new track would only leave empty.
+    /// new track would only leave empty. When the tracks reach the area's
+    /// far edge (no room past the last), the band [`NEW_TRACK_EDGE`] along
+    /// that edge, or past it, asks.
     fn asks_for_new_track(
         &self,
         drag: &ClipDrag,
@@ -3698,11 +3704,7 @@ impl TimelineView {
         if alone {
             return false;
         }
-        if video {
-            row.top() >= area.top() - 0.5 && y < row.top() - NEW_TRACK_PAST
-        } else {
-            row.bottom() <= area.bottom() + 0.5 && y >= row.bottom() + NEW_TRACK_PAST
-        }
+        past_the_last(row, area, video, y)
     }
 
     /// The label drawn nearest to `x`, if one is within a few pixels.
@@ -3775,13 +3777,15 @@ pub fn toolbar(ui: &mut Ui, theme: &Theme, view: &TimelineView, tips: [&str; 9])
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = TOOLBAR_SPACING;
         let size = vec2(TOOL_BUTTON, 26.0);
+        // While the lines are worked the pointer works them, not a tool.
+        let tool = |t: Tool| view.tool == t && view.lines.is_none();
         let items = [
-            (ToolbarClick::Tool(Tool::Select), view.tool == Tool::Select, 0),
-            (ToolbarClick::Tool(Tool::Blade), view.tool == Tool::Blade, 1),
-            (ToolbarClick::Tool(Tool::Ripple), view.tool == Tool::Ripple, 2),
-            (ToolbarClick::Tool(Tool::Roll), view.tool == Tool::Roll, 3),
-            (ToolbarClick::Tool(Tool::Slip), view.tool == Tool::Slip, 4),
-            (ToolbarClick::Tool(Tool::Slide), view.tool == Tool::Slide, 5),
+            (ToolbarClick::Tool(Tool::Select), tool(Tool::Select), 0),
+            (ToolbarClick::Tool(Tool::Blade), tool(Tool::Blade), 1),
+            (ToolbarClick::Tool(Tool::Ripple), tool(Tool::Ripple), 2),
+            (ToolbarClick::Tool(Tool::Roll), tool(Tool::Roll), 3),
+            (ToolbarClick::Tool(Tool::Slip), tool(Tool::Slip), 4),
+            (ToolbarClick::Tool(Tool::Slide), tool(Tool::Slide), 5),
             (ToolbarClick::Snapping, view.snapping, 6),
             (ToolbarClick::Fit, false, 7),
             (ToolbarClick::RoughCut, view.rough_cut, 8),
@@ -3808,6 +3812,30 @@ pub fn toolbar(ui: &mut Ui, theme: &Theme, view: &TimelineView, tips: [&str; 9])
         }
     });
     clicked
+}
+
+/// While the volume and pan lines are worked (`TimelineView::lines`): a
+/// lit pill after the [`toolbar`] saying so, with a cross to leave them
+/// (`tip` names the key, which leaves them too, as Escape does). Returns
+/// whether it was clicked.
+pub fn lines_chip(ui: &mut Ui, theme: &Theme, tip: &str) -> bool {
+    let text = "Lines on   \u{00D7}";
+    let galley = ui
+        .painter()
+        .layout_no_wrap(text.to_owned(), FontId::proportional(12.5), theme.accent);
+    let (rect, r) = ui.allocate_exact_size(vec2(galley.size().x + 18.0, 26.0), Sense::click());
+    let fill = if r.hovered() {
+        theme.accent.gamma_multiply(0.35)
+    } else {
+        theme.accent.gamma_multiply(0.22)
+    };
+    ui.painter().rect_filled(rect, 13.0, fill);
+    ui.painter()
+        .galley(rect.center() - galley.size() / 2.0, galley, theme.accent);
+    r.on_hover_text(format!(
+        "The pointer works the volume and pan lines of the audio tracks, not clips. Click to go back to the clips ({tip}, or Escape)."
+    ))
+    .clicked()
 }
 
 fn tool_icon(p: &egui::Painter, which: usize, c: Pos2, colour: Color32) {
@@ -3981,6 +4009,33 @@ fn landing_track(tracks: &[TimelineTrack], rows: &Rows, y: f32, own: u64) -> Opt
         return Some(own);
     }
     rows.nearest(y).and_then(|row| tracks.get(row)).map(|t| t.id)
+}
+
+/// Whether `y` is past the last track's `row` (see
+/// `TimelineView::asks_for_new_track`): [`NEW_TRACK_PAST`] past it when
+/// there is room, or within [`NEW_TRACK_EDGE`] of the area's edge (or past
+/// it) when the row reaches that edge. Never while the row's far edge is
+/// out of view.
+fn past_the_last(row: &Rect, area: Rect, video: bool, y: f32) -> bool {
+    if video {
+        let room = row.top() - area.top();
+        if room < -0.5 {
+            false
+        } else if room >= NEW_TRACK_PAST + NEW_TRACK_EDGE {
+            y < row.top() - NEW_TRACK_PAST
+        } else {
+            y < area.top() + NEW_TRACK_EDGE
+        }
+    } else {
+        let room = area.bottom() - row.bottom();
+        if room < -0.5 {
+            false
+        } else if room >= NEW_TRACK_PAST + NEW_TRACK_EDGE {
+            y >= row.bottom() + NEW_TRACK_PAST
+        } else {
+            y >= area.bottom() - NEW_TRACK_EDGE
+        }
+    }
 }
 
 /// Where the lit strip for a new track goes: past the last row of `rows`
@@ -5532,6 +5587,30 @@ mod tests {
             moved(0, 0.5, Some(3)),
             "the track at the top of what is shown"
         );
+    }
+
+    /// Tracks that fill their area leave no room past the last: the band
+    /// along the area's edge asks for a new track then, as the strip drawn
+    /// over that edge shows. With room, only past the last track does.
+    #[test]
+    fn a_new_track_is_asked_for_at_the_edge_when_the_tracks_fill_the_area() {
+        let area = Rect::from_min_max(pos2(0.0, 100.0), pos2(500.0, 300.0));
+        // Audio filling the area to its bottom.
+        let full = Rect::from_min_max(pos2(0.0, 242.0), pos2(500.0, 300.0));
+        assert!(!past_the_last(&full, area, false, 280.0), "on the last track");
+        assert!(past_the_last(&full, area, false, 292.0), "at the edge");
+        assert!(past_the_last(&full, area, false, 310.0), "past it");
+        // With room under it: only well past it.
+        let room = Rect::from_min_max(pos2(0.0, 150.0), pos2(500.0, 208.0));
+        assert!(!past_the_last(&room, area, false, 212.0));
+        assert!(past_the_last(&room, area, false, 220.0));
+        // Scrolled so the last track's bottom is out of view: never.
+        let hidden = Rect::from_min_max(pos2(0.0, 260.0), pos2(500.0, 330.0));
+        assert!(!past_the_last(&hidden, area, false, 299.0));
+        // Video fills from the top the same way.
+        let top = Rect::from_min_max(pos2(0.0, 100.0), pos2(500.0, 150.0));
+        assert!(past_the_last(&top, area, true, 105.0));
+        assert!(!past_the_last(&top, area, true, 120.0));
     }
 
     #[test]

@@ -83,6 +83,26 @@ impl ErrorCenter {
         facts.into_iter().chain(errors).collect::<Vec<_>>().join("\n\n")
     }
 
+    /// As [`ErrorCenter::show_inline`], floating over the top of what is
+    /// left of `ui` instead of taking room in it: the page under it never
+    /// moves when an error comes or goes. For pages whose parts are laid
+    /// out to fixed heights (a viewer over a timeline).
+    pub fn show_over(&mut self, ui: &mut egui::Ui, theme: &Theme) -> Option<ErrorResponse> {
+        if self.errors.iter().all(|e| e.dismissed) {
+            return None;
+        }
+        let rect = ui.available_rect_before_wrap();
+        let mut response = None;
+        egui::Area::new(ui.scope_id().with("error-over-the-page"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(rect.min)
+            .show(ui.ctx(), |ui| {
+                ui.set_width(rect.width());
+                response = self.show_inline(ui, theme);
+            });
+        response
+    }
+
     /// The newest error not yet dismissed, as a strip across the page.
     pub fn show_inline(&mut self, ui: &mut egui::Ui, theme: &Theme) -> Option<ErrorResponse> {
         let error = self.errors.iter_mut().rev().find(|e| !e.dismissed)?;
@@ -231,5 +251,35 @@ mod tests {
         center.push(&AppError::new("Export can't start").fix("Relink them"));
         let details = center.all_details();
         assert!(details.starts_with("Graphics: two\nTried first: another\n\nExport can't start"));
+    }
+
+    /// The error floats over the page: what is laid out after it starts
+    /// where it would without an error.
+    #[test]
+    fn an_error_over_the_page_takes_no_room_in_it() {
+        let ctx = egui::Context::default();
+        let mut center = ErrorCenter::default();
+        center.push(&AppError::new("There is already a clip there").fix("Move it elsewhere."));
+        let mut tops = Vec::new();
+        for over in [true, false] {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 600.0),
+                )),
+                ..Default::default()
+            };
+            let output = ctx.run_ui(input, |ui| {
+                if over {
+                    center.show_over(ui, &Theme::ASH);
+                } else {
+                    center.show_inline(ui, &Theme::ASH);
+                }
+                tops.push(ui.available_rect_before_wrap().top());
+            });
+            output.drop_without_applying_deltas();
+        }
+        assert!(tops[0] < 10.0, "nothing pushed down: {tops:?}");
+        assert!(tops[1] > 40.0, "inline takes room: {tops:?}");
     }
 }

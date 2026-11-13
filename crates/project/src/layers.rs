@@ -115,12 +115,16 @@ pub(crate) fn lay(
         // The track an import would give this stream: made when missing,
         // and named after the stream while nobody has used it.
         if sequence_ref(p, sequence)?.audio_tracks.len() <= i {
-            let track = p.new_track(TrackKind::Audio, &stream.name);
+            let name = crate::tracks::name_for_stream(sequence_ref(p, sequence)?, &stream.name);
+            let track = p.new_track(TrackKind::Audio, &name);
             sequence_mut(p, sequence)?.audio_tracks.push_back(track);
         }
         let tracks = &mut sequence_mut(p, sequence)?.audio_tracks;
         let usual = &mut tracks[i];
-        if usual.clips.is_empty() && usual.name == format!("A{}", i + 1) {
+        if usual.clips.is_empty()
+            && usual.name == format!("A{}", i + 1)
+            && crate::tracks::titled(&stream.name)
+        {
             usual.name = stream.name.clone();
         }
         let count = tracks.len();

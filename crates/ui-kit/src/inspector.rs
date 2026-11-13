@@ -314,11 +314,20 @@ fn slider_values(ui: &mut Ui, value: &mut f64, how: Number, words: Option<Words>
     let room = ui.available_width() - VALUE_WIDTH - ui.spacing().item_spacing.x;
     ui.spacing_mut().slider_width = room.max(40.0);
     let before = *value;
-    let slider = ui.add(
-        egui::Slider::new(value, how.range.0..=how.range.1)
-            .show_value(false)
-            .clamping(egui::SliderClamping::Always),
-    );
+    // The rail takes the colour of an idle widget, which is also a
+    // window's and a tool panel's: a stronger line there, so the rail
+    // shows wherever the row is.
+    let rail = ui.visuals().widgets.hovered.bg_stroke.color;
+    let slider = ui
+        .scope(|ui| {
+            ui.visuals_mut().widgets.inactive.bg_fill = rail;
+            ui.add(
+                egui::Slider::new(value, how.range.0..=how.range.1)
+                    .show_value(false)
+                    .clamping(egui::SliderClamping::Always),
+            )
+        })
+        .inner;
     // Shift held while dragging: a tenth as fast, from where it was.
     if slider.dragged() && ui.input(|i| i.modifiers.shift) {
         *value = fine_step(

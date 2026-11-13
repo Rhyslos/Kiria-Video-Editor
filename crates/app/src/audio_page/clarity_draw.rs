@@ -47,21 +47,41 @@ fn button_text(fix: &Fix) -> &'static str {
     }
 }
 
-/// A button's text, with its track's short name when the finding offers
-/// the same fix on several tracks ("Cut A8 around 300 Hz").
+/// A decibel figure as a button writes it: "\u{2212}3.5 dB".
+fn db(mdb: i32) -> String {
+    format!("{:.1} dB", f64::from(mdb) / 1_000.0).replace('-', "\u{2212}")
+}
+
+/// A button's text, with its track's name when the finding offers the same
+/// fix on several tracks ("Cut Music around 300 Hz"), the name the track
+/// has everywhere else on the page. A fix already made says so and offers
+/// to go further ("Cut applied, \u{2212}3.5 dB · Cut deeper").
 fn button_for(fix: &Fix, fixes: &[Fix], seq: &Sequence) -> String {
     let alike = fixes
         .iter()
         .filter(|f| button_text(f) == button_text(fix))
         .count();
-    if alike < 2 {
-        return button_text(fix).to_owned();
-    }
-    let short = super::short_name(seq, fix.track);
-    match fix.remedy {
-        Remedy::LowerUnderDialogue { .. } => format!("Lower {short} under dialogue"),
-        Remedy::CutLowMiddle => format!("Cut {short} around 300 Hz"),
-        Remedy::MakeRoomForVoice => format!("Make room in {short}"),
+    let name = (alike >= 2)
+        .then(|| seq.audio_tracks.iter().find(|t| t.id == fix.track))
+        .flatten()
+        .map(|t| t.name.as_str());
+    match (fix.remedy, fix.applied_mdb, name) {
+        (Remedy::LowerUnderDialogue { .. }, Some(d), None) => {
+            format!("Lowered, {} · Lower further", db(d))
+        }
+        (Remedy::LowerUnderDialogue { .. }, Some(d), Some(n)) => {
+            format!("{n} lowered, {} · Lower further", db(d))
+        }
+        (Remedy::CutLowMiddle | Remedy::MakeRoomForVoice, Some(d), None) => {
+            format!("Cut applied, {} · Cut deeper", db(d))
+        }
+        (Remedy::CutLowMiddle | Remedy::MakeRoomForVoice, Some(d), Some(n)) => {
+            format!("{n} cut {} · Cut deeper", db(d))
+        }
+        (_, None, None) => button_text(fix).to_owned(),
+        (Remedy::LowerUnderDialogue { .. }, None, Some(n)) => format!("Lower {n} under dialogue"),
+        (Remedy::CutLowMiddle, None, Some(n)) => format!("Cut {n} around 300 Hz"),
+        (Remedy::MakeRoomForVoice, None, Some(n)) => format!("Make room in {n}"),
     }
 }
 
@@ -223,7 +243,7 @@ fn finding_row(
         .tracks
         .iter()
         .filter_map(|t| seq.audio_tracks.iter().find(|a| a.id == *t))
-        .map(|t| format!("{} {}", super::short_name(seq, t.id), t.name))
+        .map(|t| t.name.clone())
         .collect();
     let label = first.add(
         egui::Label::new(RichText::new(&f.words).color(theme.text))
@@ -248,6 +268,7 @@ fn finding_row(
             .layout(Layout::left_to_right(Align::Center)),
     );
     let when = format!("{}–{}", at(f.range.0), at(f.range.1));
+    let was = band.was(f);
     if second
         .add(
             egui::Label::new(
@@ -263,6 +284,24 @@ fn finding_row(
     {
         asks.seek = Some(f.range.0);
     }
+    if let Some(was) = was {
+        second.add_space(6.0);
+        second
+            .label(
+                RichText::new(format!(
+                    "How bad: {:.0} % \u{2192} {:.0} %",
+                    was * 100.0,
+                    f.severity * 100.0
+                ))
+                .size(11.5)
+                .color(if f.severity < was {
+                    ui_kit::status::GOOD
+                } else {
+                    theme.text_secondary
+                }),
+            )
+            .on_hover_text("How bad it was before the last fix, and how bad it is now.");
+    }
     second.add_space(6.0);
     for fix in &f.fixes {
         let tip = format!("{}. One step: undo takes it back.", fix.label);
@@ -271,6 +310,7 @@ fn finding_row(
             .on_hover_text(tip)
             .clicked()
         {
+            band.fixed(f);
             asks.fix = Some(fix.clone());
         }
     }
@@ -390,6 +430,36 @@ fn draw_picture(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Buttons name tracks by their names, as the rest of the page does,
+    /// and a fix already made says so.
+    #[test]
+    fn buttons_say_track_names_and_what_is_already_done() {
+        let mut p = project::Project::new_automatic("T");
+        let seq_id = p.active_sequence;
+        let music = p.new_track(project::TrackKind::Audio, "Music");
+        let (first, music_id) = (p.sequences[0].audio_tracks[0].id, music.id);
+        p.sequences[0].audio_tracks.push_back(music);
+        let seq = p.sequence(seq_id).unwrap().clone();
+        let fix = |track, applied_mdb| Fix {
+            sequence: seq_id,
+            track,
+            remedy: Remedy::CutLowMiddle,
+            label: String::new(),
+            applied_mdb,
+        };
+        let two = [fix(first, None), fix(music_id, Some(-3_500))];
+        assert_eq!(button_for(&two[0], &two, &seq), "Cut A1 around 300 Hz");
+        assert_eq!(
+            button_for(&two[1], &two, &seq),
+            "Music cut \u{2212}3.5 dB · Cut deeper"
+        );
+        let one = [fix(music_id, Some(-3_500))];
+        assert_eq!(
+            button_for(&one[0], &one, &seq),
+            "Cut applied, \u{2212}3.5 dB · Cut deeper"
+        );
+    }
 
     #[test]
     fn moments_are_minutes_and_seconds_to_a_tenth() {

@@ -645,7 +645,14 @@ impl ExportPage {
 
     fn video_section(&mut self, ui: &mut egui::Ui, theme: &Theme, seq: &project::Sequence, plan: &Plan) {
         let encoders = self.encoders.clone();
-        section(ui, theme, "Video", |ui| {
+        // A sound-only file has no picture to set: only its container,
+        // under a heading that doesn't say "Video".
+        let heading = if self.choice.container.has_video() {
+            "Video"
+        } else {
+            "File"
+        };
+        section(ui, theme, heading, |ui| {
             row(ui, theme, "Container", |ui| {
                 egui::ComboBox::from_id_salt("export container")
                     .width(200.0)
@@ -1076,12 +1083,22 @@ impl ExportPage {
     }
 
     /// The name of the preset the settings are, if they are one.
+    /// The preset the settings are, by name; with the Normalise tick set
+    /// otherwise than the preset's, said after it ("Audio only, WAV,
+    /// normalised").
     fn preset_name(&self) -> Option<String> {
-        presets::built_in(self.encoders.as_ref())
-            .iter()
-            .chain(&self.own.presets)
-            .find(|p| p.choice == self.choice)
-            .map(|p| p.name.clone())
+        let presets = presets::built_in(self.encoders.as_ref());
+        let all = || presets.iter().chain(&self.own.presets);
+        if let Some(p) = all().find(|p| p.choice == self.choice) {
+            return Some(p.name.clone());
+        }
+        let p = all().find(|p| p.choice.same_format(&self.choice))?;
+        let how = if self.choice.normalise {
+            "normalised"
+        } else {
+            "not normalised"
+        };
+        Some(format!("{}, {how}", p.name))
     }
 
     fn queue_ui(&mut self, ui: &mut egui::Ui, theme: &Theme, asked: &mut Asked) {
@@ -1306,7 +1323,7 @@ fn preset_button(
     choice: &Choice,
     target: Option<f32>,
 ) -> egui::Response {
-    let on = preset.choice == *choice;
+    let on = preset.choice.same_format(choice);
     let font = |size: f32, semibold: bool| {
         if semibold {
             egui::FontId::new(size, ui_kit::fonts::semibold())

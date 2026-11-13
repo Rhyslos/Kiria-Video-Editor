@@ -243,3 +243,14 @@ fn what_was_left_out_is_said_in_plain_words() {
     // Nothing is said of a profile that wasn't asked for.
     assert_eq!(asks(false, false).dropped(asks(false, true)).len(), 1);
 }
+
+/// A probe's refusal is logged as its reason only: the fix meant for a
+/// failed export (room on the drive) would send someone the wrong way.
+#[test]
+fn a_probed_refusal_is_logged_without_the_export_fix() {
+    let err = cannot("Opening the encoder h264_nvenc failed: Operation not permitted.")
+        .fix("Check that the folder can be written to and has room, then export again.");
+    let line = refusal(&err);
+    assert!(line.contains("Operation not permitted"), "{line}");
+    assert!(!line.contains("room"), "{line}");
+}

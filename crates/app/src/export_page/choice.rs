@@ -109,6 +109,16 @@ impl Default for Choice {
 }
 
 impl Choice {
+    /// Whether `other` writes the same kind of file: everything the same
+    /// but the Normalise tick, which is about the timeline's loudness, not
+    /// the format. A preset stays chosen when only that is changed.
+    pub fn same_format(&self, other: &Choice) -> bool {
+        Choice {
+            normalise: other.normalise,
+            ..self.clone()
+        } == *other
+    }
+
     /// The engine's settings for writing `path` from `range`, normalising
     /// to `target` (from Settings) when asked to and there is one.
     pub fn settings(
@@ -218,6 +228,25 @@ pub fn plays_on(container: Container, video: Option<VideoCodec>, audio: AudioCod
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_normalise_tick_is_not_part_of_the_format() {
+        let wav = Choice {
+            container: Container::Wav,
+            audio: AudioCodec::Pcm24,
+            ..Choice::default()
+        };
+        let normalised = Choice {
+            normalise: true,
+            ..wav.clone()
+        };
+        assert!(wav.same_format(&normalised) && normalised.same_format(&wav));
+        let mp3 = Choice {
+            container: Container::Mp3,
+            ..wav.clone()
+        };
+        assert!(!wav.same_format(&mp3));
+    }
 
     #[test]
     fn sizes_keep_the_timelines_shape_or_are_exact() {

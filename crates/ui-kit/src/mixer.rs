@@ -297,15 +297,17 @@ impl Mixer {
             theme.text,
         );
         let name_room = names.width() - short_w - 4.0;
+        // A track still called by its short name ("A2") is named once.
+        let name_text = if strip.name == strip.short { "" } else { strip.name };
         let name = p.layout(
-            strip.name.to_owned(),
+            name_text.to_owned(),
             FontId::proportional(11.0),
             theme.text_secondary,
             f32::INFINITY,
         );
         let name = if name.size().x > name_room {
             let mut job = egui::text::LayoutJob::simple_singleline(
-                strip.name.to_owned(),
+                name_text.to_owned(),
                 FontId::proportional(11.0),
                 theme.text_secondary,
             );

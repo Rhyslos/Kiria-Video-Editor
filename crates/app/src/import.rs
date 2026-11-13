@@ -444,10 +444,12 @@ pub fn summary(media: &MediaRef) -> String {
     match media.info.audio.len() {
         0 if media.kind != MediaKind::Image => parts.push("no sound".into()),
         0 => {}
-        1 => parts.push(format!(
+        // A stream's made-up name ("Audio 1") would read like a track's.
+        1 if project::tracks::titled(&media.info.audio[0].name) => parts.push(format!(
             "sound stream \u{201c}{}\u{201d}",
             media.info.audio[0].name
         )),
+        1 => parts.push("with sound".into()),
         n => {
             let names: Vec<&str> = media.info.audio.iter().map(|a| a.name.as_str()).collect();
             parts.push(format!("{n} sound streams ({})", names.join(", ")));
@@ -603,6 +605,10 @@ mod tests {
         assert_eq!(
             summary(&media(MediaKind::Audio, &["Mic"])),
             "match.mkv · sound stream \u{201c}Mic\u{201d}"
+        );
+        assert_eq!(
+            summary(&media(MediaKind::Audio, &["Audio 1"])),
+            "match.mkv · with sound"
         );
         assert_eq!(
             summary(&media(MediaKind::Image, &[])),
