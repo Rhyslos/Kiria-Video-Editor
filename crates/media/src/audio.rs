@@ -62,6 +62,110 @@ const SEEK_MARGIN: f64 = 0.5;
 /// container's rounding, less than a picture frame at 60 per second.
 const RESYNC: f64 = 0.010;
 
+/// When each stream of a file starts and when the file does (seconds of
+/// file time): what probing a file finds that its header may not say, and
+/// all a decoder takes from probing besides the sound's own settings.
+#[derive(Debug, Clone, PartialEq)]
+struct Starts {
+    streams: Vec<Option<f64>>,
+    file: Option<f64>,
+}
+
+/// The size and change time of a file, so facts kept about it are dropped
+/// when it changes.
+type Stamp = (u64, Option<std::time::SystemTime>);
+
+/// Each file's [`Starts`], probed once a session: opening a sound stream
+/// again (another clip of the file, a jump to it, each time playback
+/// starts) then only reads the file's header. Probing a large recording
+/// decodes some of its pictures and takes tens of milliseconds; the header
+/// alone a fraction of one.
+static PROBED: std::sync::Mutex<Option<std::collections::HashMap<PathBuf, (Stamp, Starts)>>> =
+    std::sync::Mutex::new(None);
+
+/// Opens from the header alone, counted for the tests.
+#[cfg(test)]
+static FROM_HEADER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn stamp(path: &Path) -> Option<Stamp> {
+    let meta = std::fs::metadata(path).ok()?;
+    Some((meta.len(), meta.modified().ok()))
+}
+
+/// The file opened for reading `stream`, and its streams' start times:
+/// from its header alone when they were probed before this session and the
+/// header holds all the stream needs, else probed (and kept).
+fn open_input(path: &Path, stream: u32) -> Result<(Input, Starts), crate::ffi::OpenError> {
+    let stamp = stamp(path);
+    let known = stamp.and_then(|stamp| {
+        let probed = PROBED.lock().unwrap_or_else(|p| p.into_inner());
+        probed
+            .as_ref()?
+            .get(path)
+            .filter(|(at, _)| *at == stamp)
+            .map(|(_, starts)| starts.clone())
+    });
+    if let Some(starts) = known
+        && let Ok(input) = Input::open_unprobed(path)
+        // SAFETY: `input` was just opened and owns its context.
+        && unsafe { header_suffices(input.raw(), stream, starts.streams.len()) }
+    {
+        #[cfg(test)]
+        FROM_HEADER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        return Ok((input, starts));
+    }
+    let input = Input::open(path)?;
+    // SAFETY: just opened and probed; owned by `input`.
+    let starts = unsafe { starts_of(input.raw()) };
+    if let Some(stamp) = stamp {
+        let mut probed = PROBED.lock().unwrap_or_else(|p| p.into_inner());
+        probed
+            .get_or_insert_with(Default::default)
+            .insert(path.to_path_buf(), (stamp, starts.clone()));
+    }
+    Ok((input, starts))
+}
+
+/// Whether the header of `raw`, opened without probing, holds everything
+/// sound stream `stream` needs: the same number of streams as probing
+/// found, and the sound's codec, rate and channels.
+///
+/// # Safety
+/// `raw` is an opened format context.
+unsafe fn header_suffices(raw: *mut ff::AVFormatContext, stream: u32, streams: usize) -> bool {
+    // SAFETY: the caller's contract; `streams` has `nb_streams` entries,
+    // each with codec parameters.
+    unsafe {
+        if (*raw).nb_streams as usize != streams || stream >= (*raw).nb_streams {
+            return false;
+        }
+        let par = (**(*raw).streams.add(stream as usize)).codecpar;
+        (*par).codec_id != ff::AVCodecID::AV_CODEC_ID_NONE
+            && (*par).sample_rate > 0
+            && (*par).ch_layout.nb_channels > 0
+    }
+}
+
+/// Every stream's start time and the file's, from a probed context.
+///
+/// # Safety
+/// `raw` is an opened, probed format context.
+unsafe fn starts_of(raw: *mut ff::AVFormatContext) -> Starts {
+    // SAFETY: the caller's contract; `streams` has `nb_streams` entries.
+    unsafe {
+        let streams = (0..(*raw).nb_streams)
+            .map(|i| {
+                let st = *(*raw).streams.add(i as usize);
+                let base = f64::from((*st).time_base.num) / f64::from((*st).time_base.den.max(1));
+                ((*st).start_time != ff::AV_NOPTS_VALUE).then(|| (*st).start_time as f64 * base)
+            })
+            .collect();
+        let file = ((*raw).start_time != ff::AV_NOPTS_VALUE)
+            .then(|| (*raw).start_time as f64 / f64::from(ff::AV_TIME_BASE));
+        Starts { streams, file }
+    }
+}
+
 /// Makes the demuxer skip every stream of `raw` but those in `wanted`: the
 /// file's other streams (the picture above all, many times the sound's
 /// size) are passed over instead of being read into packets that are then
@@ -170,7 +274,7 @@ impl AudioDecoder {
     /// Opened, with nothing decoded yet: to be handed packets by someone
     /// else ([`AudioStreams`]), who reads the file from its start.
     fn open_unread(path: &Path, stream: u32, rate: u32) -> diag::Result<AudioDecoder> {
-        let input = Input::open(path).map_err(|e| {
+        let (input, starts) = open_input(path, stream).map_err(|e| {
             AppError::new("The sound can't be played")
                 .why(format!("{}: {}.", path.display(), e.text))
                 .fix("Check that the file still exists and that the drive is connected.")
@@ -204,20 +308,11 @@ impl AudioDecoder {
             let time_base = |st: *mut ff::AVStream| {
                 f64::from((*st).time_base.num) / f64::from((*st).time_base.den.max(1))
             };
-            let start = |st: *mut ff::AVStream| {
-                ((*st).start_time != ff::AV_NOPTS_VALUE).then(|| (*st).start_time as f64 * time_base(st))
-            };
+            let start = |i: u32| starts.streams.get(i as usize).copied().flatten();
             let picture = picture_stream(raw);
             let seek_stream = picture.unwrap_or(stream);
-            let origin = picture
-                .and_then(|p| start(*(*raw).streams.add(p as usize)))
-                .or_else(|| start(st))
-                .unwrap_or(0.0);
-            let file_start = if (*raw).start_time == ff::AV_NOPTS_VALUE {
-                origin
-            } else {
-                (*raw).start_time as f64 / f64::from(ff::AV_TIME_BASE)
-            };
+            let origin = picture.and_then(start).or_else(|| start(stream)).unwrap_or(0.0);
+            let file_start = starts.file.unwrap_or(origin);
             let this = AudioDecoder {
                 input,
                 path: path.to_path_buf(),
@@ -340,8 +435,8 @@ impl AudioDecoder {
     /// Opus packet before the first that a decoder needs to settle. Whether
     /// it worked.
     fn rewind(&mut self) -> bool {
-        match Input::open(&self.path) {
-            Ok(input) => {
+        match open_input(&self.path, self.stream as u32) {
+            Ok((input, _)) => {
                 // SAFETY: the context was just opened and is owned by `input`.
                 unsafe { read_only(input.raw(), &[self.stream as u32]) };
                 self.input = input;
@@ -676,7 +771,7 @@ impl AudioStreams {
             decoder.untouched = false;
             decoders.push(decoder);
         }
-        let input = Input::open(path).map_err(|e| {
+        let (input, _) = open_input(path, streams.first().copied().unwrap_or(0)).map_err(|e| {
             AppError::new("The sound can't be read")
                 .why(format!("{}: {}.", path.display(), e.text))
                 .fix("Check that the file still exists and that the drive is connected.")
@@ -712,33 +807,116 @@ impl AudioStreams {
         }
         let wanted = frames * CHANNELS;
         while !self.ended && self.decoders.iter().all(|d| d.pending.len() < wanted) {
-            // SAFETY: the context is owned by self; the packet is
-            // unreferenced after use; a packet goes to the decoder of its
-            // own stream only.
-            unsafe {
-                if ff::av_read_frame(self.input.raw(), self.packet) < 0 {
-                    for decoder in &mut self.decoders {
-                        if let Err(err) = decoder.feed(ptr::null()) {
-                            tracing::warn!("{}", err.report());
-                        }
-                    }
-                    self.ended = true;
-                    break;
-                }
-                let stream = (*self.packet).stream_index;
-                if let Some(decoder) = self.decoders.iter_mut().find(|d| d.stream == stream)
-                    && let Err(err) = decoder.feed(self.packet)
-                {
-                    // A broken packet: left out, as a straight read leaves it.
-                    tracing::debug!("{}", err.report());
-                }
-                ff::av_packet_unref(self.packet);
-            }
+            // About as many packets as `frames` take (most sound codecs put
+            // a thousand or so samples in each).
+            let batch = self.read_batch(frames.div_ceil(1024).clamp(1, BATCH));
+            decode_batch(&mut self.decoders, batch, self.ended);
         }
         for (decoder, out) in self.decoders.iter_mut().zip(out.iter_mut()) {
             decoder.take(out);
         }
         true
+    }
+}
+
+impl AudioStreams {
+    /// The next packets of every stream asked for, up to `most` for one of
+    /// them, each in its decoder's list. Sets `ended` at the file's end.
+    fn read_batch(&mut self, most: usize) -> Vec<Vec<Packet>> {
+        let mut batch: Vec<Vec<Packet>> = self.decoders.iter().map(|_| Vec::new()).collect();
+        while batch.iter().all(|b| b.len() < most) {
+            // SAFETY: the context is owned by self; a packet read is moved
+            // into one of its own (freed by `Packet`'s Drop), leaving
+            // `self.packet` blank for the next.
+            unsafe {
+                if ff::av_read_frame(self.input.raw(), self.packet) < 0 {
+                    self.ended = true;
+                    break;
+                }
+                let stream = (*self.packet).stream_index;
+                match self.decoders.iter().position(|d| d.stream == stream) {
+                    Some(i) => {
+                        let own = ff::av_packet_alloc();
+                        if own.is_null() {
+                            ff::av_packet_unref(self.packet);
+                            continue;
+                        }
+                        ff::av_packet_move_ref(own, self.packet);
+                        batch[i].push(Packet(own));
+                    }
+                    None => ff::av_packet_unref(self.packet),
+                }
+            }
+        }
+        batch
+    }
+}
+
+/// The most packets of a stream read before they are decoded: about a
+/// second of sound, so a thread per stream has work enough to be worth it.
+const BATCH: usize = 48;
+
+/// A packet of its own, freed when dropped.
+struct Packet(*mut ff::AVPacket);
+
+// A packet is plain data FFmpeg reference-counts; it moves to the thread
+// that decodes it and is used there alone.
+unsafe impl Send for Packet {}
+
+impl Drop for Packet {
+    fn drop(&mut self) {
+        // SAFETY: allocated by FFmpeg, freed once.
+        unsafe { ff::av_packet_free(&mut self.0) }
+    }
+}
+
+/// Hands each decoder its packets, the streams side by side on threads of
+/// their own when more than one has any (decoding is most of the work; a
+/// stream's packets still go to its decoder in order, so what comes out is
+/// what one thread makes). At the file's `end`, each is told so after.
+fn decode_batch(decoders: &mut [AudioDecoder], batch: Vec<Vec<Packet>>, end: bool) {
+    let decode = |decoder: &mut AudioDecoder, packets: Vec<Packet>| {
+        for packet in packets {
+            // SAFETY: the packet is valid and of this decoder's stream.
+            if let Err(err) = unsafe { decoder.feed(packet.0) } {
+                // A broken packet: left out, as a straight read leaves it.
+                tracing::debug!("{}", err.report());
+            }
+        }
+        if end {
+            // SAFETY: a null packet asks the decoder for what it holds back.
+            if let Err(err) = unsafe { decoder.feed(ptr::null()) } {
+                tracing::warn!("{}", err.report());
+            }
+        }
+    };
+    let busy = batch.iter().filter(|b| !b.is_empty()).count();
+    if busy < 2 {
+        for (decoder, packets) in decoders.iter_mut().zip(batch) {
+            decode(decoder, packets);
+        }
+        return;
+    }
+    let mut waiting: Vec<Option<Vec<Packet>>> = batch.into_iter().map(Some).collect();
+    std::thread::scope(|scope| {
+        for (decoder, slot) in decoders.iter_mut().zip(waiting.iter_mut()) {
+            let spawned = std::thread::Builder::new()
+                .name("sound decoding".into())
+                .spawn_scoped(scope, || {
+                    if let Some(packets) = slot.take() {
+                        decode(decoder, packets);
+                    }
+                });
+            if let Err(err) = spawned {
+                tracing::warn!("a sound stream could not be decoded on a thread of its own: {err}");
+            }
+        }
+    });
+    // A stream no thread could be started for: here, after the others.
+    for (decoder, slot) in decoders.iter_mut().zip(waiting) {
+        if let Some(packets) = slot {
+            decode(decoder, packets);
+        }
     }
 }
 
@@ -769,6 +947,68 @@ mod tests {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures")
             .join(name)
+    }
+
+    /// Every sample of `stream`, then a few seeks, read back.
+    fn read_through(path: &Path, stream: u32) -> (Vec<f32>, Vec<Vec<f32>>, f64, f64) {
+        let mut d = AudioDecoder::open(path, stream, 48_000).unwrap();
+        let mut all = Vec::new();
+        let mut block = vec![0.0f32; 4096];
+        loop {
+            let got = d.read(&mut block);
+            if got == 0 {
+                break;
+            }
+            all.extend_from_slice(&block[..got * CHANNELS]);
+        }
+        let seeks = [0.0, 0.42, 1.7, 0.05]
+            .iter()
+            .map(|&at| {
+                d.seek(at);
+                let mut part = vec![0.0f32; 9600];
+                let got = d.read(&mut part);
+                part.truncate(got * CHANNELS);
+                part
+            })
+            .collect();
+        (all, seeks, d.origin, d.file_start)
+    }
+
+    #[test]
+    fn a_file_opened_again_from_its_header_reads_the_same_samples() {
+        // An MP3's header doesn't say its rate: it is probed each time.
+        for (name, streams, from_header) in [
+            ("game-3-audio.mkv", &[1u32, 2, 3][..], true),
+            ("sound-offset.mkv", &[1, 2], true),
+            ("five-streams.mkv", &[1, 5], true),
+            ("voice.mp3", &[0], false),
+            ("x264-default-20s.mp4", &[1], true),
+            ("phone-rotated.mp4", &[1], true),
+        ] {
+            let path = fixture(name);
+            for &stream in streams {
+                // Probed (kept), then from the header with what was kept.
+                PROBED.lock().unwrap().take();
+                let probed = read_through(&path, stream);
+                assert!(
+                    PROBED
+                        .lock()
+                        .unwrap()
+                        .as_ref()
+                        .is_some_and(|p| p.contains_key(&path))
+                );
+                let before = FROM_HEADER.load(std::sync::atomic::Ordering::Relaxed);
+                let header = read_through(&path, stream);
+                if from_header {
+                    assert!(
+                        FROM_HEADER.load(std::sync::atomic::Ordering::Relaxed) > before,
+                        "{name}: from the header"
+                    );
+                }
+                assert!(!probed.0.is_empty(), "{name} {stream} has sound");
+                assert!(probed == header, "{name} stream {stream} reads the same");
+            }
+        }
     }
 
     #[test]

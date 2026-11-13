@@ -54,7 +54,23 @@ pub struct Input {
 }
 
 impl Input {
+    /// Opens the file and reads its stream information, probing the start
+    /// of every stream (decoding some pictures) where its header leaves
+    /// anything out.
     pub fn open(path: &Path) -> Result<Input, OpenError> {
+        Input::open_probed(path, true)
+    }
+
+    /// Opens the file with what its header says only, nothing probed: a
+    /// hundred times quicker on a large recording, for a file whose probed
+    /// facts are known already (see `audio`). Stream start times are then
+    /// unknown, and codec parameters may be missing where a container
+    /// doesn't store them.
+    pub fn open_unprobed(path: &Path) -> Result<Input, OpenError> {
+        Input::open_probed(path, false)
+    }
+
+    fn open_probed(path: &Path, probe: bool) -> Result<Input, OpenError> {
         quiet();
         // FFmpeg takes UTF-8 paths on every system.
         let Some(text) = path.to_str() else {
@@ -78,6 +94,9 @@ impl Input {
             });
         }
         let input = Input { ctx };
+        if !probe {
+            return Ok(input);
+        }
         // SAFETY: `ctx` was just opened successfully and is owned by `input`.
         let r = unsafe { ff::avformat_find_stream_info(input.ctx, ptr::null_mut()) };
         if r < 0 {

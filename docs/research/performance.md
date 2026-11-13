@@ -60,3 +60,13 @@ A review of every piece of work the app times or waits for, ranked by what it co
 Each edit was checked against the code before it on the big timeline: 390 edits (stretches inside, across and on the edges of clips, past the end, selections of up to 300 clips, moves, splits) give the same project, ids included. One set of stretches the old code refused as damaging the project (it left clips out of order) now gives what each clip's parts outside the stretches, moved back, should be; a test checks that model.
 
 Left for later, in the order of the review: each sound stream opening and reading its file on its own (playback's feeders and export), the Library's loudness per stream, drawing waveforms at every peak in view, the import check opening each file several times, per-edit cost growing with the project file, the launcher's picture decoded after every save, clip pictures and Library cards worked out again every session.
+
+### Opening sound streams (item 6)
+
+| Where | Before | After | Why |
+|---|---|---|---|
+| Opening a sound stream of a 1440p recording again (a jump to another of its clips, every start of playback) | 21 to 34 ms | under 1 ms | Each open probed the file, decoding some pictures. A file's stream start times (all a decoder takes from probing) are now kept for the session by path, size and change time, and later opens read only the header when it holds the sound's codec, rate and channels |
+| A jump across clips on the big timeline (three tracks, test timing) | about 70 ms | about 7 ms | The same: the jump opened each track's decoder for the new clip |
+| `AudioStreams` (waveforms), five 10-minute streams | 1.70 s | 1.40 s (two threads) | Packets are read a second at a time and each stream decoded on a thread of its own; on more cores it scales with the streams |
+
+Priming the tracks on threads of their own when playback starts was tried and left out: with the opens this quick it saves little, and what a track mixes depended on the order threads ran in by a few millionths, which playback's sample-exact tests rightly refuse. One demuxer handing packets to every stream's decoder during playback (a fifth of the reading for five streams) is left for later: tracks may play different moments of the same file, so they can't simply share one reader.
