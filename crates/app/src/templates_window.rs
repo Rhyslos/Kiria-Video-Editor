@@ -138,7 +138,7 @@ impl TemplatesWindow {
     ) {
         let ctx = ctx.clone();
         self.working = Some(
-            jobs.submit(PoolKind::Analysis, Priority::Interactive, name, move |_| {
+            jobs.submit_write(PoolKind::Analysis, Priority::Interactive, name, move |_| {
                 let done = work();
                 ctx.request_repaint();
                 done

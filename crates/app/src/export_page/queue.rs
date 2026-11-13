@@ -56,6 +56,9 @@ pub struct Job {
     project: Project,
     sequence: SequenceId,
     devices: Option<Devices>,
+    /// The mix's loudness measured already for this snapshot and stretch
+    /// (the page's check), so normalising doesn't mix it again first.
+    measured: Option<f32>,
     pub state: State,
 }
 
@@ -77,8 +80,15 @@ impl Job {
             project,
             sequence,
             devices,
+            measured: None,
             state: State::Held,
         }
+    }
+
+    /// The same job, normalising with the mix's loudness `measured` for its
+    /// snapshot and stretch (see [`engine::export::Export::start_knowing`]).
+    pub fn knowing(self, measured: Option<f32>) -> Job {
+        Job { measured, ..self }
     }
 
     /// The file's name.
@@ -298,11 +308,12 @@ impl Queue {
             return;
         };
         let notify = Arc::clone(&self.notify);
-        job.state = State::Running(Export::start(
+        job.state = State::Running(Export::start_knowing(
             job.project.clone(),
             job.sequence,
             job.settings.clone(),
             job.devices.clone(),
+            job.measured,
             move || notify(),
         ));
     }

@@ -84,7 +84,7 @@ impl VersionsWindow {
                     {
                         let (p, file, name) =
                             (project.clone(), project_file.to_path_buf(), self.name.clone());
-                        self.saving = Some(jobs.submit(
+                        self.saving = Some(jobs.submit_write(
                             PoolKind::Export,
                             Priority::Interactive,
                             "save version",

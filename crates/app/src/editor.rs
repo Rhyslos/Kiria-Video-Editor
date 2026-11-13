@@ -1793,7 +1793,7 @@ impl Editor {
         let name = if asked { "save" } else { "autosave" };
         let handle = self
             .jobs
-            .submit(PoolKind::Export, priority, name, move |_| job.run());
+            .submit_write(PoolKind::Export, priority, name, move |_| job.run());
         self.pending_saves.push(PendingSave { seq, asked, handle });
     }
 

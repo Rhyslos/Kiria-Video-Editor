@@ -184,7 +184,7 @@ impl ViewKeeper {
         }
         let path = self.path.clone();
         let written = view.clone();
-        let handle = jobs.submit(
+        let handle = jobs.submit_write(
             PoolKind::Export,
             Priority::Background,
             "timeline layout",

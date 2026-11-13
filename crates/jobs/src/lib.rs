@@ -213,7 +213,19 @@ impl JobSystem {
         T: Send + 'static,
         F: FnOnce(&JobContext) -> diag::Result<T> + Send + 'static,
     {
-        self.pool(pool).submit(priority, name, job)
+        self.pool(pool).submit(priority, false, name, job)
+    }
+
+    /// Runs `job`, which writes something that must be on disk when the
+    /// app ends (a save, a file someone asked for), in `pool`. Unlike
+    /// [`JobSystem::submit`]'s, it runs even when the app closes before it
+    /// started: closing gives up every other queued job.
+    pub fn submit_write<T, F>(&self, pool: PoolKind, priority: Priority, name: &str, job: F) -> JobHandle<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&JobContext) -> diag::Result<T> + Send + 'static,
+    {
+        self.pool(pool).submit(priority, true, name, job)
     }
 
     /// Tell the pools whether the timeline is playing.
@@ -293,6 +305,50 @@ mod tests {
             disk_cache_gb: 1,
             background,
         })
+    }
+
+    #[test]
+    fn closing_runs_queued_writes_and_gives_up_the_rest() {
+        let jobs = system(1, BackgroundPolicy::Always);
+        // One thread, kept busy, so everything after it waits in the queue.
+        let (go, gate) = std::sync::mpsc::channel::<()>();
+        let busy = jobs.submit(PoolKind::Export, Priority::Interactive, "busy", move |_| {
+            let _ = gate.recv_timeout(Duration::from_secs(10));
+            Ok(())
+        });
+        let ran = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let reads: Vec<_> = (0..20)
+            .map(|_| {
+                let ran = Arc::clone(&ran);
+                jobs.submit(PoolKind::Export, Priority::Background, "read", move |_| {
+                    std::thread::sleep(Duration::from_millis(100));
+                    ran.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Ok(())
+                })
+            })
+            .collect();
+        let written = Arc::new(AtomicBool::new(false));
+        let w = Arc::clone(&written);
+        let save = jobs.submit_write(PoolKind::Export, Priority::Background, "save", move |_| {
+            w.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        });
+        let started = Instant::now();
+        // Closing starts while the busy job still runs; then it ends.
+        let closing = std::thread::spawn(move || drop(jobs));
+        std::thread::sleep(Duration::from_millis(100));
+        let _ = go.send(());
+        closing.join().unwrap();
+        assert!(busy.wait().is_ok(), "a job under way finishes");
+        assert!(save.wait().is_ok() && written.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "the reads were not waited for"
+        );
+        assert_eq!(ran.load(std::sync::atomic::Ordering::SeqCst), 0);
+        for read in reads {
+            assert!(read.wait().is_err(), "a job given up says so");
+        }
     }
 
     #[cfg(target_os = "linux")]

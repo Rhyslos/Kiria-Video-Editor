@@ -460,3 +460,32 @@ fn a_real_project_answers_in_under_100_ms() {
     }
     assert!(live.take_error().is_none());
 }
+
+/// Following the same project again, every frame as the editor does,
+/// sends nothing and wakes nobody: a small project's collections are
+/// copied rather than shared when cloned, so this is about contents.
+#[test]
+fn following_an_unchanged_project_wakes_nobody() {
+    let s = sample();
+    let wakes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = std::sync::Arc::clone(&wakes);
+    let mut live = Live::start(move || {
+        counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    });
+    live.ask("drawer", &Query::text("drone"));
+    live.follow(&s.project);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !live.is_current("drawer") {
+        assert!(Instant::now() < deadline, "the worker answers");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    std::thread::sleep(Duration::from_millis(200));
+    let settled = wakes.load(std::sync::atomic::Ordering::SeqCst);
+    for _ in 0..50 {
+        live.follow(&s.project.clone());
+        live.ask("drawer", &Query::text("drone"));
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(wakes.load(std::sync::atomic::Ordering::SeqCst), settled);
+    assert!(live.is_current("drawer"));
+}

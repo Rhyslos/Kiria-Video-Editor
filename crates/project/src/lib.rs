@@ -45,6 +45,7 @@ pub mod model;
 pub mod package;
 pub mod prune;
 pub mod ramp;
+pub mod same;
 pub mod side_files;
 pub mod sound;
 pub mod templates;

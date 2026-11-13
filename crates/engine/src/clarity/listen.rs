@@ -205,7 +205,8 @@ impl Listening {
                 }
                 for t in self.tracks.iter_mut().filter(|t| t.key == key_pass) {
                     let (l, r) = (&mut t.l[span.clone()], &mut t.r[span.clone()]);
-                    t.strip.process(pos, &self.key_db, true, None, l, r, &t.readout);
+                    t.strip
+                        .process(pos, &self.key_db, true, None, l, r, Some(&t.readout));
                     if key_pass {
                         for (sum, part) in self.key_sum.iter_mut().zip([&*l, &*r]) {
                             for (s, p) in sum.iter_mut().zip(part) {

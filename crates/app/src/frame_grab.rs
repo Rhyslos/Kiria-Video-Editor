@@ -50,11 +50,12 @@ impl FrameGrab {
         {
             let path = with_png(path);
             let (out, ctx) = (path.clone(), ctx.clone());
-            let handle = jobs.submit(PoolKind::Export, Priority::Interactive, "save frame", move |_| {
-                let result = engine::thumbnail::save_frame(&project, project.active_sequence, at, &out);
-                ctx.request_repaint();
-                result
-            });
+            let handle =
+                jobs.submit_write(PoolKind::Export, Priority::Interactive, "save frame", move |_| {
+                    let result = engine::thumbnail::save_frame(&project, project.active_sequence, at, &out);
+                    ctx.request_repaint();
+                    result
+                });
             self.saving = Some((path, handle));
         }
         let (_, handle) = self.saving.as_ref()?;

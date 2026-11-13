@@ -117,7 +117,7 @@ impl Waveforms {
         self.streams.clear();
         if let Some(store) = self.store.clone() {
             // Nobody waits for it: the handle is let go.
-            drop(jobs.submit(
+            drop(jobs.submit_write(
                 PoolKind::Analysis,
                 Priority::Interactive,
                 "clear waveforms",

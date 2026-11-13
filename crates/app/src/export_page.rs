@@ -454,7 +454,7 @@ impl ExportPage {
         if let Some((p, s, n, counts)) = &self.media_counts
             && *s == sequence
             && *n == missing.len()
-            && p.sequences.ptr_eq(&project.sequences)
+            && project::same::same_vector(&p.sequences, &project.sequences)
         {
             return *counts;
         }
@@ -1078,7 +1078,8 @@ impl ExportPage {
             plan.bytes,
             (project.clone(), plan.sequence),
             devices,
-        );
+        )
+        .knowing(self.loudness.measured_for(project, plan.sequence, plan.range));
         self.queue.add(job, now);
     }
 

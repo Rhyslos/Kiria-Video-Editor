@@ -5,7 +5,7 @@ use crate::import;
 use crate::reading::Pace;
 use crate::waveforms::Look;
 use project::{ClipId, LabelColor, Project, Sequence};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 use ui_kit::timeline::{CacheRange, CacheState, LoadKind, LoadState, Loading, cache_bar};
 use ui_kit::{ClipShows, TimelineClip, TimelineMarker, TimelineTrack};
@@ -273,7 +273,10 @@ pub fn drawn(
     mut waveform: impl FnMut(&project::MediaRef, u32) -> Look,
     mut pictures: impl FnMut(&project::MediaRef, u32) -> (Option<ui_kit::ClipPictures>, Option<LoadState>),
 ) -> Drawn {
-    let links: Vec<_> = seq
+    // Looked up once per clip: sets, so a large selection costs no more
+    // per clip than a small one.
+    let selected: HashSet<ClipId> = selected.iter().copied().collect();
+    let links: HashSet<_> = seq
         .tracks()
         .flat_map(|t| t.clips.iter())
         .filter(|c| selected.contains(&c.id))
@@ -461,19 +464,22 @@ fn drawn_sound(sound: &project::Sound) -> ui_kit::ClipSound {
 /// sound clip linked to it), and sound clips that belong to a video clip
 /// leave the audio area. Tracks left empty there are not shown.
 pub fn fold_sound(drawn: &mut Drawn) {
-    let video_links: Vec<u64> = drawn
+    let video_links: HashSet<u64> = drawn
         .video
         .iter()
         .flat_map(|t| t.clips.iter())
         .filter_map(|c| c.link)
         .collect();
+    // The first sound clip of each link, found in one pass.
+    let mut first_sound: HashMap<u64, &TimelineClip> = HashMap::new();
+    for a in drawn.audio.iter().flat_map(|t| t.clips.iter()) {
+        if let Some(link) = a.link {
+            first_sound.entry(link).or_insert(a);
+        }
+    }
     for clip in drawn.video.iter_mut().flat_map(|t| t.clips.iter_mut()) {
         let Some(link) = clip.link else { continue };
-        let sound = drawn
-            .audio
-            .iter()
-            .flat_map(|t| t.clips.iter())
-            .find(|a| a.link == Some(link));
+        let sound = first_sound.get(&link).copied();
         clip.waveform = sound.and_then(|a| a.waveform.clone());
         clip.sound = sound.map_or_else(Default::default, |a| a.sound);
         // Its pictures' reading shows first; then its sound's.
@@ -838,7 +844,13 @@ pub fn all_clips(seq: &Sequence) -> Vec<ClipId> {
 
 /// Drops clips that no longer exist (after a delete or an undo).
 pub fn keep_existing(selected: &mut Vec<ClipId>, seq: &Sequence) {
-    selected.retain(|id| seq.tracks().any(|t| t.clips.iter().any(|c| c.id == *id)));
+    if selected.is_empty() {
+        return;
+    }
+    // One pass over the clips, whatever the size of the selection: this
+    // runs every frame.
+    let existing: HashSet<ClipId> = seq.tracks().flat_map(|t| t.clips.iter().map(|c| c.id)).collect();
+    selected.retain(|id| existing.contains(id));
 }
 
 #[cfg(test)]

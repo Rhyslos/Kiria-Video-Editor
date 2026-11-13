@@ -51,10 +51,9 @@ impl PruneWindow {
     /// The files no timeline uses, worked out again only when the project's
     /// media or timelines changed (undo while the dialog is open).
     fn unused(&mut self, project: &Project) -> &[MediaId] {
-        let same = self
-            .listed_for
-            .as_ref()
-            .is_some_and(|p| p.media.ptr_eq(&project.media) && p.sequences.ptr_eq(&project.sequences));
+        let same = self.listed_for.as_ref().is_some_and(|p| {
+            p.media.ptr_eq(&project.media) && project::same::same_vector(&p.sequences, &project.sequences)
+        });
         if !same {
             self.unused = project::prune::unused_media(project);
             self.kept.retain(|m| project.media.contains_key(m));

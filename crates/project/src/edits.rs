@@ -6,7 +6,8 @@
 //! edit changes nothing.
 
 use crate::command::{
-    Edge, insert_clip, missing, sequence_mut, sequence_ref, split, tracks_mut, with_linked,
+    Edge, crossing, halves, insert_clip, missing, right_ids, sequence_mut, sequence_ref, split, tracks_mut,
+    with_linked,
 };
 use crate::ids::{ClipId, SequenceId, TrackId};
 use crate::model::{Clip, Project, Region, Sequence};
@@ -313,8 +314,7 @@ pub(crate) fn cut_edges_on(
 fn split_where_crossing(p: &mut Project, sequence: SequenceId, at: Time) -> diag::Result<()> {
     let crosses = sequence_ref(p, sequence)?
         .tracks()
-        .flat_map(|t| t.clips.iter())
-        .any(|c| c.start < at && at < c.end());
+        .any(|t| crossing(&t.clips, at).is_some());
     if crosses {
         split(p, sequence, at, None)?;
     }
@@ -338,22 +338,91 @@ pub(crate) fn remove_ranges(p: &mut Project, sequence: SequenceId, ranges: &[Reg
             _ => merged.push(r),
         }
     }
+    // Stretch by stretch from the last, as cutting at its end, then at its
+    // start, and taking out what is between, one after another, would: the
+    // same cuts in the same order, so the same new ids. Each track is
+    // worked from its end: what lies after the stretch is set aside and
+    // moved back at the end by the stretches before it, added up (a stretch
+    // only ever moves clips after every stretch still to come). Nothing is
+    // put in the middle of a track, so each stretch costs a few steps per
+    // track, not a walk over every clip.
+    let seq = sequence_mut(p, sequence)?;
+    let mut work: Vec<(imbl::Vector<Clip>, Vec<Clip>)> = tracks_mut(seq)
+        .map(|t| (std::mem::take(&mut t.clips), Vec::new()))
+        .collect();
     for r in merged.iter().rev() {
-        split_where_crossing(p, sequence, r.end)?;
-        split_where_crossing(p, sequence, r.start)?;
-        let length = r.length();
-        let seq = sequence_mut(p, sequence)?;
-        for track in tracks_mut(seq) {
-            track.clips.retain(|c| c.end() <= r.start || c.start >= r.end);
-            for c in track.clips.iter_mut().filter(|c| c.start >= r.end) {
-                c.start = c.start - length;
+        for (before, after) in &mut work {
+            while let Some(c) = before.pop_back() {
+                if c.start < r.end {
+                    before.push_back(c);
+                    break;
+                }
+                after.push(c);
             }
         }
+        cut_track_ends(p, &mut work, r.end, true);
+        for (before, _) in &mut work {
+            while before.last().is_some_and(|c| c.start >= r.start) {
+                before.pop_back();
+            }
+        }
+        cut_track_ends(p, &mut work, r.start, false);
+    }
+    let mut removed = vec![Time::ZERO];
+    for r in &merged {
+        let before = removed[removed.len() - 1];
+        removed.push(before + r.length());
+    }
+    let seq = sequence_mut(p, sequence)?;
+    for (track, (mut before, after)) in tracks_mut(seq).zip(work) {
+        before.extend(after.into_iter().rev());
+        for c in before.iter_mut() {
+            let k = merged.partition_point(|r| r.end <= c.start);
+            if k > 0 {
+                c.start = c.start - removed[k];
+            }
+        }
+        track.clips = before;
+    }
+    for r in merged.iter().rev() {
+        let length = r.length();
         for label in seq.labels.iter_mut().filter(|l| l.at > r.start) {
             label.at = (label.at - length).max(r.start);
         }
     }
     Ok(())
+}
+
+/// Cuts at `at` the last clip of each track's part before it (`work`'s
+/// first half) when it crosses `at`, as a split there would, ids included.
+/// The part after the cut is set aside after it when `keep`, else dropped.
+fn cut_track_ends(p: &mut Project, work: &mut [(imbl::Vector<Clip>, Vec<Clip>)], at: Time, keep: bool) {
+    let cuts: Vec<(ClipId, Option<crate::ids::LinkId>)> = work
+        .iter()
+        .filter_map(|(before, _)| before.last())
+        .filter(|c| c.start < at && at < c.end())
+        .map(|c| (c.id, c.link))
+        .collect();
+    if cuts.is_empty() {
+        return;
+    }
+    let ids = right_ids(p, &cuts);
+    let mut ids = ids.into_iter();
+    for (before, after) in work.iter_mut() {
+        let Some(c) = before.last() else { continue };
+        if !(c.start < at && at < c.end()) {
+            continue;
+        }
+        let Some((_, right_id, right_link)) = ids.next() else {
+            break;
+        };
+        let (left, right) = halves(c, at, right_id, right_link);
+        before.pop_back();
+        before.push_back(left);
+        if keep {
+            after.push(right);
+        }
+    }
 }
 
 fn find(seq: &Sequence, clip: ClipId) -> diag::Result<Clip> {

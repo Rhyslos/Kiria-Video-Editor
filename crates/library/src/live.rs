@@ -60,8 +60,9 @@ impl std::fmt::Debug for Live {
 }
 
 impl Live {
-    /// Starts the worker. `wake` is called after each new answer (the
-    /// interface asks for a repaint there).
+    /// Starts the worker. `wake` is called when an answer changed or an
+    /// error came (the interface asks for a repaint there), never for an
+    /// answer the same as the one before.
     pub fn start(wake: impl Fn() + Send + 'static) -> Live {
         let (send, receive) = channel();
         let shared = Arc::new(Mutex::new(Shared::default()));
@@ -88,16 +89,13 @@ impl Live {
 
     /// Hands the worker `project` when its media, library or timelines
     /// differ from the last one handed over. Cheap enough for every frame:
-    /// snapshots share unchanged parts, so this compares pointers.
+    /// snapshots share unchanged parts, so this compares pointers
+    /// ([`Project::same_media_library_and_timelines`]).
     pub fn follow(&mut self, project: &Project) {
-        let same = self.followed.as_ref().is_some_and(|old| {
-            old.media.ptr_eq(&project.media)
-                && old.library.labels.ptr_eq(&project.library.labels)
-                && old.library.tagged.ptr_eq(&project.library.tagged)
-                && old.library.notes.ptr_eq(&project.library.notes)
-                && old.library.lists.ptr_eq(&project.library.lists)
-                && old.sequences.ptr_eq(&project.sequences)
-        });
+        let same = self
+            .followed
+            .as_ref()
+            .is_some_and(|old| old.same_media_library_and_timelines(project));
         if same {
             return;
         }
@@ -192,12 +190,16 @@ fn run(receive: &Receiver<Message>, shared: &Mutex<Shared>, wake: &dyn Fn()) {
             s.answers.clear();
             queries.retain(|asker, _| asked.contains(asker));
         }
+        let mut changed = forget;
         let mut all = asked;
         if let Some(project) = project {
             let started = Instant::now();
             match index.sync(&project) {
                 Ok(done) => tracing::debug!(?done, took = ?started.elapsed(), "library index synced"),
-                Err(err) => lock(shared).error = Some(err),
+                Err(err) => {
+                    lock(shared).error = Some(err);
+                    changed = true;
+                }
             }
             all = queries.keys().copied().collect();
         }
@@ -206,17 +208,32 @@ fn run(receive: &Receiver<Message>, shared: &Mutex<Shared>, wake: &dyn Fn()) {
             let started = Instant::now();
             match index.search(query) {
                 Ok(media) => {
-                    let answer = Answer {
-                        query: query.clone(),
-                        media,
-                        took: started.elapsed(),
-                    };
-                    lock(shared).answers.insert(asker, Arc::new(answer));
+                    let mut s = lock(shared);
+                    let new = s
+                        .answers
+                        .get(asker)
+                        .is_none_or(|old| old.query != *query || old.media != media);
+                    if new {
+                        let answer = Answer {
+                            query: query.clone(),
+                            media,
+                            took: started.elapsed(),
+                        };
+                        s.answers.insert(asker, Arc::new(answer));
+                        changed = true;
+                    }
                 }
-                Err(err) => lock(shared).error = Some(err),
+                Err(err) => {
+                    lock(shared).error = Some(err);
+                    changed = true;
+                }
             }
         }
         lock(shared).synced += synced;
-        wake();
+        // A sync that changed no answer still makes them current
+        // (`is_current`), which a page waiting on it wants to see.
+        if changed || synced > 0 {
+            wake();
+        }
     }
 }

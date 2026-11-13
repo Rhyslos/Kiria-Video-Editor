@@ -450,7 +450,7 @@ impl LoudnessWatch {
         let same = self.measuring.as_ref().is_some_and(|m| {
             m.sequence == sequence
                 && m.range == range
-                && m.project.sequences.ptr_eq(&project.sequences)
+                && project::same::same_vector(&m.project.sequences, &project.sequences)
                 && m.project.media.ptr_eq(&project.media)
         });
         if !same {
@@ -475,6 +475,24 @@ impl LoudnessWatch {
             Some(found) => Loudness::Measured(found),
             None => Loudness::Measuring(measuring.done.load(Ordering::Relaxed) as f32 / 1000.0),
         })
+    }
+
+    /// The integrated loudness measured for exactly `sequence` of `project`
+    /// over `range`, when that is what was measured and it is done: an
+    /// export of that snapshot normalises with it instead of mixing the
+    /// stretch again first.
+    pub fn measured_for(
+        &self,
+        project: &Project,
+        sequence: SequenceId,
+        range: Option<(Time, Time)>,
+    ) -> Option<f32> {
+        let m = self.measuring.as_ref()?;
+        let same = m.sequence == sequence
+            && m.range == range
+            && project::same::same_vector(&m.project.sequences, &project.sequences)
+            && m.project.media.ptr_eq(&project.media);
+        same.then_some(self.found?.integrated)
     }
 
     /// Whether the newest measuring is done (for screenshots).

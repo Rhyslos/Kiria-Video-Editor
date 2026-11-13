@@ -1528,3 +1528,53 @@ fn the_mix_is_measured_as_an_export_without_normalising_writes_it() {
     cancel.store(true, Ordering::Relaxed);
     assert_eq!(measure_mix(&project, seq, None, &cancel, &done), None);
 }
+
+#[test]
+fn normalising_takes_the_loudness_measured_already_and_matches_measuring_again() {
+    let (project, seq) = louder(6);
+    let range = Some((Time::ZERO, Time::seconds(2)));
+    let (cancel, done) = (AtomicBool::new(false), AtomicU32::new(0));
+    let checked = measure_mix(&project, seq, range, &cancel, &done).expect("measured");
+    // Measured again by the export itself: the same figure, to the bit.
+    let (again, _, _dir) = wav(project.clone(), seq, Some(-14.0), true);
+    assert_eq!(again.normalised.expect("normalised").measured, checked.integrated);
+    // Handed the figure, the export takes it instead of measuring.
+    let dir = tempfile::tempdir().unwrap();
+    let settings = |path: PathBuf, rate: Option<Rate>| ExportSettings {
+        range,
+        container: Container::Wav,
+        video: None,
+        audio: AudioCodec::Pcm24,
+        normalise: Some(-14.0),
+        limit: true,
+        rate,
+        ..ExportSettings::mp4(path)
+    };
+    let known = -30.0;
+    let export = Export::start_knowing(
+        project.clone(),
+        seq,
+        settings(dir.path().join("a.wav"), None),
+        None,
+        Some(known),
+        || {},
+    );
+    let Outcome::Done(taken) = wait(&export) else {
+        panic!("exported")
+    };
+    assert_eq!(taken.normalised.expect("normalised").measured, known);
+    // At another frame rate than measured at, it measures for itself.
+    let other = Rate::new(25, 1).unwrap();
+    let export = Export::start_knowing(
+        project,
+        seq,
+        settings(dir.path().join("b.wav"), Some(other)),
+        None,
+        Some(known),
+        || {},
+    );
+    let Outcome::Done(own) = wait(&export) else {
+        panic!("exported")
+    };
+    assert_ne!(own.normalised.expect("normalised").measured, known);
+}

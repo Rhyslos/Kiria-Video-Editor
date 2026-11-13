@@ -99,7 +99,7 @@ impl Strip {
         tap: Option<&mut Tap>,
         l: &mut [f32],
         r: &mut [f32],
-        readout: &TrackReadout,
+        readout: Option<&TrackReadout>,
     ) {
         let s = &self.settings;
         if s.high_pass.on {
@@ -119,13 +119,17 @@ impl Strip {
         }
         self.fader.audible = audible;
         self.fader.process(pos, l, r);
-        self.meter.process(l, r, readout);
-        readout.put_effects(
-            self.compressor.reduction_db(),
-            self.cleanup.reduction_db(),
-            self.duck.ducked_db(),
-            self.level.gain_db(),
-        );
+        // No readout: nobody watches this mix (it is being measured), so
+        // the meter's work is skipped.
+        if let Some(readout) = readout {
+            self.meter.process(l, r, readout);
+            readout.put_effects(
+                self.compressor.reduction_db(),
+                self.cleanup.reduction_db(),
+                self.duck.ducked_db(),
+                self.level.gain_db(),
+            );
+        }
     }
 
     /// Carries everything that runs on from block to block (filter

@@ -303,12 +303,7 @@ impl Kept {
             && self.group == other.group
             && self.sizes == other.sizes
             && self.missing == other.missing
-            && a.media.ptr_eq(&b.media)
-            && a.sequences.ptr_eq(&b.sequences)
-            && a.library.labels.ptr_eq(&b.library.labels)
-            && a.library.tagged.ptr_eq(&b.library.tagged)
-            && a.library.notes.ptr_eq(&b.library.notes)
-            && a.library.lists.ptr_eq(&b.library.lists)
+            && a.same_media_library_and_timelines(b)
             && other.made.duration_since(self.made) < FRESH_FOR
     }
 }
