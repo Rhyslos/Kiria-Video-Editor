@@ -82,6 +82,18 @@ pub mod context {
     pub const DRAGGING: Color32 = Color32::from_rgb(0xE0, 0x7B, 0xA8);
 }
 
+/// Track role colours: the mark by an audio track's name, the top of its
+/// mixer strip and the Audio page's Show filter. The same in every theme;
+/// told apart by lightness as well as hue.
+pub mod role {
+    use egui::Color32;
+    pub const DIALOGUE: Color32 = Color32::from_rgb(0xFB, 0x92, 0x3C);
+    pub const MUSIC: Color32 = Color32::from_rgb(0x34, 0xD3, 0x99);
+    pub const EFFECTS: Color32 = Color32::from_rgb(0xA3, 0xE6, 0x35);
+    pub const AMBIENCE: Color32 = Color32::from_rgb(0x9C, 0xA3, 0xAF);
+    pub const OTHER: Color32 = Color32::from_rgb(0x6B, 0x70, 0x78);
+}
+
 const fn hex(rgb: u32) -> Color32 {
     Color32::from_rgb((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8)
 }

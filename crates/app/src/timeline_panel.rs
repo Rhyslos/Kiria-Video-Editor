@@ -281,6 +281,7 @@ pub fn drawn(
                         project::ClipKind::Timeline(_) => ClipShows::Timeline,
                         project::ClipKind::Adjustment => ClipShows::Adjustment,
                     },
+                    line: None,
                 }
             })
             .collect();
@@ -293,6 +294,8 @@ pub fn drawn(
             gain_db: t.gain_db,
             clips,
             loading: progress.loading(what),
+            line: None,
+            role: None,
         }
     };
     let (video, audio) = (
@@ -795,6 +798,7 @@ mod tests {
             keyframes: Default::default(),
             speed_curve: None,
             shows: Default::default(),
+            line: None,
         }
     }
 
@@ -808,6 +812,8 @@ mod tests {
             hidden: false,
             gain_db: 0.0,
             loading: None,
+            line: None,
+            role: None,
         }
     }
 

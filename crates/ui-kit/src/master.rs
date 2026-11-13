@@ -17,8 +17,8 @@ use egui::{Align2, CursorIcon, FontId, Rect, Sense, Stroke, Ui, pos2, vec2};
 use serde::{Deserialize, Serialize};
 
 /// The scale shared by the meter and the fader, in dB.
-const TOP_DB: f32 = 12.0;
-const BOTTOM_DB: f32 = -60.0;
+pub(crate) const TOP_DB: f32 = 12.0;
+pub(crate) const BOTTOM_DB: f32 = -60.0;
 /// How far drawn levels fall each frame (about 20 dB a second at 60
 /// frames a second), so they can be read.
 const FALL_DB: f32 = 0.35;
@@ -189,12 +189,12 @@ impl Default for MasterColumn {
 }
 
 /// y on the scale for `db` within `bar`.
-fn y_of(bar: Rect, db: f32) -> f32 {
+pub(crate) fn y_of(bar: Rect, db: f32) -> f32 {
     let t = ((db - BOTTOM_DB) / (TOP_DB - BOTTOM_DB)).clamp(0.0, 1.0);
     bar.bottom() - t * bar.height()
 }
 
-fn db_at(bar: Rect, y: f32) -> f32 {
+pub(crate) fn db_at(bar: Rect, y: f32) -> f32 {
     let t = ((bar.bottom() - y) / bar.height().max(1.0)).clamp(0.0, 1.0);
     BOTTOM_DB + t * (TOP_DB - BOTTOM_DB)
 }
@@ -209,7 +209,7 @@ pub fn db_text(db: f32) -> String {
 }
 
 /// `now` drawn: up at once, down slowly from what was drawn.
-fn falling(drawn: f32, now: f32) -> f32 {
+pub(crate) fn falling(drawn: f32, now: f32) -> f32 {
     let fallen = drawn - FALL_DB;
     if now.is_finite() { now.max(fallen) } else { fallen }.max(BOTTOM_DB)
 }

@@ -12,6 +12,8 @@ name = "editor"
 path = "src/main.rs"
 
 [dependencies]
+# The Audio page: effect settings, curves and meters (pure Rust).
+audio = { path = "../audio" }
 cache = { path = "../cache" }
 brand = { path = "../brand" }
 diag = { path = "../diag" }
@@ -19,6 +21,7 @@ eframe = "0.37"
 engine = { path = "../engine" }
 egui = "0.37"
 graphics = { path = "../graphics" }
+imbl = "7"
 image = { version = "0.25", default-features = false, features = ["png"] }
 jobs = { path = "../jobs" }
 library = { path = "../library" }

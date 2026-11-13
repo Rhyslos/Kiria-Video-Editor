@@ -111,6 +111,21 @@ pub(super) fn menu(
                     }
                     ui.close();
                 }
+                if !data.roles.is_empty() {
+                    ui.menu_button("Role", |ui| {
+                        for (i, (name, colour)) in data.roles.iter().enumerate() {
+                            let text = egui::RichText::new(format!("● {name}"));
+                            let picked = track.role == Some(i);
+                            if ui.radio(picked, text.color(*colour)).clicked() {
+                                events.push(TimelineEvent::TrackRole {
+                                    track: track.id,
+                                    role: i,
+                                });
+                                ui.close();
+                            }
+                        }
+                    });
+                }
             }
             let remove = egui::Button::new(format!("Remove {}", track.name));
             match why_it_stays(track, tracks.len()) {

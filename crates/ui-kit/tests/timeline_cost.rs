@@ -30,6 +30,7 @@ fn tracks(count: usize, clips_each: usize, clip_len: f64) -> Vec<TimelineTrack> 
                     keyframes: Default::default(),
                     speed_curve: None,
                     shows: Default::default(),
+                    line: None,
                 })
                 .collect(),
             muted: false,
@@ -37,6 +38,8 @@ fn tracks(count: usize, clips_each: usize, clip_len: f64) -> Vec<TimelineTrack> 
             hidden: false,
             gain_db: 0.0,
             loading: None,
+            line: None,
+            role: None,
         })
         .collect()
 }
@@ -96,6 +99,7 @@ fn timeline_frame_cost() {
                         about: "",
                     },
                     keyframe_eases: &["Linear", "Hold", "Smooth"],
+                    roles: &[],
                 };
                 view.show(ui, &theme, &data, egui::vec2(1920.0, 400.0));
             });

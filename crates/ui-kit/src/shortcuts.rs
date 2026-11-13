@@ -223,6 +223,7 @@ const USUAL: &[(Action, Shortcut)] = &[
     (Action::Templates, Shortcut::ctrl(Key::T)),
     (Action::SaveTemplate, Shortcut::ctrl_shift(Key::S)),
     (Action::RoughCut, Shortcut::ctrl_shift(Key::T)),
+    (Action::VolumeLines, Shortcut::key(Key::A)),
     (Action::KeyboardShortcuts, Shortcut::ctrl(Key::Slash)),
 ];
 

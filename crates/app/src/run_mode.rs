@@ -90,6 +90,11 @@ pub struct Options {
     pub pointer: Option<crate::fake_pointer::FakePointer>,
     /// Show the question about video decoding that stopped the app (`--decoding-warning`, for screenshots).
     pub decoding_warning: bool,
+    /// The Audio page's tool, bottom view and track, and a project made to
+    /// have many audio tracks (`--audio-tool compressor`, `--audio-view
+    /// stacked`, `--audio-track 3`, `--audio-tracks 30`; for screenshots
+    /// and the responsiveness test of the Audio page).
+    pub audio: crate::audio_page::Start,
     pub mode: RunMode,
 }
 
@@ -140,6 +145,32 @@ impl Options {
                         .find(|p| p.label().eq_ignore_ascii_case(&name))
                         .ok_or("--page needs library, edit, color, audio or export")?;
                     options.page = Some(page);
+                }
+                "--audio-tool" => {
+                    let name = args.next().unwrap_or_default();
+                    let tool = crate::audio_page::Tool::from_name(&name)
+                        .ok_or("--audio-tool needs eq, compressor, clean-up, ducking, loudness or meters")?;
+                    options.audio.tool = Some(tool);
+                }
+                "--audio-view" => {
+                    let name = args.next().unwrap_or_default();
+                    let view = crate::audio_page::start::view_named(&name)
+                        .ok_or("--audio-view needs timeline, mixer, split or stacked")?;
+                    options.audio.view = Some(view);
+                }
+                "--audio-track" => {
+                    let n = args
+                        .next()
+                        .and_then(|n| n.parse().ok())
+                        .ok_or("--audio-track needs a track's number, from 1")?;
+                    options.audio.track = Some(n);
+                }
+                "--audio-tracks" => {
+                    let n = args
+                        .next()
+                        .and_then(|n| n.parse().ok())
+                        .ok_or("--audio-tracks needs a number of tracks")?;
+                    options.audio.tracks = Some(n);
                 }
                 "--library-tab" => {
                     let name = args.next().ok_or("--library-tab needs a tab's name")?;

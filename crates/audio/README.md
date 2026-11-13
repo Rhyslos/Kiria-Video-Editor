@@ -4,7 +4,7 @@ The real-time audio engine: effects on every track, the master, and the mixer th
 
 ## Status
 
-Built (8.1): every effect, the master, the mixer, its controller, the input rings, the fixed-block adapter, the meters and the analyser, all tested, and used by `engine`: playback mixes through it in the sound card's callback and export runs the same mixer offline (see "How the engine uses it"). The Audio page that sets the effects is next (8.4). The design and how it was chosen are in [docs/research/audio-engine.md](../../docs/research/audio-engine.md) (measured in `spikes/audio-engine`).
+Built (8.1): every effect, the master, the mixer, its controller, the input rings, the fixed-block adapter, the meters and the analyser, all tested, and used by `engine`: playback mixes through it in the sound card's callback and export runs the same mixer offline (see "How the engine uses it"). The Audio page sets the effects and shows the meters, the analyser and the gain reduction (8.4, in `crates/app`). The design and how it was chosen are in [docs/research/audio-engine.md](../../docs/research/audio-engine.md) (measured in `spikes/audio-engine`).
 
 ## Files
 

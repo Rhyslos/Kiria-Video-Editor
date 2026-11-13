@@ -8,7 +8,7 @@ The Cargo workspace members. One engine with no interface, and thin pages on top
 | [diag](diag/) | Explained errors, logging, crash reports | 0.2 (done) |
 | [project](project/) | Project model, commands, undo/redo, autosave | 0.3 – 0.4 (done) |
 | [jobs](jobs/) | Worker pools, priorities, resource budgets | 0.5 (done) |
-| [ui-kit](ui-kit/) | Themes, top bar, shortcuts, shared timeline widget | 0.6 (done), 4 |
+| [ui-kit](ui-kit/) | Themes, top bar, shortcuts, shared timeline widget, the mixer's strips | 0.6 (done), 4, 8 |
 | [graphics](graphics/) | Which graphics system draws the windows: the shared settings, the start plan, the safety nets around Vulkan and around decoding on the window's device, and opening the editor's Vulkan device for video decoding | 4A |
 | [video-device](video-device/) | The window's graphics device as the video decoder shares it, and the copy of a decoded picture into images the viewer draws from | 4A |
 | [os](os/) | Small questions to the operating system: the keyboard layout in use, followed live; worker threads below the interface's priority; very small numbers as zero on the sound card's thread; an allocator that counts, for tests | 4, 8 |
@@ -18,7 +18,7 @@ The Cargo workspace members. One engine with no interface, and thin pages on top
 | [launcher](launcher/) | Project browser and update panel (binary `launcher`) | 2 |
 | [media](media/) | Probe, demux, decode, encode (FFmpeg wrapper) | 4A (probe, picture and sound decoding done) |
 | [cache](cache/) | RAM, GPU and disk caches, proxies, thumbnails, waveforms | 4A (waveforms, thumbnails, proxies done) |
-| [audio](audio/) | Real-time mixer, effects, meters, loudness | 8 (effects, master and mixer built; playback and export mix through it; the Audio page next) |
+| [audio](audio/) | Real-time mixer, effects, meters, loudness | 8 (effects, master and mixer built; playback and export mix through it; the Audio page built) |
 | [render](render/) | GPU compositor (layers into a frame, a frame shown), colour, effects | 4C (compositor done), 7, 9 |
 | [engine](engine/) | Playback scheduler and export pipeline | 4A (preview picture, mixing, playback done), 6 |
 | [library](library/) | Media index and search: types, labels, lists, notes, use on timelines, full-text search (SQLite, in memory, built from the project); media folders watched for new recordings | 5 (5.1, 5.2 done) |

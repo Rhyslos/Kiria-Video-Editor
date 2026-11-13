@@ -14,6 +14,7 @@ pub mod keyboard;
 pub mod keyframe;
 pub mod layout;
 pub mod master;
+pub mod mixer;
 pub mod picture_handles;
 pub mod scrub;
 pub mod shortcuts;
@@ -37,8 +38,8 @@ pub use shortcuts::{Action, Context, Shortcut, ShortcutTable};
 pub use theme::{Theme, ThemeName, status};
 pub use timeline::{
     ClickMoves, ClipEdge, ClipPictures, ClipShows, ClipSound, ClipWaveform, DraggedMedia, DraggedTimeline,
-    KeyframeMark, SourceMap, SpeedCurve, TimelineClip, TimelineData, TimelineEvent, TimelineMarker,
-    TimelineTrack, TimelineView, Tool, ViewStep,
+    KeyframeMark, LineKind, LineOwner, LinesShown, SourceMap, SpeedCurve, TimelineClip, TimelineData,
+    TimelineEvent, TimelineMarker, TimelineTrack, TimelineView, Tool, ViewStep,
 };
 pub use top_bar::{TitleBar, TopBar, TopBarClicks, logo_mark, with_keys};
 pub use transport::TransportClick;

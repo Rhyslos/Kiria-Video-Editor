@@ -148,6 +148,7 @@ actions! {
     NestSelection, Timeline, "Nest the selected clips: move them into a timeline of their own";
     SyncBySound, Timeline, "Sync by sound: line up the selected clips by what they hear…";
     AddAdjustmentLayer, Timeline, "Add an adjustment layer at the playhead: its colour changes everything below it";
+    VolumeLines, Timeline, "Volume and pan lines: draw them on audio tracks and clips, or work clips again";
 }
 
 impl Action {
