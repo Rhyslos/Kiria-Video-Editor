@@ -45,6 +45,8 @@ pub enum Picked {
     AddFound(Vec<std::path::PathBuf>),
     /// Hide a new file from the media folders for this session.
     Dismiss(std::path::PathBuf),
+    /// A command of the ⋯ menu (Prune).
+    Run(ui_kit::Action),
 }
 
 /// New files in the media folders, for the drawer's "New in your folders".
@@ -165,11 +167,18 @@ impl MediaDrawer {
             ui.label(egui::RichText::new("Effects arrive with the inspector.").color(theme.muted));
             return None;
         }
-        ui.add(
-            egui::TextEdit::singleline(&mut self.filter)
-                .hint_text("Find a file: name, label or note")
-                .desired_width(f32::INFINITY),
-        );
+        let mut ran = None;
+        ui.horizontal(|ui| {
+            ran = more_menu(ui);
+            ui.add(
+                egui::TextEdit::singleline(&mut self.filter)
+                    .hint_text("Find a file: name, label or note")
+                    .desired_width(f32::INFINITY),
+            );
+        });
+        if ran.is_some() {
+            return ran;
+        }
         ui.add_space(4.0);
         self.filters(ui, project);
         ui.add_space(6.0);
@@ -270,6 +279,27 @@ impl MediaDrawer {
             self.sort = Sort::Name;
         }
     }
+}
+
+/// The ⋯ menu beside "Find a file": what works on the project's media as
+/// a whole.
+fn more_menu(ui: &mut egui::Ui) -> Option<Picked> {
+    let mut ran = None;
+    ui.menu_button("⋯", |ui| {
+        if ui
+            .button("Prune unused media…")
+            .on_hover_text(
+                "Lists the files no timeline uses, to take out of the project. Nothing is deleted from disk.",
+            )
+            .clicked()
+        {
+            ran = Some(Picked::Run(ui_kit::Action::Prune));
+            ui.close();
+        }
+    })
+    .response
+    .on_hover_text("More for the project's media");
+    ran
 }
 
 /// "New in your folders": the newest few new files, each with Add and ×,

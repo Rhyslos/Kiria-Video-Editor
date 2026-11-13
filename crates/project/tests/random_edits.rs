@@ -176,6 +176,14 @@ enum Action {
         at: i64,
         track: usize,
     },
+    /// Adds a file to the project's media without placing it.
+    AddSpare,
+    /// Prunes every file no timeline uses (`all`), or one file picked from
+    /// all of them (refused when a timeline uses it).
+    Prune {
+        all: bool,
+        pick: usize,
+    },
     Undo,
     Redo,
 }
@@ -223,6 +231,8 @@ fn action() -> impl Strategy<Value = Action> {
         2 => (any::<usize>(), prop::option::of(any::<usize>())).prop_map(|(pick, with)| Action::Nest { pick, with }),
         2 => (any::<usize>(), prop::option::of(0i64..120)).prop_map(|(pick, at)| Action::PlaceTimeline { pick, at }),
         2 => (0i64..120, 0usize..4).prop_map(|(at, track)| Action::Adjust { at, track }),
+        1 => Just(Action::AddSpare),
+        1 => (any::<bool>(), any::<usize>()).prop_map(|(all, pick)| Action::Prune { all, pick }),
         2 => Just(Action::Undo),
         1 => Just(Action::Redo),
     ]
@@ -311,6 +321,22 @@ fn command_for(action: &Action, p: &Project, media: MediaId, recording: MediaId)
             length: project::timelines::ADJUSTMENT_LENGTH,
             track: seq.video_tracks.get(track).map(|t| t.id),
         },
+        Action::AddSpare => Command::AddMedia {
+            media: MediaRef {
+                path: "spare.wav".into(),
+                kind: MediaKind::Audio,
+                ..crate::media()
+            },
+        },
+        Action::Prune { all: true, .. } => Command::RemoveMedia {
+            media: project::prune::unused_media(p),
+        },
+        Action::Prune { all: false, pick } => {
+            let ids: Vec<MediaId> = p.media.keys().copied().collect();
+            Command::RemoveMedia {
+                media: vec![*ids.get(pick % ids.len().max(1))?],
+            }
+        }
         Action::Remove { pick, ripple } => Command::RemoveClip {
             sequence,
             clip: pick_clip(pick)?,

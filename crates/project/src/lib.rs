@@ -17,6 +17,7 @@
 //! - [`history`]: unlimited undo and redo over snapshots.
 //! - [`document`]: an open project on disk, with the autosave journal and crash recovery.
 //! - [`versions`]: named copies of a project to go back to.
+//! - [`prune`]: the media no timeline uses, taken out of the project.
 //! - [`side_files`]: the files that belong to a project besides the project file.
 //! - [`templates`]: stretches of a timeline saved to drop into any project.
 
@@ -34,6 +35,7 @@ mod layers;
 pub mod library;
 pub mod look;
 pub mod model;
+pub mod prune;
 pub mod ramp;
 pub mod side_files;
 pub mod sound;

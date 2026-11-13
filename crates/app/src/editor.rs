@@ -117,6 +117,8 @@ pub struct Editor {
     master: ui_kit::master::MasterColumn,
     versions: crate::versions_window::VersionsWindow,
     templates: crate::templates_window::TemplatesWindow,
+    /// Prune: the files no timeline uses, to take out of the project.
+    prune: crate::prune_window::PruneWindow,
     shortcuts_page: Option<ui_kit::keyboard::ShortcutsPage>,
     /// The system's keyboard layout, followed for the shortcuts page and
     /// for writing keys in menus and tips.
@@ -356,6 +358,7 @@ impl Editor {
             master: ui_kit::master::MasterColumn::default(),
             versions: crate::versions_window::VersionsWindow::default(),
             templates: crate::templates_window::TemplatesWindow::default(),
+            prune: crate::prune_window::PruneWindow::default(),
             shortcuts_page,
             system_keyboard,
             cheat_sheet: crate::cheat_sheet::CheatSheet::default(),
@@ -479,6 +482,7 @@ impl Editor {
                 self.versions.open = true;
                 self.versions.show_again();
             }),
+            Action::Prune => self.with_document(|_| Ok(())).map(|()| self.prune.open()),
             Action::Templates | Action::SaveTemplate => self
                 .with_document(|_| Ok(()))
                 .map(|()| self.templates.show(action == Action::SaveTemplate)),
@@ -1585,6 +1589,33 @@ impl Editor {
         }
     }
 
+    /// The Prune dialog, and the files it takes out of the project.
+    fn prune_window(&mut self, ctx: &egui::Context) {
+        if !self.prune.is_open() {
+            return;
+        }
+        let Some(document) = &self.document else {
+            return;
+        };
+        let undo = self.shortcuts.keys_or_name(Action::Undo);
+        let asked = self
+            .prune
+            .ui(ctx, &self.theme, document.project(), &self.relink.missing, &undo);
+        if let crate::prune_window::Asked::Prune { media, says } = asked {
+            let gone = media.clone();
+            match self.with_document(|d| d.apply(Command::RemoveMedia { media })) {
+                Ok(()) => {
+                    for media in gone {
+                        self.waveforms.forget(media);
+                        self.pictures.forget(media);
+                    }
+                    self.status = says;
+                }
+                Err(err) => self.errors.push(&err),
+            }
+        }
+    }
+
     /// The Templates window, and what it asks for.
     fn templates_window(&mut self, ctx: &egui::Context) {
         use crate::templates_window::Asked;
@@ -1802,6 +1833,10 @@ impl Editor {
             }
             Some(Picked::AddFound(paths)) => {
                 self.importer.add(&self.jobs, &ctx, paths);
+                None
+            }
+            Some(Picked::Run(action)) => {
+                self.run_action(action);
                 None
             }
             Some(Picked::Dismiss(path)) => {
@@ -3123,6 +3158,7 @@ impl eframe::App for Editor {
         self.label_window(&ctx);
         self.versions_window(&ctx);
         self.templates_window(&ctx);
+        self.prune_window(&ctx);
         self.shortcuts_window(&ctx);
         if let Some(err) = self.graphics.show_warning(&ctx, &self.theme) {
             self.errors.push(&err);

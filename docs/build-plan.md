@@ -368,7 +368,7 @@ Phase 5 turns the simple media list from phase 4 into the full Library page; the
 **5.2 Page layout (as in the mockup)**
 
 - [x] Same top bar and tab position as every page. (The page sits between a sidebar `layout::LEFT_PANEL_WIDTH` wide and a detail panel `layout::RIGHT_PANEL_WIDTH` wide, so the tabs stay centred over the same place.)
-- [x] Left: labels, smart filters, Import, Prune. (Labels with how many files of the open tab have each; a click filters, right-click renames, recolours, offers in every project or removes; labels offered in every project that the project hasn't got show dimmed. Smart filters: Not in a timeline, Needs proxy, End missing, Can't be found, With a note. Prune is a disabled button saying it comes with 5.3.)
+- [x] Left: labels, smart filters, Import, Prune. (Labels with how many files of the open tab have each; a click filters, right-click renames, recolours, offers in every project or removes; labels offered in every project that the project hasn't got show dimmed. Smart filters: Not in a timeline, Needs proxy, End missing, Can't be found, With a note. Prune opens the Prune dialog (5.3).)
 - [x] Tab bar: Video, Audio, Images, Effects, then custom lists with "+ New list"; the bar fades and scrolls when full (`ui_kit::tab_strip`; right-click a list to rename or remove it).
 - [x] Filter row: label chips, group by, sort, thumbnail size, grid / list switch. (Also "Find" words; group by label, folder or nothing.)
 - [x] Video, Images, Effects: thumbnail grid grouped by label, coloured label edge, "In timeline" and "Needs proxy" badges. (A file goes under its first label; the pointer across a thumbnail skims the file; only the lines in view are drawn. Effects says it waits for the effects library.)
@@ -377,7 +377,7 @@ Phase 5 turns the simple media list from phase 4 into the full Library page; the
 
 **5.3 Media management**
 
-- [ ] Prune: list unused media first, remove it from the project in one undoable step, never delete files from disk.
+- [x] Prune: list unused media first, remove it from the project in one undoable step, never delete files from disk. (Done: `Action::Prune`, from the search palette, the media drawer's ⋯ menu and the Library page's Prune button, opens a list of the files no timeline uses (clips in nested timelines, and in timelines placed nowhere, count as use), each ticked with its size; untick to keep. `Command::RemoveMedia` takes them out with their labels, list places and notes in one undo step; nothing on disk is touched.)
 - [ ] Relink: by fingerprint, automatically when files moved inside a known folder.
 - [ ] Package project: copy the project plus only the media it uses into one folder (with progress and size shown first) that opens on the other person's machine.
 

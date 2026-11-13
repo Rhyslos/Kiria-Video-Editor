@@ -26,6 +26,7 @@ mod media_folders;
 mod organise;
 mod picture_handles;
 mod proxies;
+mod prune_window;
 mod reading;
 mod relink;
 mod run_mode;

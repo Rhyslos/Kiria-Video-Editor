@@ -92,6 +92,7 @@ actions! {
     Import, Anywhere, "Import media";
     Versions, Anywhere, "Saved versions: keep this version, or go back to one…";
     Templates, Anywhere, "Templates: drop in an intro or outro…";
+    Prune, Anywhere, "Prune unused media: take the files no timeline uses out of the project…";
     SaveTemplate, Anywhere, "Save as a template: the region, or the whole timeline…";
     Copy, Anywhere, "Copy: the chosen keyframe marks on the timeline";
     Paste, Anywhere, "Paste: copied keyframes at the playhead, on the selected clip";

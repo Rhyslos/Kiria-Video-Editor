@@ -18,8 +18,9 @@ pub struct Drafts {
     renaming: Option<(MediaLabelId, String)>,
 }
 
-/// Why Prune can't be used yet, for its tooltip.
-pub const PRUNE_NOT_YET: &str = "Prune removes every file no timeline uses from the project, showing the list first and never deleting anything from disk. It is being built next.";
+/// What Prune does, for its tooltip (the media drawer's ⋯ menu says the same).
+pub const PRUNE_TIP: &str =
+    "Lists the files no timeline uses, to take out of the project. Nothing is deleted from disk.";
 
 pub fn ui(
     page: &mut LibraryPage,
@@ -75,11 +76,12 @@ pub fn ui(
             }
         });
     ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
-        ui.add_enabled(
-            false,
-            egui::Button::new("Prune unused media…").min_size(egui::vec2(width, 28.0)),
-        )
-        .on_disabled_hover_text(PRUNE_NOT_YET);
+        let prune = ui
+            .add(egui::Button::new("Prune unused media…").min_size(egui::vec2(width, 28.0)))
+            .on_hover_text(PRUNE_TIP);
+        if prune.clicked() {
+            picked.push(Picked::Prune);
+        }
     });
     picked
 }
