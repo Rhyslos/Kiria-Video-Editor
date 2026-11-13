@@ -23,7 +23,7 @@ Phase 2 in progress. Done: the project browser (folder tree, project grid, searc
 
 ## Renaming, moving and deleting a project
 
-A project is its file plus the files kept beside it: the autosave file, backups from before upgrades, its picture, the timeline layout and the folder of saved versions. The list is in one place, `project::side_files`, and all three actions go by it.
+A project is its file plus the files kept beside it: the autosave file and its starting point, unsaved work set aside after a crash, unfinished saves, backups from before upgrades, its picture, the timeline layout and the folder of saved versions. The list is in one place, `project::side_files`, and all three actions go by it.
 
 - **Rename…** and **Move to** take every one of those files along, renamed to match. A file that can't follow (something is in the way, or it is in use) is reported in the error strip; the others still move and the project itself is complete. Nothing is ever overwritten: a name counts as taken while files that would belong to it are there.
 - **Delete project…** first shows what would go: the project file and each file that belongs to it, with the folder they are in. **Move to recycle bin** then moves them there (the `trash` crate: the recycle bin on Windows, the trash on Linux), so a mistake can be undone by restoring them. The project leaves the list. If nothing of the project is left on disk, it is only taken off the list.
@@ -38,7 +38,7 @@ A project is its file plus the files kept beside it: the autosave file, backups 
 
 If the editor didn't close properly last time (its session marker is still there and no editor is running), the launcher says so at start-up:
 
-- with unsaved work in the project that was open: **Kiria closed unexpectedly** with **Recover and open**, **Open last save** (the work is kept beside the project as `<file>.journal.discarded`) and **Not now**;
+- with unsaved work in the project that was open: **Kiria closed unexpectedly** with **Recover and open**, **Open last save** (the work is kept beside the project as `<file>.journal.discarded-<YYYYMMDD-HHMMSS>`, a new file each time, and the editor says so when it opens) and **Not now**;
 - with nothing unsaved: a line under the header saying nothing was lost.
 
 The marker is then cleared so the editor doesn't mention it again. Cards of projects with unsaved crash work say so, and opening one asks the same question. `--demo 8 --demo-crash` shows the window with sample projects.

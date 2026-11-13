@@ -969,17 +969,9 @@ impl Browser {
                 };
                 ui.label(RichText::new(title).family(ui_kit::fonts::semibold()).size(16.0));
                 ui.add_space(6.0);
-                let changes = if dialog.unsaved == 1 {
-                    "1 change".to_owned()
-                } else {
-                    format!("{} changes", dialog.unsaved)
-                };
                 ui.label(
-                    RichText::new(format!(
-                        "{} has {changes} that weren't saved before the app closed. They were kept and can be put back.",
-                        dialog.name
-                    ))
-                    .color(self.theme.text_secondary),
+                    RichText::new(unsaved_says(&dialog.name, dialog.unsaved))
+                        .color(self.theme.text_secondary),
                 );
                 ui.add_space(14.0);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1351,5 +1343,34 @@ fn missing_media(project: &Path) -> usize {
     match project::file::read_summary(project) {
         Ok(Some(summary)) => summary.media.iter().filter(|m| !m.exists()).count(),
         _ => 0,
+    }
+}
+
+/// What the recovery question says about `unsaved` changes in the project `name`.
+fn unsaved_says(name: &str, unsaved: usize) -> String {
+    let changes = project::document::changes_text(unsaved);
+    if unsaved == 1 {
+        format!(
+            "{name} has {changes} that wasn't saved before the app closed. It was kept and can be put back."
+        )
+    } else {
+        format!(
+            "{name} has {changes} that weren't saved before the app closed. They were kept and can be put back."
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_recovery_question_counts_in_words() {
+        assert_eq!(
+            super::unsaved_says("big", 1),
+            "big has 1 change that wasn't saved before the app closed. It was kept and can be put back."
+        );
+        assert_eq!(
+            super::unsaved_says("big", 4),
+            "big has 4 changes that weren't saved before the app closed. They were kept and can be put back."
+        );
     }
 }

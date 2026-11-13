@@ -143,7 +143,6 @@ impl Editor {
 
         // Top left: the viewer every page shares, with its transport.
         let needle = (!self.settings.edit_at_playhead).then_some(seq.edit_needle);
-        let quality_before = self.settings.preview_quality;
         let display_state = self.display_state(false);
         let away = self.display.away();
         let mut left = ui.new_child(
@@ -163,11 +162,6 @@ impl Editor {
             crate::viewer::Stage { source: None, away },
             |_, _, _| {},
         );
-        if self.settings.preview_quality != quality_before
-            && let Err(err) = self.settings.save(&self.data_dir)
-        {
-            self.errors.push(&err);
-        }
 
         // Top right: the track's tools.
         let learn_from = learn_from(seq, &self.selected, self.audio_page.track);
@@ -218,7 +212,7 @@ impl Editor {
             egui::pos2(page.left(), clarity.bottom() + GAP),
             egui::vec2(page.width(), BAR_HEIGHT),
         );
-        let bar_asks = self.audio_bar(ui, bar, shown_seq, &live);
+        self.audio_bar(ui, bar, shown_seq, &live);
         let bottom = egui::Rect::from_min_max(egui::pos2(page.left(), bar.bottom() + 6.0), page.max);
         let (timeline_rect, mixer_rect) = match self.settings.audio_bottom {
             Bottom::Timeline => (Some(bottom), None),
@@ -286,14 +280,12 @@ impl Editor {
             self.audio_page.learn(&self.jobs, document.project(), track, span);
             self.status = "Learning the noise…".into();
         }
-        let mut save = false;
+        // Settings changed here are written by the settings keeper.
         if let Some(counting) = asks.counting {
             self.settings.loudness_counting = counting;
-            save = true;
         }
         if let Some(target) = asks.target.or(mixer_asks.master.target) {
             self.settings.loudness_target = target;
-            save = true;
         }
         if asks.reset {
             self.audio_page.counted.reset();
@@ -314,10 +306,6 @@ impl Editor {
             if let Err(err) = result {
                 self.errors.push(&err);
             }
-        }
-        save |= bar_asks;
-        if save && let Err(err) = self.settings.save(&self.data_dir) {
-            self.errors.push(&err);
         }
         for event in events {
             self.timeline_event(event);
@@ -352,15 +340,9 @@ impl Editor {
         }
     }
 
-    /// The bar over the bottom views. Returns whether a setting changed.
-    fn audio_bar(
-        &mut self,
-        ui: &mut egui::Ui,
-        bar: egui::Rect,
-        seq: &project::Sequence,
-        live: &Live,
-    ) -> bool {
-        let mut changed = false;
+    /// The bar over the bottom views. The settings it changes are written
+    /// by the settings keeper.
+    fn audio_bar(&mut self, ui: &mut egui::Ui, bar: egui::Rect, seq: &project::Sequence, live: &Live) {
         let mut child = ui.new_child(
             egui::UiBuilder::new()
                 .max_rect(bar)
@@ -373,7 +355,6 @@ impl Editor {
                 .clicked()
             {
                 self.settings.audio_bottom = view;
-                changed = true;
             }
         }
         if self.settings.audio_bottom == Bottom::Split {
@@ -396,7 +377,6 @@ impl Editor {
                     .clicked()
                 {
                     self.settings.audio_split = way;
-                    changed = true;
                 }
             }
         }
@@ -547,7 +527,6 @@ impl Editor {
                 }
             });
         }
-        changed
     }
 
     /// The page's timeline: one video reference row, the audio tracks the

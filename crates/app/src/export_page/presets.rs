@@ -354,8 +354,9 @@ impl OwnPresets {
         })
     }
 
-    /// Writes them to the app's data folder (a temporary file, then
-    /// renamed over the old one). Touches the disk: call it from a worker.
+    /// Writes them to the app's data folder, whole or not at all, on this
+    /// thread. The page hands them to a `project::disk::Keeper` instead.
+    #[cfg(test)]
     pub fn save(&self, data_dir: &Path) -> diag::Result<()> {
         let explain = || {
             AppError::new("Your export presets can't be saved")
@@ -364,10 +365,7 @@ impl OwnPresets {
         };
         let text = self.to_text()?;
         std::fs::create_dir_all(data_dir).or_explain(explain)?;
-        let file = path(data_dir);
-        let temporary = file.with_extension("ron.saving");
-        std::fs::write(&temporary, text).or_explain(explain)?;
-        std::fs::rename(&temporary, &file).or_explain(explain)
+        project::disk::write_atomic(&path(data_dir), text.as_bytes()).or_explain(explain)
     }
 
     /// Saves `choice` under `name`; a preset of the same name (in any

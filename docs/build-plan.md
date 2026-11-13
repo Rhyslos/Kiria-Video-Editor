@@ -159,7 +159,7 @@ Phase 0 builds everything later phases stand on and that is painful to add after
 
 - [x] Every change is a `Command` applied to a snapshot; undo/redo is a stack of snapshots.
 - [x] Autosave journal: append each command to `project.journal`; full save every 30 s and on idle.
-- [x] Recovery: on open, if the journal is newer than the save, replay it; offer "Recover" or "Open last save". (The engine side is done; the prompt itself is drawn by the launcher in 2.3.)
+- [x] Recovery: on open, if the journal is newer than the save, replay it; offer "Recover" or "Open last save". (The engine side is done; the prompt itself is drawn by the launcher in 2.3.) Since the mistakes pass the journal holds the whole session from a copy of the file as opened (`<file>.journal.start`), so undo and redo after a full save recover exactly too (a property test crashes random sessions with saves at random points); "Open last save" keeps each set-aside journal under a name of its own. The editor says how many changes came back (each can be undone) and offers the last save in one undoable step, or says where set-aside work was kept.
 - [x] Property test: random command sequences + undo/redo always leave a valid project.
 
 **0.5 Jobs and resources (`jobs`)**
@@ -168,7 +168,7 @@ Phase 0 builds everything later phases stand on and that is painful to add after
 - [x] Priorities: playback > interactive > background; background jobs pause while playing (setting).
 - [x] Budgets for worker threads, RAM cache and disk cache, read from settings with Auto defaults.
 - [x] Live usage numbers (CPU, GPU, RAM) published for the top-bar readout. (GPU use is filled in once the GPU layer exists.)
-- [x] Full saves run on a worker: the interface hands out a snapshot, numbered journal entries make sure nothing is lost or applied twice.
+- [x] Full saves run on a worker: the interface hands out a snapshot, numbered journal entries make sure nothing is lost or applied twice. (Since the mistakes pass: Ctrl+S goes the same way; saves of one project write one at a time and an older snapshot never replaces a newer file; each write has its own temporary file.)
 
 **0.6 App shell (`ui-kit`, `app`)**
 

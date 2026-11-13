@@ -31,6 +31,7 @@ mod picture_handles;
 mod proxies;
 mod prune_window;
 mod reading;
+mod recovered;
 mod relink;
 mod run_mode;
 mod search;
@@ -91,7 +92,7 @@ fn main() -> ExitCode {
         problems.push(
             diag::AppError::new("The editor did not close properly last time")
                 .why("It crashed, was forced to quit, or the computer lost power.")
-                .fix("Open your project: unsaved changes are recovered automatically. A crash report may be in the crash-reports folder."),
+                .fix("Open your project: unsaved changes are put back, and the editor says how many and offers the last save instead. A crash report may be in the crash-reports folder."),
         );
     }
     // `--cheat-sheet`: the sheet for the shortcuts in these settings, and nothing else.

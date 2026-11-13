@@ -3,6 +3,7 @@
 use diag::{AppError, Explain};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 use ui_kit::ThemeName;
 use ui_kit::keyboard::{KeyboardChoice, LayoutId};
 
@@ -185,14 +186,111 @@ impl Settings {
         self
     }
 
+    /// The settings file's text.
+    pub fn to_text(&self) -> diag::Result<String> {
+        ron::ser::to_string_pretty(self, ron::ser::PrettyConfig::default()).or_explain(|| {
+            AppError::new("Your settings could not be saved").why("They could not be turned into file text.")
+        })
+    }
+
+    /// Writes the settings now, whole or not at all, on this thread. The
+    /// editor keeps them with a [`SettingsKeeper`] instead.
+    #[cfg(test)]
     pub fn save(&self, data_dir: &Path) -> diag::Result<()> {
-        let text = ron::ser::to_string_pretty(self, ron::ser::PrettyConfig::default())
-            .or_explain(|| AppError::new("Your settings could not be saved"))?;
-        std::fs::write(Settings::path(data_dir), text).or_explain(|| {
+        let path = Settings::path(data_dir);
+        project::disk::write_atomic(&path, self.to_text()?.as_bytes()).or_explain(|| {
             AppError::new("Your settings could not be saved")
-                .why("Writing the settings file failed.")
+                .why(format!("Writing {} failed.", path.display()))
                 .fix("Check that the disk is not full.")
         })
+    }
+}
+
+/// While the pointer is held (a slider being dragged), settings are written
+/// once they have stayed the same this long, or when it is let go.
+pub const SETTLED_AFTER: Duration = Duration::from_millis(500);
+
+/// After a failed write, the next try waits this long.
+const RETRY_AFTER: Duration = Duration::from_secs(5);
+
+/// Keeps `settings.ron` up to date without the interface thread waiting for
+/// the disk or writing on every frame of a drag: the editor shows it the
+/// settings every frame ([`SettingsKeeper::tick`]); a change is handed to a
+/// [`project::disk::Keeper`] (whole-or-nothing writes on a thread of its
+/// own, newest last) once the pointer is let go or the change has settled.
+#[derive(Debug)]
+pub struct SettingsKeeper {
+    keeper: project::disk::Keeper,
+    /// What the file holds.
+    kept: Settings,
+    /// Handed over, with its number, until it is on disk.
+    writing: Option<(u64, Settings)>,
+    /// The settings as last seen, and since when.
+    seen: Settings,
+    changed_at: Instant,
+    /// No write before this, after a failure.
+    wait_until: Option<Instant>,
+}
+
+impl SettingsKeeper {
+    /// `settings` are what the file in `data_dir` holds (as loaded).
+    pub fn new(data_dir: &Path, settings: &Settings, now: Instant) -> SettingsKeeper {
+        SettingsKeeper {
+            keeper: project::disk::Keeper::new(Settings::path(data_dir), "Your settings"),
+            kept: settings.clone(),
+            writing: None,
+            seen: settings.clone(),
+            changed_at: now,
+            wait_until: None,
+        }
+    }
+
+    /// Call every frame with the settings in use and whether the pointer is
+    /// held. Hands a change over when due; returns why a write failed, once.
+    pub fn tick(&mut self, settings: &Settings, now: Instant, pointer_held: bool) -> Option<AppError> {
+        if *settings != self.seen {
+            self.seen = settings.clone();
+            self.changed_at = now;
+        }
+        if let Some((number, written)) = self.writing.take() {
+            if self.keeper.written() >= number {
+                self.kept = written;
+            } else if self.keeper.busy() {
+                self.writing = Some((number, written));
+            }
+        }
+        let failed = self.keeper.take_failure();
+        if failed.is_some() {
+            self.wait_until = Some(now + RETRY_AFTER);
+        }
+        let settled = !pointer_held || now.duration_since(self.changed_at) >= SETTLED_AFTER;
+        let waiting = self.wait_until.is_some_and(|until| now < until);
+        let handed = self.writing.as_ref().map_or(&self.kept, |(_, s)| s);
+        if settled && !waiting && settings != handed {
+            self.hand_over(settings);
+        }
+        failed
+    }
+
+    fn hand_over(&mut self, settings: &Settings) {
+        let text = settings.clone();
+        let number = self.keeper.keep(move || text.to_text());
+        self.writing = Some((number, settings.clone()));
+        self.wait_until = None;
+    }
+
+    /// On closing: writes what is not written yet and waits for it.
+    pub fn close(&mut self, settings: &Settings) -> diag::Result<()> {
+        let handed = self.writing.as_ref().map_or(&self.kept, |(_, s)| s);
+        if settings != handed {
+            self.hand_over(settings);
+        }
+        let result = self.keeper.flush();
+        if result.is_ok() {
+            self.kept = settings.clone();
+            self.writing = None;
+        }
+        result
     }
 }
 
@@ -456,5 +554,103 @@ mod tests {
         let (loaded, problem) = Settings::load(tmp.path());
         assert_eq!(loaded, Settings::default());
         assert!(problem.is_none());
+    }
+
+    fn keeper_in(dir: &Path) -> (SettingsKeeper, Instant) {
+        let now = Instant::now();
+        (SettingsKeeper::new(dir, &Settings::default(), now), now)
+    }
+
+    fn written(dir: &Path) -> Settings {
+        Settings::load(dir).0
+    }
+
+    #[test]
+    fn a_dragged_slider_writes_once_when_let_go() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut keeper, start) = keeper_in(tmp.path());
+        let mut settings = Settings::default();
+        let mut handed = 0;
+        // Sixty frames of a held drag, a new value on each.
+        for frame in 0..60u32 {
+            settings.resources.ram_cache_mb = jobs::Limit::Manual(1000 + u64::from(frame));
+            assert!(
+                keeper
+                    .tick(
+                        &settings,
+                        start + Duration::from_millis(16 * u64::from(frame)),
+                        true
+                    )
+                    .is_none()
+            );
+            handed += usize::from(keeper.writing.is_some());
+        }
+        assert_eq!(handed, 0, "nothing is written while it moves");
+        assert!(!Settings::path(tmp.path()).exists());
+        // Let go: written at once, and only the last value.
+        keeper.tick(&settings, start + Duration::from_millis(16 * 60), false);
+        keeper.keeper.flush().unwrap();
+        assert_eq!(written(tmp.path()), settings);
+        keeper.tick(&settings, start + Duration::from_secs(2), false);
+        assert!(keeper.writing.is_none() && keeper.kept == settings);
+    }
+
+    #[test]
+    fn a_held_change_is_written_once_it_settles() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut keeper, start) = keeper_in(tmp.path());
+        let settings = Settings {
+            edit_at_playhead: true,
+            ..Settings::default()
+        };
+        keeper.tick(&settings, start, true);
+        keeper.tick(&settings, start + Duration::from_millis(200), true);
+        assert!(keeper.writing.is_none());
+        keeper.tick(&settings, start + SETTLED_AFTER, true);
+        assert!(keeper.writing.is_some(), "settled while still held");
+        keeper.keeper.flush().unwrap();
+        assert_eq!(written(tmp.path()), settings);
+    }
+
+    #[test]
+    fn a_failed_write_is_reported_and_tried_again_later() {
+        let tmp = tempfile::tempdir().unwrap();
+        // A folder where the file goes: every write fails.
+        std::fs::create_dir(Settings::path(tmp.path())).unwrap();
+        std::fs::write(Settings::path(tmp.path()).join("x"), "").unwrap();
+        let (mut keeper, start) = keeper_in(tmp.path());
+        let settings = Settings {
+            rough_cut: true,
+            ..Settings::default()
+        };
+        keeper.tick(&settings, start, false);
+        while keeper.keeper.busy() {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let failed = keeper.tick(&settings, start + Duration::from_millis(20), false);
+        assert!(failed.expect("reported").what().contains("settings"));
+        assert!(keeper.writing.is_none(), "not again straight away");
+        std::fs::remove_dir_all(Settings::path(tmp.path())).unwrap();
+        keeper.tick(&settings, start + Duration::from_millis(40), false);
+        assert!(keeper.writing.is_none());
+        keeper.tick(&settings, start + RETRY_AFTER + Duration::from_secs(1), false);
+        assert!(keeper.writing.is_some(), "tried again");
+        keeper.close(&settings).unwrap();
+        assert_eq!(written(tmp.path()), settings);
+    }
+
+    #[test]
+    fn closing_writes_what_is_not_written_yet() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut keeper, start) = keeper_in(tmp.path());
+        let settings = Settings {
+            compact_tracks: true,
+            ..Settings::default()
+        };
+        keeper.tick(&settings, start, true);
+        keeper.close(&settings).unwrap();
+        assert_eq!(written(tmp.path()), settings);
+        let names: Vec<_> = std::fs::read_dir(tmp.path()).unwrap().collect();
+        assert_eq!(names.len(), 1, "no temporary file is left");
     }
 }
