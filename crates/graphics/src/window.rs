@@ -9,6 +9,7 @@ use eframe::wgpu;
 use egui::RichText;
 use std::path::PathBuf;
 use std::sync::Arc;
+use ui_kit::settings::{Row, Section, Setting};
 use ui_kit::{ErrorCenter, Theme};
 use video_device::VideoDevice;
 
@@ -315,60 +316,72 @@ impl WindowGraphics {
         self.save()
     }
 
-    /// The Graphics row in Settings: the choice (Windows only), when it
-    /// applies, and what is in use now. Returns a problem saving a change.
-    pub fn settings_row(&mut self, ui: &mut egui::Ui, theme: &Theme) -> Option<AppError> {
-        let has_choice = self.platform == Platform::Windows;
-        let shown = if has_choice {
-            self.settings.choice
-        } else {
-            GraphicsChoice::Automatic
-        };
-        let mut chosen = shown;
-        ui.add_enabled_ui(has_choice && self.run == RunKind::Normal, |ui| {
-            egui::ComboBox::from_label("Draw the windows with")
-                .selected_text(shown.label())
-                .show_ui(ui, |ui| {
-                    for choice in GraphicsChoice::ALL {
-                        ui.selectable_value(&mut chosen, choice, choice.label());
-                    }
-                });
-        });
-        let hint = if has_choice {
-            "Automatic uses Vulkan, and Direct3D 12 if Vulkan doesn't start. A change applies to every window, from the next time the app starts."
-        } else {
-            "The choice between Vulkan and Direct3D 12 is for Windows only."
-        };
-        ui.label(RichText::new(hint).color(theme.muted));
-        ui.label(RichText::new(format!("In use now: {}", self.in_use)).color(theme.muted));
-        let changed = (chosen != shown).then(|| self.choose(chosen).err()).flatten();
-        ui.add_space(8.0);
-        changed.or(self.decoding_row(ui, theme))
-    }
-
-    /// The switch for decoding video on the window's device, and whether it
-    /// is in use. Returns a problem saving a change.
-    fn decoding_row(&mut self, ui: &mut egui::Ui, theme: &Theme) -> Option<AppError> {
-        let mut wanted = self.settings.decode_on_window_device;
-        let changed = ui
-            .add_enabled(
-                self.run == RunKind::Normal,
-                egui::Checkbox::new(&mut wanted, DECODING_SWITCH),
-            )
-            .changed();
-        ui.label(
-            RichText::new(
-                "Pictures then go from the decoder to the screen without leaving the graphics card. Turn this off if video shows wrong colours, stutters or stops the app. A change applies from the next time the editor starts.",
-            )
-            .color(theme.muted),
-        );
-        ui.label(RichText::new(format!("In this window: {}", self.decoding_in_use())).color(theme.muted));
-        changed.then(|| self.decode_on_device(wanted).err()).flatten()
+    /// Draws the control of one of [`SETTINGS`]' rows of Settings (the
+    /// same in the launcher and the editor); other rows are left alone.
+    /// Returns a problem saving a change.
+    pub fn settings_row(&mut self, row: &mut Row<'_>) -> Option<AppError> {
+        // An automated run shows the rows as they are; a change there is
+        // never saved (`save`).
+        match row.id() {
+            GRAPHICS_ROW => {
+                let has_choice = self.platform == Platform::Windows;
+                let shown = if has_choice {
+                    self.settings.choice
+                } else {
+                    GraphicsChoice::Automatic
+                };
+                let mut chosen = shown;
+                if !has_choice {
+                    row.disable("The choice between Vulkan and Direct3D 12 is for Windows only.");
+                    row.describe("The choice between Vulkan and Direct3D 12 is for Windows only.");
+                }
+                let options: Vec<(GraphicsChoice, &str)> =
+                    GraphicsChoice::ALL.iter().map(|c| (*c, c.label())).collect();
+                ui_kit::settings::segmented(row.ui, row.theme, &mut chosen, &options);
+                row.note(format!("In use now: {}", self.in_use));
+                (chosen != shown).then(|| self.choose(chosen).err()).flatten()
+            }
+            DECODING_ROW => {
+                let mut wanted = self.settings.decode_on_window_device;
+                let changed = ui_kit::settings::toggle(row.ui, row.theme, &mut wanted).changed();
+                row.note(format!("In this window: {}", self.decoding_in_use()));
+                changed.then(|| self.decode_on_device(wanted).err()).flatten()
+            }
+            _ => None,
+        }
     }
 }
 
+/// The id of the row that chooses the graphics system.
+const GRAPHICS_ROW: &str = "graphics-system";
+/// The id of the switch for decoding on the window's device.
+const DECODING_ROW: &str = "decode-on-device";
+
 /// The words on the switch in Settings.
-pub const DECODING_SWITCH: &str = "Decode video on the window's graphics device (fastest)";
+pub const DECODING_SWITCH: &str = "Decode video on the window's graphics device";
+
+/// Settings' Graphics card, the same in the launcher and the editor; the
+/// controls are [`WindowGraphics::settings_row`].
+pub const SETTINGS: Section = Section {
+    id: "graphics-drawing",
+    title: "Drawing and decoding",
+    settings: &[
+        Setting::new(
+            GRAPHICS_ROW,
+            "Draw the windows with",
+            "Automatic uses Vulkan, and Direct3D 12 if Vulkan doesn't start. For every window.",
+        )
+        .keywords("vulkan direct3d d3d12 graphics card gpu driver renderer")
+        .restart(),
+        Setting::new(
+            DECODING_ROW,
+            DECODING_SWITCH,
+            "Fastest: pictures go from the decoder to the screen without leaving the card. Turn it off if video shows wrong colours, stutters or stops the app.",
+        )
+        .keywords("hardware decoding gpu acceleration video card")
+        .restart(),
+    ],
+};
 
 /// The name of the Diagnostics line that says whether video is decoded on
 /// the window's device in this session.

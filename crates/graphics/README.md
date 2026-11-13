@@ -31,7 +31,7 @@ Automated runs (smoke tests, screenshots, the launcher's demo) read the setting 
 
 When the editor's device was opened here with video decoding, the viewer's video is decoded on it (`media`, `engine`). That has its own switch and its own safety net, apart from the window's:
 
-- **The switch.** `decode_on_window_device` in `graphics.ron`, shown in Settings under Graphics as "Decode video on the window's graphics device (fastest)". On by default; a change applies from the next time the editor starts. The line under it says what this window does and why.
+- **The switch.** `decode_on_window_device` in `graphics.ron`, shown in Settings under Graphics as "Decode video on the window's graphics device" (a switch with a Restart badge). On by default; a change applies from the next time the editor starts. The line under it says what this window does and why.
 - **Errors the device reports** need nothing from here: that file is decoded the older way, and the log says why (`engine`).
 - **A crash or a freeze** is caught by a second marker, `video-decoding.starting`, held by `DecodeGuard`. It is written before the device is first asked to decode in a session and removed once ten pictures decoded there have been drawn (`PICTURES_BEFORE_TRUSTED`), when the device reports an error instead, or when the window closes normally (after which nothing is written any more, whatever the decoding thread still does). Setting the device up for the decoder at start is guarded the same way, for the moment it takes, so a session that shows no video leaves nothing behind.
 - **A decoding thread frozen in the driver** leaves the window working, so the app can be closed normally. If the device was asked for something ten seconds ago or longer (`STUCK_AFTER`) and has not answered when the window closes, the marker stays, or is written, and the next start treats it like a crash.
@@ -68,7 +68,7 @@ The launcher rolls a version back after two failed editor starts in a row (`upda
 | `src/decode_guard.rs` | `DecodeGuard`: the marker around a session's first pictures decoded on the device |
 | `src/vulkan_device.rs` | Opens the window's Vulkan device with video decoding and fills in the `VideoDevice` handle for the decoder; `plan_video` decides what to add from the card's queue families, extensions and versions, or says why not; `plane_textures` hands a decoded picture's images to the renderer. The crate's only `unsafe` is here |
 | `src/video.rs` | `VideoDecoding`: the handle, or the reason there is none, as Diagnostics words it |
-| `src/window.rs` | `WindowGraphics`, the window's side: the first-frames check, the two questions with their answers, the Graphics row for Settings, what the editor decodes on (`device_decoding`), and the lines for Diagnostics, the log and crash reports (what draws the window, "Video decoding on this device", "Viewer decodes on this device") |
+| `src/window.rs` | `WindowGraphics`, the window's side: the first-frames check, the two questions with their answers, Settings' Graphics card (`SETTINGS`, the rows as data) and each row's control (`settings_row`), what the editor decodes on (`device_decoding`), and the lines for Diagnostics, the log and crash reports (what draws the window, "Video decoding on this device", "Viewer decodes on this device") |
 
 ## Using it
 
@@ -79,7 +79,7 @@ graphics::open_window(&startup, brand::APP_NAME, window_options, start, |cc, sta
 })?;
 ```
 
-In the window: `graphics.frame(ctx, frames_drawn)` at the top of every frame, `graphics.show_warning(ctx, theme)` with the other dialogs, and `graphics.settings_row(ui, theme)` under a "Graphics" heading in Settings.
+In the window: `graphics.frame(ctx, frames_drawn)` at the top of every frame, `graphics.show_warning(ctx, theme)` with the other dialogs, and in Settings a Graphics tab holding `graphics::SETTINGS`, whose rows `graphics.settings_row(row)` draws (`ui_kit::settings`): the graphics system as a segmented control and the decoding switch, each with what is in use now under it.
 
 `--graphics-warning` on either program shows the question about Vulkan although nothing failed, for screenshots; `--decoding-warning` on the editor shows the one about decoding.
 

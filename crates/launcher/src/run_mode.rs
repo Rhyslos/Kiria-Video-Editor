@@ -21,6 +21,10 @@ pub struct Options {
     /// Do one start's worth of updating without a window and write what
     /// happened to this file (`--update-step`, the release workflow's update drill).
     pub update_step: Option<PathBuf>,
+    /// Open Settings at this tab or setting (`--settings updates`, screenshots).
+    pub settings: Option<String>,
+    /// The window's size in points (`--window-size 1280x800`, screenshots).
+    pub window_size: Option<[f32; 2]>,
 }
 
 /// A step of the update window to show with sample numbers.
@@ -73,6 +77,24 @@ impl Options {
                 }
                 "--graphics-warning" => options.graphics_warning = true,
                 "--delete-dialog" => options.delete_dialog = true,
+                "--settings" => {
+                    let id = args
+                        .next()
+                        .ok_or("--settings needs a tab's or a setting's id, such as updates")?;
+                    options.settings = Some(id);
+                }
+                "--window-size" => {
+                    let size = args
+                        .next()
+                        .ok_or("--window-size needs WIDTHxHEIGHT, such as 1280x800")?;
+                    let (w, h) = size
+                        .split_once('x')
+                        .ok_or("--window-size needs WIDTHxHEIGHT, such as 1280x800")?;
+                    options.window_size = Some([
+                        w.parse().map_err(|_| "--window-size needs a whole width")?,
+                        h.parse().map_err(|_| "--window-size needs a whole height")?,
+                    ]);
+                }
                 "--update-window" => {
                     let step = args
                         .next()
@@ -115,6 +137,10 @@ mod tests {
         let o = parse(&["--update-step", "report.txt"]).unwrap();
         assert_eq!(o.update_step, Some("report.txt".into()));
         assert!(parse(&["--update-step"]).is_err());
+        let o = parse(&["--settings", "graphics", "--window-size", "1280x800"]).unwrap();
+        assert_eq!(o.settings.as_deref(), Some("graphics"));
+        assert_eq!(o.window_size, Some([1280.0, 800.0]));
+        assert!(parse(&["--window-size", "big"]).is_err());
         let o = parse(&["--update-window", "downloading"]).unwrap();
         assert_eq!(o.update_window, Some(UpdatePreview::Downloading));
         assert!(!o.check_updates);

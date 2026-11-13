@@ -5,6 +5,7 @@ mod clip_clipboard;
 mod keyframe_clipboard;
 mod library_ui;
 mod region_cuts;
+mod settings_ui;
 mod timelines;
 mod undo_says;
 
@@ -14,7 +15,7 @@ use crate::settings::Settings;
 use crate::timeline_panel;
 use crate::viewer::Viewer;
 use diag::AppError;
-use jobs::{BackgroundPolicy, JobHandle, JobSystem, Limit, PoolKind, Priority, UsageMonitor};
+use jobs::{JobHandle, JobSystem, PoolKind, Priority, UsageMonitor};
 use project::{Command, Document, LabelColor, LabelId, Recovery, Time, TimelineLabel};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -59,6 +60,9 @@ pub struct Start {
     pub pointer: Option<crate::fake_pointer::FakePointer>,
     /// Open the keyboard shortcuts page in this state, for screenshots.
     pub shortcuts_page: Option<ui_kit::keyboard::Preview>,
+    /// Open Settings at this id, with these words searched, for screenshots.
+    pub settings_at: Option<String>,
+    pub settings_search: Option<String>,
 }
 
 pub struct Editor {
@@ -202,6 +206,10 @@ pub struct Editor {
     play_when_ready: bool,
     show_timeline_settings: bool,
     show_settings: bool,
+    /// The Settings window's tab, search and row to jump to.
+    settings_view: ui_kit::settings::SettingsView,
+    /// What this machine has (the limits of Settings › Resources), read at start.
+    machine: jobs::Machine,
     /// Settings › Cache: what the cache takes, and clearing it.
     cache_cleanup: crate::cache_cleanup::CacheCleanup,
     /// The Settings window was open last frame (the cache is measured
@@ -210,9 +218,6 @@ pub struct Editor {
     show_diagnostics: bool,
     show_search: bool,
     search_text: String,
-    /// The Settings section search asked for: marked while the window is
-    /// open, and scrolled to over its first few frames (its size settles).
-    settings_found: Option<(crate::settings_sections::Section, u8)>,
     /// The proxy changes Settings › Cache was last measured at.
     cache_seen: u64,
     status: String,
@@ -273,9 +278,12 @@ impl Editor {
             problems,
             pointer,
             shortcuts_page,
+            settings_at,
+            settings_search,
         } = start;
         ui_kit::setup(&cc.egui_ctx, settings.theme);
-        let jobs = JobSystem::new(settings.resources.resolve(&jobs::Machine::detect()));
+        let machine = jobs::Machine::detect();
+        let jobs = JobSystem::new(settings.resources.resolve(&machine));
         let mut errors = ErrorCenter::default();
         for problem in &problems {
             errors.push(problem);
@@ -421,6 +429,16 @@ impl Editor {
             export_page.demo_queue();
         }
         let settings_keeper = crate::settings::SettingsKeeper::new(&data_dir, &settings, Instant::now());
+        let mut settings_view = ui_kit::settings::SettingsView::default();
+        let show_settings = settings_at.is_some() || settings_search.is_some();
+        if let Some(id) = &settings_at
+            && !settings_view.open_at(settings_ui::CATEGORIES, id)
+        {
+            tracing::warn!("--settings: no tab or setting is called {id}");
+        }
+        if let Some(words) = settings_search {
+            settings_view.set_query(words);
+        }
         Editor {
             theme: settings.theme.theme(),
             settings,
@@ -502,13 +520,14 @@ impl Editor {
             lines: ui_kit::LinesShown::default(),
             play_when_ready,
             show_timeline_settings: false,
-            show_settings: false,
+            show_settings,
+            settings_view,
+            machine,
             cache_cleanup: Default::default(),
             settings_were_open: false,
             show_diagnostics: false,
             show_search: false,
             search_text: String::new(),
-            settings_found: None,
             cache_seen: 0,
             status: String::new(),
             slip_playhead: None,
@@ -2604,7 +2623,10 @@ impl Editor {
             self.search_text.clear();
             self.show_search = true;
         }
-        self.show_settings |= clicks.settings || clicks.usage;
+        self.show_settings |= clicks.settings;
+        if clicks.usage {
+            self.open_settings_at(settings_ui::RESOURCES);
+        }
     }
 
     fn page(&mut self, ui: &mut egui::Ui) {
@@ -3177,175 +3199,6 @@ impl Editor {
         }
     }
 
-    fn settings_window(&mut self, ctx: &egui::Context) {
-        // Measured when Settings opens, and again while it is open as
-        // proxies are built or deleted, so the Cache line stays true.
-        let changes = self.proxies.changes();
-        if self.show_settings && (!self.settings_were_open || changes != self.cache_seen) {
-            self.cache_seen = changes;
-            self.measure_cache();
-        }
-        self.settings_were_open = self.show_settings;
-        let has_project = self.document.is_some();
-        let mut open = self.show_settings;
-        let before = self.settings.clone();
-        let mut found = self.settings_found.take();
-        use crate::settings_sections::Section;
-        // Below the top bar at the right, under the gear that opens it; held
-        // to the screen, with what doesn't fit scrolling inside.
-        let area = ui_kit::layout::window_area(ctx.content_rect());
-        egui::Window::new("Settings")
-            .open(&mut open)
-            .collapsible(false)
-            .pivot(egui::Align2::RIGHT_TOP)
-            .default_pos(area.right_top())
-            .default_width(ui_kit::layout::SETTINGS_WIDTH)
-            .default_height(area.height())
-            .max_height(area.height())
-            .constrain_to(area)
-            .vscroll(true)
-            .show(ctx, |ui| {
-                settings_heading(ui, &self.theme, Section::Look, &mut found);
-                egui::ComboBox::from_label("Theme")
-                    .selected_text(self.settings.theme.label())
-                    .show_ui(ui, |ui| {
-                        for theme in ui_kit::ThemeName::ALL {
-                            ui.selectable_value(&mut self.settings.theme, theme, theme.label());
-                        }
-                    });
-                ui.add_space(8.0);
-                settings_heading(ui, &self.theme, Section::Editing, &mut found);
-                ui.checkbox(&mut self.settings.edit_at_playhead, "Edit at the playhead")
-                    .on_hover_text("Merge the red edit needle into the playhead.");
-                click_moves_row(ui, &mut self.settings.click_moves, self.settings.edit_at_playhead);
-                ui.checkbox(&mut self.settings.cut_closes_gap, "Cut closes the gap").on_hover_text(
-                    "Cut takes the clips out and moves everything after them back on every track, as \"Delete and close the gap\" does. Off: it leaves the gap.",
-                );
-                ui.add_space(8.0);
-                settings_heading(ui, &self.theme, Section::Audio, &mut found);
-                ui_kit::master::target_row(ui, &mut self.settings.loudness_target);
-                ui.add_space(8.0);
-                settings_heading(ui, &self.theme, Section::Resources, &mut found);
-                let machine = jobs::Machine::detect();
-                limit_row(
-                    ui,
-                    "Worker threads",
-                    &mut self.settings.resources.worker_threads,
-                    1,
-                    machine.cpu_threads.max(2) - 1,
-                );
-                limit_row(
-                    ui,
-                    "RAM cache (MB)",
-                    &mut self.settings.resources.ram_cache_mb,
-                    256,
-                    machine.total_ram_mb * 3 / 4,
-                );
-                limit_row(
-                    ui,
-                    "Disk cache (GB)",
-                    &mut self.settings.resources.disk_cache_gb,
-                    1,
-                    500,
-                );
-                ui.label("Background work");
-                for (policy, label) in [
-                    (BackgroundPolicy::PauseWhilePlaying, "Pause while playing"),
-                    (BackgroundPolicy::Always, "Always run"),
-                    (BackgroundPolicy::OnlyWhenIdle, "Only when idle"),
-                ] {
-                    ui.radio_value(&mut self.settings.resources.background, policy, label);
-                }
-                ui.label(
-                    egui::RichText::new("Resource changes apply the next time the editor starts.")
-                        .color(self.theme.muted),
-                );
-                ui.add_space(8.0);
-                settings_heading(ui, &self.theme, Section::Proxies, &mut found);
-                ui.horizontal(|ui| {
-                    for mode in cache::proxy::ProxyMode::ALL {
-                        ui.radio_value(&mut self.settings.proxies, mode, mode.label())
-                            .on_hover_text(mode.explained());
-                    }
-                });
-                ui.label(egui::RichText::new(self.settings.proxies.explained()).color(self.theme.muted));
-                ui.add_space(4.0);
-                ui.label("When jumping in a file without a proxy");
-                ui.horizontal(|ui| {
-                    for choice in crate::settings::JumpPicture::ALL {
-                        ui.radio_value(&mut self.settings.jump_picture, choice, choice.label())
-                            .on_hover_text(choice.explained());
-                    }
-                });
-                ui.label(egui::RichText::new(self.settings.jump_picture.explained()).color(self.theme.muted));
-                ui.add_space(8.0);
-                settings_heading(ui, &self.theme, Section::Library, &mut found);
-                ui.horizontal(|ui| {
-                    for choice in crate::settings::LibraryMarks::ALL {
-                        ui.radio_value(&mut self.settings.library_marks, choice, choice.label())
-                            .on_hover_text(choice.explained());
-                    }
-                });
-                ui.label(
-                    egui::RichText::new(self.settings.library_marks.explained()).color(self.theme.muted),
-                );
-                ui.add_space(8.0);
-                settings_heading(ui, &self.theme, Section::Cache, &mut found);
-                self.cache_cleanup.rows(ui, &self.theme, has_project);
-                ui.add_space(8.0);
-                settings_heading(ui, &self.theme, Section::Graphics, &mut found);
-                if let Some(err) = self.graphics.settings_row(ui, &self.theme) {
-                    self.errors.push(&err);
-                }
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Keyboard shortcuts…").clicked() {
-                        self.shortcuts_page.get_or_insert_with(Default::default);
-                    }
-                    if ui.button("Diagnostics…").clicked() {
-                        self.show_diagnostics = true;
-                    }
-                    if ui.button("Copy log folder path").clicked() {
-                        ctx.copy_text(self.data_dir.join("logs").display().to_string());
-                    }
-                });
-            });
-        self.show_settings = open;
-        self.settings_found = found.filter(|_| open);
-        let project_proxies = self.project_proxies();
-        let shelf = self.proxies.shelf();
-        if self
-            .cache_cleanup
-            .question(ctx, &self.theme, &self.jobs, &shelf, project_proxies)
-        {
-            self.proxies.clearing();
-        }
-        if self.settings != before {
-            if self.settings.theme != before.theme {
-                self.theme = self.settings.theme.theme();
-                self.theme.apply(ctx);
-            }
-            self.proxies.set_mode(self.settings.proxies);
-            // On asks for a proxy for every video file: those cleared on
-            // purpose are built again (Auto leaves them cleared).
-            if self.settings.proxies == cache::proxy::ProxyMode::On && before.proxies != self.settings.proxies
-            {
-                let back = self.proxies.switched_on();
-                if back > 0 {
-                    self.status = format!(
-                        "Proxies On: building the {back} cleared from the cache again, one at a time"
-                    );
-                }
-            }
-            if self.settings.library_marks != before.library_marks {
-                self.library_marks_moved();
-            }
-            let key_frame_first = self.settings.jump_picture.key_frame_first();
-            self.viewer.set_key_frame_first(key_frame_first);
-            self.display.set_key_frame_first(key_frame_first);
-        }
-    }
-
     /// Where the open project's proxies are (none without a project).
     fn project_proxies(&self) -> Vec<std::path::PathBuf> {
         self.document
@@ -3431,8 +3284,7 @@ impl Editor {
             }
             Some(Hit::Settings) => self.show_settings = true,
             Some(Hit::Setting(section)) => {
-                self.show_settings = true;
-                self.settings_found = Some((section, 3));
+                self.open_settings_at(section.id());
             }
             Some(Hit::Timeline { id, .. }) => {
                 self.page = Page::Edit;
@@ -3885,45 +3737,6 @@ enum Thumbnail {
     Now,
 }
 
-/// A section's heading in Settings; the one search asked for (`found`,
-/// with the frames left to scroll to it) is in the accent colour and
-/// scrolled to the top.
-fn settings_heading(
-    ui: &mut egui::Ui,
-    theme: &ui_kit::Theme,
-    section: crate::settings_sections::Section,
-    found: &mut Option<(crate::settings_sections::Section, u8)>,
-) {
-    let mut text = egui::RichText::new(section.name()).heading();
-    let Some((_, frames)) = found.as_mut().filter(|(s, _)| *s == section) else {
-        ui.label(text);
-        return;
-    };
-    text = text.color(theme.accent);
-    let heading = ui.label(text);
-    if *frames > 0 {
-        *frames -= 1;
-        heading.scroll_to_me(Some(egui::Align::TOP));
-        ui.ctx().request_repaint();
-    }
-}
-
-fn click_moves_row(ui: &mut egui::Ui, moves: &mut ui_kit::ClickMoves, edit_at_playhead: bool) {
-    ui.horizontal(|ui| {
-        ui.label("Clicking the timeline moves");
-        ui.add_enabled_ui(!edit_at_playhead, |ui| {
-            ui.radio_value(moves, ui_kit::ClickMoves::Playhead, "the playhead");
-            ui.radio_value(moves, ui_kit::ClickMoves::EditNeedle, "the edit needle");
-        })
-        .response
-        .on_hover_text(if edit_at_playhead {
-            "With Edit at the playhead there is no separate needle: a click moves the playhead"
-        } else {
-            "A click or drag in the timeline's ruler moves this one; the other is moved by dragging its handle"
-        });
-    });
-}
-
 /// What a page shows when it has nothing to show: its name and one line.
 /// Without a project every page waits for one; with one, only the Color
 /// page, whose tools are still to come.
@@ -3952,22 +3765,6 @@ fn click_moves_says(moves: ui_kit::ClickMoves, edit_at_playhead: bool) -> &'stat
         }
         (ui_kit::ClickMoves::Playhead, _) => "A click in the timeline's ruler moves the playhead",
     }
-}
-
-fn limit_row<T>(ui: &mut egui::Ui, label: &str, limit: &mut Limit<T>, min: T, max: T)
-where
-    T: egui::emath::Numeric + Copy,
-{
-    ui.horizontal(|ui| {
-        let mut auto = matches!(limit, Limit::Auto);
-        ui.label(label);
-        if ui.checkbox(&mut auto, "Auto").changed() {
-            *limit = if auto { Limit::Auto } else { Limit::Manual(min) };
-        }
-        if let Limit::Manual(value) = limit {
-            ui.add(egui::Slider::new(value, min..=max));
-        }
-    });
 }
 
 /// Seconds (as the timeline widget gives them) as exact time, to the microsecond.

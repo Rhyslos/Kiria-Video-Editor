@@ -99,6 +99,14 @@ impl LibraryMarks {
         }
     }
 
+    /// The words on Settings' segmented control.
+    pub fn short(self) -> &'static str {
+        match self {
+            LibraryMarks::Session => "This session",
+            LibraryMarks::Project => "In the project",
+        }
+    }
+
     pub fn explained(self) -> &'static str {
         match self {
             LibraryMarks::Session => {
@@ -130,6 +138,14 @@ impl JumpPicture {
         match self {
             JumpPicture::KeyFrameFirst => "Show the nearest key frame first",
             JumpPicture::ExactOnly => "Wait for the exact frame",
+        }
+    }
+
+    /// The words on Settings' segmented control.
+    pub fn short(self) -> &'static str {
+        match self {
+            JumpPicture::KeyFrameFirst => "Key frame first",
+            JumpPicture::ExactOnly => "Exact frame",
         }
     }
 

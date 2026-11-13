@@ -48,7 +48,7 @@ The markers of crashed runs are then cleared so the editor doesn't mention it ag
 The launcher and the editor share one Graphics setting (`<data folder>/graphics.ron`) and one way of starting; all of it lives in the [graphics](../graphics/) crate.
 
 - If the last start with Vulkan never drew a frame, this start uses Direct3D 12 without loading the Vulkan driver, and the window asks: **The window didn't open last time**, with **Keep Direct3D 12** and **Try Vulkan again next time**. Closing without answering keeps Direct3D 12. It waits for the rollback and crash-recovery windows if one of those is open.
-- **Settings (⚙) → Graphics** has the same row as the editor's Settings: Automatic, Vulkan or Direct3D 12, for every window from the next start, and what is in use now. Diagnostics shows it on its first line.
+- **Settings (⚙) → Graphics** has the same card as the editor's Settings: Automatic, Vulkan or Direct3D 12, for every window from the next start, and what is in use now. Diagnostics shows it on its first line.
 - `--smoke-test`, `--screenshot` and `--demo` only read the setting and the marker: they write no marker, change no setting and ask nothing. `--self-test` answers before any of this.
 - `--graphics-warning` shows the question although nothing failed, for screenshots.
 - A Vulkan crash in the editor is one failed start for the health check below; the editor's next start avoids Vulkan and reports that it started, so no version is rolled back (`a_vulkan_crash_in_the_editor_changes_the_graphics_not_the_version` in `src/main.rs`).
@@ -63,7 +63,7 @@ When a check finds a newer version, a window opens over the browser: **Update av
 
 New projects go to one chosen folder, shown with a quiet "new projects" badge in the folder tree. On the first run that is the `<name> projects` folder made in Documents. It can be changed three ways:
 
-- **Settings (⚙) → New projects → Change…** picks any folder.
+- **Settings (⚙) → Projects → Save new projects in → Change…** picks any folder.
 - **Right-click a folder → Save new projects here.**
 - **New project → Browse…** saves one project anywhere; ticking *Save new projects here from now on* makes that folder the choice.
 
@@ -79,6 +79,7 @@ Preferences are read from `<data folder>/updates.ron` (defaults: automatic, Stab
 | `src/browser.rs` | The window: panels, folder tree, header, dialogs, keyboard, automated runs |
 | `src/cards.rs` | The project grid and its cards; search filtering |
 | `src/new_project.rs` | The New project dialog: Automatic settings by default (the first video imported decides), or one of the templates |
+| `src/browser/settings_ui.rs` | Settings, drawn by `ui_kit::settings` like the editor's: tabs Updates (version and where updating stands, Stable releases / Betas too, Automatic updates), Projects (where new projects are saved, Change…), Look (the theme, which follows the editor's), Graphics (`graphics::SETTINGS`) and Diagnostics (Diagnostics…, the log folder with Copy path). `--settings <id>` opens it at a tab or setting and `--window-size 1280x800` sizes the window, for screenshots |
 | `src/updates.rs` | The version panel, the update window (Update available → download bar → Update ready), and the background check and download |
 | `src/files.rs` | Creating, renaming and moving project files; the files that belong to a project move along. Moving a packaged project's file alone (its media stays behind) first makes its relative media paths full ones, in the project and its saved versions, so they are still found |
 | `src/delete.rs` | Deleting a project: `plan` lists what would go, `run` moves it to the `Bin` (the system's recycle bin, or a folder for sample projects and tests) |

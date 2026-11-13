@@ -198,22 +198,7 @@ impl Updates {
                 .family(ui_kit::fonts::semibold())
                 .size(13.0),
         );
-        let (line, colour) = match &self.state {
-            UpdateState::NotChecking => ("Update check off for this run".to_owned(), theme.muted),
-            UpdateState::Checking => ("Checking for updates…".to_owned(), theme.muted),
-            UpdateState::UpToDate => ("Up to date".to_owned(), theme.muted),
-            UpdateState::Skipped(v) => (format!("{v} skipped"), theme.muted),
-            UpdateState::Available(r) => (format!("{} available", r.version), status::WARNING),
-            UpdateState::Downloading(v) => (
-                match self.progress.fraction() {
-                    Some(f) => format!("Downloading {v}… {:.0} %", f * 100.0),
-                    None => format!("Downloading {v}…"),
-                },
-                theme.text_secondary,
-            ),
-            UpdateState::Ready(v) => (format!("{v} downloaded and verified"), status::GOOD),
-            UpdateState::Failed(what) => (what.clone(), theme.muted),
-        };
+        let (line, colour) = self.state_line(theme);
         ui.label(RichText::new(line).size(11.5).color(colour));
         if matches!(self.state, UpdateState::Ready(_))
             && ui_kit::accent_button(ui, theme, "Restart to update")
@@ -241,14 +226,53 @@ impl Updates {
             .on_hover_text("Download new versions as soon as they are out.")
             .changed()
         {
-            self.prefs.automatic = automatic;
-            self.save_prefs();
-            if automatic && let UpdateState::Available(release) = &self.state {
-                let release = release.clone();
-                self.download(&ctx, release);
-            }
+            self.set_automatic(&ctx, automatic);
         }
         restart
+    }
+
+    /// Whether new versions download as soon as they are out.
+    pub fn automatic(&self) -> bool {
+        self.prefs.automatic
+    }
+
+    /// Turns automatic updates on or off (the panel's tick and Settings'
+    /// switch); on, a version waiting to be downloaded starts downloading.
+    pub fn set_automatic(&mut self, ctx: &egui::Context, automatic: bool) {
+        if self.prefs.automatic == automatic {
+            return;
+        }
+        self.prefs.automatic = automatic;
+        self.save_prefs();
+        if automatic && let UpdateState::Available(release) = &self.state {
+            let release = release.clone();
+            self.download(ctx, release);
+        }
+    }
+
+    /// The version in use, as the panel names it.
+    pub fn version(&self) -> &str {
+        &self.version
+    }
+
+    /// Where updating stands, in a line, and its colour.
+    pub fn state_line(&self, theme: &Theme) -> (String, egui::Color32) {
+        match &self.state {
+            UpdateState::NotChecking => ("Update check off for this run".to_owned(), theme.muted),
+            UpdateState::Checking => ("Checking for updates…".to_owned(), theme.muted),
+            UpdateState::UpToDate => ("Up to date".to_owned(), theme.muted),
+            UpdateState::Skipped(v) => (format!("{v} skipped"), theme.muted),
+            UpdateState::Available(r) => (format!("{} available", r.version), status::WARNING),
+            UpdateState::Downloading(v) => (
+                match self.progress.fraction() {
+                    Some(f) => format!("Downloading {v}… {:.0} %", f * 100.0),
+                    None => format!("Downloading {v}…"),
+                },
+                theme.text_secondary,
+            ),
+            UpdateState::Ready(v) => (format!("{v} downloaded and verified"), status::GOOD),
+            UpdateState::Failed(what) => (what.clone(), theme.muted),
+        }
     }
 
     /// Opens the window at `step` with a made-up next version, for screenshots.

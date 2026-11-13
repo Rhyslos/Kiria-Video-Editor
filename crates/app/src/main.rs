@@ -186,6 +186,8 @@ fn main() -> ExitCode {
         problems,
         pointer,
         shortcuts_page: options.shortcuts_page,
+        settings_at: options.settings.clone(),
+        settings_search: options.settings_search.clone(),
     };
 
     let mut code = ExitCode::SUCCESS;
