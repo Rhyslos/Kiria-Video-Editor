@@ -268,6 +268,9 @@ pub struct TimelineData<'a> {
     /// Stretches to mark over every track (seconds), such as the silences a
     /// removal would cut.
     pub highlights: &'a [(f64, f64)],
+    /// Coloured stretches to mark (seconds), each over the audio tracks it
+    /// names (or every track): the clarity check's findings.
+    pub spans: &'a [TimelineSpan],
     /// Keep the playhead in view (while playing).
     pub follow: bool,
     /// What is prepared ahead of time along the timeline, for the strip under the ruler.
@@ -278,6 +281,20 @@ pub struct TimelineData<'a> {
     /// The roles an audio track can have, with their colours, offered in
     /// the names' right-click menu (empty: none offered).
     pub roles: &'a [(&'a str, Color32)],
+}
+
+/// A stretch the page marks in a colour of its own (see
+/// [`TimelineData::spans`]): faintly over the tracks, more strongly over
+/// the audio tracks it names, and as a bar along the labels row.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TimelineSpan {
+    pub start: f64,
+    pub end: f64,
+    pub colour: Color32,
+    /// The audio tracks it is about (empty: every track alike).
+    pub tracks: Vec<u64>,
+    /// Shown when the pointer rests on its bar.
+    pub tip: String,
 }
 
 /// Something the person did on the timeline.
@@ -1168,6 +1185,55 @@ impl TimelineView {
         }
     }
 
+    /// The page's coloured stretches ([`TimelineData::spans`]): a faint wash
+    /// over every track, a stronger one over the audio rows each names, and
+    /// a bar along the bottom of the labels row with its tip.
+    fn draw_spans(&self, ui: &Ui, layout: &Layout, data: &TimelineData, audio_rows: &Rows) {
+        if data.spans.is_empty() {
+            return;
+        }
+        let left = layout.time_left();
+        let body = Rect::from_min_max(
+            pos2(left, layout.labels.bottom()),
+            pos2(layout.ruler.right(), layout.scrollbar.top()),
+        );
+        let wash = ui.painter_at(body);
+        let audio = ui.painter_at(Rect::from_min_max(
+            pos2(left, layout.audio.top()),
+            layout.audio.max,
+        ));
+        let bar_row = Rect::from_min_max(
+            pos2(left, layout.labels.bottom() - 4.0),
+            pos2(layout.ruler.right(), layout.labels.bottom()),
+        );
+        let bars = ui.painter_at(bar_row);
+        for (i, span) in data.spans.iter().enumerate() {
+            let (x0, x1) = (self.x_of(left, span.start), self.x_of(left, span.end));
+            if x1 < body.left() || x0 > body.right() {
+                continue;
+            }
+            let x1 = x1.max(x0 + 2.0);
+            let column = Rect::from_min_max(pos2(x0, body.top()), pos2(x1, body.bottom()));
+            wash.rect_filled(column, 0.0, span.colour.gamma_multiply(0.08));
+            for (track, row) in data.audio.iter().zip(audio_rows.rects()) {
+                if span.tracks.contains(&track.id) {
+                    let r = Rect::from_min_max(pos2(x0, row.top()), pos2(x1, row.bottom()));
+                    audio.rect_filled(r, 0.0, span.colour.gamma_multiply(0.18));
+                }
+            }
+            let bar = Rect::from_min_max(pos2(x0, bar_row.top()), pos2(x1, bar_row.bottom()));
+            bars.rect_filled(bar, 1.0, span.colour.gamma_multiply(0.85));
+            if !span.tip.is_empty() {
+                let r = ui.interact(
+                    bar.intersect(bar_row),
+                    ui.scope_id().with(("timeline-span", i)),
+                    Sense::hover(),
+                );
+                r.on_hover_text(&span.tip);
+            }
+        }
+    }
+
     /// The rows of `half`, each track with its own height.
     fn rows(&self, half: Half, layout: &Layout, data: &TimelineData) -> Rows {
         let heights = tracks_of(half, data)
@@ -1784,6 +1850,7 @@ impl TimelineView {
                 }
             }
         }
+        self.draw_spans(ui, &layout, data, &audio_rows);
         let region = self.region_drag.map(|(_, r)| r).or(data.region);
         if let Some((a, b)) = region {
             let (x0, x1) = (self.x_of(left, a), self.x_of(left, b));
@@ -4102,6 +4169,7 @@ mod tests {
                             region: self.region,
                             markers: &[],
                             highlights: &[],
+                            spans: &[],
                             follow: false,
                             cache: CacheBar {
                                 ranges: &self.cache,
@@ -4130,6 +4198,7 @@ mod tests {
                 region: None,
                 markers: &[],
                 highlights: &[],
+                spans: &[],
                 follow: false,
                 cache: CacheBar {
                     ranges: &[],
@@ -5887,6 +5956,7 @@ mod tests {
                 region: None,
                 markers: &[],
                 highlights: &[],
+                spans: &[],
                 follow: false,
                 cache: CacheBar {
                     ranges: &[],

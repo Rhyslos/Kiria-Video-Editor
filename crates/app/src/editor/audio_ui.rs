@@ -1,5 +1,5 @@
 //! The Audio page as the window runs it: the shared viewer top left, the
-//! page's tools top right, the band kept for the clarity check, and the
+//! page's tools top right, the clarity check across the middle, and the
 //! bottom (the shared timeline, the mixer, or both) under a bar with the
 //! view toggle, the Show filter, the timeline's tools and the lines tool.
 //! Every frame it takes the mixer's meters once, counts for the loudness
@@ -16,8 +16,8 @@ use ui_kit::{Action, Page, layout};
 
 /// The tools' panel's width beside the viewer.
 pub const TOOLS_WIDTH: f32 = layout::TOOLS_WIDTH;
-/// The band kept for the clarity check (step 8.2).
-const CLARITY_HEIGHT: f32 = 40.0;
+/// The clarity check's band across the middle.
+const CLARITY_HEIGHT: f32 = 112.0;
 /// The bar over the bottom views.
 const BAR_HEIGHT: f32 = 30.0;
 /// Room between the page's parts.
@@ -196,12 +196,22 @@ impl Editor {
             })
             .inner;
 
-        // The band kept for the clarity check.
+        // The clarity check: followed every frame, its check on a worker.
+        if let Some(err) = self.audio_page.clarity.follow(
+            &self.jobs,
+            p,
+            self.playback.is_some(),
+            self.viewer.playhead,
+            Instant::now(),
+        ) {
+            self.errors.push(&err);
+        }
         let clarity = egui::Rect::from_min_size(
             egui::pos2(page.left(), top.bottom() + GAP),
             egui::vec2(page.width(), CLARITY_HEIGHT),
         );
-        clarity_band(ui, &self.theme, clarity);
+        let clarity_asks =
+            audio_page::clarity_draw::band(ui, &self.theme, clarity, &mut self.audio_page.clarity, seq);
 
         // The bar over the bottom views.
         let bar = egui::Rect::from_min_size(
@@ -312,8 +322,33 @@ impl Editor {
         for event in events {
             self.timeline_event(event);
         }
+        self.clarity_asks(clarity_asks);
         if let Some(command) = viewer_command {
             self.run_action(command);
+        }
+    }
+
+    /// What the clarity check's band asked: a fix (one undo step, then a
+    /// check again at once), the region or the playhead, going to a finding.
+    fn clarity_asks(&mut self, asks: audio_page::clarity_draw::BandAsks) {
+        if let Some(scope) = asks.scope {
+            self.audio_page.clarity.scope = scope;
+        }
+        if let Some(at) = asks.seek {
+            self.timeline_event(ui_kit::TimelineEvent::Seek(at.as_secs_f64()));
+        }
+        if let Some(fix) = asks.fix {
+            let result = self.with_document(|d| {
+                let command = fix.apply(d.project())?;
+                d.apply(command)
+            });
+            match result {
+                Ok(()) => {
+                    self.status = format!("{}: done. Undo takes it back.", fix.label);
+                    self.audio_page.clarity.again();
+                }
+                Err(err) => self.errors.push(&err),
+            }
         }
     }
 
@@ -570,6 +605,7 @@ impl Editor {
         }
         let needle = (!self.settings.edit_at_playhead).then_some(seq.edit_needle);
         let offered = roles::offered();
+        let spans = self.audio_page.clarity.spans(seq.id);
         let data = ui_kit::TimelineData {
             video: &video,
             audio: &audio,
@@ -580,6 +616,7 @@ impl Editor {
             region: seq.region.map(|r| (r.start.as_secs_f64(), r.end.as_secs_f64())),
             markers: &drawn.markers,
             highlights: &[],
+            spans: &spans,
             follow: self.playback.is_some(),
             cache: ui_kit::timeline::CacheBar {
                 ranges: &drawn.cache,
@@ -753,40 +790,6 @@ fn video_reference(video: Vec<ui_kit::TimelineTrack>) -> Option<ui_kit::Timeline
     Some(first)
 }
 
-/// The band across the middle kept for the clarity check.
-fn clarity_band(ui: &egui::Ui, theme: &ui_kit::Theme, r: egui::Rect) {
-    let p = ui.painter_at(r);
-    p.rect_filled(r, 6.0, theme.panel);
-    let dash = egui::Stroke::new(1.0, theme.line_strong);
-    let corners = [
-        r.left_top(),
-        r.right_top(),
-        r.right_bottom(),
-        r.left_bottom(),
-        r.left_top(),
-    ];
-    p.add(egui::Shape::dashed_line(
-        &corners.map(|c| c + (r.center() - c) * 0.0),
-        dash,
-        5.0,
-        4.0,
-    ));
-    p.text(
-        r.left_center() + egui::vec2(14.0, 0.0),
-        egui::Align2::LEFT_CENTER,
-        "Clarity check",
-        egui::FontId::proportional(12.5),
-        theme.text_secondary,
-    );
-    p.text(
-        r.left_center() + egui::vec2(110.0, 0.0),
-        egui::Align2::LEFT_CENTER,
-        "Where tracks share the same frequencies, muddy zones and one-click fixes will show here (coming next).",
-        egui::FontId::proportional(12.0),
-        theme.muted,
-    );
-}
-
 impl Editor {
     /// What the command line asked of the Audio page once the project and
     /// its imports are in: many audio tracks (`--audio-tracks`), and the
@@ -835,6 +838,25 @@ impl Editor {
                 self.audio_page.timeline = fresh;
                 self.audio_page.fitted = false;
             }
+        }
+        if self.audio_start.clarity_region && self.audio_start.tracks.is_none() {
+            self.audio_start.clarity_region = false;
+            let whole = self.document.as_ref().and_then(|d| {
+                let seq = d.project().active()?;
+                (seq.region.is_none() && seq.length() > Time::ZERO).then(|| Command::SetRegion {
+                    sequence: seq.id,
+                    region: Some(project::Region {
+                        start: Time::ZERO,
+                        end: seq.length(),
+                    }),
+                })
+            });
+            if let Some(command) = whole
+                && let Err(err) = self.with_document(|d| d.apply(command))
+            {
+                self.errors.push(&err);
+            }
+            self.audio_page.clarity.scope = audio_page::clarity::Scope::Region;
         }
         if let Some(n) = self.audio_start.track {
             let track = self

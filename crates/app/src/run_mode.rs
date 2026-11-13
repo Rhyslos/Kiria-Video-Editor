@@ -92,7 +92,7 @@ pub struct Options {
     pub decoding_warning: bool,
     /// The Audio page's tool, bottom view and track, and a project made to
     /// have many audio tracks (`--audio-tool compressor`, `--audio-view
-    /// stacked`, `--audio-track 3`, `--audio-tracks 30`; for screenshots
+    /// stacked`, `--audio-track 3`, `--audio-tracks 30`, `--audio-clarity-region`; for screenshots
     /// and the responsiveness test of the Audio page).
     pub audio: crate::audio_page::Start,
     /// The window's size in points (`--window-size 1280x800`, for
@@ -186,6 +186,7 @@ impl Options {
                         .ok_or("--audio-tracks needs a number of tracks")?;
                     options.audio.tracks = Some(n);
                 }
+                "--audio-clarity-region" => options.audio.clarity_region = true,
                 "--library-tab" => {
                     let name = args.next().ok_or("--library-tab needs a tab's name")?;
                     options.library_tab = Some(name);

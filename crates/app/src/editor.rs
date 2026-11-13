@@ -2717,6 +2717,7 @@ impl Editor {
                 region: seq.region.map(|r| (r.start.as_secs_f64(), r.end.as_secs_f64())),
                 markers: &drawn.markers,
                 highlights: &self.silence.found,
+                spans: &[],
                 follow: self.playback.is_some(),
                 cache: ui_kit::timeline::CacheBar {
                     ranges: &drawn.cache,
@@ -3169,7 +3170,10 @@ impl Editor {
                     && self.package.settled()
                     && self.sync.settled()
                     && !self.sync_when_ready
-                    && (self.page != Page::Export || self.document.is_none() || self.export_page.settled()))
+                    && (self.page != Page::Export || self.document.is_none() || self.export_page.settled())
+                    && (self.page != Page::Audio
+                        || self.document.is_none()
+                        || (self.audio_start.tracks.is_none() && self.audio_page.clarity.settled())))
                     || now.duration_since(since) > SCREENSHOT_WAIT;
                 // A scripted pointer has done its part, and rested long
                 // enough for a tooltip to come up.

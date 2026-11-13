@@ -2,7 +2,7 @@
 //! top left (the viewer every page shares), the effects of one track top
 //! right (a track dropdown and a one-at-a-time switcher: EQ, Compressor,
 //! Clean-up, Ducking, Loudness, and the full loudness overview, Meters),
-//! a band across the middle kept for the clarity check, and at the bottom
+//! the clarity check across the middle (`clarity`, `clarity_draw`), and at the bottom
 //! the timeline, the mixer or both (Split, side by side or stacked).
 //!
 //! The window lays the page out (`editor/audio_ui.rs`); this module keeps
@@ -13,6 +13,8 @@
 //! becomes one undo step when the hand is off it, as the inspector does.
 
 pub mod bar;
+pub mod clarity;
+pub mod clarity_draw;
 mod cleanup;
 pub mod counting;
 mod ducking;
@@ -167,6 +169,8 @@ pub struct AudioPage {
     pub fitted: bool,
     /// The track the mixer last showed as chosen: another one is scrolled into view.
     strip_shown: Option<TrackId>,
+    /// The clarity check across the middle.
+    pub clarity: clarity::ClarityBand,
     /// A noise being learned on a worker, for a track.
     learning: Option<(TrackId, SequenceId, JobHandle<NoiseProfile>)>,
 }

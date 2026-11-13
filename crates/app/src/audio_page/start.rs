@@ -15,6 +15,9 @@ pub struct Start {
     /// Make the open timeline have this many audio tracks (from the first
     /// audio track's clips), once its imports are in.
     pub tracks: Option<usize>,
+    /// Check the region for clarity (made the whole timeline when there is
+    /// none), once the tracks are in (`--audio-clarity-region`).
+    pub clarity_region: bool,
 }
 
 /// `timeline`, `mixer`, `split` or `stacked`.

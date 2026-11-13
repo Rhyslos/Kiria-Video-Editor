@@ -13,6 +13,9 @@
 //! - [`playback`]: sound out of the speakers and the clock the picture
 //!   follows; [`output`]: the sound card's callback.
 //! - [`offline`]: the same mix without a sound card, for export.
+//! - [`clarity`]: where tracks share frequencies (another track covering
+//!   the voice, a pile-up between 200 and 500 Hz), found on a worker from
+//!   each track's sound after its effects, with one-click fixes.
 //! - [`loudness`], [`limiter`], [`meter`]: `crates/audio`'s meter and
 //!   limiter, re-exported.
 //! - [`sync`]: where a separately recorded sound lines up with another, by
@@ -21,6 +24,7 @@
 //! The interface only sends requests and reads results back, so slow media
 //! can never freeze a window.
 
+pub mod clarity;
 pub mod compose;
 pub mod export;
 pub mod feeder;
