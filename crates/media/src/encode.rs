@@ -612,9 +612,19 @@ fn open_video_with(
         c.bit_rate = bits;
         c.rc_max_rate = bits.saturating_mul(2);
         c.rc_buffer_size = bits.saturating_mul(2).min(i64::from(i32::MAX)) as i32;
-        // A key frame every two seconds: quick to jump around in.
+        // A key frame every two seconds: quick to jump around in, and what
+        // video sites ask for. Each starts a closed group (nothing after it
+        // refers to a picture before it), so a file can be cut, joined or
+        // started at any key frame, as sites and players expect.
         let frames_a_second = (f64::from(settings.rate.0) / f64::from(settings.rate.1)).round() as i32;
         c.gop_size = (frames_a_second * 2).max(1);
+        c.flags |= ff::AV_CODEC_FLAG_CLOSED_GOP as i32;
+        // H.264 in its High profile on every encoder (some graphics cards'
+        // start at Main): smaller for the same picture, and what video
+        // sites ask for. The level follows the size and rate by itself.
+        if settings.codec == VideoCodec::H264 {
+            c.profile = ff::AV_PROFILE_H264_HIGH;
+        }
         // What the compositor hands over: BT.709 in the limited range.
         c.color_range = ff::AVColorRange::AVCOL_RANGE_MPEG;
         c.color_primaries = ff::AVColorPrimaries::AVCOL_PRI_BT709;
@@ -633,7 +643,8 @@ fn open_video_with(
                 ff::av_opt_set(
                     c.priv_data,
                     c"x265-params".as_ptr(),
-                    c"log-level=error".as_ptr(),
+                    // Its groups are open unless told otherwise.
+                    c"log-level=error:open-gop=0".as_ptr(),
                     0,
                 );
             }
@@ -1053,3 +1064,6 @@ pub fn encoder_description(name: &str) -> Option<String> {
         Some(CStr::from_ptr((*codec).long_name).to_string_lossy().into_owned())
     }
 }
+
+#[cfg(test)]
+mod tests;
