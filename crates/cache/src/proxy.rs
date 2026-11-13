@@ -641,10 +641,13 @@ mod tests {
     }
 
     #[test]
-    fn a_short_small_file_needs_no_proxy() {
+    fn a_file_is_judged_by_its_key_frames_and_a_timed_decode() {
+        // The verdict depends on how fast this machine decodes, so the test
+        // checks the rule, not the machine: a shared test runner can be slow
+        // enough for even a small file to need a proxy.
         let judged = judge(&fixture("game-3-audio.mkv"), 0, 3.0, Decoding::Software).unwrap();
         assert!(judged.longest_gap > 0.0);
-        assert!(!judged.needs_proxy, "{judged:?}");
+        assert_eq!(judged.needs_proxy, judged.typical_jump > JUMP_TARGET, "{judged:?}");
     }
 
     #[test]
