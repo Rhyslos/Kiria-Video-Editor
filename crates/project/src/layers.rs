@@ -17,14 +17,14 @@ use crate::time::{Speed, Time};
 use diag::AppError;
 
 /// Whether nothing on `track` lies between `start` and `end`.
-fn is_free(track: &Track, start: Time, end: Time) -> bool {
+pub(crate) fn is_free(track: &Track, start: Time, end: Time) -> bool {
     !track.clips.iter().any(|c| c.start < end && start < c.end())
 }
 
 /// Puts a sound clip on the first audio track where its stretch is free,
 /// trying the tracks in `order` (their places among the audio tracks), or
 /// on a new track under the others when none of them is.
-fn settle_sound(
+pub(crate) fn settle_sound(
     p: &mut Project,
     sequence: SequenceId,
     clip: Clip,

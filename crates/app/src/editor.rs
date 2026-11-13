@@ -113,6 +113,8 @@ pub struct Editor {
     export_page: crate::export_page::ExportPage,
     frame_grab: crate::frame_grab::FrameGrab,
     silence: crate::silence_panel::SilencePanel,
+    /// Sync by sound: what it found, and the comparison running.
+    sync: crate::sync_panel::SyncPanel,
     label_editor: Option<crate::label_editor::LabelEditor>,
     master: ui_kit::master::MasterColumn,
     versions: crate::versions_window::VersionsWindow,
@@ -145,6 +147,8 @@ pub struct Editor {
     full_screen_changed: bool,
     /// `--select-first-clip`: still to be done, once there is a clip.
     select_first_clip: bool,
+    /// `--sync-by-sound`: still to be done, once the imports are in.
+    sync_when_ready: bool,
     /// Save this frame was asked for; the dialog opens on the next frame.
     save_frame_requested: bool,
     /// `--play`: start playing as soon as the imports are in.
@@ -239,6 +243,7 @@ impl Editor {
         );
         let full_screen = project.as_ref().is_some_and(|p| p.full_screen);
         let select_first_clip = project.as_ref().is_some_and(|p| p.select_first_clip);
+        let sync_when_ready = project.as_ref().is_some_and(|p| p.sync_by_sound);
         let hold_reading = project.as_ref().and_then(|p| p.hold_reading);
         let hold_proxy = project.as_ref().and_then(|p| p.hold_proxy);
         let package_to = project.as_ref().and_then(|p| p.package_to.clone());
@@ -368,6 +373,7 @@ impl Editor {
             relink: crate::relink::Relinker::default(),
             frame_grab: crate::frame_grab::FrameGrab::default(),
             silence: crate::silence_panel::SilencePanel::default(),
+            sync: crate::sync_panel::SyncPanel::default(),
             label_editor: None,
             master: ui_kit::master::MasterColumn::default(),
             versions: crate::versions_window::VersionsWindow::default(),
@@ -386,6 +392,7 @@ impl Editor {
             full_screen,
             full_screen_changed: full_screen,
             select_first_clip,
+            sync_when_ready,
             save_frame_requested: false,
             global_labels,
             media_folders: crate::media_folders::MediaFolders::new(watch_folders),
@@ -582,6 +589,10 @@ impl Editor {
             Action::NewTimeline => self.new_timeline(false),
             Action::DuplicateTimeline => self.new_timeline(true),
             Action::NestSelection => self.nest_selection(),
+            Action::SyncBySound => {
+                self.start_sync();
+                Ok(())
+            }
             Action::AddAdjustmentLayer => {
                 let at = self.viewer.playhead;
                 self.add_adjustment(at, None)
@@ -1107,6 +1118,7 @@ impl Editor {
                     self.errors.push(&err);
                 }
             }
+            E::SyncBySound => self.start_sync(),
             E::DropTimeline { timeline, at, track } => {
                 let result = self.place_timeline(
                     project::SequenceId(timeline),
@@ -1783,6 +1795,46 @@ impl Editor {
                     self.status = format!(
                         "Removed {count} quiet stretch{}.",
                         if count == 1 { "" } else { "es" }
+                    );
+                }
+                Err(err) => self.errors.push(&err),
+            }
+        }
+    }
+
+    /// Starts Sync by sound on the selected clips, or says why it can't.
+    fn start_sync(&mut self) {
+        let Some(document) = &self.document else { return };
+        if let Some(says) = self.sync.start(document.project(), &self.selected, &self.jobs) {
+            self.status = says;
+        }
+    }
+
+    /// The Sync by sound window, and the move it asks for.
+    fn sync_window(&mut self, ctx: &egui::Context) {
+        if !self.sync.open {
+            return;
+        }
+        let Some(document) = &self.document else {
+            self.sync.open = false;
+            return;
+        };
+        self.sync.poll(ctx);
+        let undo = self.shortcuts.keys_or_name(Action::Undo);
+        let asked = self
+            .sync
+            .ui(ctx, &self.theme, document.project(), &self.jobs, &undo);
+        if let crate::sync_panel::Asked::Move(moves) = asked {
+            let count = moves.len();
+            let result = self.with_document(|d| {
+                let sequence = d.project().active_sequence;
+                d.apply(Command::LineUp { sequence, moves })
+            });
+            match result {
+                Ok(()) => {
+                    self.status = format!(
+                        "Lined up {count} clip{} by sound. {undo} undoes it.",
+                        if count == 1 { "" } else { "s" }
                     );
                 }
                 Err(err) => self.errors.push(&err),
@@ -3040,6 +3092,8 @@ impl Editor {
                     && self.media_folders.settled()
                     && self.relink.settled()
                     && self.package.settled()
+                    && self.sync.settled()
+                    && !self.sync_when_ready
                     && (self.page != Page::Export || self.document.is_none() || self.export_page.settled()))
                     || now.duration_since(since) > SCREENSHOT_WAIT;
                 // A scripted pointer has done its part, and rested long
@@ -3198,6 +3252,15 @@ impl eframe::App for Editor {
             self.select_first_clip = false;
             self.selected = vec![clip];
         }
+        if self.sync_when_ready
+            && self.importer.busy() == 0
+            && let Some(seq) = self.document.as_ref().and_then(|d| d.project().active())
+            && seq.tracks().any(|t| !t.clips.is_empty())
+        {
+            self.sync_when_ready = false;
+            self.selected = seq.tracks().flat_map(|t| t.clips.iter().map(|c| c.id)).collect();
+            self.run_action(Action::SyncBySound);
+        }
         if self.play_when_ready && self.importer.busy() == 0 && self.document.is_some() {
             self.play_when_ready = false;
             self.run_action(Action::PlayPause);
@@ -3271,6 +3334,7 @@ impl eframe::App for Editor {
         self.timeline_settings_window(&ctx);
         self.search_window(&ctx);
         self.silence_window(&ctx);
+        self.sync_window(&ctx);
         self.label_window(&ctx);
         self.versions_window(&ctx);
         self.templates_window(&ctx);
@@ -3456,6 +3520,8 @@ pub struct ProjectToOpen {
     /// Select the first clip of the top video track that has one, once
     /// imports are done.
     pub select_first_clip: bool,
+    /// Select every clip once imports are done, and run Sync by sound.
+    pub sync_by_sound: bool,
     /// Commands to run once open, by name.
     pub actions: Vec<String>,
     /// Commands to run once the scripted pointer has done its part, by name.

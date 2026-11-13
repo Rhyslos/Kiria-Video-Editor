@@ -35,6 +35,7 @@ mod search;
 mod settings;
 mod silence_panel;
 mod slow_pictures;
+mod sync_panel;
 mod system_keyboard;
 mod templates_window;
 mod timeline_panel;
@@ -149,6 +150,7 @@ fn main() -> ExitCode {
         library_select: options.library_select.clone(),
         full_screen: options.full_screen,
         select_first_clip: options.select_first_clip,
+        sync_by_sound: options.sync_by_sound,
         actions: options.actions.clone(),
         then_actions: options.then_actions.clone(),
         cpu_colour: options.cpu_colour,

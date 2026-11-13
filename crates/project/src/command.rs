@@ -293,6 +293,18 @@ pub enum Command {
         track: Option<TrackId>,
         by: Time,
     },
+    /// Lines clips up where sync by sound found them: each clip (with its
+    /// linked clips) moves to start at its time, as one step. A clip with
+    /// a picture goes to the nearest frame; sound alone lines up exactly
+    /// (its edges on frames, where in its file it starts moved by what is
+    /// left over). What would start before zero is cut off. Sound in the
+    /// way of something takes the first free audio track, as in
+    /// [`Command::MoveBetweenTracks`]; refused if a picture would overlap a
+    /// clip that isn't moving, or two of them are linked.
+    LineUp {
+        sequence: SequenceId,
+        moves: Vec<(ClipId, Time)>,
+    },
     /// Moves one edge of a clip (and the same edge of its linked clips) to
     /// `to` on the timeline. The start edge also moves where in the file the
     /// clip begins, so the picture stays in place.
@@ -743,6 +755,7 @@ impl Command {
                 track,
                 by,
             } => crate::layers::move_between(&mut p, *sequence, *clip, *track, *by)?,
+            Command::LineUp { sequence, moves } => crate::line_up::line_up(&mut p, *sequence, moves)?,
             Command::Trim {
                 sequence,
                 clip,

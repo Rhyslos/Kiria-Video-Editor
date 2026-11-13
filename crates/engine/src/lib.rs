@@ -15,6 +15,8 @@
 //! - [`offline`]: the same mix without a sound card, for export.
 //! - [`loudness`], [`limiter`], [`meter`]: `crates/audio`'s meter and
 //!   limiter, re-exported.
+//! - [`sync`]: where a separately recorded sound lines up with another, by
+//!   what they hear.
 //!
 //! The interface only sends requests and reads results back, so slow media
 //! can never freeze a window.
@@ -34,6 +36,7 @@ pub mod playback;
 pub mod preview;
 pub mod silence;
 pub mod source;
+pub mod sync;
 pub mod thumbnail;
 pub mod timeline;
 

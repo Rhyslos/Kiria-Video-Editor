@@ -46,6 +46,10 @@ pub struct Options {
     /// screenshots of what a selected clip shows: the inspector's values,
     /// the handles on its picture).
     pub select_first_clip: bool,
+    /// Select every clip of the open timeline once the project and its
+    /// imports are in, and run Sync by sound on them (`--sync-by-sound`,
+    /// for screenshots of its result).
+    pub sync_by_sound: bool,
     /// Commands to run once open, by name (`--action KeyboardShortcuts`, repeatable, for screenshots).
     pub actions: Vec<String>,
     /// Commands to run once the scripted pointer has done its part
@@ -147,6 +151,7 @@ impl Options {
                 }
                 "--full-screen" => options.full_screen = true,
                 "--select-first-clip" => options.select_first_clip = true,
+                "--sync-by-sound" => options.sync_by_sound = true,
                 "--cpu-colour" => options.cpu_colour = true,
                 "--graphics-warning" => options.graphics_warning = true,
                 "--decoding-warning" => options.decoding_warning = true,
@@ -326,6 +331,7 @@ mod tests {
         );
         assert!(parse(&["p.x", "--select-first-clip"]).unwrap().select_first_clip);
         assert!(!parse(&["p.x"]).unwrap().select_first_clip);
+        assert!(parse(&["p.x", "--sync-by-sound"]).unwrap().sync_by_sound);
         assert!(!parse(&["p.x"]).unwrap().cpu_colour);
         assert_eq!(
             parse(&["p.x", "--hold-reading", "0.4"]).unwrap().hold_reading,

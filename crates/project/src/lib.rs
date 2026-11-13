@@ -36,6 +36,7 @@ mod journal_sync;
 pub mod keyframes;
 mod layers;
 pub mod library;
+mod line_up;
 pub mod look;
 pub mod model;
 pub mod package;
