@@ -297,7 +297,8 @@ impl Judge {
         if involved.len() < 2 {
             return None;
         }
-        let names: Vec<String> = involved.iter().map(|i| called(&self.tracks[*i])).collect();
+        // Names alone: a list of "the music on ..." reads badly.
+        let names: Vec<String> = involved.iter().map(|i| self.tracks[*i].name.clone()).collect();
         let words = format!(
             "{} pile up between 200 and 500 Hz: {}.",
             capital(&listed(&names)),
@@ -434,11 +435,12 @@ fn between(first: usize, last: usize) -> String {
     }
 }
 
-/// "A, B and C".
+/// "A, B and C"; past three names, "A, B, C and 4 more tracks".
 fn listed(names: &[String]) -> String {
     match names {
         [] => String::new(),
         [one] => one.clone(),
+        [a, b, c, rest @ ..] if !rest.is_empty() => format!("{a}, {b}, {c} and {} more tracks", rest.len()),
         [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
     }
 }
@@ -475,6 +477,8 @@ mod tests {
         assert_eq!(between(5, 11), "between 500 Hz and 2 kHz");
         assert_eq!(between(12, 12), "around 2.5 kHz");
         assert_eq!(listed(&["a".into(), "b".into(), "c".into()]), "a, b and c");
+        let five: Vec<String> = ["a", "b", "c", "d", "e"].map(String::from).to_vec();
+        assert_eq!(listed(&five), "a, b, c and 2 more tracks");
     }
 
     #[test]

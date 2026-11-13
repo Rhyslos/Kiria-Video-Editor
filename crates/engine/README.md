@@ -4,7 +4,7 @@ Ties the parts together: what is on the timeline at a moment, and the workers th
 
 ## Status
 
-The picture at the playhead (every visible layer, put together on the graphics card), the timeline's sound (since 8.1 mixed through `crates/audio`: every track's effects, volume, pan, mute and solo, and the master, in the sound card's callback, with edits heard within a block while playing), playback with the sound as the clock, and export to every container and codec of version 1 (6.1). Export also scales to another size and frame rate, writes the sound beside as WAV, pauses between frames and measures a mix's loudness for the Export page (6.2). The clarity check (8.2) finds, on a worker, where another track covers the dialogue and where several pile up between 200 and 500 Hz, from each track's sound after its effects, in plain words with one-click fixes; the Audio page will draw it.
+The picture at the playhead (every visible layer, put together on the graphics card), the timeline's sound (since 8.1 mixed through `crates/audio`: every track's effects, volume, pan, mute and solo, and the master, in the sound card's callback, with edits heard within a block while playing), playback with the sound as the clock, and export to every container and codec of version 1 (6.1). Export also scales to another size and frame rate, writes the sound beside as WAV, pauses between frames and measures a mix's loudness for the Export page (6.2). The clarity check (8.2) finds, on a worker, where another track covers the dialogue and where several pile up between 200 and 500 Hz, from each track's sound after its effects, in plain words with one-click fixes; the Audio page's middle band draws it.
 
 ## Files
 

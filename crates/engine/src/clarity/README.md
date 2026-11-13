@@ -1,6 +1,6 @@
 # clarity
 
-The clarity check (8.2): where tracks share frequencies, at the playhead or over the region, worked out on a worker and said in plain words, each finding with one-click fixes. The Audio page draws it (its middle band); nothing here draws.
+The clarity check (8.2): where tracks share frequencies, at the playhead or over the region, worked out on a worker and said in plain words, each finding with one-click fixes. The Audio page draws it (its middle band, `crates/app/src/audio_page/clarity.rs` and `clarity_draw.rs`); nothing here draws.
 
 ## Using it
 
@@ -41,7 +41,7 @@ check.cancel();
 
 - **Covering the voice.** Only where the dialogue tracks together speak (over -50 dBFS in the speech bands) and only against tracks that aren't dialogue. Per band from 315 Hz to 4 kHz: 6 dB or more under the voice is clear, 6 dB or more over it is covered, a straight line between. A frame's severity is the covered share of the bands the voice has sound in, weighted by importance. Smoothed over 0.3 s; frames over 0.3 make stretches, joined across gaps up to 0.5 s, kept from 0.4 s. A finding's severity is the mean over its speaking frames; its band is the worst band and its neighbours at least half as bad.
 - **Muddy.** Three or more tracks over -50 dBFS between 200 and 500 Hz and within 10 dB of the loudest there; then how far the mix's low middle stands over its presence (1 to 4 kHz, per octave: a balanced sound reads 0 dB), nothing at 3 dB, as bad as it gets at 12 dB. Smoothed over 0.5 s, over 0.25, joined across 0.5 s, kept from 0.5 s.
-- **Words** use Hz and kHz and nothing else technical: "The music on A2 covers the voice between 500 Hz and 4 kHz: words may be hard to follow." (from severity 0.6; under it, "the voice may sound less clear"), "The music on A1, the sound effects on A3 and the background sound on A2 pile up between 200 and 500 Hz: the mix may sound a little muddy."
+- **Words** use Hz and kHz and nothing else technical: "The music on A2 covers the voice between 500 Hz and 4 kHz: words may be hard to follow." (from severity 0.6; under it, "the voice may sound less clear"), "Room tone, Amb: harbour and Music: theme pile up between 200 and 500 Hz: the mix may sound a little muddy." (tracks by their names; past three, "and 12 more tracks")
 - **Fixes on offer.** Covering: lower under the dialogue (unless it already ducks as deep as the fix goes), make room for the voice (when the band reaches 1.6 to 3.15 kHz), cut around 300 Hz (when it reaches down to 630 Hz). Muddy: cut around 300 Hz on up to three of the tracks that aren't dialogue, loudest first. An EQ fix is offered only when the track's EQ has room for it.
 - **Fixes' numbers.** Ducking -10 dB with the effect's own hold (300 ms) and speeds (down 40 ms, up 400 ms), its threshold 15 dB under the dialogue's middle speaking level (from -60 to -25 dB); used again, 6 dB deeper, to -24 dB. Cut: -3.5 dB at 300 Hz, Q 1. Room: -2.5 dB at 2.5 kHz, Q 1. Used again, a dip goes deeper by as much, to -9 dB.
 

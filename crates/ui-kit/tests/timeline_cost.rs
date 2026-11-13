@@ -92,6 +92,7 @@ fn timeline_frame_cost() {
                     needle: Some(10.0),
                     region: None,
                     highlights: &[],
+                    spans: &[],
                     markers: &[],
                     follow: !zoomed_out,
                     cache: CacheBar {

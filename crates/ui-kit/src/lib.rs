@@ -39,7 +39,7 @@ pub use theme::{Theme, ThemeName, status};
 pub use timeline::{
     ClickMoves, ClipEdge, ClipPictures, ClipShows, ClipSound, ClipWaveform, DraggedMedia, DraggedTimeline,
     KeyframeMark, LineKind, LineOwner, LinesShown, SourceMap, SpeedCurve, TimelineClip, TimelineData,
-    TimelineEvent, TimelineMarker, TimelineTrack, TimelineView, Tool, ViewStep,
+    TimelineEvent, TimelineMarker, TimelineSpan, TimelineTrack, TimelineView, Tool, ViewStep,
 };
 pub use top_bar::{TitleBar, TopBar, TopBarClicks, logo_mark, with_keys};
 pub use transport::TransportClick;

@@ -425,3 +425,40 @@ fn a_recordings_tracks_are_decoded_and_measured() {
         assert!(loudest > -90.0, "{:?}", t.levels_db);
     }
 }
+
+#[test]
+fn a_clips_own_volume_line_is_heard_by_the_check() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../media/tests/fixtures/game-3-audio.mkv");
+    let p = Project::new_automatic("T");
+    let seq = p.active_sequence;
+    let media = media::describe(&fixture).unwrap();
+    let p = Command::Import { sequence: seq, media }.apply(&p).unwrap();
+    let first = p.sequence(seq).unwrap().audio_tracks[0].clips[0].clone();
+    let point = |value| project::track_sound::LinePoint {
+        at: first.source_in,
+        value,
+    };
+    let quiet = Command::SetClipLines {
+        sequence: seq,
+        clip: first.id,
+        lines: Box::new(project::ClipLines {
+            volume: [point(-30_000)].into_iter().collect(),
+            pan: Default::default(),
+        }),
+    }
+    .apply(&p)
+    .unwrap();
+    let request = Request::Region(Time::ZERO, Time::seconds(1));
+    let level = |p: &Project| {
+        let mut clips = Clips::new(RATE);
+        let report = analyse(p, seq, request, &mut clips, &|| true, &|_| {})
+            .unwrap()
+            .unwrap();
+        let t = &report.tracks[0];
+        let power: f32 = t.levels_db.iter().map(|db| 10f32.powf(db / 10.0)).sum();
+        bands::db(power)
+    };
+    let (before, after) = (level(&p), level(&quiet));
+    println!("first track: {before:.1} dB, with its clip line at -30 dB: {after:.1} dB");
+    assert!((before - after - 30.0).abs() < 1.5, "{before} -> {after}");
+}

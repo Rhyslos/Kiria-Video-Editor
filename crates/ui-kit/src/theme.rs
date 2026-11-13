@@ -94,6 +94,16 @@ pub mod role {
     pub const OTHER: Color32 = Color32::from_rgb(0x6B, 0x70, 0x78);
 }
 
+/// The clarity check's colours: its findings' marks on the timeline and in
+/// its band. The same in every theme, apart from the roles' colours.
+pub mod clarity {
+    use egui::Color32;
+    /// Another track covers the voice.
+    pub const COVERED: Color32 = Color32::from_rgb(0xE0, 0x7B, 0xF0);
+    /// Several tracks pile up between 200 and 500 Hz.
+    pub const MUDDY: Color32 = Color32::from_rgb(0xC8, 0xA9, 0x6E);
+}
+
 const fn hex(rgb: u32) -> Color32 {
     Color32::from_rgb((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8)
 }
