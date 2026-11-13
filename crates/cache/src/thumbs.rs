@@ -34,19 +34,21 @@ pub fn spacing(duration: f64) -> f64 {
 /// before up to the exact moment (a hundred frames or more each, in a
 /// recording with key frames far apart). The picture is then up to half a
 /// key frame distance off its place, a small part of the space it is drawn
-/// in. Otherwise each picture is the exact frame.
+/// in. Otherwise, or with `exact` (Settings › Editing › Clip pictures),
+/// each picture is the exact frame.
 pub fn strip(
     path: &Path,
     stream: u32,
     rotation: u16,
     duration: f64,
+    exact: bool,
     cancelled: impl Fn() -> bool,
     progress: impl Fn(f32),
 ) -> diag::Result<Strip> {
     let every = spacing(duration);
     let mut decoder = VideoDecoder::open(path, stream, rotation, Decoding::Software)?;
     let keys = decoder.key_frames().clone();
-    let glances = by_key_frames(&keys, duration, every);
+    let glances = !exact && by_key_frames(&keys, duration, every);
     if glances {
         // One frame at a time, each as soon as its packet is in.
         decoder = VideoDecoder::open_for_glances(path, stream, rotation, Decoding::Software)?;
@@ -120,6 +122,7 @@ mod tests {
             index,
             0,
             info.duration.as_secs_f64(),
+            false,
             || false,
             |done| told.borrow_mut().push(done),
         )

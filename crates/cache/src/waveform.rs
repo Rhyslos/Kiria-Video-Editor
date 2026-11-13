@@ -191,6 +191,12 @@ impl Store {
         }
     }
 
+    /// Removes every waveform kept (Settings › Cache): they are read from
+    /// the recordings again when next needed. Returns how many went.
+    pub fn clear(&self) -> usize {
+        self.trim(0)
+    }
+
     /// Removes the waveforms used longest ago until those left take at
     /// most `budget` bytes. Returns how many went.
     pub fn trim(&self, budget: u64) -> usize {
@@ -345,6 +351,8 @@ mod tests {
         store.save(&print(3), 0, &peaks);
         assert_eq!(store.trim(50), 1, "two of 24 bytes fit");
         assert!(store.load(&print(3), 0).is_some() && !store.file_for(&print(2), 0).exists());
+        assert_eq!(store.clear(), 2, "clearing removes them all");
+        assert_eq!(store.load(&print(3), 0), None);
     }
 
     #[test]

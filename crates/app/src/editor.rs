@@ -422,6 +422,8 @@ impl Editor {
                 .as_ref()
                 .map(|state| (state.device.clone(), state.queue.clone())),
         );
+        let mut pictures = crate::clip_pictures::ClipPictures::holding_at(hold_reading);
+        pictures.set_exact(settings.clip_pictures == crate::settings::ClipPictureWay::Exact);
         // Waveforms are kept beside the proxies, in the app's cache folder.
         let waveforms = crate::waveforms::Waveforms::new(
             proxy_dir.parent().map(|cache| cache.join("waveforms")),
@@ -484,7 +486,7 @@ impl Editor {
             playheads: Default::default(),
             fitted: false,
             waveforms,
-            pictures: crate::clip_pictures::ClipPictures::holding_at(hold_reading),
+            pictures,
             proxies,
             track_paces: timeline_panel::TrackPaces::default(),
             relink: crate::relink::Relinker::default(),

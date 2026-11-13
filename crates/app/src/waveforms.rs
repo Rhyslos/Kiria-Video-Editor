@@ -107,6 +107,29 @@ impl Waveforms {
         }
     }
 
+    /// Removes every waveform kept on disk, on a worker (Settings › Cache),
+    /// and forgets the ones in memory: they are read again as needed.
+    pub fn clear_kept(&mut self, jobs: &JobSystem) {
+        for (_, reading) in &self.files {
+            reading.handle.cancel();
+        }
+        self.files.clear();
+        self.streams.clear();
+        if let Some(store) = self.store.clone() {
+            // Nobody waits for it: the handle is let go.
+            drop(jobs.submit(
+                PoolKind::Analysis,
+                Priority::Interactive,
+                "clear waveforms",
+                move |_| {
+                    let removed = store.clear();
+                    tracing::info!("{removed} kept waveforms cleared");
+                    Ok(())
+                },
+            ));
+        }
+    }
+
     /// What is known of this stream's waveform; starts reading it (with the
     /// file's other streams) if nobody has yet.
     pub fn get(&mut self, jobs: &JobSystem, ctx: &egui::Context, media: &MediaRef, stream: u32) -> Look {

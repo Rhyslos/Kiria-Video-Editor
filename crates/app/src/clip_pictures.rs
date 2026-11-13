@@ -41,6 +41,8 @@ pub struct ClipPictures {
     files: HashMap<(MediaId, u32), State>,
     /// `--hold-reading`: workers stop at this share, for screenshots of reading in progress.
     hold_at: Option<f32>,
+    /// Exact frames, not the nearest key frames (Settings › Editing).
+    exact: bool,
 }
 
 impl ClipPictures {
@@ -63,7 +65,7 @@ impl ClipPictures {
         stream: u32,
     ) -> (Option<ui_kit::ClipPictures>, Option<LoadState>) {
         let key = (media.id, stream);
-        let hold_at = self.hold_at;
+        let (hold_at, exact) = (self.hold_at, self.exact);
         let state = self.files.entry(key).or_insert_with(|| {
             let (path, ctx) = (media.path.clone(), ctx.clone());
             let rotation = media.info.video.as_ref().map_or(0, |v| v.rotation);
@@ -78,6 +80,7 @@ impl ClipPictures {
                         stream,
                         rotation,
                         duration,
+                        exact,
                         || job.is_cancelled(),
                         |done| {
                             // Never quite 1: done is when the pictures are on show.
@@ -183,6 +186,20 @@ impl ClipPictures {
         }
     }
 
+    /// Takes exact frames, or the nearest key frames in long recordings;
+    /// a change reads every file's pictures again the new way.
+    pub fn set_exact(&mut self, exact: bool) {
+        if exact != self.exact {
+            self.exact = exact;
+            for state in self.files.values() {
+                if let State::Reading { handle, .. } = state {
+                    handle.cancel();
+                }
+            }
+            self.files.clear();
+        }
+    }
+
     /// Reads this file's pictures again next time (it was found somewhere else).
     pub fn forget(&mut self, media: MediaId) {
         self.files.retain(|(id, _), state| {
@@ -193,5 +210,21 @@ impl ClipPictures {
             }
             *id != media
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn switching_between_quick_and_exact_reads_the_pictures_again() {
+        let mut pictures = ClipPictures::default();
+        pictures.files.insert((MediaId(1), 0), State::Failed);
+        pictures.set_exact(false);
+        assert_eq!(pictures.files.len(), 1, "no change, nothing read again");
+        pictures.set_exact(true);
+        assert!(pictures.files.is_empty(), "read again the exact way");
+        assert!(pictures.exact);
     }
 }

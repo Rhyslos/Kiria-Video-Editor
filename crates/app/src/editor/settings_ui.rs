@@ -6,7 +6,7 @@
 
 use super::Editor;
 use crate::cache_cleanup::{CLEAR_ALL_ROW, CLEAR_PROJECT_ROW, USED_ROW};
-use crate::settings::{JumpPicture, LibraryMarks};
+use crate::settings::{ClipPictureWay, JumpPicture, LibraryMarks};
 use jobs::{BackgroundPolicy, Limit};
 use ui_kit::settings::{Category, Section, Setting};
 
@@ -16,6 +16,8 @@ pub const THEME: &str = "theme";
 pub const EDIT_AT_PLAYHEAD: &str = "edit-at-playhead";
 pub const CLICK_MOVES: &str = "click-moves";
 pub const CUT_CLOSES_GAP: &str = "cut-closes-gap";
+pub const CLIP_PICTURES: &str = "clip-pictures";
+pub const CLEAR_WAVEFORMS: &str = "clear-waveforms";
 pub const PROXIES: &str = "proxies";
 pub const JUMP_PICTURE: &str = "jump-picture";
 pub const LOUDNESS_TARGET: &str = "loudness-target";
@@ -47,7 +49,8 @@ pub const CATEGORIES: &[Category] = &[
     Category {
         id: "editing",
         label: "Editing",
-        sections: &[Section {
+        sections: &[
+        Section {
             id: "playhead-and-needle",
             title: "Playhead and edit needle",
             settings: &[
@@ -70,6 +73,16 @@ pub const CATEGORIES: &[Category] = &[
                 )
                 .keywords("cut ripple gap ctrl+x"),
             ],
+        },
+        Section {
+            id: "timeline-pictures",
+            title: "Timeline",
+            settings: &[Setting::new(
+                CLIP_PICTURES,
+                "Clip pictures",
+                "How the small pictures inside video clips are taken from long recordings.",
+            )
+            .keywords("thumbnails pictures filmstrip quick exact key frame")],
         }],
     },
     Category {
@@ -192,6 +205,12 @@ pub const CATEGORIES: &[Category] = &[
                         "For every project. Recordings and project files are never touched.",
                     )
                     .keywords("clear delete remove cache all"),
+                    Setting::new(
+                        CLEAR_WAVEFORMS,
+                        "Waveforms",
+                        "Kept so recordings are not read again each time. Clearing them reads them again when needed; proxies stay.",
+                    )
+                    .keywords("clear delete remove cache waveforms peaks sound"),
                 ],
             },
         ],
@@ -269,6 +288,7 @@ impl Editor {
         let theme = self.theme;
         let mut open = self.show_settings;
         let mut problems = Vec::new();
+        let mut clear_waveforms = false;
         let in_use = *self.jobs.budgets();
         ui_kit::settings::window(ctx, &theme, &mut open, |ui| {
             self.settings_view.show(ui, &theme, CATEGORIES, |row| {
@@ -283,6 +303,16 @@ impl Editor {
                     }
                     CUT_CLOSES_GAP => {
                         ui_kit::settings::toggle(row.ui, row.theme, &mut s.cut_closes_gap);
+                    }
+                    CLIP_PICTURES => {
+                        let options: Vec<_> = ClipPictureWay::ALL.iter().map(|w| (*w, w.short())).collect();
+                        ui_kit::settings::segmented(row.ui, row.theme, &mut s.clip_pictures, &options);
+                        row.describe(s.clip_pictures.explained());
+                    }
+                    CLEAR_WAVEFORMS => {
+                        if ui_kit::settings::action(row.ui, "Clear").clicked() {
+                            clear_waveforms = true;
+                        }
                     }
                     CLICK_MOVES => {
                         if s.edit_at_playhead {
@@ -389,6 +419,11 @@ impl Editor {
         for err in &problems {
             self.errors.push(err);
         }
+        if clear_waveforms {
+            self.waveforms.clear_kept(&self.jobs);
+            self.status =
+                "Waveforms cleared: they are read again from the recordings as they are needed".into();
+        }
         self.show_settings = open;
         let project_proxies = self.project_proxies();
         let shelf = self.proxies.shelf();
@@ -421,6 +456,8 @@ impl Editor {
             let key_frame_first = self.settings.jump_picture.key_frame_first();
             self.viewer.set_key_frame_first(key_frame_first);
             self.display.set_key_frame_first(key_frame_first);
+            self.pictures
+                .set_exact(self.settings.clip_pictures == ClipPictureWay::Exact);
         }
     }
 }
@@ -465,6 +502,8 @@ mod tests {
         assert!(finds("clear cache", CLEAR_ALL_ROW));
         assert!(finds("threads", WORKER_THREADS));
         assert!(finds("ripple", CUT_CLOSES_GAP));
+        assert!(finds("thumbnails", CLIP_PICTURES));
+        assert!(finds("clear waveforms", CLEAR_WAVEFORMS));
         for words in ["help", "guide", "manual", "docs"] {
             assert!(finds(words, ui_kit::user_guide::ROW), "{words}");
         }
