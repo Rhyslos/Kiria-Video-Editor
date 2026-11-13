@@ -16,7 +16,7 @@ Phase 5.2: the Library page (the Library tab). Left: Import, the labels with how
 cargo run -p app                         # no project
 cargo run -p app -- trip.kiria           # opens (or creates) a project
 cargo run -p app -- trip.kiria --open-last-save   # sets aside unsaved work from a crash instead of recovering it
-cargo run -p app -- trip.kiria --import match.mkv # imports media at start (repeatable)
+cargo run -p app -- trip.kiria --import match.mkv # imports media at start (repeatable; a folder imports every file in it)
 cargo run -p app -- trip.kiria --playhead 12.5     # starts with the playhead there (for screenshots)
 cargo run -p app -- trip.kiria --play              # starts playing once imports are in (for checks)
 cargo run -p app -- trip.kiria --cpu-colour        # converts the viewer's colour on the CPU, to compare with the GPU's picture
@@ -42,6 +42,7 @@ cargo run -p app -- trip.kiria --select-first-clip --pointer 1270,400 --scroll 6
 cargo run -p app -- trip.kiria --select-first-clip --playhead 12 --pointer 700,640 --drag-to 820,640 --release --then Copy --then Paste --screenshot out.png  # commands run once the scripted pointer is done (here: a box chose keyframe marks, which are copied and pasted at the playhead)
 cargo run -p app -- trip.kiria --page library --library-tab audio --library-select voice.wav --screenshot out.png  # on a page (library, edit, color, audio, export), the Library on a tab (a type or a list's name) with a file in its detail panel (waits for the index's answer, the thumbnails and waveforms in view and the panel's loudness)
 cargo run -p app -- trip.kiria --page library --responsiveness-test  # the responsiveness test on a page
+cargo run -p app -- big.kiria --import recordings --page library --responsiveness-test  # the same while every file in a folder is imported: it lasts until they are all in (the phase 5 gate)
 cargo run -p app -- --shortcuts-page clash --screenshot out.png  # with the keyboard shortcuts page open: `filter` (one chip picked), `rebinding` (waiting for keys) or `clash` (keys another command has)
 cargo run -p app -- --cheat-sheet keys.html  # write the printable cheat sheet for the shortcuts in settings and exit, without a window
 ```

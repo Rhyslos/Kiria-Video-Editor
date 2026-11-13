@@ -379,3 +379,84 @@ fn ten_thousand_files_answer_in_under_100_ms() {
     eprintln!("one changed file synced in {:?}", started.elapsed());
     assert_eq!((done.added, done.changed, done.removed), (0, 1, 0));
 }
+
+/// The phase 5 gate on a real project: `GATE_PROJECT=<project file> cargo
+/// test -p library --test index -- --ignored --nocapture`. Loads the project
+/// (one with hundreds of imported files), indexes it and times each kind
+/// of query, both straight on the index and asked of the worker the pages
+/// ask (`Live`), from asking to the answer being there.
+#[test]
+#[ignore = "needs GATE_PROJECT: a project file with imported media"]
+fn a_real_project_answers_in_under_100_ms() {
+    let Some(path) = std::env::var_os("GATE_PROJECT") else {
+        eprintln!("GATE_PROJECT not set: nothing to measure");
+        return;
+    };
+    let p = project::file::load(std::path::Path::new(&path)).unwrap();
+    let mut index = Index::new().unwrap();
+    let started = Instant::now();
+    index.sync(&p).unwrap();
+    eprintln!("{} files indexed in {:?}", index.len(), started.elapsed());
+
+    let queries = [
+        Query::default(),
+        Query::text("h264"),
+        Query::text("tone 1"),
+        Query::text("o"),
+        Query {
+            types: vec![Type::Audio],
+            sort: Sort::Longest,
+            ..Query::default()
+        },
+        Query {
+            types: vec![Type::Image],
+            sort: Sort::Name,
+            ..Query::default()
+        },
+        Query {
+            types: vec![Type::Video],
+            usage: Usage::Used,
+            sort: Sort::MostUsed,
+            ..Query::default()
+        },
+        Query {
+            text: "5".into(),
+            usage: Usage::Unused,
+            sort: Sort::Newest,
+            ..Query::default()
+        },
+    ];
+    let mut live = Live::start(|| {});
+    live.follow(&p);
+    // The worker indexes the project first, as when a project opens.
+    let opened = Instant::now();
+    live.ask("gate", &Query::default());
+    while !live.is_current("gate") {
+        std::thread::sleep(Duration::from_micros(200));
+    }
+    eprintln!(
+        "the worker's first answer, indexing included: {:?}",
+        opened.elapsed()
+    );
+    for query in &queries {
+        let started = Instant::now();
+        let found = index.search(query).unwrap();
+        let took = started.elapsed();
+        let asked = Instant::now();
+        live.ask("gate", query);
+        while !live.is_current("gate") {
+            std::thread::sleep(Duration::from_micros(200));
+        }
+        let answered = asked.elapsed();
+        eprintln!(
+            "{query:?}: {} found in {took:?}; asked of the worker: {answered:?}",
+            found.len()
+        );
+        assert!(took < Duration::from_millis(100), "{query:?} took {took:?}");
+        assert!(
+            answered < Duration::from_millis(100),
+            "{query:?} answered in {answered:?}"
+        );
+    }
+    assert!(live.take_error().is_none());
+}

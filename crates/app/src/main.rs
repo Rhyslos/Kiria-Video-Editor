@@ -1,6 +1,6 @@
 //! The editor: window, pages and the start-up sequence.
 //!
-//! Usage: `editor [project file] [--open-last-save] [--import <media file>]... [--playhead <seconds>] [--play] [--select-first-clip] [--cpu-colour] [--graphics-warning] [--decoding-warning] [--shortcuts-page <filter|rebinding|clash>] [--cheat-sheet <file.html>] [--smoke-test | --responsiveness-test | --screenshot <file.png>]`.
+//! Usage: `editor [project file] [--open-last-save] [--import <media file or folder>]... [--playhead <seconds>] [--play] [--select-first-clip] [--cpu-colour] [--graphics-warning] [--decoding-warning] [--shortcuts-page <filter|rebinding|clash>] [--cheat-sheet <file.html>] [--smoke-test | --responsiveness-test | --screenshot <file.png>]`.
 //! The extra options are for automated checks; normal use needs none.
 
 // Release builds on Windows open no console window next to the editor.
@@ -136,7 +136,7 @@ fn main() -> ExitCode {
         } else {
             project::Recovery::Recover
         },
-        import: options.import.clone(),
+        import: run_mode::expand_folders(&options.import),
         playhead: options.playhead,
         play: options.play,
         media_drawer: options.media_drawer,

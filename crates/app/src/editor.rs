@@ -3040,7 +3040,10 @@ impl Editor {
                 probe.slowest_ui = probe.slowest_ui.max(ui_time);
                 probe.ui_times.push(ui_time);
                 probe.frames += 1;
-                let done = probe.job.as_ref().and_then(JobHandle::try_result).is_some();
+                // With files to import at start, it lasts until they are in
+                // too: the interface stays smooth through a whole import.
+                let done =
+                    probe.job.as_ref().and_then(JobHandle::try_result).is_some() && self.importer.busy() == 0;
                 if done {
                     let elapsed = probe.started.map_or(Duration::ZERO, |s| now - s);
                     let fps = probe.frames as f64 / elapsed.as_secs_f64().max(0.001);
