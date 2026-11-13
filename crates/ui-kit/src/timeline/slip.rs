@@ -46,6 +46,23 @@ pub(super) fn held(delta: f64, room: Option<SlipRoom>, fps: f64) -> f64 {
     (delta.abs() * fps + 1e-6).floor() / fps * delta.signum()
 }
 
+/// A trim of `delta` seconds held to the file there is, in whole frames,
+/// so a trim is never refused once let go: the start edge can go back by
+/// `room.before` at most, the end edge on by `room.after`. Moving an edge
+/// inwards is not held here.
+pub(super) fn trim_held(delta: f64, room: Option<SlipRoom>, fps: f64, start_edge: bool) -> f64 {
+    let Some(room) = room else {
+        return delta;
+    };
+    let fps = fps.max(1.0);
+    let whole = |secs: f64| (secs.max(0.0) * fps + 1e-6).floor() / fps;
+    if start_edge {
+        delta.max(-whole(room.before))
+    } else {
+        delta.min(whole(room.after))
+    }
+}
+
 /// `clip` as it looks slipped by `delta` (right is positive): the same
 /// place on the timeline, an earlier or later part of its file inside.
 pub(super) fn shifted(clip: &TimelineClip, delta: f64) -> TimelineClip {
@@ -120,5 +137,19 @@ mod tests {
         // Whole frames towards zero.
         assert!((held(0.51, room, 10.0) - 0.5).abs() < 1e-9);
         assert_eq!(held(3.0, None, 10.0), 3.0);
+    }
+
+    #[test]
+    fn a_trim_is_held_to_the_file_in_whole_frames() {
+        // The file ends a third of a frame after the clip, and has 1.25 s before it.
+        let room = Some(SlipRoom {
+            before: 1.25,
+            after: 0.01,
+        });
+        assert_eq!(trim_held(2.0, room, 30.0, false), 0.0, "no whole frame left");
+        assert_eq!(trim_held(-0.5, room, 30.0, false), -0.5, "shortening is free");
+        assert!((trim_held(-3.0, room, 30.0, true) + 1.233_333).abs() < 1e-3);
+        assert_eq!(trim_held(0.5, room, 30.0, true), 0.5);
+        assert_eq!(trim_held(9.0, None, 30.0, false), 9.0, "a still has no end");
     }
 }
