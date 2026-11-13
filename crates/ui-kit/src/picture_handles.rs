@@ -719,7 +719,14 @@ mod tests {
                         self.handles
                             .draw(ui, &Theme::ASH, response.rect, map, self.picture);
                         let shortcuts = crate::ShortcutTable::default();
-                        let click = crate::transport::transport(ui, &Theme::ASH, frame, false, &shortcuts);
+                        let click = crate::transport::transport(
+                            ui,
+                            &Theme::ASH,
+                            frame,
+                            false,
+                            Some(false),
+                            &shortcuts,
+                        );
                         self.played |= click == Some(crate::TransportClick::PlayPause);
                     });
             });

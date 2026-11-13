@@ -272,8 +272,8 @@ mod tests {
             "\"label\" lists them all"
         );
         assert!(
-            find("stop playing").contains(&Hit::Command {
-                action: Action::Stop,
+            find("clear the region").contains(&Hit::Command {
+                action: Action::ClearRegion,
                 keys: String::new()
             }),
             "a command without a shortcut is found too"

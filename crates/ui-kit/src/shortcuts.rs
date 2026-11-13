@@ -167,6 +167,8 @@ pub struct Clash {
 /// or not at all (none until someone gives it one).
 const USUAL: &[(Action, Shortcut)] = &[
     (Action::PlayPause, Shortcut::key(Key::Space)),
+    // Ctrl with play: stop and leave the playhead where it is.
+    (Action::Stop, Shortcut::ctrl(Key::Space)),
     (Action::Split, Shortcut::key(Key::S)),
     (Action::Delete, Shortcut::key(Key::Delete)),
     (Action::RippleDelete, Shortcut::key(Key::Backspace)),
@@ -644,8 +646,13 @@ mod tests {
         }
         assert_eq!(table.bindings().count(), USUAL.len());
         assert!(!table.changed());
-        assert_eq!(table.shortcut_for(Action::Stop), None, "no shortcut yet");
-        assert_eq!(table.lines()[line(&table, Action::Stop)].label(), "none");
+        assert_eq!(table.shortcut_for(Action::ClearRegion), None, "no shortcut yet");
+        assert_eq!(table.lines()[line(&table, Action::ClearRegion)].label(), "none");
+        assert_eq!(table.shortcut_for(Action::Stop), Some(Shortcut::ctrl(Key::Space)));
+        // Space alone pauses; with Ctrl it stops, and only stops.
+        let on = |m| table.actions_for(Key::Space, m).collect::<Vec<_>>();
+        assert_eq!(on(Modifiers::NONE), [Action::PlayPause]);
+        assert_eq!(on(Modifiers::COMMAND), [Action::Stop]);
     }
 
     #[test]
@@ -676,9 +683,9 @@ mod tests {
         assert_eq!(table.keys_for(Action::Split), "Ctrl+B");
         assert_eq!(table.tip(Action::Split), "Split at the edit needle (Ctrl+B)");
         assert_eq!(table.keys_or_name(Action::Split), "Ctrl+B");
-        assert_eq!(table.keys_or_name(Action::Stop), "Stop playing here");
-        assert_eq!(table.keys_for(Action::Stop), "");
-        assert_eq!(table.tip(Action::Stop), "Stop playing here");
+        assert_eq!(table.keys_or_name(Action::ClearRegion), "Clear the region");
+        assert_eq!(table.keys_for(Action::ClearRegion), "");
+        assert_eq!(table.tip(Action::ClearRegion), "Clear the region");
         assert_eq!(
             table.actions_for(Key::B, Modifiers::COMMAND).next(),
             Some(Action::Split)
@@ -730,15 +737,21 @@ mod tests {
         assert_no_key_twice(&table);
 
         // A command without a shortcut takes one: the other is left with none.
-        let stop = line(&table, Action::Stop);
+        let stop = line(&table, Action::ClearRegion);
         table.swap(stop, Shortcut::key(Key::Space));
-        assert_eq!(table.shortcut_for(Action::Stop), Some(Shortcut::key(Key::Space)));
+        assert_eq!(
+            table.shortcut_for(Action::ClearRegion),
+            Some(Shortcut::key(Key::Space))
+        );
         assert_eq!(table.shortcut_for(Action::PlayPause), None);
         assert_no_key_twice(&table);
 
         // Free keys: a swap is a plain change.
         table.swap(stop, Shortcut::key(Key::F9));
-        assert_eq!(table.shortcut_for(Action::Stop), Some(Shortcut::key(Key::F9)));
+        assert_eq!(
+            table.shortcut_for(Action::ClearRegion),
+            Some(Shortcut::key(Key::F9))
+        );
         assert_eq!(table.shortcut_for(Action::PlayPause), None);
     }
 
@@ -753,7 +766,7 @@ mod tests {
         assert_eq!(table, ShortcutTable::default());
 
         // A command that usually has none goes back to none.
-        let stop = line(&table, Action::Stop);
+        let stop = line(&table, Action::ClearRegion);
         assert_eq!(table.rebind(stop, Shortcut::key(Key::F9)), Ok(()));
         assert_eq!(table.reset(stop), Ok(()));
         assert_eq!(table, ShortcutTable::default());
@@ -763,10 +776,10 @@ mod tests {
     fn resetting_a_line_whose_usual_keys_were_taken_is_a_clash() {
         let mut table = ShortcutTable::default();
         let split = line(&table, Action::Split);
-        let stop = line(&table, Action::Stop);
+        let stop = line(&table, Action::ClearRegion);
         assert_eq!(table.rebind(split, Shortcut::key(Key::F9)), Ok(()));
         assert_eq!(table.rebind(stop, Shortcut::key(Key::S)), Ok(()));
-        assert_eq!(table.reset(split).map_err(|c| c.action), Err(Action::Stop));
+        assert_eq!(table.reset(split).map_err(|c| c.action), Err(Action::ClearRegion));
         assert_eq!(table.shortcut_for(Action::Split), Some(Shortcut::key(Key::F9)));
         assert_no_key_twice(&table);
     }
