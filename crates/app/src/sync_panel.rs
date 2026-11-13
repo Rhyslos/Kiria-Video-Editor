@@ -450,7 +450,8 @@ pub fn reference(units: &[Unit]) -> usize {
         .map_or(0, |(i, _)| i)
 }
 
-/// "12 250 ms earlier (735 frames)", or "Already in place".
+/// "12.250 s earlier (735 frames)", "17 ms later (1 frame)", or
+/// "Already in place": milliseconds under a second, seconds from one up.
 pub fn moves_text(by: Time, rate: Rate) -> String {
     let seconds = by.as_secs_f64();
     let ms = (seconds * 1000.0).round() as i64;
@@ -460,10 +461,13 @@ pub fn moves_text(by: Time, rate: Rate) -> String {
     let frames = (seconds * rate.as_f64()).round().abs() as i64;
     let way = if ms < 0 { "earlier" } else { "later" };
     let plural = if frames == 1 { "" } else { "s" };
-    format!(
-        "{} ms {way} ({frames} frame{plural})",
-        thousands(ms.unsigned_abs())
-    )
+    let size = ms.unsigned_abs();
+    let amount = if size < 1000 {
+        format!("{size} ms")
+    } else {
+        format!("{}.{:03} s", thousands(size / 1000), size % 1000)
+    };
+    format!("{amount} {way} ({frames} frame{plural})")
 }
 
 /// 12250 as "12 250".
@@ -560,15 +564,19 @@ mod tests {
     }
 
     #[test]
-    fn moves_are_said_in_milliseconds_and_frames() {
+    fn moves_are_said_in_milliseconds_or_seconds_and_frames() {
         let rate = Rate::FPS_60;
         assert_eq!(
             moves_text(Time::from_ratio(-49, 4).unwrap(), rate),
-            "12\u{2009}250 ms earlier (735 frames)"
+            "12.250 s earlier (735 frames)"
         );
         assert_eq!(
             moves_text(Time::from_ratio(1, 60).unwrap(), rate),
             "17 ms later (1 frame)"
+        );
+        assert_eq!(
+            moves_text(Time::seconds(4000), rate),
+            "4\u{2009}000.000 s later (240000 frames)"
         );
         assert_eq!(
             moves_text(Time::from_ratio(1, 4000).unwrap(), rate),
