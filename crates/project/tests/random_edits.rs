@@ -178,6 +178,11 @@ enum Action {
     },
     /// Adds a file to the project's media without placing it.
     AddSpare,
+    /// Points every file (with `all`), or one picked, at a new place in one step.
+    Relink {
+        all: bool,
+        pick: usize,
+    },
     /// Prunes every file no timeline uses (`all`), or one file picked from
     /// all of them (refused when a timeline uses it).
     Prune {
@@ -232,6 +237,7 @@ fn action() -> impl Strategy<Value = Action> {
         2 => (any::<usize>(), prop::option::of(0i64..120)).prop_map(|(pick, at)| Action::PlaceTimeline { pick, at }),
         2 => (0i64..120, 0usize..4).prop_map(|(at, track)| Action::Adjust { at, track }),
         1 => Just(Action::AddSpare),
+        1 => (any::<bool>(), any::<usize>()).prop_map(|(all, pick)| Action::Relink { all, pick }),
         1 => (any::<bool>(), any::<usize>()).prop_map(|(all, pick)| Action::Prune { all, pick }),
         2 => Just(Action::Undo),
         1 => Just(Action::Redo),
@@ -328,11 +334,30 @@ fn command_for(action: &Action, p: &Project, media: MediaId, recording: MediaId)
                 ..crate::media()
             },
         },
+        Action::Relink { all, pick } => {
+            let ids: Vec<MediaId> = p.media.keys().copied().collect();
+            let chosen: Vec<MediaId> = if all {
+                ids
+            } else {
+                vec![*ids.get(pick % ids.len().max(1))?]
+            };
+            Command::RelinkFiles {
+                files: chosen
+                    .into_iter()
+                    .map(|id| (id, format!("moved/{}-{pick}.mkv", id.0).into()))
+                    .collect(),
+            }
+        }
+        // The two files every other action uses are never pruned, or the
+        // rest of the session would only be refusals.
         Action::Prune { all: true, .. } => Command::RemoveMedia {
-            media: project::prune::unused_media(p),
+            media: project::prune::unused_media(p)
+                .into_iter()
+                .filter(|id| *id != media && *id != recording)
+                .collect(),
         },
         Action::Prune { all: false, pick } => {
-            let ids: Vec<MediaId> = p.media.keys().copied().collect();
+            let ids: Vec<MediaId> = p.media.keys().copied().filter(|id| *id != media).collect();
             Command::RemoveMedia {
                 media: vec![*ids.get(pick % ids.len().max(1))?],
             }
