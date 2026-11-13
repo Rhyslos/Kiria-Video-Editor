@@ -107,6 +107,21 @@ impl Mixer {
         self.master.settings()
     }
 
+    /// The deepest the master's limiter has turned the mix down since the
+    /// mixer was made, dB (0 when never): for an export's report.
+    pub fn limited_db(&self) -> f32 {
+        self.master.limited_db()
+    }
+
+    /// Takes waiting swaps and commands without making a block: while the
+    /// sound card is given silence (before the feeder has the first sound
+    /// ready, or during a jump), so a jump is taken and nothing is owed.
+    /// Never allocates, frees or waits.
+    pub fn idle(&mut self) {
+        self.take_swaps();
+        self.take_commands();
+    }
+
     /// Makes the next block: `out` is interleaved stereo.
     pub fn process(&mut self, out: &mut [f32; 2 * BLOCK]) {
         // Swaps first: a command sent after adding a track is meant for it.
@@ -194,6 +209,9 @@ impl Mixer {
                     Some(place) => {
                         if carry && let Some(old) = place.as_ref() {
                             track.strip.take_state(&old.strip);
+                        }
+                        if let Some(first) = track.first {
+                            track.feed.align(first, self.pos);
                         }
                         place.replace(track).map(Returned::Track)
                     }

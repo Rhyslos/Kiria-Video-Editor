@@ -48,6 +48,12 @@ impl BlockAdapter {
         }
     }
 
+    /// Frames of the last block made and not yet given out: the mixer's
+    /// position is this far ahead of what the device was handed.
+    pub fn pending(&self) -> usize {
+        BLOCK - self.used
+    }
+
     /// Forgets the rest of the last block (after a jump, so the next sound
     /// starts at the new place).
     pub fn clear(&mut self) {

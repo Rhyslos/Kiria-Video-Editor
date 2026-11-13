@@ -18,7 +18,7 @@ The Cargo workspace members. One engine with no interface, and thin pages on top
 | [launcher](launcher/) | Project browser and update panel (binary `launcher`) | 2 |
 | [media](media/) | Probe, demux, decode, encode (FFmpeg wrapper) | 4A (probe, picture and sound decoding done) |
 | [cache](cache/) | RAM, GPU and disk caches, proxies, thumbnails, waveforms | 4A (waveforms, thumbnails, proxies done) |
-| [audio](audio/) | Real-time mixer, effects, meters, loudness | 8 (effects, master and mixer built; engine integration next) |
+| [audio](audio/) | Real-time mixer, effects, meters, loudness | 8 (effects, master and mixer built; playback and export mix through it; the Audio page next) |
 | [render](render/) | GPU compositor (layers into a frame, a frame shown), colour, effects | 4C (compositor done), 7, 9 |
 | [engine](engine/) | Playback scheduler and export pipeline | 4A (preview picture, mixing, playback done), 6 |
 | [library](library/) | Media index and search: types, labels, lists, notes, use on timelines, full-text search (SQLite, in memory, built from the project); media folders watched for new recordings | 5 (5.1, 5.2 done) |

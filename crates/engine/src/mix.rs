@@ -11,7 +11,7 @@
 
 use media::AudioDecoder;
 use media::audio::CHANNELS;
-use project::{Clip, ClipId, MediaId, MediaRef, Project, Sequence, SequenceId, Sound, Speed, Time};
+use project::{Clip, ClipId, MediaId, MediaRef, Project, Sequence, SequenceId, Sound, Speed, Time, Track};
 use std::f64::consts::FRAC_PI_2;
 
 /// How far ahead of a ramped clip's decoder its next sample may be and
@@ -100,59 +100,74 @@ impl Mixer {
     /// `start` seconds on. Gaps and silent tracks give zeros.
     pub fn mix(&mut self, project: &Project, sequence: &Sequence, start: f64, out: &mut [f32]) {
         out.fill(0.0);
-        let frames = out.len() / CHANNELS;
-        let rate = f64::from(self.rate);
-        let end = start + frames as f64 / rate;
         let soloing = sequence.audio_tracks.iter().any(|t| t.solo);
         for track in &sequence.audio_tracks {
             if track.muted || (soloing && !track.solo) {
                 continue;
             }
             let gain = 10f32.powf(track.gain_db / 20.0);
-            for clip in &track.clips {
-                if clip.sound.is_silent() {
-                    continue;
-                }
-                let (cs, ce) = (clip.start.as_secs_f64(), clip.end().as_secs_f64());
-                let (a, b) = (cs.max(start), ce.min(end));
-                if a >= b {
-                    continue;
-                }
-                let first = ((a - start) * rate).round() as usize;
-                let count = (((b - start) * rate).round() as usize)
-                    .min(frames)
-                    .saturating_sub(first);
-                if count == 0 {
-                    continue;
-                }
-                let mut scratch = std::mem::take(&mut self.scratch);
-                scratch.resize(count * CHANNELS, 0.0);
-                let from = start + first as f64 / rate;
-                let got = if let Some(inner) = clip.nested() {
-                    self.nested_sound(project, clip, inner, a, b, &mut scratch)
-                } else if let Some(media) = project.media.get(&clip.media) {
-                    self.file_sound(clip, media, a, from, &mut scratch)
-                } else {
-                    0
-                };
-                if let Some(shape) = Shape::of(clip) {
-                    // Seconds into the clip of the first sample read.
-                    shape.apply(&mut scratch[..got * CHANNELS], from - cs, rate);
-                }
-                for (o, s) in out[first * CHANNELS..(first + got) * CHANNELS]
-                    .iter_mut()
-                    .zip(&scratch)
-                {
-                    *o += s * gain;
-                }
-                self.scratch = scratch;
-            }
+            self.add_track(project, track, start, gain, out);
         }
         if sequence.master_gain_db != 0.0 {
             let master = 10f32.powf(sequence.master_gain_db / 20.0);
             for s in out.iter_mut() {
                 *s *= master;
             }
+        }
+    }
+
+    /// Fills `out` (interleaved stereo) with one track's clips from `start`
+    /// seconds on, before anything the track itself does (its volume, mute,
+    /// solo and effects are the real-time mixer's, `crates/audio`). The
+    /// feeder calls this for each track; summed with the track's and the
+    /// master's volume it is exactly what [`Mixer::mix`] makes.
+    pub fn mix_track(&mut self, project: &Project, track: &Track, start: f64, out: &mut [f32]) {
+        out.fill(0.0);
+        self.add_track(project, track, start, 1.0, out);
+    }
+
+    /// Adds a track's clips, times `gain`, to `out` from `start` seconds on.
+    fn add_track(&mut self, project: &Project, track: &Track, start: f64, gain: f32, out: &mut [f32]) {
+        let frames = out.len() / CHANNELS;
+        let rate = f64::from(self.rate);
+        let end = start + frames as f64 / rate;
+        for clip in &track.clips {
+            if clip.sound.is_silent() {
+                continue;
+            }
+            let (cs, ce) = (clip.start.as_secs_f64(), clip.end().as_secs_f64());
+            let (a, b) = (cs.max(start), ce.min(end));
+            if a >= b {
+                continue;
+            }
+            let first = ((a - start) * rate).round() as usize;
+            let count = (((b - start) * rate).round() as usize)
+                .min(frames)
+                .saturating_sub(first);
+            if count == 0 {
+                continue;
+            }
+            let mut scratch = std::mem::take(&mut self.scratch);
+            scratch.resize(count * CHANNELS, 0.0);
+            let from = start + first as f64 / rate;
+            let got = if let Some(inner) = clip.nested() {
+                self.nested_sound(project, clip, inner, a, b, &mut scratch)
+            } else if let Some(media) = project.media.get(&clip.media) {
+                self.file_sound(clip, media, a, from, &mut scratch)
+            } else {
+                0
+            };
+            if let Some(shape) = Shape::of(clip) {
+                // Seconds into the clip of the first sample read.
+                shape.apply(&mut scratch[..got * CHANNELS], from - cs, rate);
+            }
+            for (o, s) in out[first * CHANNELS..(first + got) * CHANNELS]
+                .iter_mut()
+                .zip(&scratch)
+            {
+                *o += s * gain;
+            }
+            self.scratch = scratch;
         }
     }
 

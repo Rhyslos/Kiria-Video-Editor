@@ -38,6 +38,15 @@ pub fn from_db(db: f32) -> f32 {
     (db / DB_PER_NEPER).exp()
 }
 
+/// The factor a fader or the master's volume puts on samples: worked out
+/// exactly as the timeline's track and master volumes always were
+/// (`10^(dB/20)` in single precision), so a mix with every effect off is
+/// the same to the bit as before the effects came. [`from_db`] is quicker
+/// and is what the effects use, sample by sample.
+pub fn volume_gain(db: f32) -> f32 {
+    10f32.powf(db / 20.0)
+}
+
 /// The coefficient of a one-pole smoother that goes 63 % of the way in
 /// `ms` milliseconds at `rate` steps a second: `next = want + c * (now - want)`.
 pub fn smoothing(rate: f32, ms: f32) -> f32 {

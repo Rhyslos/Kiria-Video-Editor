@@ -1,5 +1,6 @@
 use super::*;
 use crate::compose::Composing;
+use crate::mix::Mixer;
 use project::look::ONE;
 use project::{Command, Region, SequenceSettings};
 

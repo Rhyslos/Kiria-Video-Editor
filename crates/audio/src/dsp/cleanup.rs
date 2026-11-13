@@ -36,6 +36,8 @@ pub const BINS: usize = WINDOW / 2 + 1;
 pub const LATENCY: usize = WINDOW;
 /// Where new samples go in a window: its last hop.
 const FILL_FROM: usize = WINDOW - HOP;
+/// Windows over each sample.
+const OVERLAP: usize = WINDOW / HOP;
 
 /// The clean-up's settings.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -180,6 +182,12 @@ pub struct SpectralGate {
     /// Every gain is fully open and the gate is off: windows go through
     /// without an FFT.
     open: bool,
+    /// Windows in a row that went through open (up to [`OVERLAP`]). When
+    /// every window over the samples going out did, they go out exactly as
+    /// they came in (a plain delay), not as the windows added back up,
+    /// which can differ in the last bit: a track with clean-up off sounds
+    /// exactly as it would without the clean-up.
+    open_run: usize,
     floor: f32,
     threshold: f32,
     release: f32,
@@ -223,6 +231,7 @@ impl SpectralGate {
             gains: vec![1.0; BINS],
             smooth: vec![1.0; BINS],
             open: !settings.on,
+            open_run: if settings.on { 0 } else { OVERLAP },
             floor: 0.0,
             threshold: 0.0,
             release: 0.0,
@@ -288,12 +297,18 @@ impl SpectralGate {
     fn window_done(&mut self) {
         if self.open {
             self.pass_through();
+            self.open_run = (self.open_run + 1).min(OVERLAP);
         } else {
             self.gate();
+            self.open_run = 0;
         }
         for ch in 0..2 {
             let sum = &mut self.sum[ch];
-            self.ready[ch].copy_from_slice(&sum[..HOP]);
+            if self.open_run == OVERLAP {
+                self.ready[ch].copy_from_slice(&self.input[ch][..HOP]);
+            } else {
+                self.ready[ch].copy_from_slice(&sum[..HOP]);
+            }
             sum.copy_within(HOP.., 0);
             sum[FILL_FROM..].fill(0.0);
             self.input[ch].copy_within(HOP.., 0);
@@ -379,6 +394,7 @@ impl SpectralGate {
         self.gains.copy_from_slice(&old.gains);
         self.at = old.at;
         self.open = old.open && !self.settings.on;
+        self.open_run = if self.open { old.open_run } else { 0 };
     }
 }
 
@@ -413,10 +429,27 @@ pub(crate) mod tests {
         let input = hiss(8_192, 0.3, 1);
         let (mut l, mut r) = (input.clone(), input.clone());
         run(&mut gate, &mut l, &mut r);
-        for i in LATENCY..input.len() {
-            assert!((l[i] - input[i - LATENCY]).abs() < 1e-6, "sample {i}");
-        }
+        // Exactly: a plain delay, to the bit.
+        assert_eq!(l[LATENCY..], input[..input.len() - LATENCY]);
         assert!(l[..LATENCY].iter().all(|v| *v == 0.0));
+    }
+
+    #[test]
+    fn turned_off_while_running_it_becomes_a_plain_delay_once_the_windows_pass() {
+        let profile = NoiseProfile([-20.0; crate::dsp::bands::COUNT]);
+        let mut gate = SpectralGate::new(RATE, on(), profile.bins(RATE));
+        let input = hiss(4_096 + 2 * RATE as usize, 0.3, 1);
+        let (mut l, mut r) = (input[..4_096].to_vec(), input[..4_096].to_vec());
+        run(&mut gate, &mut l, &mut r);
+        gate.set(CleanupSettings::OFF);
+        let (mut l, mut r) = (input[4_096..].to_vec(), input[4_096..].to_vec());
+        run(&mut gate, &mut l, &mut r);
+        // A release and the windows still holding gated sound, then exact.
+        let settled = RATE as usize;
+        assert_eq!(
+            l[settled..],
+            input[4_096 + settled - LATENCY..input.len() - LATENCY]
+        );
     }
 
     /// How far (dB) the gate takes pauses and words down, for speech over

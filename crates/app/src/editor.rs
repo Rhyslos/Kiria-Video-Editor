@@ -884,11 +884,8 @@ impl Editor {
             return;
         };
         let (rate, length) = (seq.settings.frame_rate, seq.length());
-        let was_playing = self.playback.take().is_some();
         self.viewer.go_to(at, rate, length);
-        if was_playing {
-            self.start_playback();
-        }
+        self.play_on_from_playhead();
         self.after_play_change();
     }
 
@@ -999,7 +996,7 @@ impl Editor {
                 if let Err(err) = result {
                     self.errors.push(&err);
                 }
-                self.play_on_with_new_mix();
+                // Heard within a block while playing: `follow_playback` sends it.
             }
             E::RippleTrim { clip, edge, to } => {
                 let result = self.with_document(|d| {
@@ -1231,23 +1228,27 @@ impl Editor {
     }
 
     /// While playing, carries on from here with the project as it is now
-    /// (after a change to the mix).
+    /// (after a change to a clip's sound, speed or length): mixed again
+    /// from here at once, by a jump that keeps the sound card open.
     fn play_on_with_new_mix(&mut self) {
-        if let Some(playback) = self.playback.take() {
+        let Some(project) = self.document.as_ref().map(|d| d.project()) else {
+            return;
+        };
+        if let Some(playback) = &mut self.playback {
             let at = playback.position();
-            drop(playback);
+            playback.update(project);
+            playback.jump(at);
             self.viewer.playhead = at;
-            self.start_playback();
         }
     }
 
-    fn start_playback(&mut self) {
-        let Some(document) = &self.document else { return };
-        let p = document.project();
-        let Some(seq) = p.active() else { return };
+    /// Where playing from the playhead starts: the start again from the
+    /// end, inside the region when looping. `None` for an empty timeline.
+    fn play_from(&self) -> Option<(project::SequenceId, Time)> {
+        let seq = self.document.as_ref()?.project().active()?;
         let length = seq.length();
         if length == Time::ZERO {
-            return;
+            return None;
         }
         // From the end, play from the start again.
         let last = (length - seq.settings.frame_rate.frame_duration()).max(Time::ZERO);
@@ -1256,9 +1257,37 @@ impl Editor {
         } else {
             self.viewer.playhead
         };
-        let from = crate::looping::start_at(from, seq.region, self.looping);
+        Some((seq.id, crate::looping::start_at(from, seq.region, self.looping)))
+    }
+
+    fn start_playback(&mut self) {
+        let Some((sequence, from)) = self.play_from() else {
+            return;
+        };
+        let Some(document) = &self.document else { return };
         self.viewer.playhead = from;
-        self.playback = Some(engine::Playback::start(p.clone(), seq.id, from));
+        self.playback = Some(engine::Playback::start(
+            document.project().clone(),
+            sequence,
+            from,
+        ));
+    }
+
+    /// While playing, goes on from the playhead (a jump: the sound card
+    /// stays open); otherwise nothing.
+    fn play_on_from_playhead(&mut self) {
+        let Some((sequence, from)) = self.play_from() else {
+            self.playback = None;
+            return;
+        };
+        match &mut self.playback {
+            Some(playback) if playback.sequence() == sequence => {
+                self.viewer.playhead = from;
+                playback.jump(from);
+            }
+            Some(_) => self.start_playback(),
+            None => {}
+        }
     }
 
     fn after_play_change(&mut self) {
@@ -1284,7 +1313,14 @@ impl Editor {
 
     /// While playing: the playhead follows the clock, and playback stops at the end.
     fn follow_playback(&mut self, ctx: &egui::Context) {
-        let Some(playback) = &self.playback else { return };
+        let Some(playback) = &mut self.playback else {
+            return;
+        };
+        // Mute, solo, volume and sound changes (and their undo) are heard
+        // within a block: a comparison per frame, sent only when changed.
+        if let Some(document) = &self.document {
+            playback.follow(document.project());
+        }
         let seq = self.document.as_ref().and_then(|d| d.project().active());
         let (length, rate) = seq.map_or((Time::ZERO, project::Rate::FPS_60), |s| {
             (s.length(), s.settings.frame_rate)
@@ -1292,9 +1328,9 @@ impl Editor {
         let at = playback.position();
         let region = seq.and_then(|s| s.region);
         if let Some(back) = crate::looping::wrap(at, region, self.looping, length) {
-            self.playback = None;
+            // Back to the region's start: a jump, the sound card stays open.
+            playback.jump(back);
             self.viewer.playhead = back;
-            self.start_playback();
             ctx.request_repaint();
         } else if at >= length {
             self.playback = None;
@@ -2609,7 +2645,6 @@ impl Editor {
             if let Err(err) = result {
                 self.errors.push(&err);
             }
-            self.play_on_with_new_mix();
         }
         for event in timeline_events {
             self.timeline_event(event);

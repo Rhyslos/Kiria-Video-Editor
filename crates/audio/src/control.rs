@@ -48,6 +48,9 @@ pub struct MixerTrack {
     pub(crate) strip: Strip,
     pub(crate) feed: FeedReader,
     pub(crate) readout: Arc<TrackReadout>,
+    /// The timeline sample its ring's first frame is, when it says (a
+    /// track added while playing): the mixer lines the ring up with it.
+    pub(crate) first: Option<u64>,
 }
 
 /// Something that needs memory, put in place by the mixer.
@@ -178,7 +181,23 @@ impl Controller {
         noise: Option<&NoiseProfile>,
         ring_frames: usize,
     ) -> diag::Result<(FeedWriter, Arc<TrackReadout>)> {
-        self.put_track(slot, settings, lines, noise, ring_frames, false)
+        self.put_track(slot, (settings, lines, noise), ring_frames, None, false)
+    }
+
+    /// As [`Controller::add_track`], for a track added while playing: its
+    /// ring's first frame is sample `first` of the timeline, so the mixer
+    /// plays silence until then or owes what has gone by (see
+    /// [`crate::feed`]), and the track is in step with the others.
+    pub fn add_track_at(
+        &mut self,
+        slot: usize,
+        settings: TrackSettings,
+        lines: Box<Lines>,
+        noise: Option<&NoiseProfile>,
+        ring_frames: usize,
+        first: u64,
+    ) -> diag::Result<(FeedWriter, Arc<TrackReadout>)> {
+        self.put_track(slot, (settings, lines, noise), ring_frames, Some(first), false)
     }
 
     /// As [`Controller::add_track`], but the new track carries on the running
@@ -193,16 +212,15 @@ impl Controller {
         noise: Option<&NoiseProfile>,
         ring_frames: usize,
     ) -> diag::Result<(FeedWriter, Arc<TrackReadout>)> {
-        self.put_track(slot, settings, lines, noise, ring_frames, true)
+        self.put_track(slot, (settings, lines, noise), ring_frames, None, true)
     }
 
     fn put_track(
         &mut self,
         slot: usize,
-        settings: TrackSettings,
-        lines: Box<Lines>,
-        noise: Option<&NoiseProfile>,
+        (settings, lines, noise): (TrackSettings, Box<Lines>, Option<&NoiseProfile>),
         ring_frames: usize,
+        first: Option<u64>,
         carry: bool,
     ) -> diag::Result<(FeedWriter, Arc<TrackReadout>)> {
         let slot = self.slot(slot)?;
@@ -213,6 +231,7 @@ impl Controller {
             strip: Strip::new(self.rate, settings, lines, noise),
             feed: reader,
             readout: Arc::clone(&readout),
+            first,
         });
         self.swap(Swap::Track { slot, track, carry })?;
         Ok((writer, readout))

@@ -5,8 +5,9 @@
 //! exactly as in the viewer, at the timeline's full size, from the
 //! recordings themselves: never proxies, never a key frame standing in for
 //! the exact one), reads each back from the graphics card as the planes an
-//! encoder takes, mixes the sound for the same stretch with the playback
-//! mixer, and hands both to `media::encode`. A sound-only file (WAV, MP3,
+//! encoder takes, mixes the sound for the same stretch exactly as playback
+//! does (the same feeder and real-time mixer, track effects and master
+//! included: [`crate::offline`]), and hands both to `media::encode`. A sound-only file (WAV, MP3,
 //! OGG) needs no pictures and no graphics card. The editor stays usable
 //! meanwhile; [`Export`] says how far it is and can be told to stop.
 //!
@@ -26,9 +27,9 @@
 //! samples. An export can be paused between frames ([`Export::pause`]).
 
 use crate::compose::Composing;
-use crate::limiter::Limiter;
-use crate::mix::Mixer;
+use crate::offline::OfflineMix;
 use crate::preview::{Convert, OnDevice, Picture, Preview};
+use audio::settings::{LimiterSettings, MasterSettings};
 use diag::{AppError, Explain};
 use media::Decoding;
 pub use media::encode::{AudioCodec, Container, VideoCodec, combinations};
@@ -856,17 +857,20 @@ fn run(
             boxed: Vec::new(),
         }
     });
-    let start = rate.frame_start(first).as_secs_f64();
+    let start = rate.frame_start(first);
     // Normalising: the whole stretch is mixed and measured first.
     let normalised = match settings.normalise {
         Some(target) => {
             shared.measuring.store(true, Ordering::Relaxed);
-            let Some(measured) = measure(project, seq, (start, rate, sample_rate, count), shared, notify)
-            else {
-                if let Some(p) = &mut picturing {
-                    p.preview.close(Duration::from_secs(5));
+            let measured = match measure(project, seq, (start, rate, sample_rate, count), shared, notify) {
+                Ok(Some(measured)) => measured,
+                // Cancelled, or the mixer couldn't be made.
+                other => {
+                    if let Some(p) = &mut picturing {
+                        p.preview.close(Duration::from_secs(5));
+                    }
+                    return other.map(|_| None);
                 }
-                return Ok(None);
             };
             shared.measuring.store(false, Ordering::Relaxed);
             shared.frames_done.store(0, Ordering::Relaxed);
@@ -879,8 +883,17 @@ fn run(
         }
         None => None,
     };
-    let gain = normalised.map_or(1.0, |n| 10f32.powf(n.gain_db / 20.0));
-    let mut master = Master::new(sample_rate, start, gain, settings.limit);
+    let master_settings = export_master(seq, normalised.map_or(0.0, |n| n.gain_db), settings.limit);
+    let limiting = master_settings.limiter.on;
+    let mut master = match OfflineMix::new(project, sequence, sample_rate, start, master_settings) {
+        Ok(master) => master,
+        Err(err) => {
+            if let Some(p) = &mut picturing {
+                p.preview.close(Duration::from_secs(5));
+            }
+            return Err(err);
+        }
+    };
     let mut loudness = crate::loudness::Loudness::new(sample_rate);
     let mut sound = Vec::new();
     let mut samples_written: u64 = 0;
@@ -926,7 +939,7 @@ fn run(
             }
             // The sound up to the end of this frame, to the exact sample.
             let until = samples_until(index + 1, sample_rate, rate);
-            master.take(project, seq, (until - samples_written) as usize, &mut sound);
+            master.take((until - samples_written) as usize, &mut sound);
             loudness.feed(&sound);
             writer.write_sound(&sound)?;
             if let Some(beside) = &mut beside {
@@ -965,7 +978,7 @@ fn run(
         loudness: loudness.measured().integrated,
         true_peak: loudness.measured().true_peak_max,
         normalised,
-        limited_db: master.limiter.as_ref().map(Limiter::deepest_db),
+        limited_db: limiting.then(|| master.limited_db()),
     }))
 }
 
@@ -974,26 +987,26 @@ fn samples_until(frames: u64, sample_rate: u32, rate: Rate) -> u64 {
     (u128::from(frames) * u128::from(sample_rate) * u128::from(rate.den()) / u128::from(rate.num())) as u64
 }
 
-/// The integrated loudness of `count` frames' sound from `start` (seconds),
-/// mixed as the export mixes it, without writing anything. `None` when
-/// cancelled.
+/// The integrated loudness of `count` frames' sound from `start`, mixed as
+/// the export mixes it (the timeline's master without its limiter), without
+/// writing anything. `None` when cancelled.
 fn measure(
     project: &Project,
     seq: &Sequence,
-    (start, rate, sample_rate, count): (f64, Rate, u32, u64),
+    (start, rate, sample_rate, count): (Time, Rate, u32, u64),
     shared: &Shared,
     notify: &dyn Fn(),
-) -> Option<f32> {
-    let mut master = Master::new(sample_rate, start, 1.0, false);
+) -> diag::Result<Option<f32>> {
+    let mut master = OfflineMix::new(project, seq.id, sample_rate, start, measured_master(seq))?;
     let mut loudness = crate::loudness::Loudness::new(sample_rate);
     let mut sound = Vec::new();
     let mut done = 0;
     for index in 0..count {
         if !shared.carry_on() {
-            return None;
+            return Ok(None);
         }
         let until = samples_until(index + 1, sample_rate, rate);
-        master.take(project, seq, (until - done) as usize, &mut sound);
+        master.take((until - done) as usize, &mut sound);
         loudness.feed(&sound);
         done = until;
         shared.frames_done.store(index + 1, Ordering::Relaxed);
@@ -1001,7 +1014,33 @@ fn measure(
             notify();
         }
     }
-    Some(loudness.measured().integrated)
+    Ok(Some(loudness.measured().integrated))
+}
+
+/// The timeline's master as measured for normalising and the Export
+/// page's checks: everything but the limiter.
+fn measured_master(seq: &Sequence) -> MasterSettings {
+    let mut master = MasterSettings::from_project(seq);
+    master.limiter.on = false;
+    master
+}
+
+/// The master an export mixes through: the timeline's, turned up or down
+/// by normalising's `gain_db` after its compressor, and with `limit` the
+/// limiter on at [`TRUE_PEAK_CEILING`] (or the timeline's own, when lower).
+fn export_master(seq: &Sequence, gain_db: f32, limit: bool) -> MasterSettings {
+    let mut master = MasterSettings::from_project(seq);
+    master.trim_db = gain_db;
+    if limit {
+        let own = master.limiter;
+        let ceiling_db = if own.on {
+            own.ceiling_db.min(TRUE_PEAK_CEILING)
+        } else {
+            TRUE_PEAK_CEILING
+        };
+        master.limiter = LimiterSettings { on: true, ceiling_db };
+    }
+    master
 }
 
 /// What [`measure_mix`] found: the mix's integrated loudness (LUFS) and
@@ -1028,9 +1067,15 @@ pub fn measure_mix(
     let rate = seq.settings.frame_rate;
     let sample_rate = seq.settings.sample_rate.max(8_000);
     let (first, end) = frames(seq.length(), range, rate);
-    let start = rate.frame_start(first).as_secs_f64();
+    let start = rate.frame_start(first);
     let total = samples_until((end - first).max(0) as u64, sample_rate, rate);
-    let mut master = Master::new(sample_rate, start, 1.0, false);
+    let mut master = match OfflineMix::new(project, sequence, sample_rate, start, measured_master(seq)) {
+        Ok(master) => master,
+        Err(err) => {
+            tracing::warn!("{}", err.report());
+            return None;
+        }
+    };
     let mut loudness = crate::loudness::Loudness::new(sample_rate);
     let mut sound = Vec::new();
     // A tenth of a second at a time.
@@ -1041,7 +1086,7 @@ pub fn measure_mix(
             return None;
         }
         let take = step.min(total - mixed);
-        master.take(project, seq, take as usize, &mut sound);
+        master.take(take as usize, &mut sound);
         loudness.feed(&sound);
         mixed += take;
         done.store((mixed * 1000 / total.max(1)) as u32, Ordering::Relaxed);
@@ -1051,61 +1096,6 @@ pub fn measure_mix(
         integrated: measured.integrated,
         true_peak: measured.true_peak_max,
     })
-}
-
-/// The export's sound, piece by piece: the playback mixer's, turned up or
-/// down by a gain, then through the limiter when there is one (mixed
-/// ahead by the limiter's delay, so what comes out lines up exactly).
-struct Master {
-    mixer: Mixer,
-    rate: u32,
-    /// Where the stretch starts, seconds.
-    start: f64,
-    /// Samples mixed so far (each one a left and a right).
-    mixed: u64,
-    gain: f32,
-    limiter: Option<Limiter>,
-}
-
-impl Master {
-    fn new(rate: u32, start: f64, gain: f32, limit: bool) -> Master {
-        Master {
-            mixer: Mixer::new(rate),
-            rate,
-            start,
-            mixed: 0,
-            gain,
-            limiter: limit.then(|| Limiter::new(rate, TRUE_PEAK_CEILING)),
-        }
-    }
-
-    /// The next `frames` samples into `out` (resized to fit).
-    fn take(&mut self, project: &Project, seq: &Sequence, frames: usize, out: &mut Vec<f32>) {
-        if self.mixed == 0
-            && let Some(latency) = self.limiter.as_ref().map(Limiter::latency)
-        {
-            // Fill the limiter's delay; what comes out meanwhile is silence.
-            let mut ahead = Vec::new();
-            self.mix(project, seq, latency, &mut ahead);
-        }
-        self.mix(project, seq, frames, out);
-    }
-
-    fn mix(&mut self, project: &Project, seq: &Sequence, frames: usize, out: &mut Vec<f32>) {
-        out.clear();
-        out.resize(frames * 2, 0.0);
-        let from = self.start + self.mixed as f64 / f64::from(self.rate);
-        self.mixer.mix(project, seq, from, out);
-        self.mixed += frames as u64;
-        if self.gain != 1.0 {
-            for sample in out.iter_mut() {
-                *sample *= self.gain;
-            }
-        }
-        if let Some(limiter) = &mut self.limiter {
-            limiter.process(out);
-        }
-    }
 }
 
 /// What making the pictures takes: a preview worker of the export's own and

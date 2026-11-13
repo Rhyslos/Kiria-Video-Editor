@@ -7,6 +7,13 @@
 //! skips as much of its sound, so a late file comes back in step instead of
 //! drifting behind for the rest of the play.
 //!
+//! **A track added while playing** says which sample of the timeline its
+//! first frame is ([`crate::Controller::add_track_at`]); when the mixer
+//! takes it, it plays silence until then (not owed: there was nothing to
+//! play), or, when that moment has passed, owes the frames since, so the
+//! new track is in step with the others to the sample however late it
+//! comes in.
+//!
 //! **Jumping somewhere else** (the playhead moved): the feeder stops
 //! writing, the controller sends [`crate::Command::Locate`] with a new
 //! number, and the mixer, at its next block, empties every ring, forgets
@@ -37,6 +44,9 @@ pub struct FeedWriter {
 pub struct FeedReader {
     from: rtrb::Consumer<f32>,
     shared: Arc<Shared>,
+    /// Frames of silence to play before reading (a track whose first frame
+    /// is later than where the mixer is): not owed.
+    wait: u64,
 }
 
 /// A ring for one track holding up to `frames` stereo frames.
@@ -48,7 +58,11 @@ pub fn ring(frames: usize) -> (FeedWriter, FeedReader) {
             to,
             shared: Arc::clone(&shared),
         },
-        FeedReader { from, shared },
+        FeedReader {
+            from,
+            shared,
+            wait: 0,
+        },
     )
 }
 
@@ -89,6 +103,14 @@ impl FeedReader {
     /// counted as owed. Returns how many frames were missing.
     pub fn read(&mut self, l: &mut [f32], r: &mut [f32]) -> usize {
         let n = l.len().min(r.len());
+        if self.wait > 0 {
+            let quiet = usize::try_from(self.wait).unwrap_or(usize::MAX).min(n);
+            l[..quiet].fill(0.0);
+            r[..quiet].fill(0.0);
+            self.wait -= quiet as u64;
+            let (l, r) = (&mut l[quiet..n], &mut r[quiet..n]);
+            return if l.is_empty() { 0 } else { self.read(l, r) };
+        }
         let have = (self.from.slots() / 2).min(n);
         if have > 0
             && let Ok(chunk) = self.from.read_chunk(have * 2)
@@ -111,8 +133,19 @@ impl FeedReader {
         missing
     }
 
+    /// Lines the ring up with the mixer: its first frame is sample `first`
+    /// of the timeline and the mixer's next block starts at `pos`.
+    pub fn align(&mut self, first: u64, pos: u64) {
+        if first >= pos {
+            self.wait = first - pos;
+        } else {
+            self.shared.owed.fetch_add(pos - first, Ordering::AcqRel);
+        }
+    }
+
     /// Throws away everything in the ring and forgets what was owed (a jump).
     pub fn clear(&mut self) {
+        self.wait = 0;
         let n = self.from.slots();
         if let Ok(chunk) = self.from.read_chunk(n) {
             chunk.commit_all();
@@ -143,5 +176,24 @@ mod tests {
         assert_eq!(w.write(&[1.0; 20]), 4, "only the room there is");
         r.clear();
         assert_eq!(w.room(), 4);
+    }
+
+    #[test]
+    fn a_late_or_early_track_lines_up_with_the_mixer() {
+        // Its first frame is three frames after where the mixer is: silence
+        // first, not owed, then the ring.
+        let (mut w, mut r) = ring(8);
+        r.align(13, 10);
+        w.write(&[1.0, 1.0, 2.0, 2.0]);
+        let (mut l, mut rr) = ([9f32; 4], [9f32; 4]);
+        assert_eq!(r.read(&mut l, &mut rr), 0);
+        assert_eq!(l, [0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(r.read(&mut l[..1], &mut rr[..1]), 0);
+        assert_eq!(l[0], 2.0);
+        assert_eq!(w.take_owed(), 0);
+        // Its first frame has gone by: the frames since are owed.
+        let (w, mut r) = ring(8);
+        r.align(10, 14);
+        assert_eq!(w.take_owed(), 4);
     }
 }

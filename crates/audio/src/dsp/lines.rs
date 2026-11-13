@@ -130,7 +130,7 @@ impl Fader {
         if !self.audible {
             return [0.0; 2];
         }
-        let volume = from_db(self.volume_db);
+        let volume = super::volume_gain(self.volume_db);
         let [l, r] = if self.lines.pan.is_empty() {
             pan_gains(self.pan)
         } else {

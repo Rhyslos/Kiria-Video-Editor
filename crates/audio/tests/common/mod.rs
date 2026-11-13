@@ -117,6 +117,7 @@ pub fn master() -> MasterSettings {
     MasterSettings {
         volume_db: 0.0,
         compressor: Preset::Gentle.settings(),
+        trim_db: 0.0,
         limiter: LimiterSettings {
             on: true,
             ceiling_db: -1.0,

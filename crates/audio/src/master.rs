@@ -1,5 +1,5 @@
-//! The master: the mix's volume, compressor and true-peak limiter, and the
-//! meter (true peak; momentary, short-term and integrated loudness).
+//! The master: the mix's volume, compressor, trim (export's normalising)
+//! and true-peak limiter, and the meter (true peak; momentary, short-term and integrated loudness).
 //!
 //! The limiter always runs its delay, on or off (off, its ceiling is out
 //! of reach), so the mix is always late by the same amount and turning it
@@ -7,9 +7,9 @@
 
 use crate::BLOCK;
 use crate::dsp::dynamics::Compressor;
-use crate::dsp::from_db;
 use crate::dsp::limiter::Limiter;
 use crate::dsp::loudness::Loudness;
+use crate::dsp::volume_gain;
 use crate::readout::MasterReadout;
 use crate::settings::{MasterChange, MasterSettings};
 
@@ -35,12 +35,18 @@ impl Master {
             compressor: Compressor::new(rate as f32, settings.compressor),
             limiter,
             meter: Loudness::new(rate),
-            gain: from_db(settings.volume_db),
+            gain: volume_gain(settings.volume_db),
         }
     }
 
     pub fn settings(&self) -> &MasterSettings {
         &self.settings
+    }
+
+    /// The deepest the limiter has turned the mix down since made, dB (0
+    /// when never).
+    pub fn limited_db(&self) -> f32 {
+        self.limiter.deepest_db()
     }
 
     /// How late the limiter makes the mix, in frames.
@@ -51,7 +57,7 @@ impl Master {
     pub fn apply(&mut self, change: MasterChange) {
         self.settings.apply(change);
         match change {
-            MasterChange::Volume(_) => {}
+            MasterChange::Volume(_) | MasterChange::Trim(_) => {}
             MasterChange::Compressor(c) => self.compressor.set(c),
             MasterChange::Limiter(l) => {
                 self.limiter
@@ -68,7 +74,7 @@ impl Master {
         out: &mut [f32; 2 * BLOCK],
         readout: &MasterReadout,
     ) {
-        let (from, to) = (self.gain, from_db(self.settings.volume_db));
+        let (from, to) = (self.gain, volume_gain(self.settings.volume_db));
         self.gain = to;
         let step = (to - from) / BLOCK as f32;
         for (i, (a, b)) in l.iter_mut().zip(r.iter_mut()).enumerate() {
@@ -77,6 +83,14 @@ impl Master {
             *b *= g;
         }
         self.compressor.process(l, r);
+        if self.settings.trim_db != 0.0 {
+            // Set before mixing (export), so it never needs a glide.
+            let trim = volume_gain(self.settings.trim_db);
+            for (a, b) in l.iter_mut().zip(r.iter_mut()) {
+                *a *= trim;
+                *b *= trim;
+            }
+        }
         for (frame, (a, b)) in out.chunks_exact_mut(2).zip(l.iter().zip(r.iter())) {
             frame[0] = *a;
             frame[1] = *b;

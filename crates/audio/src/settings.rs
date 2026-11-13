@@ -234,6 +234,9 @@ pub struct LimiterSettings {
 pub struct MasterSettings {
     pub volume_db: f32,
     pub compressor: CompressorSettings,
+    /// A gain after the compressor and before the limiter: export's
+    /// normalising. Not in the project; 0 while playing.
+    pub trim_db: f32,
     pub limiter: LimiterSettings,
 }
 
@@ -242,6 +245,7 @@ impl Default for MasterSettings {
         MasterSettings {
             volume_db: 0.0,
             compressor: CompressorSettings::OFF,
+            trim_db: 0.0,
             limiter: LimiterSettings {
                 on: false,
                 ceiling_db: -1.0,
@@ -255,6 +259,7 @@ impl Default for MasterSettings {
 pub enum MasterChange {
     Volume(f32),
     Compressor(CompressorSettings),
+    Trim(f32),
     Limiter(LimiterSettings),
 }
 
@@ -263,6 +268,7 @@ impl MasterSettings {
         match change {
             MasterChange::Volume(v) => self.volume_db = v,
             MasterChange::Compressor(v) => self.compressor = v,
+            MasterChange::Trim(v) => self.trim_db = v,
             MasterChange::Limiter(v) => self.limiter = v,
         }
     }
@@ -276,6 +282,9 @@ impl MasterSettings {
         if self.compressor != old.compressor {
             out.push(MasterChange::Compressor(self.compressor));
         }
+        if self.trim_db != old.trim_db {
+            out.push(MasterChange::Trim(self.trim_db));
+        }
         if self.limiter != old.limiter {
             out.push(MasterChange::Limiter(self.limiter));
         }
@@ -288,6 +297,7 @@ impl MasterSettings {
         MasterSettings {
             volume_db: sequence.master_gain_db,
             compressor: compressor(&m.compressor),
+            trim_db: 0.0,
             limiter: LimiterSettings {
                 on: m.limiter.on,
                 ceiling_db: milli(m.limiter.ceiling_mdb),

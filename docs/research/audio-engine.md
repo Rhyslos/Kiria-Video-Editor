@@ -2,7 +2,7 @@
 
 Turning the timeline's tracks into the sound that comes out of the speakers and into exported files, with effects on every track and on the master: high pass, EQ with an analyser, compressor, noise clean-up, ducking, loudness, a master compressor and a true-peak limiter, and volume and pan lines. Build plan step 8.1 "DSP", and everything on the Audio page (8.4) and at Gate 8 that depends on it.
 
-Status: measured on this cloud machine (2 cores) and chosen (section 4). The first part of section 5 is built: `crates/audio` (every effect, the master, the mixer, its controller and rings; see its README). The engine does not use it yet. The owner's machine can run the same measurement (the "Audio engine spike" workflow).
+Status: measured on this cloud machine (2 cores) and chosen (section 4). Section 5 is built: `crates/audio` (every effect, the master, the mixer, its controller and rings; see its README), and the engine plays and exports through it (`engine::playback`, `output`, `feeder`, `offline`; see its README). What differs from the plan as written is under "As built" in section 5. The owner's machine can run the same measurement (the "Audio engine spike" workflow).
 
 ## 1. Problem
 
@@ -235,6 +235,16 @@ Denormals are flushed to zero at the start of each callback (`os::denormals_as_z
 - The Audio page (8.4) holds a `Controller`: each slider movement is a command; learning a noise profile runs on a worker and its result is swapped in.
 - Export (phase 6) runs the same feeder and `Graph` on its own thread, block after block, without a device. Not touched now: export is being worked on separately.
 - The project gains per-track sound settings and volume and pan lines (a new format version with its migration and stored sample). Clip lines are kept in the clip's file time, like its keyframes; track lines in timeline time. A noise profile is stored as levels in 64 bands by frequency, so it is small and works at any rate.
+
+### As built in the engine
+
+- Nested timelines are still mixed by `engine::mix` inside the feeder (their tracks' volume, mute and solo as before); their tracks' effects are not heard yet. A `Graph` of their own per nested timeline is left for later.
+- The feeder keeps a `mix::Mixer` per track (each track its own decoders) and writes pieces of 1 024 frames; playback and export write the same pieces at the same places, so they give the same samples (tested, effects on).
+- A track added while playing is lined up by the mixer to the sample (`Controller::add_track_at`, `FeedReader::align`), rather than rebuilt by a jump.
+- The clean-up, off, is a plain delay to the bit (once its windows have passed), and fader and master volumes are worked out as the timeline's always were, so with every effect off the sound is exactly what playback mixed before (tested).
+- Jumps (dragging the playhead, looping, a clip's sound changed) keep the sound card open: the callback gives silence while the mixer takes `locate`, the feeder fills from there, sound resumes. For the 23 ms of the fixed delay after a jump what was already inside the effects plays out; the clock stays at the place jumped to meanwhile.
+- Export's normalising is the master's `trim_db` (after its compressor, before its limiter), measured through the timeline's master without its limiter; export's limiter is the master's.
+- The clock: the callback publishes the timeline sample it hands out less the adapter's leftover and the fixed delay.
 
 ### Tests
 
