@@ -71,6 +71,8 @@ pub struct Editor {
     thumbnail_due: Thumbnail,
     importer: Importer,
     import_requested: bool,
+    /// What the timeline's settings settled on during the import under way.
+    import_settled: Option<String>,
     viewer: Viewer,
     /// Split view's Source and the viewer's own window (the Display menu).
     display: crate::display::ViewerDisplay,
@@ -409,6 +411,7 @@ impl Editor {
             thumbnail_due: Thumbnail::IfMissing,
             importer,
             import_requested: false,
+            import_settled: None,
             viewer,
             display,
             playback: None,
@@ -1534,14 +1537,19 @@ impl Editor {
                         } else {
                             "it"
                         };
-                        self.status = match settled {
-                            Some(s) => format!(
-                                "Imported {line}. The timeline is now {} at {} kHz to match {matching} (Timeline settings to change).",
+                        let settled = settled.map(|s| {
+                            format!(
+                                "The timeline is now {} at {} kHz to match {matching} (Timeline settings to change).",
                                 import::settings_text(&s),
                                 s.sample_rate as f32 / 1000.0
-                            ),
+                            )
+                        });
+                        self.status = match &settled {
+                            Some(said) => format!("Imported {line}. {said}"),
                             None => format!("Imported {line}"),
                         };
+                        // Said again when the batch is summed up.
+                        self.import_settled = settled.or(self.import_settled.take());
                         if let Some(words) = end_missing {
                             self.status = format!("{}. {words}", self.status.trim_end_matches('.'));
                         }
@@ -1574,6 +1582,9 @@ impl Editor {
             // one message for those refused.
             if let Some(batch) = batch.filter(|b| b.files > 1) {
                 self.status = format!("Imported {} of {} files", batch.imported(), batch.files);
+                if let Some(said) = self.import_settled.take() {
+                    self.status = format!("{}. {said}", self.status);
+                }
                 let whats_there = (!batch.cut_short.is_empty())
                     .then(|| self.importer.set_aside(batch.cut_short.clone(), batch.place));
                 if let Some(err) = batch.summary(whats_there) {
