@@ -7,6 +7,7 @@
 pub mod dialog;
 pub mod drawer;
 pub mod errors;
+pub mod file_dialog;
 pub mod fonts;
 pub mod icon;
 pub mod inspector;

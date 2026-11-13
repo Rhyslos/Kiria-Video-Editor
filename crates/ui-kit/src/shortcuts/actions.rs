@@ -93,6 +93,7 @@ actions! {
     Versions, Anywhere, "Saved versions: keep this version, or go back to one…";
     Templates, Anywhere, "Templates: drop in an intro or outro…";
     Prune, Anywhere, "Prune unused media: take the files no timeline uses out of the project…";
+    BuildProxies, Anywhere, "Build proxies: a proxy for every video file of the project that has none, also those cleared from the cache";
     PackageProject, Anywhere, "Package project: copy it and the media it uses into one folder, to open on another machine…";
     SaveTemplate, Anywhere, "Save as a template: the region, or the whole timeline…";
     Copy, Anywhere, "Copy: the chosen keyframe marks on the timeline";
@@ -122,6 +123,7 @@ actions! {
     RippleDelete, Timeline, "Delete and close the gap";
     AddLabel, Timeline, "Add a timeline label";
     ClearSelection, Timeline, "Select nothing (and leave full screen)";
+    SelectAll, Timeline, "Select all: every clip of the open timeline (on the Library page, every file shown)";
     ClearRegion, Timeline, "Clear the region";
     RemoveSilence, Timeline, "Remove silence…";
     SelectTool, Timeline, "Select tool: pick, move and trim clips";
