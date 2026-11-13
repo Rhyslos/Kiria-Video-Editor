@@ -555,7 +555,7 @@ fn open_video(settings: &VideoSettings, global_header: bool) -> diag::Result<(Tr
         let Some(codec) = find_encoder(encoder.name) else {
             continue;
         };
-        match open_video_asking(codec, encoder, settings, global_header) {
+        match open_video_asking(codec, encoder, settings, global_header, Trying::Export) {
             Ok(track) => return Ok((track, *encoder)),
             Err(err) => {
                 tracing::info!("the encoder {} did not open: {}", encoder.name, err.report());
@@ -617,6 +617,17 @@ impl Asks {
     }
 }
 
+/// Why an encoder is opened, which says how its refusals are logged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Trying {
+    /// For an export: each refusal is worth a line.
+    Export,
+    /// Only to see whether it opens ([`probe_video`]): a refusal is the
+    /// answer, not a problem, and an export's fix (room on the drive) has
+    /// nothing to do with it, so only why, and only for those debugging.
+    Probe,
+}
+
 /// Opens `encoder`, asking for less each time it refuses ([`Asks::in_order`]),
 /// and says in the log what it was opened without.
 fn open_video_asking(
@@ -624,6 +635,7 @@ fn open_video_asking(
     encoder: &Encoder,
     settings: &VideoSettings,
     global_header: bool,
+    trying: Trying,
 ) -> diag::Result<Track> {
     let tries = Asks::in_order(encoder, settings.codec);
     let wanted = tries[0];
@@ -642,12 +654,20 @@ fn open_video_asking(
                 return Ok(track);
             }
             Err(err) => {
-                tracing::info!(
-                    "the encoder {} refused {:?}: {}",
-                    encoder.name,
-                    asks,
-                    err.report()
-                );
+                match trying {
+                    Trying::Export => tracing::info!(
+                        "the encoder {} refused {:?}: {}",
+                        encoder.name,
+                        asks,
+                        err.report()
+                    ),
+                    Trying::Probe => tracing::debug!(
+                        "the encoder {} refused {:?}: {}",
+                        encoder.name,
+                        asks,
+                        refusal(&err)
+                    ),
+                }
                 last = Some(err);
             }
         }
@@ -1114,14 +1134,20 @@ pub fn probe_video(codec: VideoCodec) -> Probed {
         if encoder.place == Place::Processor {
             probed.processor = Some(encoder.name);
         } else if probed.graphics_card.is_none() {
-            match open_video_asking(found, encoder, &trial, true) {
+            match open_video_asking(found, encoder, &trial, true, Trying::Probe) {
                 // Dropped at once: only whether it opens counts.
                 Ok(_) => probed.graphics_card = Some(encoder.name),
-                Err(err) => tracing::debug!("{} is not usable here: {}", encoder.name, err.report()),
+                Err(err) => tracing::debug!("{} is not usable here: {}", encoder.name, refusal(&err)),
             }
         }
     }
     probed
+}
+
+/// Why an encoder refused, for the log while probing: the reason alone,
+/// without the fix meant for a failed export.
+fn refusal(err: &AppError) -> &str {
+    err.why_text().unwrap_or(err.what())
 }
 
 /// The encoder this build has for a sound codec (FFmpeg's name), if any.

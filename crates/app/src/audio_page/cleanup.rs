@@ -46,9 +46,21 @@ pub struct Asks {
     pub learn: Option<(Time, Time)>,
 }
 
-/// The profile's scale on the drawing, dB.
-const FLOOR: f32 = -110.0;
-const TOP: f32 = -30.0;
+/// How many decibels the drawing spans, below its top.
+const SPAN: f32 = 80.0;
+
+/// The drawing's scale for levels `bands` (dBFS): from [`SPAN`] under its
+/// top to the top, which is at least 10 dB over the loudest band, on a
+/// whole 10 dB, and never over 0 dBFS. Returns (floor, top).
+pub fn scale(bands: &[f32]) -> (f32, f32) {
+    let loudest = bands.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let top = if loudest.is_finite() {
+        ((loudest / 10.0).ceil() * 10.0 + 10.0).min(0.0)
+    } else {
+        -30.0
+    };
+    (top - SPAN, top)
+}
 
 /// The tool. `learning` is the track being learned, if any.
 pub fn ui(
@@ -170,9 +182,15 @@ fn draw_profile(ui: &Ui, theme: &Theme, r: Rect, c: &Cleanup) {
         );
         return;
     };
+    // Stored per hertz on the clean-up's own scale; drawn as each band's
+    // share of the noise, dBFS, so the bands add up to the noise's level.
+    let learned =
+        audio::dsp::cleanup::NoiseProfile(std::array::from_fn(|i| profile.levels_mdb[i] as f32 / 1_000.0));
+    let levels = learned.band_dbfs();
+    let (floor, top) = scale(&levels);
     let x = |i: usize| r.left() + (i as f32 + 0.5) / bands::COUNT as f32 * r.width();
-    let y = |mdb: i32| {
-        let t = ((mdb as f32 / 1_000.0 - FLOOR) / (TOP - FLOOR)).clamp(0.0, 1.0);
+    let y = |db: f32| {
+        let t = ((db - floor) / (top - floor)).clamp(0.0, 1.0);
         r.bottom() - t * r.height()
     };
     let colour = if c.on {
@@ -181,8 +199,7 @@ fn draw_profile(ui: &Ui, theme: &Theme, r: Rect, c: &Cleanup) {
         theme.muted
     };
     let fill = colour.gamma_multiply(0.2);
-    let points: Vec<_> = profile
-        .levels_mdb
+    let points: Vec<_> = levels
         .iter()
         .enumerate()
         .map(|(i, l)| pos2(x(i), y(*l)))
@@ -212,4 +229,37 @@ fn draw_profile(ui: &Ui, theme: &Theme, r: Rect, c: &Cleanup) {
         FontId::proportional(9.5),
         theme.faint,
     );
+    for (db, align, at) in [
+        (top, Align2::RIGHT_TOP, r.right_top() + vec2(-4.0, 3.0)),
+        (floor, Align2::RIGHT_BOTTOM, r.right_bottom() + vec2(-4.0, -14.0)),
+    ] {
+        p.text(
+            at,
+            align,
+            format!("{db:.0} dB"),
+            FontId::monospace(9.0),
+            theme.faint,
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The tester's hiss: every band about -60 dBFS (stored about -27 dB
+    /// per hertz on the clean-up's scale) is drawn with room above it,
+    /// never pinned to the top.
+    #[test]
+    fn the_drawing_fits_the_learned_levels() {
+        let learned = audio::dsp::cleanup::NoiseProfile([-27.5; bands::COUNT]);
+        let levels = learned.band_dbfs();
+        let (floor, top) = scale(&levels);
+        for l in levels {
+            assert!(l > floor && l < top - 5.0, "{l} in {floor}..{top}");
+        }
+        assert_eq!(scale(&[-3.0]).1, 0.0, "never over 0 dBFS");
+        assert_eq!(scale(&[-41.0]), (-110.0, -30.0));
+        assert_eq!(scale(&[]).1, -30.0, "nothing learned");
+    }
 }

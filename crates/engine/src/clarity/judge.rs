@@ -10,11 +10,15 @@
 //! ([`super::bands::IMPORTANCE`]). 0 is clear, 1 is covered everywhere.
 //!
 //! **Muddy.** In each frame, the tracks whose sound between 200 and
-//! 500 Hz is over [`MUD_FLOOR_DB`] and within [`MUD_NEAR_DB`] of the loudest
-//! there are counted; with [`MUD_TRACKS`] or more, how much the mix's low
-//! middle stands over its presence (1 to 4 kHz, per octave so a balanced
-//! sound reads 0 dB) says how bad: nothing at [`MUD_FROM_DB`], fully at
-//! [`MUD_FULL_DB`].
+//! 500 Hz is over [`MUD_FLOOR_DB`] are counted; with [`MUD_TRACKS`] or
+//! more, how much the mix's low middle stands over its presence (1 to
+//! 4 kHz, per octave so a balanced sound reads 0 dB) says how bad: nothing
+//! at [`MUD_FROM_DB`], fully at [`MUD_FULL_DB`]. The count leaves out no
+//! track for being far under the loudest, so a cut on one track can only
+//! lower how bad a frame is (counted against the loudest, cutting it
+//! brought others into the count and made the finding worse). The finding
+//! names the tracks within [`MUD_NEAR_DB`] of the loudest, those worth
+//! cutting.
 //!
 //! **Stretches.** Each measure is smoothed over a short time; where the
 //! smoothed value is over a threshold the frames make a stretch,
@@ -38,7 +42,7 @@ pub const CLEAR_DB: f32 = 6.0;
 pub const COVERED_DB: f32 = 6.0;
 /// How many tracks make a pile-up.
 pub const MUD_TRACKS: usize = 3;
-/// A track counts in a pile-up within this of the loudest there.
+/// A track is named in a pile-up within this of the loudest there.
 pub const MUD_NEAR_DB: f32 = 10.0;
 /// ... and over this (dBFS, between 200 and 500 Hz).
 pub const MUD_FLOOR_DB: f32 = -50.0;
@@ -264,11 +268,18 @@ impl Judge {
             ));
         }
         // 1.6 to 3.15 kHz: where the dip for the voice works.
-        if first <= 13 && last >= 10 && fix::dip_fits(&track.sound, fix::ROOM_HZ) {
+        if first <= 13
+            && last >= 10
+            && fix::dip_fits(&track.sound, fix::ROOM_HZ)
+            && Fix::useful(&track.sound, Remedy::MakeRoomForVoice)
+        {
             fixes.push(Fix::new(sequence, track, Remedy::MakeRoomForVoice));
         }
         // Up to 630 Hz: the low middle.
-        if first <= 6 && fix::dip_fits(&track.sound, fix::CUT_HZ) {
+        if first <= 6
+            && fix::dip_fits(&track.sound, fix::CUT_HZ)
+            && Fix::useful(&track.sound, Remedy::CutLowMiddle)
+        {
             fixes.push(Fix::new(sequence, track, Remedy::CutLowMiddle));
         }
         Some(Finding {
@@ -311,7 +322,11 @@ impl Judge {
         let fixes = involved
             .iter()
             .map(|i| &self.tracks[*i])
-            .filter(|t| t.sound.role != project::TrackRole::Dialogue && fix::dip_fits(&t.sound, fix::CUT_HZ))
+            .filter(|t| {
+                t.sound.role != project::TrackRole::Dialogue
+                    && fix::dip_fits(&t.sound, fix::CUT_HZ)
+                    && Fix::useful(&t.sound, Remedy::CutLowMiddle)
+            })
             .take(3)
             .map(|t| Fix::new(sequence, t, Remedy::CutLowMiddle))
             .collect();
@@ -351,11 +366,7 @@ fn covered(voice: &[f32; COUNT], other: &[f32; COUNT]) -> (f32, [u8; SPEECH.end 
 /// How muddy one frame is: see the module notes.
 fn muddy(frame: &[[f32; COUNT]]) -> f32 {
     let low: Vec<f32> = frame.iter().map(|b| b[MUD].iter().sum()).collect();
-    let loudest = low.iter().copied().fold(0f32, f32::max);
-    let piled = low
-        .iter()
-        .filter(|p| db(**p) >= MUD_FLOOR_DB && db(**p) >= db(loudest) - MUD_NEAR_DB)
-        .count();
+    let piled = low.iter().filter(|p| db(**p) >= MUD_FLOOR_DB).count();
     if piled < MUD_TRACKS {
         return 0.0;
     }
@@ -479,6 +490,34 @@ mod tests {
         assert_eq!(listed(&["a".into(), "b".into(), "c".into()]), "a, b and c");
         let five: Vec<String> = ["a", "b", "c", "d", "e"].map(String::from).to_vec();
         assert_eq!(listed(&five), "a, b, c and 2 more tracks");
+    }
+
+    /// Cutting one track's low middle never makes a frame muddier, also
+    /// when it is the loudest there and the others were far under it.
+    #[test]
+    fn a_cut_on_one_track_never_makes_a_frame_muddier() {
+        let track = |low: f32, presence: f32| {
+            let mut b = [1e-9f32; COUNT];
+            for k in MUD {
+                b[k] = low;
+            }
+            for k in PRESENCE {
+                b[k] = presence;
+            }
+            b
+        };
+        // Music loud in the low middle, two voices 14 dB under it.
+        let mut frame = vec![track(1e-2, 1e-5), track(4e-4, 1e-4), track(4e-4, 1e-4)];
+        let mut before = muddy(&frame);
+        assert!(before > 0.0, "muddy to begin with");
+        for _ in 0..6 {
+            for k in MUD {
+                frame[0][k] *= 0.45; // -3.5 dB
+            }
+            let after = muddy(&frame);
+            assert!(after <= before, "{before} then {after}");
+            before = after;
+        }
     }
 
     #[test]

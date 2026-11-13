@@ -34,6 +34,26 @@ impl Sequence {
     }
 }
 
+/// Whether a sound stream's name is a title its file gave it ("Mic",
+/// "Game"), rather than the "Audio 2" made up for a stream without one.
+pub fn titled(stream_name: &str) -> bool {
+    !stream_name
+        .strip_prefix("Audio ")
+        .is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// The name an audio track made or first used for an imported sound stream
+/// gets: the stream's title when its file gave it one, else the usual
+/// short name ("A2"), the same as every track added by hand. One scheme
+/// for every track, so "Audio 1" never sits beside "A2".
+pub fn name_for_stream(seq: &Sequence, stream_name: &str) -> String {
+    if titled(stream_name) {
+        stream_name.to_owned()
+    } else {
+        seq.next_track_name(TrackKind::Audio)
+    }
+}
+
 /// A name as it is kept: without spaces around it. Refused when nothing is
 /// left or it is too long for a track's header.
 fn tidy(name: &str) -> diag::Result<String> {

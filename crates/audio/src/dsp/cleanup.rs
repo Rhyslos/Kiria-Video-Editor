@@ -143,6 +143,21 @@ impl NoiseProfile {
         NoiseProfile(levels.map(|p| 10.0 * (p + 1e-20).log10()))
     }
 
+    /// How loud the noise is in each band, dBFS: the band's share of the
+    /// noise's whole level (its mean square against a full-scale square
+    /// wave's), so the bands of the noise add up to the noise and none is
+    /// louder than all of them together. For drawing the profile; the
+    /// stored levels are per hertz on the gate's own scale (a window's
+    /// magnitudes, unscaled), which is what the gate compares with and
+    /// says nothing on its own.
+    pub fn band_dbfs(&self) -> [f32; bands::COUNT] {
+        // A window's bin k of a real signal holds 4·|X(k)|²/N² of its mean
+        // square (Parseval, with the two window halves' power N/2 and each
+        // frequency's mirror image); the levels are |X(k)|² per hertz.
+        let share = 10.0 * (4.0 / (WINDOW as f32 * WINDOW as f32)).log10();
+        std::array::from_fn(|i| self.0[i] + share + 10.0 * bands::width(i).log10())
+    }
+
     /// The noise at each of the gate's frequencies at `rate`. Allocates:
     /// worked out off the real-time thread and swapped in.
     pub fn bins(&self, rate: u32) -> Box<BinNoise> {
@@ -498,6 +513,35 @@ pub(crate) mod tests {
             assert!(pauses > 12.0, "pauses down only {pauses:.1} dB");
             assert!(words < 1.0, "words down {words:.2} dB");
         }
+    }
+
+    /// White noise of a known level, as one channel (a microphone): the
+    /// bands drawn add up to that level over the part of the frequencies
+    /// they cover, and none is louder than the whole.
+    #[test]
+    fn a_learned_profile_reads_in_dbfs_and_its_bands_add_up_to_the_noise() {
+        let noise = hiss(2 * RATE as usize, 0.05, 9);
+        let rms_db = 10.0 * (noise.iter().map(|s| s * s).sum::<f32>() / noise.len() as f32).log10();
+        let profile = NoiseProfile::learn(RATE, &noise, &noise);
+        let bands = profile.band_dbfs();
+        let total = 10.0 * bands.iter().map(|b| 10f32.powf(b / 10.0)).sum::<f32>().log10();
+        // The bands cover 20 Hz to 20 kHz of the 24 kHz there is.
+        let covered = rms_db + 10.0 * ((bands::HIGHEST - bands::LOWEST) / (RATE as f32 / 2.0)).log10();
+        assert!(
+            (total - covered).abs() < 0.5,
+            "bands add to {total:.2}, noise {covered:.2} dBFS"
+        );
+        assert!(bands.iter().all(|b| *b < rms_db), "{bands:?} against {rms_db}");
+        // White noise has the same level per hertz: a band twice as wide
+        // reads 3 dB louder.
+        let (lo, hi) = (40, 52);
+        let wider = 10.0 * (bands::width(hi) / bands::width(lo)).log10();
+        assert!(
+            (bands[hi] - bands[lo] - wider).abs() < 1.5,
+            "{} {}",
+            bands[lo],
+            bands[hi]
+        );
     }
 
     #[test]

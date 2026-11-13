@@ -71,6 +71,7 @@ impl Editor {
         let mut live = Live::default();
         if let Some(playback) = &mut self.playback {
             live.playing = true;
+            live.unheard = playback.unheard();
             let wants = (self.audio_page.tool == audio_page::Tool::Eq)
                 .then_some(track)
                 .flatten();
@@ -594,7 +595,7 @@ impl Editor {
             needle: needle.map(Time::as_secs_f64),
             region: seq.region.map(|r| (r.start.as_secs_f64(), r.end.as_secs_f64())),
             markers: &drawn.markers,
-            highlights: &[],
+            highlights: &self.silence.found,
             spans: &spans,
             follow: self.playback.is_some(),
             cache: ui_kit::timeline::CacheBar {
@@ -665,7 +666,7 @@ impl Editor {
                 return Ok(());
             };
             let mut sound = t.sound.clone();
-            sound.role = role;
+            sound.set_role(role);
             let command = Command::SetTrackSound {
                 sequence: seq.id,
                 track: t.id,

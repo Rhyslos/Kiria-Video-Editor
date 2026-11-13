@@ -450,9 +450,13 @@ impl Measured {
     };
 }
 
-/// Measures interleaved stereo as it is fed in. Allocates only when made.
+/// Measures interleaved stereo (or one channel, [`Loudness::mono`]) as it
+/// is fed in. Allocates only when made.
 #[derive(Debug, Clone)]
 pub struct Loudness {
+    /// 2, or 1 for a recording of one channel, measured as one channel as
+    /// the recommendation says (not spread over two first).
+    channels: usize,
     filters: [[Biquad; 2]; 2],
     block_len: usize,
     /// Weighted energy and samples of the 100 ms block being filled.
@@ -477,6 +481,7 @@ impl Loudness {
     pub fn new(rate: u32) -> Loudness {
         let k = k_weighting(f64::from(rate));
         Loudness {
+            channels: 2,
             filters: [k, k],
             block_len: (rate / 10).max(1) as usize,
             filling: (0.0, 0),
@@ -489,6 +494,16 @@ impl Loudness {
             true_peaks: [TruePeak::new(), TruePeak::new()],
             true_peak_max: 0.0,
             measured: Measured::SILENT,
+        }
+    }
+
+    /// Measures one channel: `feed` takes its samples one after another, a
+    /// sample's own level is its peak, and its loudness is that channel's
+    /// alone. Both channels of what it measures read the same.
+    pub fn mono(rate: u32) -> Loudness {
+        Loudness {
+            channels: 1,
+            ..Loudness::new(rate)
         }
     }
 
@@ -517,12 +532,12 @@ impl Loudness {
         Some(sum / n as f64)
     }
 
-    /// Takes in one block (interleaved left, right) and works out the new
-    /// values.
+    /// Takes in one block (interleaved left, right; or the one channel's
+    /// samples, [`Loudness::mono`]) and works out the new values.
     pub fn feed(&mut self, samples: &[f32]) -> Measured {
         let mut peak = [0f32; 2];
         let mut true_peak = [0f32; 2];
-        for frame in samples.chunks_exact(2) {
+        for frame in samples.chunks_exact(self.channels) {
             let mut energy = 0.0;
             for (ch, s) in frame.iter().enumerate() {
                 peak[ch] = peak[ch].max(s.abs());
@@ -549,6 +564,10 @@ impl Loudness {
                     self.range.add(short);
                 }
             }
+        }
+        if self.channels == 1 {
+            peak[1] = peak[0];
+            true_peak[1] = true_peak[0];
         }
         self.true_peak_max = self.true_peak_max.max(true_peak[0]).max(true_peak[1]);
         // Short-term: 3 s, or what there is of it once there is 0.4 s.

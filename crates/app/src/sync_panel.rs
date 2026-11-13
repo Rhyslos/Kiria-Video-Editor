@@ -8,6 +8,10 @@
 //! move and how sure the match is, in plain words. "Move" moves the sure
 //! and likely ones, in one undoable step (`Command::LineUp`); unsure ones
 //! only move with "Move anyway".
+//!
+//! A clip that would start before the timeline is cut off there (the
+//! timeline starts at 0): the window says so before Move, and the status
+//! line after (`cut_offs`).
 
 use engine::sync::{self, ClipSound, Found, Sureness};
 use jobs::{JobHandle, JobProgress, JobSystem, PoolKind, Priority};
@@ -245,6 +249,13 @@ impl SyncPanel {
                     format!("Their linked picture and sound move with them, as one step: {undo} undoes it.")
                 };
                 ui.label(egui::RichText::new(note).size(11.5).color(theme.muted));
+                for (file, cut) in cut_offs(project, seq, &unsure) {
+                    ui.label(
+                        egui::RichText::new(cut_off_text(&file, cut, false))
+                            .size(11.5)
+                            .color(ui_kit::theme::status::WARNING),
+                    );
+                }
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     if !sure.is_empty() && ui_kit::accent_button(ui, theme, "Move").clicked() {
@@ -439,6 +450,47 @@ pub fn units(project: &Project, seq: &Sequence, selected: &[ClipId]) -> Vec<Unit
     units
 }
 
+/// What `moves` would cut off the start of clips because they would start
+/// before the timeline does: each file's name and how much, the most of
+/// any clip of its group (a clip and those linked to it).
+pub fn cut_offs(project: &Project, seq: &Sequence, moves: &[(ClipId, Time)]) -> Vec<(String, Time)> {
+    let mut out: Vec<(String, Time)> = Vec::new();
+    for (id, to) in moves {
+        let Some(clip) = find(seq, *id) else { continue };
+        let by = *to - clip.start;
+        let cut = seq
+            .tracks()
+            .flat_map(|t| t.clips.iter())
+            .filter(|c| c.id == clip.id || (clip.link.is_some() && c.link == clip.link))
+            .map(|c| Time::ZERO - (c.start + by))
+            .filter(|cut| *cut > Time::ZERO)
+            .max();
+        let Some(cut) = cut else { continue };
+        let file = project
+            .media
+            .get(&clip.media)
+            .and_then(|m| m.path.file_name())
+            .map_or_else(|| "a clip".to_owned(), |n| n.to_string_lossy().into_owned());
+        out.push((file, cut));
+    }
+    out
+}
+
+/// "The first 3.0 s of mic.wav will be cut off, because it would start
+/// before the timeline does." (`done`: was cut off.)
+pub fn cut_off_text(file: &str, cut: Time, done: bool) -> String {
+    let length = ui_kit::time_text::length(cut.as_secs_f64());
+    if done {
+        format!(
+            "The first {length} of {file} was cut off, because it would have started before the timeline does."
+        )
+    } else {
+        format!(
+            "The first {length} of {file} will be cut off, because it would start before the timeline does."
+        )
+    }
+}
+
 /// The usual reference: a picture on the lowest video track, the earliest
 /// there; else sound on the first audio track. Only units with sound.
 pub fn reference(units: &[Unit]) -> usize {
@@ -560,6 +612,33 @@ mod tests {
         assert_eq!(
             found.iter().find(|u| u.clip == mic).unwrap().problem,
             Some("plays at another speed")
+        );
+    }
+
+    /// A mic that started recording 3 s before the screen recording, both
+    /// at 0 on the timeline: lining it up would start it 3 s before the
+    /// timeline, so its first 3 s are cut off, and that is said.
+    #[test]
+    fn a_move_before_the_timeline_says_what_it_cuts_off() {
+        let p = Project::new("Test", SequenceSettings::GAME_CLIP);
+        let sequence = p.active_sequence;
+        let p = Command::Import {
+            sequence,
+            media: file("mic.wav", false),
+        }
+        .apply(&p)
+        .unwrap();
+        let seq = p.active().unwrap();
+        let mic = seq.audio_tracks[0].clips[0].id;
+        let cuts = cut_offs(&p, seq, &[(mic, Time::seconds(-3))]);
+        assert_eq!(cuts, [("mic.wav".to_owned(), Time::seconds(3))]);
+        assert_eq!(
+            cut_off_text(&cuts[0].0, cuts[0].1, false),
+            "The first 3.0 s of mic.wav will be cut off, because it would start before the timeline does."
+        );
+        assert!(
+            cut_offs(&p, seq, &[(mic, Time::seconds(2))]).is_empty(),
+            "later: nothing cut"
         );
     }
 

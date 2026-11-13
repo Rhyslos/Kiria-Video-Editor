@@ -149,7 +149,13 @@ pub struct Mix<'a> {
     pub target: LoudnessTarget,
     /// What the meter says when pointed at.
     pub tip: &'a str,
+    /// Playing without a sound output: the mix is made and measured, not
+    /// heard. The column says so at its top.
+    pub unheard: bool,
 }
+
+/// What the column's top says while the mix plays unheard.
+pub const UNHEARD: &str = "No sound output: meters still work";
 
 /// What a frame of the column asks of the page.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -222,19 +228,32 @@ impl MasterColumn {
             gain_db,
             target,
             tip,
+            unheard,
         } = mix;
         let mut response = MasterResponse::default();
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 6.0, theme.panel);
+        let (title, colour) = if unheard {
+            ("No sound", crate::status::WARNING)
+        } else {
+            ("Master", theme.text_secondary)
+        };
         painter.text(
             pos2(rect.center().x, rect.top() + 10.0),
             Align2::CENTER_CENTER,
-            "Master",
+            title,
             FontId::proportional(11.0),
-            theme.text_secondary,
+            colour,
         );
         // The target in the right-click menu, anywhere on the column.
         let column = ui.interact(rect, ui.scope_id().with("master-column"), Sense::click());
+        if unheard {
+            let top = Rect::from_min_size(rect.min, vec2(rect.width(), 20.0));
+            ui.interact(top, ui.scope_id().with("master-unheard"), Sense::hover())
+                .on_hover_text(format!(
+                    "{UNHEARD}. There is no sound device to play to (or it would not open), so nothing is heard, but the mix is made at its real pace and measured: the meters, the loudness and ducking work as with sound."
+                ));
+        }
         target_menu(&column, target, &mut response);
         let bar = Rect::from_min_max(
             pos2(rect.center().x - 15.0, rect.top() + 24.0),
@@ -521,6 +540,7 @@ mod tests {
                     gain_db: 0.0,
                     target: LoudnessTarget::Online,
                     tip: "tip",
+                    unheard: false,
                 };
                 got = column.show(ui, &Theme::ASH, rect, mix);
             });

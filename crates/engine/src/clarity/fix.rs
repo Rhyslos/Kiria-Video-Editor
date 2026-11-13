@@ -14,6 +14,12 @@
 //! [`DEEPEST_DIP_MDB`]), else in a peak band that is flat (0 dB, on or off), moved there. With
 //! the EQ off, bands set before stay as they were but switched off, so
 //! only the dip is new in what is heard.
+//!
+//! A fix already made on its track says so ([`Fix::applied_mdb`]: the cut
+//! or ducking there now) and offers to go further; one already as far as
+//! it goes is not offered ([`Fix::useful`]). A fix may not clear a finding
+//! by itself (three tracks piling up are still three after one is cut),
+//! so the finding stays, its button saying what is done.
 
 use diag::AppError;
 use project::track_sound::{BandShape, EqBand, TrackRole, TrackSound};
@@ -56,6 +62,9 @@ pub struct Fix {
     pub remedy: Remedy,
     /// What the button says: "Lower the music under the dialogue".
     pub label: String,
+    /// The same fix already on the track: its cut, or how far it ducks
+    /// now, thousandths of a dB. Pressing again goes further.
+    pub applied_mdb: Option<i32>,
 }
 
 fn gone() -> AppError {
@@ -67,16 +76,44 @@ fn gone() -> AppError {
 impl Fix {
     pub fn new(sequence: SequenceId, track: &project::Track, remedy: Remedy) -> Fix {
         let what = called(track);
-        let label = match remedy {
-            Remedy::LowerUnderDialogue { .. } => format!("Lower {what} under the dialogue"),
-            Remedy::CutLowMiddle => format!("Cut {what} around {CUT_HZ} Hz"),
-            Remedy::MakeRoomForVoice => format!("Make room for the voice in {what}"),
+        let applied_mdb = applied(&track.sound, remedy);
+        let db = |mdb: i32| format!("{:.1}", f64::from(mdb) / 1_000.0).replace('-', "\u{2212}");
+        let label = match (remedy, applied_mdb) {
+            (Remedy::LowerUnderDialogue { .. }, None) => format!("Lower {what} under the dialogue"),
+            (Remedy::LowerUnderDialogue { .. }, Some(d)) => {
+                format!(
+                    "Lower {what} further under the dialogue (it ducks {} dB now)",
+                    db(d)
+                )
+            }
+            (Remedy::CutLowMiddle, None) => format!("Cut {what} around {CUT_HZ} Hz"),
+            (Remedy::CutLowMiddle, Some(d)) => {
+                format!(
+                    "Cut {what} deeper around {CUT_HZ} Hz (cut {} dB there now)",
+                    db(d)
+                )
+            }
+            (Remedy::MakeRoomForVoice, None) => format!("Make room for the voice in {what}"),
+            (Remedy::MakeRoomForVoice, Some(d)) => {
+                format!("Make more room for the voice in {what} ({} dB there now)", db(d))
+            }
         };
         Fix {
             sequence,
             track: track.id,
             remedy,
             label,
+            applied_mdb,
+        }
+    }
+
+    /// Whether pressing it changes anything: not when the cut or the
+    /// ducking is already as deep as the fix goes.
+    pub fn useful(sound: &TrackSound, remedy: Remedy) -> bool {
+        match (remedy, applied(sound, remedy)) {
+            (_, None) => true,
+            (Remedy::LowerUnderDialogue { .. }, Some(d)) => d > DEEPEST_DUCK_MDB,
+            (_, Some(d)) => d > DEEPEST_DIP_MDB,
         }
     }
 
@@ -118,6 +155,27 @@ impl Fix {
             track: self.track,
             sound: Box::new(self.sound(&track.sound)?),
         })
+    }
+}
+
+/// The fix already on the track, as it is now (thousandths of a dB):
+/// ducking that is on, or a dip of its EQ near the fix's frequency.
+fn applied(sound: &TrackSound, remedy: Remedy) -> Option<i32> {
+    let dip_near = |hz: u32| {
+        sound.eq.on.then_some(())?;
+        sound
+            .eq
+            .bands
+            .iter()
+            .filter(|b| b.on && b.shape == BandShape::Peak && b.gain_mdb < 0)
+            .filter(|b| (b.freq_hz.max(1) as f32 / hz as f32).log2().abs() <= 0.5)
+            .map(|b| b.gain_mdb)
+            .min()
+    };
+    match remedy {
+        Remedy::LowerUnderDialogue { .. } => sound.ducking.on.then_some(sound.ducking.depth_mdb),
+        Remedy::CutLowMiddle => dip_near(CUT_HZ),
+        Remedy::MakeRoomForVoice => dip_near(ROOM_HZ),
     }
 }
 
@@ -200,7 +258,43 @@ mod tests {
             track: TrackId(0),
             remedy,
             label: String::new(),
+            applied_mdb: None,
         }
+    }
+
+    fn track(sound: TrackSound) -> project::Track {
+        let mut p = project::Project::new_automatic("T");
+        let mut t = p.new_track(project::TrackKind::Audio, "Music");
+        t.sound = sound;
+        t
+    }
+
+    /// Once made, a fix says so and offers to go further; as far as it
+    /// goes, it is no longer offered.
+    #[test]
+    fn a_fix_already_made_says_so_until_it_goes_no_further() {
+        let mut sound = TrackSound::default();
+        let first = Fix::new(SequenceId(0), &track(sound.clone()), Remedy::CutLowMiddle);
+        assert_eq!(first.applied_mdb, None);
+        assert_eq!(first.label, "Cut Music around 300 Hz");
+        for _ in 0..2 {
+            sound = first.sound(&sound).unwrap();
+        }
+        let again = Fix::new(SequenceId(0), &track(sound.clone()), Remedy::CutLowMiddle);
+        assert_eq!(again.applied_mdb, Some(-7_000));
+        assert!(
+            again.label.contains("deeper") && again.label.contains("\u{2212}7.0 dB"),
+            "{}",
+            again.label
+        );
+        assert!(Fix::useful(&sound, Remedy::CutLowMiddle));
+        sound = first.sound(&sound).unwrap();
+        assert_eq!(applied(&sound, Remedy::CutLowMiddle), Some(DEEPEST_DIP_MDB));
+        assert!(!Fix::useful(&sound, Remedy::CutLowMiddle), "as deep as it goes");
+        assert!(
+            Fix::useful(&sound, Remedy::MakeRoomForVoice),
+            "another fix still is"
+        );
     }
 
     #[test]

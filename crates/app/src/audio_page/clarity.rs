@@ -10,7 +10,7 @@
 
 use engine::clarity::{Clarity, Finding, Outcome, Problem, Report, Request};
 use jobs::JobSystem;
-use project::{Project, SequenceId, Time, Track};
+use project::{Project, SequenceId, Time, Track, TrackId};
 use std::time::{Duration, Instant};
 use ui_kit::TimelineSpan;
 use ui_kit::theme::clarity as colours;
@@ -53,6 +53,23 @@ pub struct ClarityBand {
     changes: u64,
     /// The finding the band shows in its picture (index, worst first).
     pub chosen: usize,
+    /// The finding a fix was last pressed for, as it was then.
+    before: Option<Before>,
+    /// Reports taken so far.
+    reports: u64,
+}
+
+/// A finding as it was when a fix was pressed for it: what kind, which
+/// tracks, how bad, and where it was checked. The next check of the same
+/// stretch says how bad the same trouble is now against it.
+#[derive(Debug, Clone, PartialEq)]
+struct Before {
+    problem: Problem,
+    tracks: Vec<TrackId>,
+    severity: f32,
+    request: Request,
+    /// Reports taken when the fix was pressed: only a later one tells.
+    reports: u64,
 }
 
 /// A finding's colour.
@@ -113,6 +130,7 @@ impl ClarityBand {
             match outcome {
                 Outcome::Done(report) => {
                     self.report = Some((report, *asked));
+                    self.reports += 1;
                     self.chosen = 0;
                 }
                 Outcome::Cancelled => {}
@@ -178,6 +196,30 @@ impl ClarityBand {
     pub fn again(&mut self) {
         self.since = None;
     }
+
+    /// A fix was pressed for `finding`: the next check of the same stretch
+    /// shows how bad it was against how bad it is then ([`ClarityBand::was`]).
+    pub fn fixed(&mut self, finding: &Finding) {
+        self.before = self.report.as_ref().map(|(r, _)| Before {
+            problem: finding.problem,
+            tracks: finding.tracks.clone(),
+            severity: finding.severity,
+            request: r.request,
+            reports: self.reports,
+        });
+    }
+
+    /// How bad `finding` was before the last fix pressed for the same
+    /// trouble (the same kind, a track in common, the same stretch), when
+    /// the report shown is a check made since.
+    pub fn was(&self, finding: &Finding) -> Option<f32> {
+        let before = self.before.as_ref()?;
+        let (report, _) = self.report.as_ref()?;
+        let same = before.problem == finding.problem
+            && before.request == report.request
+            && finding.tracks.iter().any(|t| before.tracks.contains(t));
+        (same && self.reports > before.reports).then_some(before.severity)
+    }
 }
 
 #[cfg(test)]
@@ -214,6 +256,56 @@ mod tests {
             now += Duration::from_millis(50);
         }
         panic!("never settled");
+    }
+
+    fn finding(problem: Problem, severity: f32) -> Finding {
+        Finding {
+            problem,
+            range: (Time::ZERO, Time::seconds(1)),
+            tracks: vec![TrackId(1), TrackId(2)],
+            band_hz: (200, 500),
+            severity,
+            words: String::new(),
+            fixes: Vec::new(),
+        }
+    }
+
+    fn report(findings: Vec<Finding>) -> Report {
+        Report {
+            sequence: SequenceId(0),
+            request: Request::Playhead(Time::ZERO),
+            stretch: (Time::ZERO, Time::seconds(1)),
+            findings,
+            tracks: Vec::new(),
+        }
+    }
+
+    fn wanted() -> Wanted {
+        Wanted {
+            request: Request::Playhead(Time::ZERO),
+            sequence: SequenceId(0),
+            tracks: 0,
+        }
+    }
+
+    /// After a fix that leaves the finding (three tracks still pile up),
+    /// the check that follows says how bad it was and how bad it is now.
+    #[test]
+    fn after_a_fix_the_finding_says_how_much_better_it_is() {
+        let muddy = finding(Problem::Muddy, 0.7);
+        let mut band = ClarityBand {
+            report: Some((report(vec![muddy.clone()]), wanted())),
+            ..ClarityBand::default()
+        };
+        assert_eq!(band.was(&muddy), None, "no fix pressed");
+        band.fixed(&muddy);
+        assert_eq!(band.was(&muddy), None, "not checked again yet");
+        let better = finding(Problem::Muddy, 0.55);
+        band.report = Some((report(vec![better.clone()]), wanted()));
+        band.reports += 1;
+        assert_eq!(band.was(&better), Some(0.7));
+        let other = finding(Problem::CoversVoice, 0.4);
+        assert_eq!(band.was(&other), None, "another kind of trouble");
     }
 
     #[test]

@@ -469,6 +469,21 @@ Built (`crates/app/src/audio_page.rs` and `audio_page/`, laid out by `editor/aud
 - [x] Shared playhead, edit needle, region, labels, transport and shortcuts from phase 4.
 - [x] Full loudness overview: momentary, short-term and integrated loudness, loudness range and true peak for the whole mix (and the selected track), larger than the master column's readouts, with how integrated loudness and true peak are counted chosen there: restart on every play (as on the Edit page, the usual), keep until reset (adding up over several plays, with a Reset button), or follow the region (count only what plays inside it, starting again when the region changes). The loudness to aim for is the same setting as the master column's and Settings'. Perhaps a quick setting for the counting in the inspector's Audio section too.
 
+**8.5 Fixes from a podcast use test**
+
+A voice-over edit (screen recording, a separate mic with hiss, music) found these; each is fixed with a test where the logic allows.
+
+- [x] No sound output: playback still mixes at real-time pace, unheard, so meters, the Meters tab and ducking work; the master column and status line say "No sound output: meters still work".
+- [x] A mono recording's loudness and true peak are measured as one channel (the Library read a clipped mic 3 dB low); within 0.1 dB of the common command-line loudness filter.
+- [x] Clean-up's learned noise is drawn as each band's share in dBFS on a scale fitted to it (the bands add up to the noise).
+- [x] The clarity check's fixes say when they are already made ("Cut applied, −3.5 dB · Cut deeper"), stop when as deep as they go, name tracks by their names, and after a fix the finding says how bad it was and is.
+- [x] Remove silence starts on the Dialogue track, says it reads the recording before Clean-up and offers a threshold over its hiss, marks its finds on the Audio page's timeline too, and uses the inspector's sliders.
+- [x] Sync by sound says when a move cuts the start off a clip, before Move and after.
+- [x] The lines tool shows on the Edit page's tool row ("Lines on ×"), Escape leaves it, and its hint never stays on a page without a timeline.
+- [x] A clip dragged under the last audio track gets a "New track" zone when the tracks fill the timeline; errors float over the page instead of pushing it down; the inspector is cut at its edge and scrolls.
+- [x] One track naming scheme ("A2"), an untitled stream never naming a track; a track made Dialogue gets the voice's Low cut at 80 Hz in the same undo step.
+- [x] Export: a preset stays lit when only Normalise changes; a sound-only format has no "Video" panel; encoder probes log their refusals for debugging only, without an export's fix.
+
 **Gate 8**
 
 - [ ] A noisy recording with game, mic and voice chat streams mixes to −14 LUFS integrated with no true peak over −1 dB.

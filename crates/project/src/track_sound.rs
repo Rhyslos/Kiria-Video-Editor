@@ -312,6 +312,18 @@ impl TrackSound {
     /// The top of a volume line: +12 dB.
     pub const LINE_LOUDEST: i32 = 12_000;
 
+    /// Gives the track a role. A track made Dialogue gets the voice's
+    /// high pass (the project plan's "high-pass filter per track with a
+    /// sensible default for voice"): Low cut on at its usual 80 Hz, or at
+    /// the frequency it was set to, when it was off. One change, so one
+    /// undo step with the role. Leaving Dialogue leaves the filter as it is.
+    pub fn set_role(&mut self, role: TrackRole) {
+        if role == TrackRole::Dialogue && self.role != TrackRole::Dialogue && !self.high_pass.on {
+            self.high_pass.on = true;
+        }
+        self.role = role;
+    }
+
     /// Whether every effect is off and nothing moves: the track sounds as
     /// its volume, mute and solo alone say.
     pub fn is_plain(&self) -> bool {
@@ -406,6 +418,36 @@ impl MasterSound {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_dialogue_track_gets_the_voice_high_pass() {
+        let mut s = TrackSound::default();
+        s.set_role(TrackRole::Dialogue);
+        assert!(s.high_pass.on);
+        assert_eq!(s.high_pass.freq_hz, 80);
+        s.set_role(TrackRole::Music);
+        assert!(s.high_pass.on, "left as it is");
+        // One set by hand stays as set.
+        let mut s = TrackSound {
+            high_pass: HighPass {
+                on: true,
+                freq_hz: 120,
+            },
+            ..TrackSound::default()
+        };
+        s.set_role(TrackRole::Dialogue);
+        assert_eq!(
+            s.high_pass,
+            HighPass {
+                on: true,
+                freq_hz: 120
+            }
+        );
+        // Turned off by hand on a dialogue track, it stays off.
+        s.high_pass.on = false;
+        s.set_role(TrackRole::Dialogue);
+        assert!(!s.high_pass.on);
+    }
 
     #[test]
     fn the_defaults_are_off_and_allowed() {

@@ -3,7 +3,9 @@
 //! worker and measured as the master meter measures (`engine::loudness`:
 //! integrated loudness gated as the loudness standard says, true peak from
 //! four-times oversampling). Kept for the session; a file is measured only
-//! once someone looks at it.
+//! once someone looks at it. A stream of one channel (a microphone) is
+//! measured as one channel, as the loudness standard says: its peak is its
+//! own samples', not those of the two channels it is spread over to play.
 //!
 //! What to do about it (`Advice`), stream by stream: the change of level
 //! that brings it to the loudness aimed for (Settings › Audio, the master
@@ -55,12 +57,18 @@ impl Measurements {
     ) -> Option<Result<Reading, String>> {
         let state = self.streams.entry((media.id, stream)).or_insert_with(|| {
             let (path, ctx) = (media.path.clone(), ctx.clone());
+            let channels = media
+                .info
+                .audio
+                .iter()
+                .find(|a| a.index == stream)
+                .map_or(2, |a| a.channels);
             State::Measuring(jobs.submit(
                 PoolKind::Analysis,
                 Priority::Interactive,
                 "measure loudness",
                 move |job| {
-                    let result = measure(&path, stream, || job.is_cancelled());
+                    let result = measure(&path, (stream, channels), || job.is_cancelled());
                     ctx.request_repaint();
                     result
                 },
@@ -106,15 +114,25 @@ impl Measurements {
     }
 }
 
-/// Reads sound stream `stream` of the file from start to end and measures
-/// it. Slow (the whole stream is decoded): run it on a worker. `cancelled`
-/// is asked between blocks.
-pub fn measure(path: &Path, stream: u32, cancelled: impl Fn() -> bool) -> diag::Result<Reading> {
+/// Reads sound stream `stream` (of `channels` channels) of the file from
+/// start to end and measures it. Slow (the whole stream is decoded): run
+/// it on a worker. `cancelled` is asked between blocks.
+pub fn measure(
+    path: &Path,
+    (stream, channels): (u32, u16),
+    cancelled: impl Fn() -> bool,
+) -> diag::Result<Reading> {
     let mut decoder = AudioDecoder::open(path, stream, RATE)?;
     decoder.seek(0.0);
-    let mut meter = engine::loudness::Loudness::new(RATE);
+    let mono = channels == 1;
+    let mut meter = if mono {
+        engine::loudness::Loudness::mono(RATE)
+    } else {
+        engine::loudness::Loudness::new(RATE)
+    };
     // A tenth of a second at a time, in stereo.
     let mut block = vec![0f32; (RATE / 10) as usize * 2];
+    let mut one = vec![0f32; (RATE / 10) as usize];
     loop {
         if cancelled() {
             return Err(diag::AppError::new("Measuring the loudness stopped").why("It was no longer needed."));
@@ -123,7 +141,17 @@ pub fn measure(path: &Path, stream: u32, cancelled: impl Fn() -> bool) -> diag::
         if frames == 0 {
             break;
         }
-        meter.feed(&block[..frames * 2]);
+        if mono {
+            // The decoder spreads one channel over two at -3 dB each (the
+            // same power, as it is played); the channel itself is either
+            // of them brought back up.
+            for (o, pair) in one.iter_mut().zip(block[..frames * 2].chunks_exact(2)) {
+                *o = pair[0] * std::f32::consts::SQRT_2;
+            }
+            meter.feed(&one[..frames]);
+        } else {
+            meter.feed(&block[..frames * 2]);
+        }
         if frames * 2 < block.len() {
             break;
         }
@@ -198,7 +226,7 @@ mod tests {
     fn a_sound_file_is_measured() {
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../media/tests/fixtures/voice.mp3");
         let probed = media::probe(&fixture).unwrap();
-        let stream = probed.info.audio[0].index;
+        let stream = (probed.info.audio[0].index, probed.info.audio[0].channels);
         let reading = measure(&fixture, stream, || false).unwrap();
         assert!(
             reading.true_peak.is_finite() && reading.true_peak < 3.0,
@@ -208,7 +236,70 @@ mod tests {
             measure(&fixture, stream, || true).is_err(),
             "stopped when no longer needed"
         );
-        assert!(measure(Path::new("/nowhere/at/all.wav"), 0, || false).is_err());
+        assert!(measure(Path::new("/nowhere/at/all.wav"), (0, 2), || false).is_err());
+    }
+
+    /// `seconds` of a sine at `freq` Hz `gain` times full scale, clipped,
+    /// as a 16-bit WAV of one channel at 48 kHz.
+    fn clipped_mono_wav(path: &Path, freq: f64, gain: f64, seconds: u32) {
+        let frames = RATE * seconds;
+        let mut bytes = Vec::new();
+        let data = frames * 2;
+        bytes.extend(b"RIFF");
+        bytes.extend((36 + data).to_le_bytes());
+        bytes.extend(b"WAVEfmt ");
+        bytes.extend(16u32.to_le_bytes());
+        bytes.extend(1u16.to_le_bytes()); // whole numbers
+        bytes.extend(1u16.to_le_bytes()); // one channel
+        bytes.extend(RATE.to_le_bytes());
+        bytes.extend((RATE * 2).to_le_bytes());
+        bytes.extend(2u16.to_le_bytes());
+        bytes.extend(16u16.to_le_bytes());
+        bytes.extend(b"data");
+        bytes.extend(data.to_le_bytes());
+        for i in 0..frames {
+            let v = gain * (std::f64::consts::TAU * freq * f64::from(i) / f64::from(RATE)).sin();
+            let s = (v * 32767.0).round().clamp(-32767.0, 32767.0) as i16;
+            bytes.extend(s.to_le_bytes());
+        }
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    /// A clipped microphone recording of one channel: its true peak is at
+    /// least its samples' (full scale), not 3 dB under it as when it was
+    /// spread over two channels first, and both figures are what the
+    /// common command-line tool's loudness filter (true peak on) says of
+    /// the same files, within 0.1 dB: 1 kHz twice full scale -0.81 LUFS,
+    /// +0.17 dBTP (a true peak of 1.020); 997 Hz 1.5 times -1.44 LUFS,
+    /// +0.12 dBTP (1.014); 3 kHz twice full scale +2.00 LUFS, +0.30 dBTP
+    /// (1.035), where the four-times oversampled peak (16 taps a phase)
+    /// reads about 0.2 dB under the tool's longer filter (the recommendation
+    /// allows a 4x meter to read up to 0.5 dB low that near the top), so
+    /// its peak is held to 0.3 dB.
+    #[test]
+    fn a_clipped_mono_recording_reads_as_the_standard_measures_it() {
+        let dir = tempfile::tempdir().unwrap();
+        for (freq, gain, lufs, dbtp, within) in [
+            (1_000.0, 2.0, -0.81, 0.17, 0.1),
+            (997.0, 1.5, -1.44, 0.12, 0.1),
+            (3_000.0, 2.0, 2.00, 0.30, 0.3),
+        ] {
+            let path = dir.path().join(format!("clipped-{freq}.wav"));
+            clipped_mono_wav(&path, freq, gain, 5);
+            let probed = media::probe(&path).unwrap();
+            let sound = &probed.info.audio[0];
+            assert_eq!(sound.channels, 1);
+            let reading = measure(&path, (sound.index, sound.channels), || false).unwrap();
+            assert!(
+                (reading.integrated - lufs).abs() <= 0.1,
+                "{freq} Hz: {reading:?} against {lufs} LUFS"
+            );
+            assert!(
+                (reading.true_peak - dbtp).abs() <= within,
+                "{freq} Hz: {reading:?} against {dbtp} dBTP"
+            );
+            assert!(reading.true_peak >= -0.01, "never under the samples' own peak");
+        }
     }
 
     #[test]

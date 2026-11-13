@@ -1351,12 +1351,16 @@ fn place_media(
     for (i, stream) in audio.iter().enumerate() {
         let c = clip(p, stream.index);
         if sequence_ref(p, sequence)?.audio_tracks.len() <= i {
-            let track = p.new_track(TrackKind::Audio, &stream.name);
+            let name = crate::tracks::name_for_stream(sequence_ref(p, sequence)?, &stream.name);
+            let track = p.new_track(TrackKind::Audio, &name);
             sequence_mut(p, sequence)?.audio_tracks.push_back(track);
         }
         let track = &mut sequence_mut(p, sequence)?.audio_tracks[i];
         // A track nobody has used yet takes the stream's name.
-        if track.clips.is_empty() && track.name == format!("A{}", i + 1) {
+        if track.clips.is_empty()
+            && track.name == format!("A{}", i + 1)
+            && crate::tracks::titled(&stream.name)
+        {
             track.name = stream.name.clone();
         }
         insert_clip(track, c)?;
@@ -1992,6 +1996,28 @@ mod tests {
         let streams: Vec<u32> = s.audio_tracks.iter().map(|t| t.clips[0].stream).collect();
         assert_eq!(streams, [1, 2, 3]);
         assert_eq!(s.length(), Time::seconds(30));
+    }
+
+    /// Streams without a title in their file (named "Audio 1" and
+    /// "Audio 2" for the Library) leave the tracks their usual short names,
+    /// as tracks added by hand get: "A1" and "A2", never "Audio 1" beside
+    /// "A2".
+    #[test]
+    fn untitled_sound_streams_keep_the_usual_track_names() {
+        let p = Project::new("Test", SequenceSettings::GAME_CLIP);
+        let seq = p.active_sequence;
+        let p = Command::Import {
+            sequence: seq,
+            media: recording(&["Audio 1", "Audio 2"], 30),
+        }
+        .apply(&p)
+        .unwrap();
+        let s = p.active().unwrap();
+        let names: Vec<&str> = s.audio_tracks.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["A1", "A2"]);
+        assert_eq!(s.next_track_name(TrackKind::Audio), "A3");
+        assert!(crate::tracks::titled("Mic") && crate::tracks::titled("Audio"));
+        assert!(!crate::tracks::titled("Audio 12"));
     }
 
     #[test]

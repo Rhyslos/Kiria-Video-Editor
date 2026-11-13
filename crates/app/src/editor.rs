@@ -25,6 +25,17 @@ use ui_kit::{Action, ErrorCenter, ErrorResponse, Page, ShortcutTable, Theme, Top
 /// How long without input before the app counts as idle (autosave runs, idle-only work starts).
 const IDLE_AFTER: Duration = Duration::from_secs(5);
 
+/// What the status line says when the lines are turned on and off.
+const LINES_ON: &str =
+    "Lines: click an audio track to add a point, drag one to move it, double-click it to remove it";
+const LINES_OFF: &str = "Lines off: the pointer works clips again";
+
+/// Whether the status line says something about the timeline that a page
+/// without one should not keep showing (the lines tool's hint).
+fn about_the_timeline(status: &str) -> bool {
+    status == LINES_ON || status == LINES_OFF
+}
+
 /// The outcome of an automated run, read by `main` after the window closes.
 #[derive(Debug, Default)]
 pub struct RunReport {
@@ -136,6 +147,9 @@ pub struct Editor {
     audio_demo_made: Option<u64>,
     /// The master's meter as last read while playing, shown after.
     audio_held_master: Option<audio::dsp::loudness::Measured>,
+    /// The status line has said that this playback is unheard (no sound
+    /// output), once per playback.
+    unheard_said: bool,
     /// Volume and pan lines are drawn with their points and worked by the
     /// pointer over audio tracks (the lines tool, on every timeline).
     lines_on: bool,
@@ -482,6 +496,7 @@ impl Editor {
             audio_page,
             audio_start,
             audio_held_master: None,
+            unheard_said: false,
             audio_demo_made: None,
             lines_on: false,
             lines: ui_kit::LinesShown::default(),
@@ -550,7 +565,11 @@ impl Editor {
                 Ok(())
             }
             Action::MarkIn | Action::MarkOut => self.mark(action == Action::MarkIn),
-            Action::RemoveSilence => self.with_document(|_| Ok(())).map(|()| self.silence.open = true),
+            Action::RemoveSilence => self.with_document(|_| Ok(())).map(|()| {
+                if let Some(d) = &self.document {
+                    self.silence.open_on(d.project(), self.audio_page.track);
+                }
+            }),
             Action::SaveFrame => self
                 .with_document(|_| Ok(()))
                 .map(|()| self.save_frame_requested = true),
@@ -609,6 +628,9 @@ impl Editor {
             Action::ClearSelection => {
                 if self.full_screen {
                     self.set_full_screen(false);
+                } else if self.lines_on && matches!(self.page, Page::Edit | Page::Audio) {
+                    // Escape leaves the lines first, as it leaves a menu.
+                    self.run_action(Action::VolumeLines);
                 } else {
                     self.selected.clear();
                 }
@@ -631,12 +653,7 @@ impl Editor {
             }
             Action::VolumeLines => {
                 self.lines_on = !self.lines_on;
-                self.status = if self.lines_on {
-                    "Lines: click an audio track to add a point, drag one to move it, double-click it to remove it"
-                } else {
-                    "Lines off: the pointer works clips again"
-                }
-                .into();
+                self.status = if self.lines_on { LINES_ON } else { LINES_OFF }.into();
                 Ok(())
             }
             Action::RoughCut => {
@@ -1433,6 +1450,7 @@ impl Editor {
         };
         let Some(document) = &self.document else { return };
         self.viewer.playhead = from;
+        self.unheard_said = false;
         self.playback = Some(engine::Playback::start(
             document.project().clone(),
             sequence,
@@ -1480,6 +1498,13 @@ impl Editor {
 
     /// While playing: the playhead follows the clock, and playback stops at the end.
     fn follow_playback(&mut self, ctx: &egui::Context) {
+        if self.playback.as_ref().is_some_and(engine::Playback::unheard) && !self.unheard_said {
+            self.unheard_said = true;
+            self.status = format!(
+                "{}: the mix is measured as it plays, but there is no sound device to hear it on.",
+                ui_kit::master::UNHEARD
+            );
+        }
         let Some(playback) = &mut self.playback else {
             return;
         };
@@ -2089,6 +2114,14 @@ impl Editor {
             .ui(ctx, &self.theme, document.project(), &self.jobs, &undo);
         if let crate::sync_panel::Asked::Move(moves) = asked {
             let count = moves.len();
+            let cut: Vec<String> = document
+                .project()
+                .active()
+                .map(|seq| crate::sync_panel::cut_offs(document.project(), seq, &moves))
+                .unwrap_or_default()
+                .iter()
+                .map(|(file, cut)| format!(" {}", crate::sync_panel::cut_off_text(file, *cut, true)))
+                .collect();
             let result = self.with_document(|d| {
                 let sequence = d.project().active_sequence;
                 d.apply(Command::LineUp { sequence, moves })
@@ -2096,8 +2129,9 @@ impl Editor {
             match result {
                 Ok(()) => {
                     self.status = format!(
-                        "Lined up {count} clip{} by sound. {undo} undoes it.",
-                        if count == 1 { "" } else { "s" }
+                        "Lined up {count} clip{} by sound.{} {undo} undoes it.",
+                        if count == 1 { "" } else { "s" },
+                        cut.concat()
                     );
                 }
                 Err(err) => self.errors.push(&err),
@@ -2429,6 +2463,7 @@ impl Editor {
     /// A finished change is applied as one undo step.
     fn inspector_panel(&mut self, ui: &mut egui::Ui) {
         if !crate::inspector::shows_a_clip(self.document.as_ref().map(|d| d.project()), &self.selected) {
+            // Scrolls when the panel is short (a tall timeline under it).
             egui::ScrollArea::vertical()
                 .id_salt("timeline details")
                 .auto_shrink([false, true])
@@ -2573,7 +2608,10 @@ impl Editor {
     }
 
     fn page(&mut self, ui: &mut egui::Ui) {
-        if let Some(response) = self.errors.show_inline(ui, &self.theme) {
+        if !matches!(self.page, Page::Edit | Page::Audio) && about_the_timeline(&self.status) {
+            self.status.clear();
+        }
+        if let Some(response) = self.errors.show_over(ui, &self.theme) {
             match response {
                 ErrorResponse::OpenDiagnostics => self.show_diagnostics = true,
                 ErrorResponse::Fix(action) if action.command == crate::recovered::OPEN_LAST_SAVE => {
@@ -2660,6 +2698,7 @@ impl Editor {
         let mut master = ui_kit::master::MasterResponse::default();
         let mut timeline_events = Vec::new();
         let mut toolbar_click = None;
+        let mut lines_off = false;
         let mut tabs_events = Vec::new();
         let shortcut = self.shortcuts.keys_for(Action::Import);
         let beside = egui::UiBuilder::new()
@@ -2740,6 +2779,9 @@ impl Editor {
                     .max_rect(inspector_rect)
                     .layout(egui::Layout::top_down(egui::Align::Min)),
             );
+            // Nothing in it is drawn past its edge, over the timeline below,
+            // however tall the timeline is made.
+            panel.set_clip_rect(inspector_rect.intersect(ui.clip_rect()));
             egui::Frame::new()
                 .fill(self.theme.panel)
                 .corner_radius(6)
@@ -2912,6 +2954,16 @@ impl Editor {
                         &tips[8],
                     ],
                 );
+                if self.lines_on {
+                    ui.add_space(8.0);
+                    if ui_kit::timeline::lines_chip(
+                        ui,
+                        &self.theme,
+                        &self.shortcuts.keys_or_name(Action::VolumeLines),
+                    ) {
+                        lines_off = true;
+                    }
+                }
                 ui.add_space(16.0);
                 tabs_events = self.tabs.show(ui, &self.theme, &shown_tabs, &new_tip);
             });
@@ -2992,6 +3044,7 @@ impl Editor {
                 let (rect, _) = ui.allocate_exact_size(egui::vec2(layout::MASTER_WIDTH, height), egui::Sense::hover());
                 let mix = ui_kit::master::Mix {
                     levels,
+                    unheard: self.playback.as_ref().is_some_and(|p| p.unheard()),
                     gain_db: gain,
                     target: self.settings.loudness_target,
                     tip: "The whole mix: drag to change its volume, double-click for 0 dB. The lines on the channels are their true peaks; the third lane is the loudness over 3 s, with the loudness aimed for across it (right-click to choose). M and S are the loudness over 0.4 s and 3 s, I since playback started, TP the highest true peak.",
@@ -3021,6 +3074,9 @@ impl Editor {
         }
         for event in tabs_events {
             self.tabs_event(event);
+        }
+        if lines_off {
+            self.run_action(Action::VolumeLines);
         }
         if let Some(click) = toolbar_click {
             self.run_action(match click {
@@ -4013,6 +4069,14 @@ mod tests {
             assert!(placeholder(page, false).1.contains("Open a project"));
         }
         assert!(placeholder(Page::Color, true).1.contains("later update"));
+    }
+
+    /// The lines tool's hint is about the timeline: a page without one
+    /// clears it, anything else stays.
+    #[test]
+    fn the_lines_hint_is_only_for_pages_with_a_timeline() {
+        assert!(about_the_timeline(LINES_ON) && about_the_timeline(LINES_OFF));
+        assert!(!about_the_timeline("Imported 3 files"));
     }
 
     #[test]
