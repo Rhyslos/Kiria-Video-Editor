@@ -4,9 +4,10 @@
 //! - [`timeline`]: which clip is showing at a time, and where in its file.
 //! - [`frame`]: every layer that is seen at a time, and where in the frame.
 //! - [`compose`]: those layers' pictures put together on the window's device.
-//! - [`export`]: the timeline written as a video file, on a worker.
+//! - [`export`]: the timeline written as a video or sound file, on a worker.
 //! - [`preview`]: a worker thread that decodes the picture at the playhead.
 //! - [`mix`]: the timeline's sound at any moment, all audible tracks summed.
+//! - [`limiter`]: a true-peak limiter for the master, used by export.
 //! - [`playback`]: sound out of the speakers and the clock the picture follows.
 //!
 //! The interface only sends requests and reads results back, so slow media
@@ -16,6 +17,7 @@ pub mod compose;
 pub mod export;
 pub mod frame;
 pub mod frames;
+pub mod limiter;
 pub mod loudness;
 pub mod meter;
 pub mod mix;

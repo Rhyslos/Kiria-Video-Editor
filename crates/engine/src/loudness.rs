@@ -168,14 +168,14 @@ impl Gate {
 }
 
 /// Taps of each of the interpolator's phases.
-const TAPS: usize = 16;
+pub(crate) const TAPS: usize = 16;
 /// How many times over a channel is sampled for its true peak.
-const OVERSAMPLE: usize = 4;
+pub(crate) const OVERSAMPLE: usize = 4;
 
 /// The interpolator for the true peak: a windowed sinc cut off at the
 /// original rate's half, `OVERSAMPLE` phases of `TAPS` taps. Phase 0 is
 /// the samples themselves (its sinc is zero at every other sample).
-fn interpolator() -> [[f32; TAPS]; OVERSAMPLE] {
+pub(crate) fn interpolator() -> [[f32; TAPS]; OVERSAMPLE] {
     // The whole filter has OVERSAMPLE * TAPS + 1 taps around its centre.
     let len = OVERSAMPLE * TAPS + 1;
     let centre = (len / 2) as f64;
@@ -217,14 +217,14 @@ fn interpolator() -> [[f32; TAPS]; OVERSAMPLE] {
 /// The true peak of one channel: its last samples and the highest level
 /// found between and on them.
 #[derive(Debug, Clone)]
-struct TruePeak {
+pub(crate) struct TruePeak {
     history: [f32; TAPS],
     /// Where the next sample goes in `history`.
     next: usize,
 }
 
 impl TruePeak {
-    fn new() -> TruePeak {
+    pub(crate) fn new() -> TruePeak {
         TruePeak {
             history: [0.0; TAPS],
             next: 0,
@@ -233,7 +233,7 @@ impl TruePeak {
 
     /// Takes in a sample; returns the highest absolute level of the
     /// oversampled signal it ends.
-    fn feed(&mut self, sample: f32, phases: &[[f32; TAPS]; OVERSAMPLE]) -> f32 {
+    pub(crate) fn feed(&mut self, sample: f32, phases: &[[f32; TAPS]; OVERSAMPLE]) -> f32 {
         self.history[self.next] = sample;
         self.next = (self.next + 1) % TAPS;
         let mut peak = 0f32;

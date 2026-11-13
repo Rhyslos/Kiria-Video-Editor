@@ -19,13 +19,14 @@
 //! leaves nothing that looks like a video.
 
 use crate::compose::Composing;
+use crate::limiter::Limiter;
 use crate::mix::Mixer;
 use crate::preview::{Convert, OnDevice, Picture, Preview};
 use diag::{AppError, Explain};
 use media::Decoding;
 pub use media::encode::{AudioCodec, Container, VideoCodec, combinations};
 use media::encode::{AudioSettings, Place, Probed, VideoSettings, Writer};
-use project::{Project, Rate, SequenceId, Time};
+use project::{Project, Rate, Sequence, SequenceId, Time};
 use render::Reader;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -125,7 +126,22 @@ pub struct ExportSettings {
     pub quality: Quality,
     /// Encode the picture on the processor even when a graphics card could.
     pub software: bool,
+    /// Turn the sound up or down to this integrated loudness (LUFS): the
+    /// whole stretch is mixed and measured first, then exported with the
+    /// gain that brings it there. `None` exports the mix as it is.
+    pub normalise: Option<f32>,
+    /// Keep the sound's true peak under [`TRUE_PEAK_CEILING`] with a
+    /// limiter on the master (wanted with `normalise`, which can push peaks
+    /// over). Off, the mix is exported sample for sample as it plays.
+    pub limit: bool,
 }
+
+/// The highest true peak a limited export lets through, dBTP: safe for
+/// files played or encoded again.
+pub const TRUE_PEAK_CEILING: f32 = -1.0;
+/// The most normalising turns the sound up, dB: more would mostly raise
+/// noise and hum in something nearly silent.
+pub const MOST_GAIN_DB: f32 = 20.0;
 
 impl ExportSettings {
     /// An MP4 with H.264 and AAC at Medium quality: plays everywhere.
@@ -138,6 +154,8 @@ impl ExportSettings {
             audio: AudioCodec::Aac,
             quality: Quality::Medium,
             software: false,
+            normalise: None,
+            limit: false,
         }
     }
 
@@ -286,6 +304,9 @@ pub struct Progress {
     pub elapsed: Duration,
     /// Which encoder makes the pictures, once it is known (FFmpeg's name).
     pub encoder: Option<String>,
+    /// The sound is being measured for normalising, before anything is
+    /// written: `frames_done` counts that pass.
+    pub measuring: bool,
 }
 
 impl Progress {
@@ -300,7 +321,7 @@ impl Progress {
     /// How long the rest should take at the pace so far. `None` until
     /// there is a pace to go by.
     pub fn time_left(&self) -> Option<Duration> {
-        if self.frames_done < 10 || self.frames_done >= self.frames {
+        if self.measuring || self.frames_done < 10 || self.frames_done >= self.frames {
             return None;
         }
         let each = self.elapsed.as_secs_f64() / self.frames_done as f64;
@@ -328,6 +349,33 @@ pub struct Exported {
     /// (dBTP), measured as it was written (`-inf` for silence).
     pub loudness: f32,
     pub true_peak: f32,
+    /// What normalising found and did, when asked for.
+    pub normalised: Option<Normalised>,
+    /// The deepest the limiter turned the sound down, dB (0 when it never
+    /// had to), when it was on.
+    pub limited_db: Option<f32>,
+}
+
+/// What normalising found and did.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Normalised {
+    /// The mix's integrated loudness before, LUFS (`-inf` for silence).
+    pub measured: f32,
+    /// The gain applied, dB.
+    pub gain_db: f32,
+}
+
+impl Normalised {
+    /// The gain that brings `measured` to `target`: none for silence, and
+    /// at most [`MOST_GAIN_DB`] up.
+    pub fn for_target(measured: f32, target: f32) -> Normalised {
+        let gain_db = if measured.is_finite() {
+            (target - measured).min(MOST_GAIN_DB)
+        } else {
+            0.0
+        };
+        Normalised { measured, gain_db }
+    }
 }
 
 /// How an export ended.
@@ -356,6 +404,7 @@ pub struct Devices {
 struct Shared {
     frames_done: AtomicU64,
     frames: AtomicU64,
+    measuring: AtomicBool,
     cancel: AtomicBool,
     encoder: Mutex<Option<String>>,
 }
@@ -433,6 +482,7 @@ impl Export {
             frames: self.shared.frames.load(Ordering::Relaxed),
             elapsed: self.started.elapsed(),
             encoder: self.shared.encoder.lock().ok().and_then(|name| name.clone()),
+            measuring: self.shared.measuring.load(Ordering::Relaxed),
         }
     }
 
@@ -590,7 +640,31 @@ fn run(
             picture,
         }
     });
-    let mut mixer = Mixer::new(sample_rate);
+    let start = rate.frame_start(first).as_secs_f64();
+    // Normalising: the whole stretch is mixed and measured first.
+    let normalised = match settings.normalise {
+        Some(target) => {
+            shared.measuring.store(true, Ordering::Relaxed);
+            let Some(measured) = measure(project, seq, (start, rate, sample_rate, count), shared, notify)
+            else {
+                if let Some(p) = &mut picturing {
+                    p.preview.close(Duration::from_secs(5));
+                }
+                return Ok(None);
+            };
+            shared.measuring.store(false, Ordering::Relaxed);
+            shared.frames_done.store(0, Ordering::Relaxed);
+            let normalised = Normalised::for_target(measured, target);
+            tracing::info!(
+                "the mix measures {measured:.1} LUFS: exported {:+.1} dB louder to aim at {target} LUFS",
+                normalised.gain_db
+            );
+            Some(normalised)
+        }
+        None => None,
+    };
+    let gain = normalised.map_or(1.0, |n| 10f32.powf(n.gain_db / 20.0));
+    let mut master = Master::new(sample_rate, start, gain, settings.limit);
     let mut loudness = crate::loudness::Loudness::new(sample_rate);
     let mut sound = Vec::new();
     let mut samples_written: u64 = 0;
@@ -630,13 +704,8 @@ fn run(
                 }
             }
             // The sound up to the end of this frame, to the exact sample.
-            let until = (u128::from(index + 1) * u128::from(sample_rate) * u128::from(rate.den())
-                / u128::from(rate.num())) as u64;
-            let wanted = (until - samples_written) as usize;
-            sound.resize(wanted * 2, 0.0);
-            let from =
-                rate.frame_start(first).as_secs_f64() + samples_written as f64 / f64::from(sample_rate);
-            mixer.mix(project, seq, from, &mut sound);
+            let until = samples_until(index + 1, sample_rate, rate);
+            master.take(project, seq, (until - samples_written) as usize, &mut sound);
             loudness.feed(&sound);
             writer.write_sound(&sound)?;
             samples_written = until;
@@ -666,7 +735,99 @@ fn run(
         on_graphics_card,
         loudness: loudness.measured().integrated,
         true_peak: loudness.measured().true_peak_max,
+        normalised,
+        limited_db: master.limiter.as_ref().map(Limiter::deepest_db),
     }))
+}
+
+/// How many samples of sound the first `frames` frames take, exactly.
+fn samples_until(frames: u64, sample_rate: u32, rate: Rate) -> u64 {
+    (u128::from(frames) * u128::from(sample_rate) * u128::from(rate.den()) / u128::from(rate.num())) as u64
+}
+
+/// The integrated loudness of `count` frames' sound from `start` (seconds),
+/// mixed as the export mixes it, without writing anything. `None` when
+/// cancelled.
+fn measure(
+    project: &Project,
+    seq: &Sequence,
+    (start, rate, sample_rate, count): (f64, Rate, u32, u64),
+    shared: &Shared,
+    notify: &dyn Fn(),
+) -> Option<f32> {
+    let mut master = Master::new(sample_rate, start, 1.0, false);
+    let mut loudness = crate::loudness::Loudness::new(sample_rate);
+    let mut sound = Vec::new();
+    let mut done = 0;
+    for index in 0..count {
+        if shared.cancel.load(Ordering::Relaxed) {
+            return None;
+        }
+        let until = samples_until(index + 1, sample_rate, rate);
+        master.take(project, seq, (until - done) as usize, &mut sound);
+        loudness.feed(&sound);
+        done = until;
+        shared.frames_done.store(index + 1, Ordering::Relaxed);
+        if index % 60 == 0 {
+            notify();
+        }
+    }
+    Some(loudness.measured().integrated)
+}
+
+/// The export's sound, piece by piece: the playback mixer's, turned up or
+/// down by a gain, then through the limiter when there is one (mixed
+/// ahead by the limiter's delay, so what comes out lines up exactly).
+struct Master {
+    mixer: Mixer,
+    rate: u32,
+    /// Where the stretch starts, seconds.
+    start: f64,
+    /// Samples mixed so far (each one a left and a right).
+    mixed: u64,
+    gain: f32,
+    limiter: Option<Limiter>,
+}
+
+impl Master {
+    fn new(rate: u32, start: f64, gain: f32, limit: bool) -> Master {
+        Master {
+            mixer: Mixer::new(rate),
+            rate,
+            start,
+            mixed: 0,
+            gain,
+            limiter: limit.then(|| Limiter::new(rate, TRUE_PEAK_CEILING)),
+        }
+    }
+
+    /// The next `frames` samples into `out` (resized to fit).
+    fn take(&mut self, project: &Project, seq: &Sequence, frames: usize, out: &mut Vec<f32>) {
+        if self.mixed == 0
+            && let Some(latency) = self.limiter.as_ref().map(Limiter::latency)
+        {
+            // Fill the limiter's delay; what comes out meanwhile is silence.
+            let mut ahead = Vec::new();
+            self.mix(project, seq, latency, &mut ahead);
+        }
+        self.mix(project, seq, frames, out);
+    }
+
+    fn mix(&mut self, project: &Project, seq: &Sequence, frames: usize, out: &mut Vec<f32>) {
+        out.clear();
+        out.resize(frames * 2, 0.0);
+        let from = self.start + self.mixed as f64 / f64::from(self.rate);
+        self.mixer.mix(project, seq, from, out);
+        self.mixed += frames as u64;
+        if self.gain != 1.0 {
+            for sample in out.iter_mut() {
+                *sample *= self.gain;
+            }
+        }
+        if let Some(limiter) = &mut self.limiter {
+            limiter.process(out);
+        }
+    }
 }
 
 /// What making the pictures takes: a preview worker of the export's own and
