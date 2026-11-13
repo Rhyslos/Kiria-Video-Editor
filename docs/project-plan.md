@@ -237,6 +237,7 @@ A full page, reached from the Export tab. Everything is visible at once.
 
 - **Presets** on the left: Web 1080p, Web 4K, Vertical, Archive master, Small preview, Audio only (WAV, MP3/OGG), plus saving your own.
 - **Settings** in the middle: file name, folder, range (whole timeline, in to out, or the timeline region), then Video (container, codec, resolution, frame rate, quality, graphics-card encoding) and Audio (codec, bitrate, sample rate, loudness normalisation, optional separate WAV).
+- **Formats**: MP4 (H.264, H.265 or AV1 with AAC or Opus sound), MKV (the same, or lossless FLAC sound), and sound alone as WAV (24-bit), MP3 or OGG (Opus or Vorbis). Pictures are encoded on the graphics card when it has an encoder for the codec, else on the processor, always 8-bit in version 1. Only what this machine can encode is offered.
 - **Checks** before export: missing media, loudness and peaks, unrendered effects (with a Render now button), disk space.
 - **Summary** on the right in plain words: size, time on this machine, what it plays on, free disk space, then Export or Add to queue.
 - **Queue** along the bottom: exports run in the background with progress, time left, pause and cancel, so editing can continue.

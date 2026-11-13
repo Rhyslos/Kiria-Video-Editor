@@ -8,7 +8,8 @@
 //! - [`timing`]: constant or variable frame rate, and the nearest standard rate.
 //! - [`audio`]: sound as stereo float samples at any rate, from any point.
 //! - [`decode`]: the picture at any moment of a video, scaled and upright.
-//! - [`encode`]: writing a video file: H.264 pictures and AAC sound in an MP4.
+//! - [`encode`]: writing a file: MP4 or MKV video (H.264, H.265, AV1 with
+//!   AAC, Opus or FLAC sound), or sound alone as WAV, MP3 or OGG.
 //! - [`proxy`]: writing a proxy, a small copy of a recording with key frames
 //!   close together and exactly the original's frame times.
 //! - [`yuv`]: that picture as the decoder's own planes, for the GPU to convert.
