@@ -6,4 +6,4 @@ Mixer, per-track effects, meters and loudness analysis on a real-time thread wit
 
 ## Status
 
-Placeholder: nothing here yet.
+Placeholder: nothing here yet. The design is chosen and the build planned in [docs/research/audio-engine.md](../../docs/research/audio-engine.md) (measured in `spikes/audio-engine`).
