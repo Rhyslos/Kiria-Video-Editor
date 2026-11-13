@@ -638,6 +638,7 @@ fn command_for(action: &Action, p: &Project, media: MediaId, recording: MediaId)
                 // A stretch with no clips in it is nothing to save.
                 template: Box::new(Template::capture(p, sequence, range).ok()?),
                 at: Time::from_ratio(at * 2 + 1, 2)?,
+                name_tracks: a % 2 == 0,
             }
         }
         Action::Ramp {

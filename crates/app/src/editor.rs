@@ -2005,6 +2005,7 @@ impl Editor {
                         sequence,
                         template,
                         at,
+                        name_tracks: true,
                     })
                 });
                 match result {

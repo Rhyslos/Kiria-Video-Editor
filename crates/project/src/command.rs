@@ -156,10 +156,16 @@ pub enum Command {
     /// track, moves later by the template's length (clips under `at` are
     /// split), and the template's clips fill the room. Tracks it needs are
     /// made, media the project doesn't have yet is added, and every id is new.
+    /// With `name_tracks`, a track nobody has used yet (empty, still with its
+    /// usual name, "A1") takes the name of the template's track that lands on
+    /// it ("Game"); journals written before it existed read it as off, so
+    /// they replay as they did.
     InsertTemplate {
         sequence: SequenceId,
         template: Box<Template>,
         at: Time,
+        #[serde(default)]
+        name_tracks: bool,
     },
     /// Takes files that no timeline uses out of the project (prune), with
     /// their labels, places in lists and notes, as one step. Refused when
@@ -685,7 +691,8 @@ impl Command {
                 sequence,
                 template,
                 at,
-            } => crate::templates::insert(&mut p, *sequence, template, *at)?,
+                name_tracks,
+            } => crate::templates::insert(&mut p, *sequence, template, *at, *name_tracks)?,
             Command::RemoveMedia { media } => crate::prune::remove_media(&mut p, media)?,
             Command::Relink { media, path } => {
                 p.media.get_mut(media).ok_or_else(|| missing("media file"))?.path = path.clone();
