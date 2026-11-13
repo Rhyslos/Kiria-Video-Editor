@@ -647,7 +647,11 @@ mod tests {
         // enough for even a small file to need a proxy.
         let judged = judge(&fixture("game-3-audio.mkv"), 0, 3.0, Decoding::Software).unwrap();
         assert!(judged.longest_gap > 0.0);
-        assert_eq!(judged.needs_proxy, judged.typical_jump > JUMP_TARGET, "{judged:?}");
+        assert_eq!(
+            judged.needs_proxy,
+            judged.typical_jump > JUMP_TARGET,
+            "{judged:?}"
+        );
     }
 
     #[test]
