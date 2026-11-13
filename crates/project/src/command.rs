@@ -17,6 +17,7 @@ use crate::ramp::Ramp;
 use crate::sound::Sound;
 use crate::templates::Template;
 use crate::time::{Speed, Time};
+use crate::track_sound::{MasterSound, TrackSound};
 use diag::AppError;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -380,6 +381,18 @@ pub enum Command {
         muted: bool,
         solo: bool,
         gain_db: f32,
+    },
+    /// An audio track's role, pan, effects and volume and pan lines
+    /// (format 16), all at once: one undo step per change on the Audio page.
+    SetTrackSound {
+        sequence: SequenceId,
+        track: TrackId,
+        sound: Box<TrackSound>,
+    },
+    /// The mix's compressor and true-peak limiter (format 16).
+    SetMasterSound {
+        sequence: SequenceId,
+        sound: MasterSound,
     },
     /// Fixes a timeline's picture size, frame rate and sound rate (it stops being automatic).
     SetSettings {
@@ -819,6 +832,23 @@ impl Command {
                 t.muted = *muted;
                 t.solo = *solo;
                 t.gain_db = *gain_db;
+            }
+            Command::SetTrackSound {
+                sequence,
+                track,
+                sound,
+            } => {
+                sound.check()?;
+                let t = track_mut(sequence_mut(&mut p, *sequence)?, *track)?;
+                if t.kind != TrackKind::Audio {
+                    return Err(AppError::new("That sound setting can't be used")
+                        .why("Effects, pan and lines are set on audio tracks; a picture's sound is on its linked audio track."));
+                }
+                t.sound = (**sound).clone();
+            }
+            Command::SetMasterSound { sequence, sound } => {
+                sound.check()?;
+                sequence_mut(&mut p, *sequence)?.master_sound = *sound;
             }
             Command::SetSettings { sequence, settings } => {
                 crate::timelines::check_settings(settings)?;
@@ -1910,6 +1940,58 @@ mod tests {
             gain_db: 40.0,
         };
         assert!(loud.apply(&f.p).is_err());
+    }
+
+    #[test]
+    fn track_and_master_sound_are_set_checked_and_undone_by_snapshot() {
+        let f = fixture();
+        let mut sound = TrackSound {
+            role: crate::TrackRole::Dialogue,
+            pan: -250_000,
+            ..TrackSound::default()
+        };
+        sound.compressor.on = true;
+        sound.eq.on = true;
+        sound.eq.bands[1].gain_mdb = -3_000;
+        let set = Command::SetTrackSound {
+            sequence: f.seq,
+            track: f.a1,
+            sound: Box::new(sound.clone()),
+        };
+        let p = set.apply(&f.p).unwrap();
+        assert_eq!(p.active().unwrap().audio_tracks[0].sound, sound);
+        assert!(
+            f.p.active().unwrap().audio_tracks[0].sound.is_plain(),
+            "the old snapshot is untouched"
+        );
+        sound.eq.bands[1].gain_mdb = -40_000;
+        let wild = Command::SetTrackSound {
+            sequence: f.seq,
+            track: f.a1,
+            sound: Box::new(sound),
+        };
+        assert!(wild.apply(&f.p).is_err());
+        let picture = Command::SetTrackSound {
+            sequence: f.seq,
+            track: f.v1,
+            sound: Box::default(),
+        };
+        assert!(picture.apply(&f.p).is_err(), "only audio tracks");
+        let mut master = MasterSound::default();
+        master.limiter.on = true;
+        let p = Command::SetMasterSound {
+            sequence: f.seq,
+            sound: master,
+        }
+        .apply(&f.p)
+        .unwrap();
+        assert!(p.active().unwrap().master_sound.limiter.on);
+        master.limiter.ceiling_mdb = 3_000;
+        let over = Command::SetMasterSound {
+            sequence: f.seq,
+            sound: master,
+        };
+        assert!(over.apply(&f.p).is_err());
     }
 
     #[test]

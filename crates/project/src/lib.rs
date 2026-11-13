@@ -6,6 +6,7 @@
 //! - [`keyframes`]: how a clip's look changes over time.
 //! - [`ramp`]: how a clip's speed changes over time (speed ramps).
 //! - [`sound`]: how loud a clip is, its pan and its fades.
+//! - [`track_sound`]: a track's role, pan, effects and lines, and the master's compressor and limiter.
 //! - [`library`]: labels, custom lists and notes on the project's media.
 //! - [`global_labels`]: label names and colours offered in every project.
 //! - [`model`]: projects, timelines, tracks, clips, media, labels, the region.
@@ -45,6 +46,7 @@ pub mod sound;
 pub mod templates;
 pub mod time;
 pub mod timelines;
+pub mod track_sound;
 pub mod tracks;
 pub mod versions;
 
@@ -67,6 +69,7 @@ pub use side_files::SideFile;
 pub use sound::Sound;
 pub use templates::Template;
 pub use time::{Rate, Speed, Time};
+pub use track_sound::{MasterSound, TrackRole, TrackSound};
 
 /// File extension for project files, without the dot.
 pub const FILE_EXTENSION: &str = brand::PROJECT_FILE_EXTENSION;
