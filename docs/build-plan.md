@@ -36,7 +36,7 @@ The platform (project file, errors, installs, safe updates) comes before any pag
 | 4 | Edit page | Media pipeline, playback, timeline, editing, inspector | Cut a 20-minute game recording smoothly at 1440p 60 | Built; gate waiting for the owner's edit |
 | 5 | Library | Import, index, tabs, lists, labels, prune | 500 clips import, filter and search instantly | Built; gate measured on the cloud machine (Library page passed, Edit page borderline), waiting for the owner's PC |
 | 6 | Export | Encode pipeline, presets, checks, queue | Exports match the timeline frame for frame | Built; gate measured on the cloud machine, waiting for the owner's PC |
-| 8 | Audio | Mixer, effects, loudness, clarity check | A noisy three-track recording mixes to −14 LUFS cleanly | In progress (8.1, 8.3 and 8.4 built; 8.2, the clarity check, left) |
+| 8 | Audio | Mixer, effects, loudness, clarity check | A noisy three-track recording mixes to −14 LUFS cleanly | Built; gate waiting for the owner's PC |
 | 9 | Effects and extras | Effects drawer, background removal, extra features | Hair edges hold, no flicker; extras pass their tests | Not started |
 | 7 | Color | Float pipeline, wheels, curves, scopes, auto white balance | Preview and export colours match; grades copy between clips | Not started |
 | 10 | Release 1.0 | Hardening, docs, licence, first public release | Release checklist all ticked | Not started |
