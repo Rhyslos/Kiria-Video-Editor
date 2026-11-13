@@ -8,7 +8,14 @@
 //! the decoder is (to the sample). Rounding never makes it seek: the
 //! decoder counts samples exactly (`media::audio`), and a clip that carries
 //! on is known by itself, not by comparing times.
+//!
+//! A clip playing a nested timeline hears that timeline as it sounds opened:
+//! its tracks' effects, volume and pan, lines and its master, mixed by a
+//! real-time mixer of its own run offline here (on the feeder's thread,
+//! never in the sound card's callback; [`OfflineMix::nested`]), then the
+//! clip's own sound as for a file.
 
+use crate::offline::OfflineMix;
 use media::AudioDecoder;
 use media::audio::CHANNELS;
 use project::{Clip, ClipId, MediaId, MediaRef, Project, Sequence, SequenceId, Sound, Speed, Time, Track};
@@ -19,6 +26,8 @@ use std::f64::consts::FRAC_PI_2;
 const SEEK_SLACK: f64 = 0.005;
 /// How many files and streams keep an open decoder.
 const OPEN_DECODERS: usize = 16;
+/// How many nested timelines (by timeline and rate) keep their mixer.
+const OPEN_NESTED: usize = 4;
 
 pub struct Mixer {
     rate: u32,
@@ -33,12 +42,31 @@ pub struct Mixer {
     carries: Vec<Carry>,
     /// The file's samples a ramped clip reads, kept between calls.
     ramp_read: Vec<f32>,
-    /// Mixers of nested timelines by timeline and the rate they mix at (a
-    /// nested clip at another speed mixes its timeline faster or slower,
-    /// tape-style), most recent first.
-    nested: Vec<((SequenceId, u32), Mixer)>,
+    /// Nested timelines being mixed, most recent first.
+    nested: Vec<Nested>,
+    /// How many nested timelines' mixers were made (each a real jump).
+    made: u64,
     /// How many timelines deep this mixer is: 0 for the timeline played.
     depth: usize,
+}
+
+/// A nested timeline's own mixer and where it is.
+struct Nested {
+    sequence: SequenceId,
+    /// The rate it is mixed at: a clip at another speed mixes its timeline
+    /// faster or slower, tape-style (a ramped one at this mixer's own rate,
+    /// read as a ramped file is).
+    rate: u32,
+    mix: OfflineMix,
+    /// The timeline's sample (at `rate`) the next frame taken is.
+    next: i64,
+    /// What it last mixed for, when that was a clip without a ramp.
+    follows: Option<Follows>,
+    /// The two frames before `next` (the last `kept` of them taken), for a
+    /// ramp's steps between two calls: read up to a sample past where it is
+    /// for the step after, a ramp goes on from one or two samples back.
+    last: [f32; 2 * CHANNELS],
+    kept: usize,
 }
 
 /// A decoder kept open, most recently used first.
@@ -73,13 +101,24 @@ struct Carry {
 
 impl std::fmt::Debug for Mixer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Mixer({} Hz, {} open)", self.rate, self.decoders.len())
+        write!(
+            f,
+            "Mixer({} Hz, {} open, {} nested mixers made)",
+            self.rate,
+            self.decoders.len(),
+            self.made
+        )
     }
 }
 
 impl Mixer {
     /// A mixer producing interleaved stereo at `rate` samples per second.
     pub fn new(rate: u32) -> Mixer {
+        Mixer::at_depth(rate, 0)
+    }
+
+    /// A mixer for a timeline `depth` timelines deep.
+    pub(crate) fn at_depth(rate: u32, depth: usize) -> Mixer {
         Mixer {
             rate,
             decoders: Vec::new(),
@@ -88,7 +127,8 @@ impl Mixer {
             carries: Vec::new(),
             ramp_read: Vec::new(),
             nested: Vec::new(),
-            depth: 0,
+            made: 0,
+            depth,
         }
     }
 
@@ -151,7 +191,7 @@ impl Mixer {
             scratch.resize(count * CHANNELS, 0.0);
             let from = start + first as f64 / rate;
             let got = if let Some(inner) = clip.nested() {
-                self.nested_sound(project, clip, inner, a, b, &mut scratch)
+                self.nested_sound(project, clip, inner, (a, from), &mut scratch)
             } else if let Some(media) = project.media.get(&clip.media) {
                 self.file_sound(clip, media, a, from, &mut scratch)
             } else {
@@ -221,47 +261,173 @@ impl Mixer {
         }
     }
 
-    /// Fills `out` with a nested timeline's sound for its clip from `a` to
-    /// `b` seconds on this timeline: that timeline mixed from where the clip
-    /// is in it, by a mixer of its own, at a rate that makes it play at the
-    /// clip's speed there (tape-style, as a file's sound does; a ramp is
-    /// followed at the speed it has over each stretch mixed). Returns the
-    /// sample frames written.
+    /// Fills `out` with a nested timeline's sound for its clip from `a`
+    /// seconds on this timeline (`from` is the same moment brought to a
+    /// whole sample): that timeline as it sounds opened, mixed by a mixer of
+    /// its own from where the clip is in it. Without a ramp it is mixed at
+    /// the rate that makes it play at the clip's speed and taken sample for
+    /// sample (tape-style, as a file's sound is); with one, at this mixer's
+    /// rate and each sample taken from where the ramp says the clip is then,
+    /// as a ramped file is. Its mixer carries on from call to call and is
+    /// made again only on a real jump (so a jump starts it afresh, its
+    /// effects and delay too). Returns the sample frames written.
     fn nested_sound(
         &mut self,
         project: &Project,
         clip: &Clip,
         id: SequenceId,
-        a: f64,
-        b: f64,
+        (a, from): (f64, f64),
         out: &mut [f32],
     ) -> usize {
-        let Some(inner) = project.sequence(id) else {
-            return 0;
-        };
-        if self.depth >= crate::timeline::DEEPEST {
+        if project.sequence(id).is_none() || self.depth >= crate::timeline::DEEPEST {
             return 0;
         }
+        if !clip.ramp.is_empty() {
+            return self.nested_ramped(project, clip, id, from, out);
+        }
+        let rate = f64::from(self.rate);
+        let speed = clip.speed.as_f64();
+        let read_rate = ((rate / speed.max(0.0001)).round() as u32).clamp(1, 1_000_000);
         let source = clip.source_at_f64(a);
-        let speed = if clip.ramp.is_empty() || b <= a {
-            clip.speed.as_f64()
-        } else {
-            (clip.source_at_f64(b) - source) / (b - a)
+        let wanted = (source.max(0.0) * f64::from(read_rate)).round() as i64;
+        let follows = Follows {
+            clip: clip.id,
+            start: clip.start,
+            source_in: clip.source_in,
+            speed: clip.speed,
+            next: (a * rate).round() as i64,
         };
-        let read_rate = ((f64::from(self.rate) / speed.max(0.0001)).round() as u32).clamp(1, 1_000_000);
-        let key = (id, read_rate);
-        let mut mixer = match self.nested.iter().position(|(k, _)| *k == key) {
-            Some(i) => self.nested.remove(i).1,
-            None => {
-                let mut mixer = Mixer::new(read_rate);
-                mixer.depth = self.depth + 1;
-                mixer
+        // The same clip carrying on, or one that starts where the mixer is
+        // (a clip cut in two): mix on. Anything else is a jump.
+        let Some(mut nested) = self.nested_mix(project, id, read_rate, wanted, |n| {
+            n.follows == Some(follows) || (n.next - wanted).abs() <= 1
+        }) else {
+            return 0;
+        };
+        nested.mix.follow(project);
+        nested.mix.fill(Some(project), out);
+        let frames = out.len() / CHANNELS;
+        nested.next += frames as i64;
+        nested.follows = Some(Follows {
+            next: follows.next + frames as i64,
+            ..follows
+        });
+        nested.kept = 0;
+        self.keep_nested(nested);
+        frames
+    }
+
+    /// [`Mixer::nested_sound`] for a clip with a speed ramp: the timeline
+    /// mixed at this mixer's rate, read as [`Mixer::ramped`] reads a file.
+    fn nested_ramped(
+        &mut self,
+        project: &Project,
+        clip: &Clip,
+        id: SequenceId,
+        from: f64,
+        out: &mut [f32],
+    ) -> usize {
+        let count = out.len() / CHANNELS;
+        let rate = f64::from(self.rate);
+        let place = |i: usize| clip.source_at_f64(from + i as f64 / rate).max(0.0) * rate;
+        let (first, last) = (place(0), place(count.saturating_sub(1)));
+        let low = first.floor() as i64;
+        let high = last.floor() as i64 + 1;
+        let slack = (SEEK_SLACK * rate) as i64;
+        let Some(mut nested) = self.nested_mix(project, id, self.rate, low, |n| {
+            n.follows.is_none() && low >= n.next - n.kept as i64 && low <= n.next + slack
+        }) else {
+            return 0;
+        };
+        nested.follows = None;
+        nested.mix.follow(project);
+        let mut read = std::mem::take(&mut self.ramp_read);
+        read.clear();
+        // Carrying on from up to two frames back: those are kept.
+        let back = (nested.next - low).clamp(0, nested.kept as i64) as usize;
+        read.extend_from_slice(&nested.last[(2 - back) * CHANNELS..]);
+        let base = nested.next - back as i64;
+        let wanted = (high + 1 - nested.next).max(0) as usize;
+        read.resize((back + wanted) * CHANNELS, 0.0);
+        nested.mix.fill(Some(project), &mut read[back * CHANNELS..]);
+        let have = read.len() / CHANNELS;
+        if have == 0 {
+            self.ramp_read = read;
+            self.keep_nested(nested);
+            return 0;
+        }
+        for (i, frame) in out.chunks_exact_mut(CHANNELS).enumerate() {
+            let x = (place(i) - base as f64).max(0.0);
+            let k = (x.floor() as usize).min(have - 1);
+            let share = (x - k as f64).clamp(0.0, 1.0) as f32;
+            let k2 = (k + 1).min(have - 1);
+            for (channel, sample) in frame.iter_mut().enumerate() {
+                let (a, b) = (read[k * CHANNELS + channel], read[k2 * CHANNELS + channel]);
+                *sample = a + (b - a) * share;
             }
-        };
-        mixer.mix(project, inner, source, out);
-        self.nested.insert(0, (key, mixer));
-        self.nested.truncate(OPEN_DECODERS);
-        out.len() / CHANNELS
+        }
+        nested.next = base + have as i64;
+        // The two frames before the next: the old ones carried on by the new.
+        if wanted >= 2 {
+            nested
+                .last
+                .copy_from_slice(&read[(have - 2) * CHANNELS..have * CHANNELS]);
+            nested.kept = 2;
+        } else if wanted == 1 {
+            nested.last.copy_within(CHANNELS.., 0);
+            nested.last[CHANNELS..].copy_from_slice(&read[(have - 1) * CHANNELS..]);
+            nested.kept = (nested.kept + 1).min(2);
+        }
+        self.ramp_read = read;
+        self.keep_nested(nested);
+        count
+    }
+
+    /// The mixer of timeline `id` at `rate`, taken out of those kept: the
+    /// one kept when `carries_on` says it goes on from where it is, else
+    /// one made afresh from the timeline's sample `at` (logged and `None`
+    /// when it can't be).
+    fn nested_mix(
+        &mut self,
+        project: &Project,
+        id: SequenceId,
+        rate: u32,
+        at: i64,
+        carries_on: impl Fn(&Nested) -> bool,
+    ) -> Option<Nested> {
+        if let Some(i) = self
+            .nested
+            .iter()
+            .position(|n| n.sequence == id && n.rate == rate)
+        {
+            let kept = self.nested.remove(i);
+            if carries_on(&kept) {
+                return Some(kept);
+            }
+        }
+        let at = at.max(0);
+        self.made += 1;
+        match OfflineMix::nested(project, id, rate, at as u64, self.depth + 1) {
+            Ok(mix) => Some(Nested {
+                sequence: id,
+                rate,
+                mix,
+                next: at,
+                follows: None,
+                last: [0.0; 2 * CHANNELS],
+                kept: 0,
+            }),
+            Err(err) => {
+                tracing::warn!("{}", err.report());
+                None
+            }
+        }
+    }
+
+    /// Keeps a nested timeline's mixer, most recent first.
+    fn keep_nested(&mut self, nested: Nested) {
+        self.nested.insert(0, nested);
+        self.nested.truncate(OPEN_NESTED);
     }
 
     /// Fills `out` with a ramped clip's sound from `from` seconds on the
@@ -962,6 +1128,91 @@ mod tests {
         let mut slowed = vec![0.0f32; 4_800 * CHANNELS];
         Mixer::new(48_000).mix(&slow, slow.active().unwrap(), 1.0, &mut slowed);
         assert!(loudness(&slowed) > 0.001, "still heard");
+    }
+
+    /// The fixture nested whole, its outer clip given `speed` or `ramp`.
+    fn nested_at(speed: Option<project::Speed>, ramp: Option<project::Ramp>) -> Project {
+        let p = project();
+        let seq = p.active_sequence;
+        let picture = p.active().unwrap().video_tracks[0].clips[0].id;
+        let mut p = Command::NestClips {
+            sequence: seq,
+            clips: vec![picture],
+            name: "Inner".into(),
+        }
+        .apply(&p)
+        .unwrap();
+        let clip = p.active().unwrap().video_tracks[0].clips[0].id;
+        if let Some(speed) = speed {
+            p = Command::SetSpeed {
+                sequence: seq,
+                clip,
+                speed,
+            }
+            .apply(&p)
+            .unwrap();
+        }
+        if let Some(ramp) = ramp {
+            p = Command::SetRamp {
+                sequence: seq,
+                clip,
+                ramp,
+            }
+            .apply(&p)
+            .unwrap();
+        }
+        p
+    }
+
+    /// The outer timeline's sound track mixed a piece of `block` at a time
+    /// from `from`, as the feeder mixes it; and how many nested mixers it made.
+    fn track_in_pieces(p: &Project, from: f64, frames: usize, block: usize) -> (Vec<f32>, u64) {
+        let track = &p.active().unwrap().audio_tracks[0];
+        let mut mixer = Mixer::new(48_000);
+        let mut out = vec![0f32; frames * CHANNELS];
+        for (n, chunk) in out.chunks_mut(block * CHANNELS).enumerate() {
+            mixer.mix_track(p, track, from + (n * block) as f64 / 48_000.0, chunk);
+        }
+        (out, mixer.made)
+    }
+
+    /// A nested timeline mixed a piece at a time carries on: its mixer is
+    /// made once, at a speed whose rate is rounded too, and in pieces it
+    /// sounds as mixed in one go.
+    #[test]
+    fn a_nested_timeline_carries_on_without_jumping() {
+        for speed in [None, Some(project::Speed::new(7, 10).unwrap())] {
+            let p = nested_at(speed, None);
+            let (pieces, made) = track_in_pieces(&p, 0.25, 48_000, 800);
+            assert_eq!(made, 1, "{speed:?}: made once");
+            let (whole, _) = track_in_pieces(&p, 0.25, 48_000, 48_000);
+            assert!(loudness(&whole) > 0.01);
+            assert!(pieces == whole, "{speed:?}: the same samples");
+        }
+    }
+
+    /// A ramp on a nested clip at one speed sounds like that speed (the
+    /// same loudness and pitch), and its mixer carries on between calls.
+    #[test]
+    fn a_ramped_nested_timeline_follows_its_ramp_and_carries_on() {
+        let half = project::Speed::new(1, 2).unwrap();
+        let ramped = nested_at(None, Some(project::Ramp::new([key(project::Time::ZERO, half)])));
+        let slowed = nested_at(Some(half), None);
+        let (a, made) = track_in_pieces(&ramped, 0.25, 24_000, 480);
+        assert_eq!(made, 1, "made once");
+        let (b, _) = track_in_pieces(&slowed, 0.25, 24_000, 480);
+        let (a, b) = (channel(&a, 0), channel(&b, 0));
+        assert!(loudness(&a) > 0.01, "it sounds");
+        assert!((loudness(&a) / loudness(&b) - 1.0).abs() < 0.05);
+        let (ra, rb) = (rises(&a) as f64, rises(&b) as f64);
+        assert!((ra / rb - 1.0).abs() < 0.03, "the same pitch: {ra} and {rb}");
+        // A jump back makes it again.
+        let track = &ramped.active().unwrap().audio_tracks[0];
+        let mut mixer = Mixer::new(48_000);
+        let mut buf = vec![0f32; 480 * CHANNELS];
+        mixer.mix_track(&ramped, track, 1.0, &mut buf);
+        mixer.mix_track(&ramped, track, 0.25, &mut buf);
+        assert_eq!(mixer.made, 2);
     }
 
     fn imported(name: &str) -> Project {

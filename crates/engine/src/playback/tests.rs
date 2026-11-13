@@ -2,8 +2,10 @@ use super::*;
 use crate::offline::OfflineMix;
 use audio::BLOCK;
 use project::track_sound::LinePoint;
-use project::{ClipId, Command, MediaId, TrackRole};
+use project::{ClipId, Command, MasterSound, MediaId, TrackRole, TrackSound};
 use std::path::Path;
+
+mod nested;
 
 const RATE: u32 = 48_000;
 
@@ -31,9 +33,21 @@ fn recording() -> Project {
 /// compressor; a ducked one with the Loudness tool; one panned with a
 /// volume line; the master's compressor and limiter.
 fn with_effects() -> Project {
-    let mut p = recording();
+    let p = recording();
     let seq = p.active_sequence;
-    let tracks: Vec<_> = p.active().unwrap().audio_tracks.iter().map(|t| t.id).collect();
+    effects_on(p, seq)
+}
+
+/// [`with_effects`]' effects on the first three sound tracks and the master
+/// of timeline `seq`.
+fn effects_on(mut p: Project, seq: SequenceId) -> Project {
+    let tracks: Vec<_> = p
+        .sequence(seq)
+        .unwrap()
+        .audio_tracks
+        .iter()
+        .map(|t| t.id)
+        .collect();
     let mut sounds = vec![TrackSound::default(); 3];
     let s = &mut sounds[0];
     s.role = TrackRole::Dialogue;

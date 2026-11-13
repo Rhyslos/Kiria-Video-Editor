@@ -4,7 +4,9 @@
 //! Everything that can wait is done here, never in the sound card's
 //! callback: opening and decoding files, seeking, each clip's volume, pan
 //! and fades, speed and speed ramps, nested timelines (all of it
-//! [`crate::mix::Mixer::mix_track`], sample-exact). The track's own volume,
+//! [`crate::mix::Mixer::mix_track`], sample-exact; a nested timeline is
+//! mixed as it sounds opened, by a real-time mixer of its own run offline
+//! here, [`crate::offline::OfflineMix::nested`]). The track's own volume,
 //! mute, solo and effects, and the master, are the real-time mixer's, so a
 //! change to them is heard within one block instead of after what is
 //! already in the rings.
@@ -26,7 +28,7 @@ use audio::settings::{TrackSettings, lines_from_project, noise_from_project};
 use audio::{Controller, FeedWriter, TrackReadout};
 use diag::AppError;
 use media::audio::CHANNELS;
-use project::{Project, Sequence, SequenceId, Track, TrackId, TrackSound};
+use project::{MasterSound, Project, Sequence, SequenceId, Track, TrackId, TrackSound};
 use std::sync::Arc;
 
 /// Frames mixed at a time per track: four of the mixer's blocks.
@@ -74,6 +76,53 @@ pub struct Feeder {
     /// changes while it runs; while playing they are, so unmuting is
     /// heard at once).
     skip_unheard: bool,
+    /// How many timelines deep the timeline fed is: 0 for the one played.
+    depth: usize,
+}
+
+/// The parts of a timeline's mix that are heard at once when changed while
+/// playing (tracks' mute, solo, volume and sound, the master), as last
+/// taken: compared every frame of the interface by playback, and every
+/// piece by a nested timeline's mixer.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct MixShape {
+    tracks: Vec<(TrackId, bool, bool, f32, TrackSound)>,
+    master: (f32, MasterSound),
+}
+
+impl MixShape {
+    pub(crate) fn of(project: &Project, sequence: SequenceId) -> Option<MixShape> {
+        let seq = project.sequence(sequence)?;
+        Some(MixShape {
+            tracks: seq
+                .audio_tracks
+                .iter()
+                .map(|t| (t.id, t.muted, t.solo, t.gain_db, t.sound.clone()))
+                .collect(),
+            master: (seq.master_gain_db, seq.master_sound),
+        })
+    }
+
+    /// Whether `project`'s mix is still this, without building anything.
+    pub(crate) fn matches(&self, project: &Project, sequence: SequenceId) -> bool {
+        let Some(seq) = project.sequence(sequence) else {
+            return true;
+        };
+        seq.audio_tracks.len() == self.tracks.len()
+            && seq
+                .audio_tracks
+                .iter()
+                .zip(&self.tracks)
+                .all(|(t, (id, muted, solo, gain, sound))| {
+                    t.id == *id
+                        && t.muted == *muted
+                        && t.solo == *solo
+                        && t.gain_db == *gain
+                        && t.sound == *sound
+                })
+            && seq.master_gain_db == self.master.0
+            && seq.master_sound == self.master.1
+    }
 }
 
 impl std::fmt::Debug for Feeder {
@@ -101,6 +150,28 @@ impl Feeder {
         (at, at_secs): (u64, f64),
         skip_unheard: bool,
     ) -> diag::Result<Feeder> {
+        Feeder::at_depth(
+            project,
+            sequence,
+            controller,
+            (slots, ring),
+            (at, at_secs),
+            skip_unheard,
+            0,
+        )
+    }
+
+    /// [`Feeder::new`] for a timeline `depth` timelines deep (a nested
+    /// timeline's own feeder, [`crate::offline::OfflineMix::nested`]).
+    pub(crate) fn at_depth(
+        project: Project,
+        sequence: SequenceId,
+        controller: &mut Controller,
+        (slots, ring): (usize, usize),
+        (at, at_secs): (u64, f64),
+        skip_unheard: bool,
+        depth: usize,
+    ) -> diag::Result<Feeder> {
         let rate = controller.rate();
         let mut feeder = Feeder {
             rate,
@@ -113,10 +184,16 @@ impl Feeder {
             piece: vec![0.0; PIECE * CHANNELS],
             live: false,
             skip_unheard,
+            depth,
         };
         feeder.update(project, controller)?;
         feeder.live = true;
         Ok(feeder)
+    }
+
+    /// The timeline fed.
+    pub(crate) fn sequence(&self) -> SequenceId {
+        self.sequence
     }
 
     /// Each track's readout (its meter and effects), in the timeline's order.
@@ -148,9 +225,16 @@ impl Feeder {
     /// while `go_on` says so, until no ring has room. Returns the frames
     /// written.
     pub fn fill(&mut self, go_on: &dyn Fn() -> bool) -> usize {
+        self.fill_from(None, go_on)
+    }
+
+    /// [`Feeder::fill`] with the clips of `project` when given (a nested
+    /// timeline's feeder is handed the project its outer timeline is mixed
+    /// from, so it never mixes an older one) or else the one last taken.
+    pub(crate) fn fill_from(&mut self, project: Option<&Project>, go_on: &dyn Fn() -> bool) -> usize {
         let mut written = 0;
         loop {
-            let round = self.fill_round();
+            let round = self.fill_round(project);
             written += round;
             if round == 0 || !go_on() {
                 return written;
@@ -163,15 +247,17 @@ impl Feeder {
     pub fn prime(&mut self, frames: usize, go_on: &dyn Fn() -> bool) {
         let frames = frames.min(self.ring);
         while go_on() && self.tracks.iter().any(|t| self.ring - t.writer.room() < frames) {
-            if self.fill_round() == 0 {
+            if self.fill_round(None) == 0 {
                 return;
             }
         }
     }
 
-    /// One piece into each ring with room for it.
-    fn fill_round(&mut self) -> usize {
-        let Some(seq) = self.project.sequence(self.sequence).cloned() else {
+    /// One piece into each ring with room for it, from `project` when
+    /// given, else from the one last taken.
+    fn fill_round(&mut self, project: Option<&Project>) -> usize {
+        let project = project.unwrap_or(&self.project);
+        let Some(seq) = project.sequence(self.sequence).cloned() else {
             return 0;
         };
         let soloing = seq.audio_tracks.iter().any(|t| t.solo);
@@ -191,7 +277,7 @@ impl Feeder {
                     let start =
                         self.origin.1 + at.saturating_sub(self.origin.0) as f64 / f64::from(self.rate);
                     let fed = &mut self.tracks[i];
-                    fed.clips.mix_track(&self.project, track, start, &mut self.piece);
+                    fed.clips.mix_track(project, track, start, &mut self.piece);
                 }
                 _ => self.piece.fill(0.0),
             }
@@ -263,7 +349,7 @@ impl Feeder {
         };
         Ok(Fed {
             id: track.id,
-            clips: mix::Mixer::new(self.rate),
+            clips: mix::Mixer::at_depth(self.rate, self.depth),
             slot,
             writer,
             readout,

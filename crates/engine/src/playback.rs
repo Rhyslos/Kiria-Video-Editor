@@ -28,14 +28,14 @@
 //! thread either: it is told to stop, the sound card goes quiet at once,
 //! and the thread ends by itself when whatever it was doing returns.
 
-use crate::feeder::{self, Feeder};
+use crate::feeder::{self, Feeder, MixShape};
 use crate::meter::{Levels, MasterReadout};
 use crate::output::{Output, Shared};
 use audio::settings::{MasterSettings, sample_at};
 use audio::{Analyser, Controller, Spectrum, TrackReadout};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SizedSample};
-use project::{MasterSound, Project, SequenceId, Time, TrackId, TrackSound};
+use project::{Project, SequenceId, Time, TrackId};
 use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -186,49 +186,6 @@ enum Message {
     Jump { at: Time, number: u64 },
     /// The track the EQ's analyser listens to, if any.
     Analyse(Option<TrackId>),
-}
-
-/// The parts of a timeline's mix that are heard at once when changed while
-/// playing, as last sent: compared every frame of the interface.
-#[derive(Debug, Clone, PartialEq)]
-struct MixShape {
-    tracks: Vec<(TrackId, bool, bool, f32, TrackSound)>,
-    master: (f32, MasterSound),
-}
-
-impl MixShape {
-    fn of(project: &Project, sequence: SequenceId) -> Option<MixShape> {
-        let seq = project.sequence(sequence)?;
-        Some(MixShape {
-            tracks: seq
-                .audio_tracks
-                .iter()
-                .map(|t| (t.id, t.muted, t.solo, t.gain_db, t.sound.clone()))
-                .collect(),
-            master: (seq.master_gain_db, seq.master_sound),
-        })
-    }
-
-    /// Whether `project`'s mix is still this, without building anything.
-    fn matches(&self, project: &Project, sequence: SequenceId) -> bool {
-        let Some(seq) = project.sequence(sequence) else {
-            return true;
-        };
-        seq.audio_tracks.len() == self.tracks.len()
-            && seq
-                .audio_tracks
-                .iter()
-                .zip(&self.tracks)
-                .all(|(t, (id, muted, solo, gain, sound))| {
-                    t.id == *id
-                        && t.muted == *muted
-                        && t.solo == *solo
-                        && t.gain_db == *gain
-                        && t.sound == *sound
-                })
-            && seq.master_gain_db == self.master.0
-            && seq.master_sound == self.master.1
-    }
 }
 
 #[derive(Debug)]
@@ -566,6 +523,10 @@ fn audio_thread(
     if clock.stopped() {
         return; // stopped before it began, as when the playhead is dragged while playing
     }
+    // As in the callback and in export: the feeder's decoding and the
+    // nested timelines it mixes treat very small numbers as zero, so they
+    // never slow down in silence and make what export makes.
+    os::float::denormals_as_zero();
     let Some(device) = output_device() else {
         // No sound card: time itself runs; nothing to mix.
         clock.follow_time();
