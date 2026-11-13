@@ -352,11 +352,16 @@ mod tests {
         let path = tmp.path().join("export-presets.ron");
         let keeper = Keeper::new(path.clone(), "Your export presets");
         // The first write is held until released, so later changes queue.
+        // Wait until the writer has started it: a change still waiting may
+        // rightly be replaced by a newer one before it is ever run.
         let (release, held) = mpsc::channel::<()>();
+        let (started, has_started) = mpsc::channel::<()>();
         let first = keeper.keep(move || {
+            started.send(()).unwrap();
             held.recv().unwrap();
             Ok("first".into())
         });
+        has_started.recv().unwrap();
         let mut last = first;
         for i in 0..50 {
             last = keeper.keep(move || Ok(format!("change {i}")));
