@@ -504,6 +504,7 @@ fn progress_says_how_far_and_how_long_still() {
         elapsed: Duration::from_secs(10),
         encoder: None,
         measuring: false,
+        paused: false,
     };
     assert_eq!(progress.share(), 0.25);
     assert_eq!(progress.time_left(), Some(Duration::from_secs(30)));
@@ -512,6 +513,11 @@ fn progress_says_how_far_and_how_long_still() {
         ..progress.clone()
     };
     assert_eq!(early.time_left(), None, "no pace to go by yet");
+    let paused = Progress {
+        paused: true,
+        ..progress.clone()
+    };
+    assert_eq!(paused.time_left(), None, "paused: no time left to say");
     assert_eq!(
         part_path(Path::new("/videos/My cut.mp4")),
         PathBuf::from("/videos/My cut.exporting.mp4")
@@ -949,6 +955,9 @@ fn every_format_this_build_encodes_exports_in_sync() {
             software: true,
             normalise: None,
             limit: false,
+            size: None,
+            rate: None,
+            sound_beside: false,
         };
         let export = Export::start(project.clone(), seq, settings, Some(devices.clone()), || {});
         let done = match wait(&export) {
@@ -1292,4 +1301,221 @@ fn exported_sound_is_the_recording_read_straight() {
             .fold(0f32, f32::max);
         assert!(off < 1e-6, "from {from:?}: off by {off}");
     }
+}
+
+#[test]
+fn the_picture_is_fitted_into_another_shape_with_even_black_bars() {
+    // The same shape: the whole frame.
+    assert_eq!(picture_size((1920, 1080), (1280, 720)), (1280, 720));
+    assert_eq!(picture_size((1920, 1080), (3840, 2160)), (3840, 2160));
+    // Wide into tall: bars above and below, an even margin each side.
+    let (w, h) = picture_size((1920, 1080), (1080, 1920));
+    assert_eq!(w, 1080);
+    assert!((606..=612).contains(&h), "{h}");
+    assert_eq!(((1920 - h) / 2) % 2, 0, "the margin is even");
+    assert_eq!(h % 2, 0);
+    // Tall into wide: bars at the sides.
+    let (w, h) = picture_size((1080, 1920), (1920, 1080));
+    assert_eq!(h, 1080);
+    assert!((604..=612).contains(&w), "{w}");
+    // Odd sizes asked for are made even.
+    assert_eq!(picture_size((1921, 1081), (1281, 721)), (1280, 720));
+
+    // A 4×2 picture in an 8×6 frame: black around it, colour lined up.
+    let mut picture = vec![200u8; 8];
+    picture.extend([10, 20, 30, 40]);
+    let mut out = Vec::new();
+    letterbox(&picture, (4, 2), (8, 6), &mut out);
+    assert_eq!(out.len(), 8 * 6 * 3 / 2);
+    let luma = &out[..48];
+    for (row, line) in luma.chunks(8).enumerate() {
+        let expected: Vec<u8> = (0..8)
+            .map(|x| {
+                if row == 2 || row == 3 {
+                    if (2..6).contains(&x) { 200 } else { 16 }
+                } else {
+                    16
+                }
+            })
+            .collect();
+        assert_eq!(line, expected.as_slice(), "row {row}");
+    }
+    let chroma = &out[48..];
+    assert_eq!(chroma[..8], [128; 8]);
+    assert_eq!(chroma[8..16], [128, 128, 10, 20, 30, 40, 128, 128]);
+    assert_eq!(chroma[16..], [128; 8]);
+}
+
+#[test]
+fn an_export_at_another_size_and_rate_has_the_timeline_inside_bars() {
+    let Some(devices) = devices() else {
+        eprintln!("no graphics device here: exporting isn't checked");
+        return;
+    };
+    let (project, seq) = recording();
+    let timeline = project.active().unwrap().settings;
+    assert!(timeline.width > timeline.height, "a wide recording");
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("vertical.mp4");
+    let settings = ExportSettings {
+        range: Some((Time::seconds(1), Time::seconds(2))),
+        quality: Quality::Small,
+        software: true,
+        size: Some((180, 320)),
+        rate: Some(Rate::FPS_30),
+        ..ExportSettings::mp4(path.clone())
+    };
+    let export = Export::start(project, seq, settings, Some(devices), || {});
+    let done = match wait(&export) {
+        Outcome::Done(done) => done,
+        Outcome::Failed(err) => panic!("{}", err.report()),
+        Outcome::Cancelled => panic!("cancelled"),
+    };
+    assert_eq!(done.frames, 30, "a second at 30 frames a second");
+    assert_eq!(done.size, Some((180, 320)));
+    let made = media::describe(&path).unwrap();
+    let video = made.info.video.expect("a picture stream");
+    assert_eq!((video.width, video.height), (180, 320));
+    assert_eq!(video.frame_rate.nominal_fps(), 30);
+    let seconds = made.duration.as_secs_f64();
+    assert!((seconds - 1.0).abs() < 0.08, "{seconds} s");
+    // Black bars above and below, the picture between.
+    let (luma, width) = luma_at(&path, 0.5);
+    let row_mean = |row: usize| {
+        luma[row * width..(row + 1) * width]
+            .iter()
+            .map(|&v| f64::from(v))
+            .sum::<f64>()
+            / width as f64
+    };
+    let top = (0..40).map(row_mean).sum::<f64>() / 40.0;
+    let bottom = (280..320).map(row_mean).sum::<f64>() / 40.0;
+    assert!(top < 20.0 && bottom < 20.0, "bars: {top} and {bottom}");
+}
+
+#[test]
+fn the_sound_beside_is_the_same_samples_as_a_wav_export() {
+    let (project, seq) = recording();
+    let dir = tempfile::tempdir().unwrap();
+    let range = Some((Time::seconds(1), Time::seconds(2)));
+    let plain = dir.path().join("plain.wav");
+    let only = ExportSettings {
+        range,
+        container: Container::Wav,
+        video: None,
+        audio: AudioCodec::Pcm24,
+        ..ExportSettings::mp4(plain.clone())
+    };
+    assert!(matches!(
+        wait(&Export::start(project.clone(), seq, only, None, || {})),
+        Outcome::Done(_)
+    ));
+    let path = dir.path().join("song.mp3");
+    let settings = ExportSettings {
+        range,
+        container: Container::Mp3,
+        video: None,
+        audio: AudioCodec::Mp3,
+        sound_beside: true,
+        ..ExportSettings::mp4(path.clone())
+    };
+    assert_eq!(settings.sound_beside_path(), Some(dir.path().join("song.wav")));
+    let done = match wait(&Export::start(project, seq, settings, None, || {})) {
+        Outcome::Done(done) => done,
+        Outcome::Failed(err) => panic!("{}", err.report()),
+        Outcome::Cancelled => panic!("cancelled"),
+    };
+    let beside = done.sound_beside.expect("the sound beside");
+    assert_eq!(beside, dir.path().join("song.wav"));
+    assert!(path.exists());
+    // The same bytes after the header: the same samples.
+    let (a, b) = (std::fs::read(&plain).unwrap(), std::fs::read(&beside).unwrap());
+    assert_eq!(a.len(), b.len());
+    assert!(a[a.len() - 4096..] == b[b.len() - 4096..]);
+    // Nothing half-written is left over.
+    let mut names: Vec<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["plain.wav", "song.mp3", "song.wav"]);
+    // A WAV export writes no second WAV.
+    let wav = ExportSettings {
+        container: Container::Wav,
+        sound_beside: true,
+        ..ExportSettings::mp4(dir.path().join("x.wav"))
+    };
+    assert_eq!(wav.sound_beside_path(), None);
+}
+
+#[test]
+fn a_paused_export_waits_and_its_time_paused_does_not_count() {
+    let (project, seq) = recording();
+    let dir = tempfile::tempdir().unwrap();
+    let settings = ExportSettings {
+        container: Container::Wav,
+        video: None,
+        audio: AudioCodec::Pcm24,
+        ..ExportSettings::mp4(dir.path().join("sound.wav"))
+    };
+    let export = Export::start(project, seq, settings, None, || {});
+    export.pause();
+    std::thread::sleep(Duration::from_millis(150));
+    let held = export.progress();
+    assert!(held.paused && export.is_paused());
+    std::thread::sleep(Duration::from_millis(300));
+    let still = export.progress();
+    assert_eq!(still.frames_done, held.frames_done, "nothing done while paused");
+    assert!(still.elapsed < Duration::from_millis(250), "{:?}", still.elapsed);
+    export.resume();
+    let Outcome::Done(done) = wait(&export) else {
+        panic!("the export did not finish after resuming");
+    };
+    assert!(done.took < Duration::from_secs(60));
+    assert!(!export.progress().paused);
+
+    // Cancelled while paused: it stops.
+    let (project, seq) = recording();
+    let settings = ExportSettings {
+        container: Container::Wav,
+        video: None,
+        audio: AudioCodec::Pcm24,
+        ..ExportSettings::mp4(dir.path().join("other.wav"))
+    };
+    let export = Export::start(project, seq, settings, None, || {});
+    export.pause();
+    export.cancel();
+    assert!(matches!(wait(&export), Outcome::Cancelled));
+    assert!(!dir.path().join("other.wav").exists());
+}
+
+#[test]
+fn the_mix_is_measured_as_an_export_without_normalising_writes_it() {
+    let (project, seq) = louder(6);
+    let (plain, _, _dir) = wav(project.clone(), seq, None, false);
+    let (cancel, done) = (AtomicBool::new(false), AtomicU32::new(0));
+    let found = measure_mix(
+        &project,
+        seq,
+        Some((Time::ZERO, Time::seconds(2))),
+        &cancel,
+        &done,
+    )
+    .expect("measured");
+    assert!(
+        (found.integrated - plain.loudness).abs() < 0.05,
+        "{} against {}",
+        found.integrated,
+        plain.loudness
+    );
+    assert!(
+        (found.true_peak - plain.true_peak).abs() < 0.05,
+        "{} against {}",
+        found.true_peak,
+        plain.true_peak
+    );
+    assert_eq!(done.load(Ordering::Relaxed), 1000);
+    cancel.store(true, Ordering::Relaxed);
+    assert_eq!(measure_mix(&project, seq, None, &cancel, &done), None);
 }
