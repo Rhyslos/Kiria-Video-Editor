@@ -255,6 +255,15 @@ pub enum Command {
         clip: ClipId,
         ripple: bool,
     },
+    /// Removes several clips and the clips linked to them, as one step: every
+    /// clip is checked first, and if any no longer exists nothing changes.
+    /// With `ripple`, later clips on the same tracks move back to close the
+    /// gaps, as removing them one after another would.
+    RemoveClips {
+        sequence: SequenceId,
+        clips: Vec<ClipId>,
+        ripple: bool,
+    },
     /// Moves a clip to a new start time, and optionally to another track of the same kind.
     MoveClip {
         sequence: SequenceId,
@@ -709,23 +718,18 @@ impl Command {
                 sequence,
                 clip,
                 ripple,
+            } => remove_clips(&mut p, *sequence, &[*clip], *ripple)?,
+            Command::RemoveClips {
+                sequence,
+                clips,
+                ripple,
             } => {
-                let seq = sequence_mut(&mut p, *sequence)?;
-                let targets = with_linked(seq, *clip)?;
-                for track in tracks_mut(seq) {
-                    let removed: Vec<Clip> = track
-                        .clips
-                        .iter()
-                        .filter(|c| targets.contains(&c.id))
-                        .cloned()
-                        .collect();
-                    track.clips.retain(|c| !targets.contains(&c.id));
-                    if *ripple {
-                        for gone in removed.iter().rev() {
-                            close_gap(track, gone.start, gone.duration);
-                        }
-                    }
+                if clips.is_empty() {
+                    return Err(AppError::new("No clips to remove")
+                        .why("None were selected.")
+                        .fix("Click a clip on the timeline first."));
                 }
+                remove_clips(&mut p, *sequence, clips, *ripple)?
             }
             Command::MoveClip {
                 sequence,
@@ -1369,6 +1373,33 @@ pub(crate) fn with_linked(seq: &Sequence, clip: ClipId) -> diag::Result<Vec<Clip
         .collect())
 }
 
+/// Removes `clips` and every clip linked to them. Each is looked up before
+/// anything changes, so a missing one leaves the project as it was. With
+/// `ripple`, each track closes its gaps from the last one back, which is
+/// what removing the clips one at a time would do.
+fn remove_clips(p: &mut Project, sequence: SequenceId, clips: &[ClipId], ripple: bool) -> diag::Result<()> {
+    let seq = sequence_mut(p, sequence)?;
+    let mut targets = Vec::new();
+    for clip in clips {
+        targets.extend(with_linked(seq, *clip)?);
+    }
+    for track in tracks_mut(seq) {
+        let removed: Vec<Clip> = track
+            .clips
+            .iter()
+            .filter(|c| targets.contains(&c.id))
+            .cloned()
+            .collect();
+        track.clips.retain(|c| !targets.contains(&c.id));
+        if ripple {
+            for gone in removed.iter().rev() {
+                close_gap(track, gone.start, gone.duration);
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Removes a clip from whichever track holds it.
 fn take_clip(seq: &mut Sequence, clip: ClipId) -> diag::Result<(TrackId, Clip)> {
     for track in tracks_mut(seq) {
@@ -1578,6 +1609,74 @@ mod tests {
         .apply(&p)
         .unwrap();
         assert_eq!(clips(&closed, 0, false), vec![(0, 10), (15, 5)]);
+    }
+
+    #[test]
+    fn removing_several_clips_is_one_step_and_matches_removing_them_one_by_one() {
+        let mut f = fixture();
+        let link = Some(f.p.allocate_id());
+        let p = place(&f, &f.p, f.v1, clip(&f, 0, 10, link)).unwrap();
+        let p = place(&f, &p, f.a1, clip(&f, 0, 10, link)).unwrap();
+        let p = place(&f, &p, f.v1, clip(&f, 10, 5, None)).unwrap();
+        let p = place(&f, &p, f.v1, clip(&f, 20, 5, None)).unwrap();
+        let p = place(&f, &p, f.v1, clip(&f, 30, 5, None)).unwrap();
+        let v = &p.active().unwrap().video_tracks[0];
+        // The linked pair's audio goes with its picture, even when both are picked.
+        let a = p.active().unwrap().audio_tracks[0].clips[0].id;
+        let picked = vec![v.clips[0].id, a, v.clips[2].id];
+        for ripple in [false, true] {
+            let together = Command::RemoveClips {
+                sequence: f.seq,
+                clips: picked.clone(),
+                ripple,
+            }
+            .apply(&p)
+            .unwrap();
+            let mut one_by_one = p.clone();
+            for id in [picked[0], picked[2]] {
+                one_by_one = Command::RemoveClip {
+                    sequence: f.seq,
+                    clip: id,
+                    ripple,
+                }
+                .apply(&one_by_one)
+                .unwrap();
+            }
+            assert_eq!(clips(&together, 0, false), clips(&one_by_one, 0, false));
+            assert_eq!(clips(&together, 0, true), clips(&one_by_one, 0, true));
+            assert!(clips(&together, 0, true).is_empty());
+        }
+        let gaps = Command::RemoveClips {
+            sequence: f.seq,
+            clips: picked,
+            ripple: true,
+        }
+        .apply(&p)
+        .unwrap();
+        assert_eq!(clips(&gaps, 0, false), vec![(0, 5), (15, 5)]);
+    }
+
+    #[test]
+    fn removing_several_clips_changes_nothing_when_one_is_gone() {
+        let f = fixture();
+        let p = place(&f, &f.p, f.v1, clip(&f, 0, 10, None)).unwrap();
+        let p = place(&f, &p, f.v1, clip(&f, 10, 5, None)).unwrap();
+        let first = p.active().unwrap().video_tracks[0].clips[0].id;
+        let err = Command::RemoveClips {
+            sequence: f.seq,
+            clips: vec![first, ClipId(9999)],
+            ripple: false,
+        }
+        .apply(&p)
+        .unwrap_err();
+        assert!(err.what().contains("no longer exists"));
+        let none = Command::RemoveClips {
+            sequence: f.seq,
+            clips: Vec::new(),
+            ripple: false,
+        }
+        .apply(&p);
+        assert!(none.is_err());
     }
 
     #[test]

@@ -505,25 +505,29 @@ impl Editor {
                     Ok(())
                 } else {
                     let ripple = action == Action::RippleDelete;
-                    let clips = std::mem::take(&mut self.selected);
-                    self.with_document(|d| {
+                    let clips = self.selected.clone();
+                    let result = self.with_document(|d| {
                         let sequence = d.project().active_sequence;
-                        for clip in clips {
-                            // A linked clip may already have gone with an earlier one.
-                            let exists = d
-                                .project()
-                                .active()
-                                .is_some_and(|s| s.tracks().any(|t| t.clips.iter().any(|c| c.id == clip)));
-                            if exists {
-                                d.apply(Command::RemoveClip {
-                                    sequence,
-                                    clip,
-                                    ripple,
-                                })?;
-                            }
-                        }
-                        Ok(())
-                    })
+                        // The selection may still name a clip an undo took away.
+                        let clips: Vec<_> = clips
+                            .into_iter()
+                            .filter(|clip| {
+                                d.project().active().is_some_and(|s| {
+                                    s.tracks().any(|t| t.clips.iter().any(|c| c.id == *clip))
+                                })
+                            })
+                            .collect();
+                        // One step: every clip is checked first, then all go or none do.
+                        d.apply(Command::RemoveClips {
+                            sequence,
+                            clips,
+                            ripple,
+                        })
+                    });
+                    if result.is_ok() {
+                        self.selected.clear();
+                    }
+                    result
                 }
             }
             Action::ClearSelection => {

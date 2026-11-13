@@ -25,6 +25,12 @@ enum Action {
         pick: usize,
         ripple: bool,
     },
+    /// Removes two clips (maybe the same one, maybe linked) in one step.
+    RemoveSeveral {
+        a: usize,
+        b: usize,
+        ripple: bool,
+    },
     Move {
         pick: usize,
         start: i64,
@@ -199,6 +205,8 @@ fn action() -> impl Strategy<Value = Action> {
         4 => (any::<bool>(), 0usize..3, t.clone(), 1i64..30)
             .prop_map(|(video, track, start, len)| Action::Place { video, track, start, len }),
         2 => (any::<usize>(), any::<bool>()).prop_map(|(pick, ripple)| Action::Remove { pick, ripple }),
+        1 => (any::<usize>(), any::<usize>(), any::<bool>())
+            .prop_map(|(a, b, ripple)| Action::RemoveSeveral { a, b, ripple }),
         2 => (any::<usize>(), t.clone()).prop_map(|(pick, start)| Action::Move { pick, start }),
         2 => (any::<usize>(), t.clone()).prop_map(|(pick, at)| Action::SplitSelected { pick, at }),
         1 => t.clone().prop_map(|at| Action::SplitAll { at }),
@@ -366,6 +374,11 @@ fn command_for(action: &Action, p: &Project, media: MediaId, recording: MediaId)
         Action::Remove { pick, ripple } => Command::RemoveClip {
             sequence,
             clip: pick_clip(pick)?,
+            ripple,
+        },
+        Action::RemoveSeveral { a, b, ripple } => Command::RemoveClips {
+            sequence,
+            clips: vec![pick_clip(a)?, pick_clip(b)?],
             ripple,
         },
         Action::Move { pick, start } => Command::MoveClip {
