@@ -160,6 +160,16 @@ pub const MOUSE: &[MouseAction] = &[
         "Drag the playhead's handle at the top of the ruler",
         "Move the playhead, whatever a click moves",
     ),
+    on(
+        Context::Timeline,
+        "Alt+click anywhere on the timeline",
+        "Move the playhead there, whatever a click moves and with any tool; a clip clicked stays as it was",
+    ),
+    on(
+        Context::Timeline,
+        "Alt+drag in the ruler or on empty track space",
+        "Move the playhead along with the pointer, a frame at a time",
+    ),
     on(Context::Timeline, "Shift+drag in the ruler", "Mark a region"),
     on(
         Context::Timeline,
@@ -274,8 +284,8 @@ pub const MOUSE: &[MouseAction] = &[
     ),
     on(
         Context::Dragging,
-        "Hold Alt while dragging a clip",
-        "No snapping for this drag",
+        "Hold Alt while dragging a clip, its edge or a keyframe diamond",
+        "No snapping for this drag (a click with Alt moves the playhead instead)",
     ),
     on(
         Context::Dragging,

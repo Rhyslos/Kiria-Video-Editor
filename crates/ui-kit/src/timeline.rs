@@ -635,6 +635,9 @@ pub struct TimelineView {
     pub showing: Option<u64>,
     /// The playhead's handle is pointed at or dragged: it is drawn lit.
     playhead_lit: bool,
+    /// An Alt+drag in the ruler or on empty track space: the playhead
+    /// follows the pointer until the button is let go.
+    scrub: bool,
 }
 
 impl Default for TimelineView {
@@ -678,6 +681,7 @@ impl Default for TimelineView {
             click_moves: ClickMoves::Playhead,
             showing: None,
             playhead_lit: false,
+            scrub: false,
         }
     }
 }
@@ -2225,6 +2229,9 @@ impl TimelineView {
     ) {
         let left = layout.time_left();
         let id = ui.scope_id().with("timeline");
+        if self.scrub && !ui.input(|i| i.pointer.primary_down()) {
+            self.scrub = false;
+        }
         // The ruler takes the pointer first, so that the handles lying on it
         // (the edit needle's, the region's edges) come after it and are on
         // top: a press on a handle drags the handle, not the playhead.
@@ -2247,7 +2254,8 @@ impl TimelineView {
                 .on_hover_cursor(CursorIcon::ResizeHorizontal);
             self.playhead_lit = r.hovered() || r.dragged();
             if self.needle_moves(data) && !r.dragged() {
-                r.clone().on_hover_text("Drag to move the playhead");
+                r.clone()
+                    .on_hover_text("Drag to move the playhead, or Alt+click anywhere on the timeline");
             }
             if r.dragged_by(egui::PointerButton::Primary)
                 && let Some(p) = r.interact_pointer_pos()
@@ -2255,6 +2263,9 @@ impl TimelineView {
                 events.push(TimelineEvent::Seek(
                     self.time_at(left, p.x).clamp(0.0, data.length.max(0.0)),
                 ));
+            }
+            if let Some(t) = self.alt_click(ui, &r, left, data) {
+                events.push(TimelineEvent::Seek(t));
             }
             if r.dragged() || r.drag_stopped() || r.clicked() {
                 return;
@@ -2321,8 +2332,16 @@ impl TimelineView {
             }
         }
 
+        // Alt+click anywhere in the ruler or the labels row: the playhead
+        // goes there, whatever a click moves.
+        let ruler_alt = self.alt_click(ui, &ruler, left, data);
+        if let Some(t) = ruler_alt {
+            events.push(TimelineEvent::Seek(t));
+        }
+
         // Labels: click one to go to it, double-click to rename or recolour it.
-        if let Some(pos) = ui.input(|i| i.pointer.interact_pos())
+        if ruler_alt.is_none()
+            && let Some(pos) = ui.input(|i| i.pointer.interact_pos())
             && layout.labels.contains(pos)
             && let Some(marker) = self.marker_near(left, data.markers, pos.x)
         {
@@ -2337,7 +2356,7 @@ impl TimelineView {
                 events.push(TimelineEvent::EditLabel(marker.id));
                 return;
             }
-            if single {
+            if single && !ui.input(|i| i.modifiers.alt) {
                 events.push(TimelineEvent::Seek(marker.at));
                 return;
             }
@@ -2353,15 +2372,25 @@ impl TimelineView {
                 .clone()
                 .on_hover_text_at_pointer(cache_bar::legend(data.cache.about));
         }
-        let shift = ui.input(|i| i.modifiers.shift);
-        if ruler.drag_started_by(egui::PointerButton::Primary)
-            && shift
-            && let Some(p) = ruler.interact_pointer_pos()
-        {
-            let t = self.time_at(left, p.x).clamp(0.0, data.length.max(0.0));
-            self.region_drag = Some((RegionDrag::New(t), (t, t)));
+        let (shift, alt) = ui.input(|i| (i.modifiers.shift, i.modifiers.alt));
+        if ruler.drag_started_by(egui::PointerButton::Primary) {
+            if shift && let Some(p) = ruler.interact_pointer_pos() {
+                let t = self.time_at(left, p.x).clamp(0.0, data.length.max(0.0));
+                self.region_drag = Some((RegionDrag::New(t), (t, t)));
+            } else if alt {
+                self.scrub = true;
+            }
         }
-        if let Some((RegionDrag::New(from), _)) = self.region_drag {
+        if ruler_alt.is_some() {
+            // Alt+click: the playhead went there above.
+        } else if self.scrub {
+            // Alt+drag: the playhead follows, whatever a click moves.
+            if ruler.dragged()
+                && let Some(p) = ruler.interact_pointer_pos()
+            {
+                events.push(TimelineEvent::Seek(self.frame_under(left, p.x, data)));
+            }
+        } else if let Some((RegionDrag::New(from), _)) = self.region_drag {
             if ruler.dragged()
                 && let Some(p) = ruler.interact_pointer_pos()
             {
@@ -2549,6 +2578,22 @@ impl TimelineView {
                     DragKind::Move
                 }
             });
+
+            // Alt+drag on empty track space scrubs: the playhead follows the
+            // pointer. (On a clip, Alt+drag moves or trims it without snapping.)
+            if r.drag_started_by(egui::PointerButton::Primary)
+                && hit.is_none()
+                && ui.input(|i| i.modifiers.alt)
+            {
+                self.scrub = true;
+            }
+            if self.scrub
+                && r.dragged()
+                && let Some(now) = r.interact_pointer_pos()
+            {
+                events.push(TimelineEvent::Seek(self.frame_under(left, now.x, data)));
+                ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
+            }
 
             // A keyframe mark on the clip under the pointer: it comes before
             // the clip itself.
@@ -2897,7 +2942,11 @@ impl TimelineView {
             };
             clip_menu(&r, menu, events);
             let add = ui.input(|i| i.modifiers.shift || i.modifiers.command);
-            if r.clicked()
+            if let Some(at) = self.alt_click(ui, &r, left, data) {
+                // Alt+click: the playhead goes there, with any tool; the
+                // selection and the chosen marks stay as they are.
+                events.push(TimelineEvent::Seek(at));
+            } else if r.clicked()
                 && let Some((c, mark)) = on_mark
             {
                 // A keyframe mark: the playhead goes there, or (Shift or
@@ -2964,6 +3013,28 @@ impl TimelineView {
             false => CursorIcon::ResizeHorizontal,
         });
         self.mark_drag = Some(keyframes::MarkDrag { by, refused, ..drag });
+    }
+
+    /// The start of the frame under screen x, inside the timeline: where
+    /// an Alt+click or an Alt+drag puts the playhead.
+    fn frame_under(&self, left: f32, x: f32, data: &TimelineData) -> f64 {
+        let t = self.time_at(left, x).clamp(0.0, data.length.max(0.0));
+        if data.fps <= 0.0 {
+            return t;
+        }
+        // A hair over, so a time on a frame's start stays on that frame.
+        (t * data.fps + 1e-6).floor() / data.fps
+    }
+
+    /// Where an Alt+click on `r` puts the playhead: a click as egui tells
+    /// it (pressed and let go without dragging) with Alt held. Alt+drag
+    /// keeps its own meaning (no snapping, or scrubbing).
+    fn alt_click(&self, ui: &Ui, r: &egui::Response, left: f32, data: &TimelineData) -> Option<f64> {
+        if !r.clicked_by(egui::PointerButton::Primary) || !ui.input(|i| i.modifiers.alt) {
+            return None;
+        }
+        let p = r.interact_pointer_pos()?;
+        Some(self.frame_under(left, p.x, data))
     }
 
     /// Whether a click in the ruler moves the edit needle: so set, and the
@@ -5673,5 +5744,108 @@ mod tests {
         let events = click(&mut rig, pos2(500.0, 10.0), egui::PointerButton::Primary);
         assert_eq!(seeks(&events), [6.0]);
         assert!(needle_moves(&events).is_empty());
+    }
+
+    #[test]
+    fn alt_click_in_the_ruler_moves_the_playhead_whatever_a_click_moves() {
+        let primary = egui::PointerButton::Primary;
+        for moves in [ClickMoves::Playhead, ClickMoves::EditNeedle] {
+            let mut rig = Rig::new(1, 1);
+            rig.view.click_moves = moves;
+            rig.needle = Some(5.0);
+            rig.modifiers = egui::Modifiers::ALT;
+            // x = 500 is six seconds, in the ruler and in the labels row.
+            for y in [10.0, 36.0] {
+                let events = click(&mut rig, pos2(500.0, y), primary);
+                assert_eq!(seeks(&events), [6.0], "{moves:?} at y {y}: {events:?}");
+                assert!(needle_moves(&events).is_empty(), "{moves:?}: the needle stays");
+            }
+            // On the playhead's own handle too.
+            let events = click(&mut rig, pos2(260.0, 6.0), primary);
+            assert_eq!(seeks(&events), [2.0], "{moves:?}: {events:?}");
+        }
+    }
+
+    #[test]
+    fn alt_click_puts_the_playhead_on_the_frame_under_the_pointer() {
+        let mut rig = Rig::new(1, 1);
+        rig.fps = 25.0;
+        rig.modifiers = egui::Modifiers::ALT;
+        // x = 507 is 6.1167 s, in frame 152 at 25 frames a second.
+        for y in [10.0, 190.0, 300.0] {
+            let events = click(&mut rig, pos2(507.0, y), egui::PointerButton::Primary);
+            assert_eq!(seeks(&events), [6.08], "at y {y}: {events:?}");
+        }
+    }
+
+    #[test]
+    fn alt_click_on_a_clip_moves_the_playhead_and_keeps_the_selection() {
+        let primary = egui::PointerButton::Primary;
+        let mut rig = Rig::new(1, 1);
+        rig.video[0].clips[0].selected = true;
+        rig.modifiers = egui::Modifiers::ALT;
+        // On the clip (x = 300 is 2 2/3 s), on the audio clip and on empty space.
+        let events = click(&mut rig, pos2(300.0, 190.0), primary);
+        assert_eq!(events, [TimelineEvent::Seek(160.0 / 60.0)]);
+        let events = click(&mut rig, pos2(300.0, 300.0), primary);
+        assert_eq!(events, [TimelineEvent::Seek(160.0 / 60.0)]);
+        let events = click(&mut rig, pos2(700.0, 190.0), primary);
+        assert_eq!(
+            events,
+            [TimelineEvent::Seek(560.0 / 60.0)],
+            "nothing is unselected"
+        );
+    }
+
+    #[test]
+    fn alt_click_with_any_tool_never_cuts_or_trims() {
+        let primary = egui::PointerButton::Primary;
+        for tool in [Tool::Blade, Tool::Ripple, Tool::Roll, Tool::Slip, Tool::Slide] {
+            let mut rig = Rig::new(1, 1);
+            rig.view.tool = tool;
+            rig.modifiers = egui::Modifiers::ALT;
+            // In the middle of the clip and on its end edge.
+            for x in [300.0, 439.0] {
+                let events = click(&mut rig, pos2(x, 190.0), primary);
+                assert_eq!(seeks(&events).len(), 1, "{tool:?} at {x}: {events:?}");
+                assert_eq!(
+                    events.len(),
+                    1,
+                    "{tool:?} at {x}: only the playhead moves: {events:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn alt_drag_still_moves_a_clip_and_scrubs_elsewhere() {
+        // On a clip: the clip moves (without snapping); the playhead stays.
+        let mut rig = Rig::new(1, 1);
+        rig.modifiers = egui::Modifiers::ALT;
+        let events = drag_along(&mut rig, pos2(300.0, 190.0));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, TimelineEvent::Move { clip: 0, by, .. } if (by - 1.0).abs() < 1e-6)),
+            "{events:?}"
+        );
+        assert!(seeks(&events).is_empty(), "{events:?}");
+        // On empty track space and in the ruler (also set to the needle):
+        // the playhead follows the pointer, on whole frames.
+        rig.view.click_moves = ClickMoves::EditNeedle;
+        rig.needle = Some(5.0);
+        for grab in [pos2(700.0, 190.0), pos2(700.0, 300.0), pos2(700.0, 10.0)] {
+            let events = drag_along(&mut rig, grab);
+            assert_eq!(seeks(&events).last(), Some(&10.333), "from {grab:?}: {events:?}");
+            assert!(needle_moves(&events).is_empty(), "{events:?}");
+            assert!(
+                !events.iter().any(|e| matches!(e, TimelineEvent::ClearSelection)),
+                "{events:?}"
+            );
+        }
+        // Let go, the next plain drag in empty space doesn't scrub.
+        rig.modifiers = egui::Modifiers::NONE;
+        let events = drag_along(&mut rig, pos2(700.0, 190.0));
+        assert!(seeks(&events).is_empty(), "{events:?}");
     }
 }
