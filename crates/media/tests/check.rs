@@ -124,3 +124,35 @@ fn a_file_with_broken_data_is_damaged() {
     assert_eq!(refusal, Refusal::Damaged, "{report}");
     assert!(report.contains("first picture"), "{report}");
 }
+
+/// Whole files whose key frames are far apart: the end check reads from
+/// the key frame before where it looks, however early that is, to the end.
+#[test]
+fn whole_files_with_far_apart_key_frames_pass() {
+    // The usual H.264 settings: a key frame every 250 frames (8.3 s at
+    // 30 fps), the last at 16.7 s of 20 s.
+    // A key frame every 10 s: at 0, 10 and 20 s of 25 s.
+    for (name, seconds) in [("x264-default-20s.mp4", 20.0), ("key-every-10s.mkv", 25.0)] {
+        let media = check(&fixture(name)).unwrap_or_else(|r| panic!("{name}: {}", r.error.report()));
+        let length = media.duration.as_secs_f64();
+        assert!((length - seconds).abs() < 0.2, "{name}: {length}");
+        // "Import what's there" on it keeps all of it.
+        let kept = media::salvage(&fixture(name)).unwrap();
+        assert_eq!(kept.info.stated_length, None, "{name} stays whole");
+        assert_eq!(kept.duration, media.duration, "{name}");
+    }
+}
+
+#[test]
+fn a_cut_file_with_far_apart_key_frames_is_still_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    // Its index is at the front, so the cut file still opens and says 20 s.
+    let bytes = std::fs::read(fixture("x264-default-20s.mp4")).unwrap();
+    let cut = dir.path().join("cut.mp4");
+    std::fs::write(&cut, &bytes[..bytes.len() * 3 / 4]).unwrap();
+    let (refusal, report) = refusal(&cut);
+    assert_eq!(refusal, Refusal::CutShort, "{report}");
+    let kept = media::salvage(&cut).unwrap();
+    let real = kept.duration.as_secs_f64();
+    assert!(real > 5.0 && real < 19.0, "what is there: {real}");
+}

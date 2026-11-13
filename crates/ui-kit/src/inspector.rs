@@ -319,9 +319,29 @@ fn slider_values(ui: &mut Ui, value: &mut f64, how: Number, words: Option<Words>
             .show_value(false)
             .clamping(egui::SliderClamping::Always),
     );
+    // Shift held while dragging: a tenth as fast, from where it was.
+    if slider.dragged() && ui.input(|i| i.modifiers.shift) {
+        *value = fine_step(
+            before,
+            ui.input(|i| i.pointer.delta().x),
+            room.max(40.0),
+            how.range,
+        );
+    }
     let on_slider = touched(&slider, value, before, how);
     let typed = ui.add_sized([VALUE_WIDTH, 20.0], worded(value_drag(value, how), words));
     on_slider.and(touched(&typed, value, before, how))
+}
+
+/// How much slower a slider moves with Shift held.
+pub const FINE: f64 = 0.1;
+
+/// A slider `width` points wide over `range`, dragged `dx` points with
+/// Shift held: the value moves a tenth as far as the pointer, from
+/// `before`, within the range.
+pub fn fine_step(before: f64, dx: f32, width: f32, range: (f64, f64)) -> f64 {
+    let per_point = (range.1 - range.0) / f64::from(width.max(1.0));
+    (before + f64::from(dx) * per_point * FINE).clamp(range.0, range.1)
 }
 
 /// The number to drag sideways or type, as `how` says.
@@ -396,6 +416,17 @@ pub fn note(ui: &mut Ui, theme: &Theme, text: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shift_moves_a_slider_a_tenth_as_far() {
+        // 0 to 100 over 50 points: 2 per point, 0.2 with Shift.
+        assert!((fine_step(10.0, 5.0, 50.0, (0.0, 100.0)) - 11.0).abs() < 1e-9);
+        assert_eq!(
+            fine_step(99.9, 50.0, 50.0, (0.0, 100.0)),
+            100.0,
+            "within the range"
+        );
+    }
 
     #[test]
     fn touches_add_up() {

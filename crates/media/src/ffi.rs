@@ -119,18 +119,49 @@ impl Input {
     /// `from` seconds on, for up to `span` seconds of file. Reads packets only;
     /// nothing is decoded. Empty when the file can't be read there.
     pub fn packet_times(&self, stream: u32, from: f64, span: f64) -> Vec<f64> {
+        let mut times = Vec::new();
+        let mut first: Option<f64> = None;
+        self.read_packets(stream, from, |t| {
+            let start = *first.get_or_insert(t);
+            if t - start > span {
+                return false;
+            }
+            times.push(t);
+            true
+        });
+        times
+    }
+
+    /// The latest presentation time (seconds) of `stream`'s packets, read
+    /// from the key frame before `from` on to the end of the file, however
+    /// far that is, or until a packet at `enough` or later is seen (all a
+    /// caller needs to know). Reads packets only; nothing is decoded, so the
+    /// cost is reading the bytes from that key frame on. `None` when no
+    /// packet of the stream can be read there.
+    pub fn last_packet_time(&self, stream: u32, from: f64, enough: f64) -> Option<f64> {
+        let mut last: Option<f64> = None;
+        self.read_packets(stream, from, |t| {
+            last = Some(last.map_or(t, |l| l.max(t)));
+            t < enough
+        });
+        last
+    }
+
+    /// Seeks back to the key frame before `from` and hands `each` the time of
+    /// every packet of `stream` after it, until it returns false or the file
+    /// ends.
+    fn read_packets(&self, stream: u32, from: f64, mut each: impl FnMut(f64) -> bool) {
         let ctx = self.ctx();
         if stream >= ctx.nb_streams {
-            return Vec::new();
+            return;
         }
         // SAFETY: the index was checked against `nb_streams`; stream pointers
         // stay valid while the input is open.
         let tb = unsafe { (**ctx.streams.add(stream as usize)).time_base };
         if tb.num <= 0 || tb.den <= 0 {
-            return Vec::new();
+            return;
         }
         let tb = f64::from(tb.num) / f64::from(tb.den);
-        let mut times = Vec::new();
         // SAFETY: the packet is allocated here, filled by av_read_frame,
         // unreferenced after each use and freed before returning; the format
         // context is valid and only this thread uses it.
@@ -139,25 +170,22 @@ impl Input {
             let _ = ff::av_seek_frame(self.ctx, stream as i32, target, ff::AVSEEK_FLAG_BACKWARD);
             let mut packet = ff::av_packet_alloc();
             if packet.is_null() {
-                return times;
+                return;
             }
-            let mut first: Option<f64> = None;
             while ff::av_read_frame(self.ctx, packet) >= 0 {
                 let p = &*packet;
-                if p.stream_index as u32 == stream && p.pts != ff::AV_NOPTS_VALUE {
-                    let t = p.pts as f64 * tb;
-                    let start = *first.get_or_insert(t);
-                    if t - start > span {
-                        ff::av_packet_unref(packet);
-                        break;
-                    }
-                    times.push(t);
-                }
+                let go_on = if p.stream_index as u32 == stream && p.pts != ff::AV_NOPTS_VALUE {
+                    each(p.pts as f64 * tb)
+                } else {
+                    true
+                };
                 ff::av_packet_unref(packet);
+                if !go_on {
+                    break;
+                }
             }
             ff::av_packet_free(&mut packet);
         }
-        times
     }
 
     pub fn streams(&self) -> Vec<Stream<'_>> {

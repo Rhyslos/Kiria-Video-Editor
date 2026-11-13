@@ -90,7 +90,7 @@ impl Editor {
             ))
         });
         let Some((clip, frames)) = chosen else {
-            self.status = "Nothing to copy: choose keyframe marks on the selected clip first (click one, Shift-click more, or drag a box along the clip's bottom edge).".into();
+            self.status = "Nothing to copy: click a clip to copy it (Shift-click more), or choose keyframe marks on the selected clip (click one, Shift-click more, or drag a box along the clip's bottom edge).".into();
             return Ok(());
         };
         let copied = CopiedKeyframes::copy(clip, rate, &frames)?;
@@ -100,6 +100,7 @@ impl Editor {
             self.shortcuts.keys_or_name(ui_kit::Action::Paste)
         );
         self.clipboard_text = Some(format!("Keyframes: {says}"));
+        self.copied_clips = None;
         self.copied_keyframes = Some(copied);
         Ok(())
     }

@@ -291,6 +291,7 @@ pub(crate) fn insert(
     sequence: SequenceId,
     template: &Template,
     at: Time,
+    name_tracks: bool,
 ) -> diag::Result<()> {
     template.validate()?;
     if at.is_negative() {
@@ -338,6 +339,9 @@ pub(crate) fn insert(
                 continue;
             }
             make_tracks(p, sequence, kind, &tracks[..=index])?;
+            if name_tracks {
+                name_unused_track(p, sequence, kind, index, &from.name)?;
+            }
             for clip in &from.clips {
                 let placed = Clip {
                     id: p.allocate_id(),
@@ -363,6 +367,32 @@ pub(crate) fn insert(
     Ok(())
 }
 
+/// A track of the timeline nobody has used yet (empty, still with its
+/// usual name, "A1") takes the name of the template's track that lands on
+/// it when someone chose that name ("Game"), as a file placed on it does.
+fn name_unused_track(
+    p: &mut Project,
+    sequence: SequenceId,
+    kind: TrackKind,
+    index: usize,
+    wanted: &str,
+) -> diag::Result<()> {
+    let seq = sequence_mut(p, sequence)?;
+    let name = new_track_name(seq, kind, wanted);
+    let letter = match kind {
+        TrackKind::Video => 'V',
+        TrackKind::Audio => 'A',
+    };
+    if let Some(track) = tracks_of(seq, kind).get_mut(index)
+        && track.clips.is_empty()
+        && track.name == format!("{letter}{}", index + 1)
+        && name == wanted.trim()
+    {
+        track.name = name;
+    }
+    Ok(())
+}
+
 /// The timeline's tracks of one kind.
 fn tracks_of(seq: &mut Sequence, kind: TrackKind) -> &mut imbl::Vector<Track> {
     match kind {
@@ -375,7 +405,12 @@ fn tracks_of(seq: &mut Sequence, kind: TrackKind) -> &mut imbl::Vector<Track> {
 /// track goes after the others of its kind, as any added track does, and is
 /// as loud as the template's track in that place, with its role, pan and
 /// effects (not its lines).
-fn make_tracks(p: &mut Project, sequence: SequenceId, kind: TrackKind, wanted: &[Track]) -> diag::Result<()> {
+pub(crate) fn make_tracks(
+    p: &mut Project,
+    sequence: SequenceId,
+    kind: TrackKind,
+    wanted: &[Track],
+) -> diag::Result<()> {
     loop {
         let seq = sequence_mut(p, sequence)?;
         let have = tracks_of(seq, kind).len();
@@ -785,6 +820,7 @@ mod tests {
             sequence: p.active_sequence,
             template: Box::new(template.clone()),
             at: Time::seconds(at),
+            name_tracks: false,
         }
         .apply(p)
     }
@@ -999,6 +1035,49 @@ mod tests {
         // A second time, the track is there already.
         let again = insert_at(&done, &intro(), 0).unwrap();
         assert_eq!(again.active().unwrap().audio_tracks.len(), 2);
+    }
+
+    #[test]
+    fn an_unused_track_takes_the_name_of_the_templates_track() {
+        let p = Project::new("Empty", SequenceSettings::GAME_CLIP);
+        let mut template = intro();
+        template.audio_tracks[0].name = "Commentary".into();
+        let wanted = template.audio_tracks[0].name.clone();
+        let insert = |name_tracks| Command::InsertTemplate {
+            sequence: p.active_sequence,
+            template: Box::new(template.clone()),
+            at: Time::ZERO,
+            name_tracks,
+        };
+        let named = insert(true).apply(&p).unwrap();
+        assert_eq!(named.active().unwrap().audio_tracks[0].name, wanted);
+        let kept = insert(false).apply(&p).unwrap();
+        assert_eq!(
+            kept.active().unwrap().audio_tracks[0].name,
+            "A1",
+            "as before the option came"
+        );
+    }
+
+    #[test]
+    fn a_template_insert_written_before_naming_tracks_replays_without_it() {
+        let p = Project::new("Empty", SequenceSettings::GAME_CLIP);
+        let written = Command::InsertTemplate {
+            sequence: p.active_sequence,
+            template: Box::new(intro()),
+            at: Time::ZERO,
+            name_tracks: true,
+        };
+        let text = ron::to_string(&written).unwrap().replace(",name_tracks:true", "");
+        assert!(!text.contains("name_tracks"));
+        let read: Command = ron::from_str(&text).unwrap();
+        assert!(matches!(
+            read,
+            Command::InsertTemplate {
+                name_tracks: false,
+                ..
+            }
+        ));
     }
 
     /// The intro with a caption over the title card on a second video
@@ -1275,6 +1354,7 @@ mod tests {
             sequence: before.active_sequence,
             template: Box::new(intro()),
             at: Time::seconds(25),
+            name_tracks: false,
         })
         .unwrap();
         let after = doc.project().clone();
@@ -1293,6 +1373,7 @@ mod tests {
             sequence: before.active_sequence,
             template: Box::new(intro()),
             at: Time::seconds(25),
+            name_tracks: false,
         }
         .apply(&expected)
         .unwrap();

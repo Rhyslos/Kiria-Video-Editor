@@ -141,12 +141,15 @@ pub fn check(path: &Path) -> Result<MediaRef, Refused> {
             .map(|v| v.index)
             .or_else(|| media.info.audio.first().map(|a| a.index));
         if let Some(stream) = stream {
+            // From the key frame before this on to the end of the file,
+            // however far apart its key frames are; a complete file stops
+            // the reading as soon as a packet reaches the stated end.
             let from = (duration - 6.0).max(0.0);
+            let enough = duration - END_SLACK.max(duration * 0.02);
             let last = input
-                .packet_times(stream, from, 10.0)
-                .into_iter()
-                .fold(f64::NEG_INFINITY, f64::max);
-            if last < duration - END_SLACK.max(duration * 0.02) {
+                .last_packet_time(stream, from, enough)
+                .unwrap_or(f64::NEG_INFINITY);
+            if last < enough {
                 let says = clock(duration);
                 let why = if last.is_finite() && last > from {
                     format!(
@@ -193,11 +196,16 @@ pub fn salvage(path: &Path) -> diag::Result<MediaRef> {
     else {
         return Ok(media);
     };
-    let latest = |times: Vec<f64>| times.into_iter().fold(f64::NEG_INFINITY, f64::max);
+    // The same reading as `check`'s, to the very end of the file; when
+    // nothing is found after where the end was looked for, from the start.
     let from = (duration - 6.0).max(0.0);
-    let mut last = latest(input.packet_times(stream, from, 10.0));
+    let mut last = input
+        .last_packet_time(stream, from, f64::INFINITY)
+        .unwrap_or(f64::NEG_INFINITY);
     if !(last.is_finite() && last > from) {
-        last = latest(input.packet_times(stream, 0.0, f64::MAX));
+        last = input
+            .last_packet_time(stream, 0.0, f64::INFINITY)
+            .unwrap_or(f64::NEG_INFINITY);
     }
     if !last.is_finite() || last <= 0.0 {
         return Err(

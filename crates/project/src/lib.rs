@@ -25,6 +25,7 @@
 //! - [`templates`]: stretches of a timeline saved to drop into any project.
 
 pub mod animate;
+pub mod clip_clipboard;
 pub mod clipboard;
 pub mod command;
 pub mod disk;
@@ -53,6 +54,7 @@ pub mod track_sound;
 pub mod tracks;
 pub mod versions;
 
+pub use clip_clipboard::CopiedClips;
 pub use clipboard::CopiedKeyframes;
 pub use command::{Command, Edge};
 pub use document::{Document, OpenCheck, Opened, Recovery, thumbnail_path, view_path};

@@ -31,6 +31,27 @@ enum Action {
         b: usize,
         ripple: bool,
     },
+    /// Removes two clips and closes the gaps on every track.
+    RippleSeveral {
+        a: usize,
+        b: usize,
+    },
+    /// Moves two clips together.
+    MoveSeveral {
+        a: usize,
+        b: usize,
+        by: i64,
+    },
+    /// Closes a stretch of every track.
+    CloseGap {
+        at: i64,
+        len: i64,
+    },
+    /// Copies a clip (with its linked clips) and pastes it.
+    PasteClip {
+        pick: usize,
+        at: i64,
+    },
     Move {
         pick: usize,
         start: i64,
@@ -207,6 +228,10 @@ fn action() -> impl Strategy<Value = Action> {
         2 => (any::<usize>(), any::<bool>()).prop_map(|(pick, ripple)| Action::Remove { pick, ripple }),
         1 => (any::<usize>(), any::<usize>(), any::<bool>())
             .prop_map(|(a, b, ripple)| Action::RemoveSeveral { a, b, ripple }),
+        1 => (any::<usize>(), any::<usize>()).prop_map(|(a, b)| Action::RippleSeveral { a, b }),
+        1 => (any::<usize>(), any::<usize>(), -30i64..30).prop_map(|(a, b, by)| Action::MoveSeveral { a, b, by }),
+        1 => (t.clone(), 1i64..20).prop_map(|(at, len)| Action::CloseGap { at, len }),
+        2 => (any::<usize>(), t.clone()).prop_map(|(pick, at)| Action::PasteClip { pick, at }),
         2 => (any::<usize>(), t.clone()).prop_map(|(pick, start)| Action::Move { pick, start }),
         2 => (any::<usize>(), t.clone()).prop_map(|(pick, at)| Action::SplitSelected { pick, at }),
         1 => t.clone().prop_map(|at| Action::SplitAll { at }),
@@ -380,6 +405,25 @@ fn command_for(action: &Action, p: &Project, media: MediaId, recording: MediaId)
             sequence,
             clips: vec![pick_clip(a)?, pick_clip(b)?],
             ripple,
+        },
+        Action::RippleSeveral { a, b } => Command::RippleRemoveClips {
+            sequence,
+            clips: vec![pick_clip(a)?, pick_clip(b)?],
+        },
+        Action::MoveSeveral { a, b, by } => Command::MoveClips {
+            sequence,
+            clips: vec![pick_clip(a)?, pick_clip(b)?],
+            by: Time::seconds(by),
+        },
+        Action::CloseGap { at, len } => Command::CloseGap {
+            sequence,
+            start: Time::seconds(at),
+            end: Time::seconds(at + len),
+        },
+        Action::PasteClip { pick, at } => Command::PasteClips {
+            sequence,
+            at: Time::seconds(at),
+            clips: project::CopiedClips::copy(p, sequence, &[pick_clip(pick)?]).ok()?,
         },
         Action::Move { pick, start } => Command::MoveClip {
             sequence,
@@ -594,6 +638,7 @@ fn command_for(action: &Action, p: &Project, media: MediaId, recording: MediaId)
                 // A stretch with no clips in it is nothing to save.
                 template: Box::new(Template::capture(p, sequence, range).ok()?),
                 at: Time::from_ratio(at * 2 + 1, 2)?,
+                name_tracks: a % 2 == 0,
             }
         }
         Action::Ramp {

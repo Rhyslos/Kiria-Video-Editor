@@ -96,8 +96,9 @@ actions! {
     BuildProxies, Anywhere, "Build proxies: a proxy for every video file of the project that has none, also those cleared from the cache";
     PackageProject, Anywhere, "Package project: copy it and the media it uses into one folder, to open on another machine…";
     SaveTemplate, Anywhere, "Save as a template: the region, or the whole timeline…";
-    Copy, Anywhere, "Copy: the chosen keyframe marks on the timeline";
-    Paste, Anywhere, "Paste: copied keyframes at the playhead, on the selected clip";
+    Copy, Anywhere, "Copy: the selected clips, or the chosen keyframe marks";
+    Cut, Anywhere, "Cut: copy the selected clips and take them out";
+    Paste, Anywhere, "Paste: copied clips at the edit point, or copied keyframes on the selected clip";
     PlayPause, Viewer, "Play / pause";
     Stop, Viewer, "Stop playing here";
     PreviousFrame, Viewer, "Back one frame";
@@ -125,6 +126,10 @@ actions! {
     ClearSelection, Timeline, "Select nothing (and leave full screen)";
     SelectAll, Timeline, "Select all: every clip of the open timeline (on the Library page, every file shown)";
     ClearRegion, Timeline, "Clear the region";
+    RemoveRegion, Timeline, "Remove the region: cut it out of every track and close the gap";
+    LiftRegion, Timeline, "Remove the region, leave a gap";
+    KeepRegion, Timeline, "Keep only the region: remove everything before and after it";
+    EditAtPlayhead, Timeline, "Edit at the playhead: cuts, splits and pastes at the playhead, no separate edit needle";
     RemoveSilence, Timeline, "Remove silence…";
     SelectTool, Timeline, "Select tool: pick, move and trim clips";
     BladeTool, Timeline, "Blade tool: cut clips where clicked";
@@ -154,6 +159,45 @@ actions! {
 }
 
 impl Action {
+    /// Other words people look for the command by, besides those of its
+    /// name: the names other editors and guides give it ("ripple delete").
+    /// Search and the shortcuts page find a command by these too.
+    pub fn keywords(self) -> &'static [&'static str] {
+        match self {
+            Action::RippleDelete => &["ripple delete", "remove gap", "extract"],
+            Action::RemoveRegion => &["ripple", "extract", "cut region", "in out"],
+            Action::LiftRegion => &["lift", "cut region", "in out"],
+            Action::KeepRegion => &["trim to region", "crop timeline", "in out"],
+            Action::EditAtPlayhead => &["edit needle", "single needle", "cut at the playhead"],
+            Action::Delete => &["lift", "remove clip", "leave gap"],
+            Action::Split => &["cut", "razor", "blade"],
+            Action::BladeTool => &["razor", "cut"],
+            Action::Copy => &["duplicate clip"],
+            Action::Cut => &["remove", "clipboard"],
+            Action::Paste => &["clipboard", "overwrite"],
+            Action::PlayPause => &["play", "pause"],
+            Action::MarkIn => &["in point", "region"],
+            Action::MarkOut => &["out point", "region"],
+            Action::ToggleLoop => &["repeat"],
+            Action::SlipTool => &["slip"],
+            Action::SlideTool => &["slide"],
+            Action::NestSelection => &["compound clip", "group", "nested timeline"],
+            Action::AddAdjustmentLayer => &["grade", "colour all", "color"],
+            Action::SaveFrame => &["still", "snapshot", "screenshot", "export frame"],
+            Action::ToggleSnapping => &["magnet", "snap"],
+            Action::RemoveSilence => &["silence", "dead air", "jump cut"],
+            Action::SplitView => &["source", "program", "two up"],
+            Action::Undo => &["back", "revert"],
+            Action::Search => &["find", "command palette"],
+            _ => &[],
+        }
+    }
+
+    /// Whether `text` (in lower case) is in the command's name or keywords.
+    pub fn found_by(self, text: &str) -> bool {
+        self.label().to_lowercase().contains(text) || self.keywords().iter().any(|k| k.contains(text))
+    }
+
     /// The command called `name` (see [`Action::name`]).
     pub fn from_name(name: &str) -> Option<Action> {
         Action::ALL.iter().copied().find(|a| a.name() == name)
@@ -170,6 +214,16 @@ mod tests {
             assert_eq!(Action::from_name(action.name()), Some(*action));
         }
         assert_eq!(Action::Split.name(), "Split");
+        assert!(
+            Action::RippleDelete.found_by("ripple"),
+            "found by the name other editors give it"
+        );
+        assert!(Action::RippleDelete.found_by("close the gap"));
+        for action in Action::ALL {
+            for keyword in action.keywords() {
+                assert_eq!(*keyword, keyword.to_lowercase(), "keywords are in lower case");
+            }
+        }
         assert_eq!(Action::from_name("Nothing"), None);
     }
 

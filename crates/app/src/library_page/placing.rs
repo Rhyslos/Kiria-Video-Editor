@@ -97,6 +97,7 @@ pub fn command(project: &Project, adding: Adding, edit_point: Time) -> diag::Res
         sequence,
         template: Box::new(template),
         at,
+        name_tracks: true,
     })
 }
 
@@ -142,6 +143,7 @@ pub fn command_many(
             AddAt::End => before,
             AddAt::EditPoint => edit_point,
         },
+        name_tracks: true,
     })
 }
 

@@ -1,9 +1,12 @@
 //! The editor window.
 
 mod audio_ui;
+mod clip_clipboard;
 mod keyframe_clipboard;
 mod library_ui;
+mod region_cuts;
 mod timelines;
+mod undo_says;
 
 use crate::import::{self, Importer, Read};
 use crate::run_mode::RunMode;
@@ -166,6 +169,9 @@ pub struct Editor {
     actions_after_pointer: Vec<Action>,
     /// Keyframe marks copied (Copy), to paste on a picture clip.
     copied_keyframes: Option<project::CopiedKeyframes>,
+    /// Clips copied (Copy or Cut with clips selected), to paste at the
+    /// edit point; only one of these and `copied_keyframes` is kept.
+    copied_clips: Option<project::CopiedClips>,
     /// Text for the system clipboard, put there on the next frame.
     clipboard_text: Option<String>,
     /// The viewer fills the screen (F; Escape returns).
@@ -196,6 +202,13 @@ pub struct Editor {
     /// The proxy changes Settings › Cache was last measured at.
     cache_seen: u64,
     status: String,
+    /// Where the playhead was before a clip began to be slipped: the viewer
+    /// shows the clip's first frame while it is, then the playhead goes back.
+    slip_playhead: Option<Time>,
+    /// The status line's age: it fades out a few seconds after it last changed.
+    status_fade: crate::status_line::Fading,
+    /// How strongly the status line is drawn this frame (1 full).
+    status_strength: f32,
     playing: bool,
     /// Playback loops inside the region (L).
     looping: bool,
@@ -444,6 +457,7 @@ impl Editor {
             startup_actions,
             actions_after_pointer,
             copied_keyframes: None,
+            copied_clips: None,
             clipboard_text: None,
             full_screen,
             full_screen_changed: full_screen,
@@ -482,6 +496,9 @@ impl Editor {
             settings_found: None,
             cache_seen: 0,
             status: String::new(),
+            slip_playhead: None,
+            status_fade: Default::default(),
+            status_strength: 1.0,
             playing: false,
             looping: false,
             last_input: Instant::now(),
@@ -499,8 +516,8 @@ impl Editor {
             return;
         }
         let result = match action {
-            Action::Undo => self.with_document(|d| d.undo().map(|_| ())),
-            Action::Redo => self.with_document(|d| d.redo().map(|_| ())),
+            Action::Undo => self.step_history(false),
+            Action::Redo => self.step_history(true),
             Action::Save => self.save_now(),
             Action::AddLabel => {
                 let at = self.edit_point();
@@ -518,6 +535,20 @@ impl Editor {
                 Ok(())
             }
             Action::ClearRegion => self.set_region(None),
+            Action::RemoveRegion => self.cut_region(ui_kit::RegionCut::Remove),
+            Action::LiftRegion => self.cut_region(ui_kit::RegionCut::Lift),
+            Action::KeepRegion => self.cut_region(ui_kit::RegionCut::Keep),
+            Action::EditAtPlayhead => {
+                self.settings.edit_at_playhead = !self.settings.edit_at_playhead;
+                self.status = if self.settings.edit_at_playhead {
+                    "Edit at the playhead: cuts, splits and pastes happen at the playhead."
+                } else {
+                    "The edit needle is back: cuts, splits and pastes happen at the red needle."
+                }
+                .into();
+                // The settings keeper writes it once it has settled.
+                Ok(())
+            }
             Action::MarkIn | Action::MarkOut => self.mark(action == Action::MarkIn),
             Action::RemoveSilence => self.with_document(|_| Ok(())).map(|()| self.silence.open = true),
             Action::SaveFrame => self
@@ -525,41 +556,34 @@ impl Editor {
                 .map(|()| self.save_frame_requested = true),
             Action::Split => {
                 let at = self.edit_point();
-                let clip = self.selected.first().copied();
-                self.with_document(|d| {
-                    let sequence = d.project().active_sequence;
-                    d.apply(Command::Split { sequence, at, clip })
-                })
+                let result = self.split_at(at);
+                // Nothing at the edit needle (often off screen): offer the
+                // playhead, and say where the needle is and how to merge them.
+                match result {
+                    Err(err) if !self.settings.edit_at_playhead && self.playhead_on_frame() != at => Err(err
+                        .fix(format!(
+                            "Split at the playhead instead, or move the edit needle (the red line, at {}) over a clip. To always cut at the playhead, turn on Display \u{203a} Edit at the playhead{}.",
+                            ui_kit::time_text::duration(at.as_secs_f64() as u64),
+                            match self.shortcuts.keys_for(Action::EditAtPlayhead) {
+                                keys if keys.is_empty() => String::new(),
+                                keys => format!(" ({keys})"),
+                            }
+                        ))
+                        .action(diag::FixAction::new("Split at the playhead instead", SPLIT_AT_PLAYHEAD))),
+                    other => other,
+                }
             }
             Action::Delete | Action::RippleDelete => {
-                if self.selected.is_empty() {
-                    self.status = "Click a clip on the timeline first.".into();
+                if self.selected.is_empty()
+                    && let Some((start, end)) = self.shown_view().selected_gap()
+                {
+                    // A selected gap: closed on every track, whichever key.
+                    self.close_gap(start, end)
+                } else if self.selected.is_empty() {
+                    self.status = "Click a clip, or the gap between two clips, on the timeline first.".into();
                     Ok(())
                 } else {
-                    let ripple = action == Action::RippleDelete;
-                    let clips = self.selected.clone();
-                    let result = self.with_document(|d| {
-                        let sequence = d.project().active_sequence;
-                        // The selection may still name a clip an undo took away.
-                        let clips: Vec<_> = clips
-                            .into_iter()
-                            .filter(|clip| {
-                                d.project().active().is_some_and(|s| {
-                                    s.tracks().any(|t| t.clips.iter().any(|c| c.id == *clip))
-                                })
-                            })
-                            .collect();
-                        // One step: every clip is checked first, then all go or none do.
-                        d.apply(Command::RemoveClips {
-                            sequence,
-                            clips,
-                            ripple,
-                        })
-                    });
-                    if result.is_ok() {
-                        self.selected.clear();
-                    }
-                    result
+                    self.remove_selected(action == Action::RippleDelete)
                 }
             }
             Action::SelectAll => {
@@ -808,8 +832,9 @@ impl Editor {
                 self.jump_to_keyframe(action == Action::NextKeyframe);
                 Ok(())
             }
-            Action::Copy => self.copy_keyframes(),
-            Action::Paste => self.paste_keyframes(),
+            Action::Copy => self.copy(),
+            Action::Cut => self.cut(),
+            Action::Paste => self.paste(),
         };
         if let Err(err) = result {
             self.errors.push(&err);
@@ -831,6 +856,24 @@ impl Editor {
                 .why("This needs a project.")
                 .fix("Open a project from the launcher.")),
         }
+    }
+
+    /// Splits at `at`: the first selected clip (with its linked clips), or
+    /// every clip there when none is selected.
+    fn split_at(&mut self, at: Time) -> diag::Result<()> {
+        let clip = self.selected.first().copied();
+        self.with_document(|d| {
+            let sequence = d.project().active_sequence;
+            d.apply(Command::Split { sequence, at, clip })
+        })
+    }
+
+    /// The playhead, on the open timeline's frame grid.
+    fn playhead_on_frame(&self) -> Time {
+        let seq = self.document.as_ref().and_then(|d| d.project().active());
+        seq.map_or(self.viewer.playhead, |s| {
+            s.settings.frame_rate.snap(self.viewer.playhead)
+        })
     }
 
     /// Where cuts, splits and labels happen: the edit needle, or the playhead
@@ -865,6 +908,7 @@ impl Editor {
 
     /// Adds an empty track after the others of its kind, named by its number.
     fn add_track(&mut self, kind: project::TrackKind) -> diag::Result<()> {
+        self.shown_view().reveal_added_track();
         let mut added = None;
         self.with_document(|d| {
             let Some(seq) = d.project().active() else {
@@ -956,7 +1000,8 @@ impl Editor {
                 "Select a clip with a picture first: its keyframes are what this moves between.".into();
             return;
         };
-        let frames = clip.keyframe_frames(&project::LookField::ALL, rate);
+        // Its look's keyframes and its speed ramp's, as the marks show them.
+        let frames = timeline_panel::all_keyframe_frames(clip, rate);
         let target = match next {
             true => frames.iter().find(|frame| **frame > here),
             false => frames.iter().rev().find(|frame| **frame < here),
@@ -968,7 +1013,9 @@ impl Editor {
             }
             None => {
                 let way = if next { "after" } else { "before" };
-                self.status = format!("The selected clip has no keyframe {way} the playhead.");
+                self.status = format!(
+                    "The selected clip has no keyframe (of its look or its speed) {way} the playhead."
+                );
             }
         }
     }
@@ -1008,6 +1055,16 @@ impl Editor {
             E::TrackRole { track, role } => self.role_event(track, role),
             E::Select { clip, add } => timeline_panel::select(&mut self.selected, project::ClipId(clip), add),
             E::ClearSelection => self.selected.clear(),
+            E::RegionCut(cut) => {
+                if let Err(err) = self.cut_region(cut) {
+                    self.errors.push(&err);
+                }
+            }
+            E::CloseGap { start, end } => {
+                if let Err(err) = self.close_gap(start, end) {
+                    self.errors.push(&err);
+                }
+            }
             E::Move {
                 clip,
                 by,
@@ -1015,11 +1072,13 @@ impl Editor {
                 new_track,
             } => {
                 let mut says = None;
+                let selected = self.selected.clone();
                 let result = self.with_document(|d| {
                     let Some(seq) = d.project().active() else {
                         return Ok(());
                     };
                     let clip = project::ClipId(clip);
+                    let together = timeline_panel::moves_together(seq, &selected, clip);
                     let Some(start) = seq
                         .tracks()
                         .flat_map(|t| t.clips.iter())
@@ -1030,6 +1089,14 @@ impl Editor {
                     };
                     let target = seq.settings.frame_rate.snap(start + seconds(by)).max(Time::ZERO);
                     let (sequence, by) = (seq.id, target - start);
+                    if together {
+                        // One of several selected clips: they all move, one step.
+                        return d.apply(Command::MoveClips {
+                            sequence,
+                            clips: selected,
+                            by,
+                        });
+                    }
                     if track.is_none() && !new_track {
                         return d.apply(Command::MoveLinked { sequence, clip, by });
                     }
@@ -1195,6 +1262,7 @@ impl Editor {
                 }
             }
             E::OpenNested { clip } => self.open_nested(project::ClipId(clip)),
+            E::FitNested { clip } => self.fit_nested(project::ClipId(clip)),
             E::AddAdjustment { at, track } => {
                 if let Err(err) = self.add_adjustment(seconds(at), track.map(project::TrackId)) {
                     self.errors.push(&err);
@@ -1938,6 +2006,7 @@ impl Editor {
                         sequence,
                         template,
                         at,
+                        name_tracks: true,
                     })
                 });
                 match result {
@@ -2075,6 +2144,8 @@ impl Editor {
             compact_tracks: self.settings.compact_tracks,
             track_divider: !self.settings.one_track_list,
             click_moves_needle: self.settings.click_moves == ui_kit::ClickMoves::EditNeedle,
+            rough_cut: self.settings.rough_cut,
+            edit_at_playhead: self.settings.edit_at_playhead,
             ..self.display.state(full_screen)
         }
     }
@@ -2358,7 +2429,10 @@ impl Editor {
     /// A finished change is applied as one undo step.
     fn inspector_panel(&mut self, ui: &mut egui::Ui) {
         if !crate::inspector::shows_a_clip(self.document.as_ref().map(|d| d.project()), &self.selected) {
-            self.timeline_details(ui);
+            egui::ScrollArea::vertical()
+                .id_salt("timeline details")
+                .auto_shrink([false, true])
+                .show(ui, |ui| self.timeline_details(ui));
         }
         self.inspector.on_picture = self.settings.picture_handles;
         // A clip's level line being dragged on the timeline shows here as it moves.
@@ -2375,7 +2449,15 @@ impl Editor {
         );
         let Some(document) = &self.document else { return };
         let playhead = self.viewer.playhead;
+        // A fixed id: its place in the panel is kept whatever comes before
+        // it, so a click in it (an arrow beside a diamond) never scrolls it
+        // back to the top.
+        // A scroll bar with room of its own, beside the rows instead of over
+        // their right end, where the keyframe arrows are (a click there went
+        // to the bar and scrolled the panel to the top).
+        ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
         let commands = egui::ScrollArea::vertical()
+            .id_salt("inspector")
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 self.inspector
@@ -2497,6 +2579,12 @@ impl Editor {
                 ErrorResponse::Fix(action) if action.command == crate::recovered::OPEN_LAST_SAVE => {
                     self.open_last_save();
                 }
+                ErrorResponse::Fix(action) if action.command == SPLIT_AT_PLAYHEAD => {
+                    let at = self.playhead_on_frame();
+                    if let Err(err) = self.split_at(at) {
+                        self.errors.push(&err);
+                    }
+                }
                 ErrorResponse::Fix(action) => match import::whats_there_id(&action.command) {
                     Some(id) => {
                         if self.importer.whats_there(&self.jobs, ui.ctx(), id) {
@@ -2554,7 +2642,10 @@ impl Editor {
         ui.add_space(24.0);
         if !self.status.is_empty() {
             ui.add_space(8.0);
-            ui.label(egui::RichText::new(&self.status).color(self.theme.text_secondary));
+            ui.label(
+                egui::RichText::new(&self.status)
+                    .color(self.theme.text_secondary.gamma_multiply(self.status_strength)),
+            );
         }
     }
 
@@ -2654,7 +2745,12 @@ impl Editor {
                 .corner_radius(6)
                 .inner_margin(egui::Margin::symmetric(12, 10))
                 .show(&mut panel, |ui| {
-                    ui.set_min_size(inspector_rect.size() - egui::vec2(24.0, 20.0));
+                    // Everything stays inside the panel: what doesn't fit
+                    // scrolls, and nothing is drawn past its edge.
+                    let inner = inspector_rect.shrink2(egui::vec2(12.0, 10.0));
+                    ui.set_min_size(inner.size());
+                    ui.set_max_size(inner.size());
+                    ui.set_clip_rect(ui.clip_rect().intersect(inner));
                     self.inspector_panel(ui);
                 });
         }
@@ -2716,6 +2812,27 @@ impl Editor {
                 let whole = crate::picture_handles::uncropped(being_changed.as_ref().unwrap_or(p), clip);
                 being_changed = whole.or(being_changed);
             }
+            // A clip being slipped: the viewer shows its first frame as it
+            // would be (and the Source its file there), live; the playhead
+            // goes back when the drag ends.
+            match timeline_panel::slipped(&self.timeline, being_changed.as_ref().unwrap_or(p)) {
+                Some((moved, clip)) => {
+                    let start = moved
+                        .active()
+                        .and_then(|s| s.tracks().flat_map(|t| t.clips.iter()).find(|c| c.id == clip))
+                        .map(|c| c.start);
+                    if let Some(start) = start {
+                        self.slip_playhead.get_or_insert(self.viewer.playhead);
+                        self.viewer.playhead = start;
+                    }
+                    being_changed = Some(moved);
+                }
+                None => {
+                    if let Some(back) = self.slip_playhead.take() {
+                        self.viewer.playhead = back;
+                    }
+                }
+            }
             let playhead = self.viewer.playhead;
             let snapping = self.timeline.snapping;
             let on_picture = self.settings.picture_handles;
@@ -2730,8 +2847,9 @@ impl Editor {
             // Split view: the selected clip raw, beside the timeline's picture.
             let (split, away) = (self.display.split(), self.display.away());
             let display = &mut self.display;
+            let shown = being_changed.as_ref().unwrap_or(p);
             let mut source = |ui: &mut egui::Ui, size: egui::Vec2| {
-                display.source_ui(ui, theme, size, p, selected, playhead, quality_before);
+                display.source_ui(ui, theme, size, shown, selected, playhead, quality_before);
             };
             let stage = crate::viewer::Stage {
                 source: split.then_some(&mut source as &mut crate::viewer::DrawSource),
@@ -2928,7 +3046,10 @@ impl Editor {
         }
         if !self.status.is_empty() {
             ui.add_space(4.0);
-            ui.label(egui::RichText::new(&self.status).color(self.theme.text_secondary));
+            ui.label(
+                egui::RichText::new(&self.status)
+                    .color(self.theme.text_secondary.gamma_multiply(self.status_strength)),
+            );
         }
     }
 
@@ -3041,6 +3162,9 @@ impl Editor {
                 ui.checkbox(&mut self.settings.edit_at_playhead, "Edit at the playhead")
                     .on_hover_text("Merge the red edit needle into the playhead.");
                 click_moves_row(ui, &mut self.settings.click_moves, self.settings.edit_at_playhead);
+                ui.checkbox(&mut self.settings.cut_closes_gap, "Cut closes the gap").on_hover_text(
+                    "Cut takes the clips out and moves everything after them back on every track, as \"Delete and close the gap\" does. Off: it leaves the gap.",
+                );
                 ui.add_space(8.0);
                 settings_heading(ui, &self.theme, Section::Audio, &mut found);
                 ui_kit::master::target_row(ui, &mut self.settings.loudness_target);
@@ -3444,6 +3568,11 @@ impl eframe::App for Editor {
         }
         let idle = now.duration_since(self.last_input) > IDLE_AFTER;
         self.jobs.set_idle(idle);
+        let (strength, again) = self.status_fade.follow(&mut self.status, now);
+        self.status_strength = strength;
+        if let Some(again) = again {
+            ctx.request_repaint_after(again);
+        }
         self.graphics.frame(&ctx, self.frames);
         if self.frames == 2 {
             for action in std::mem::take(&mut self.startup_actions) {
@@ -3786,6 +3915,10 @@ where
 }
 
 /// Seconds (as the timeline widget gives them) as exact time, to the microsecond.
+/// The fix button's command that splits at the playhead when the edit
+/// needle found nothing to split.
+const SPLIT_AT_PLAYHEAD: &str = "split.at-playhead";
+
 pub(crate) fn seconds(s: f64) -> Time {
     Time::from_ratio((s * 1_000_000.0).round() as i64, 1_000_000).unwrap_or(Time::ZERO)
 }

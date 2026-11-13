@@ -93,7 +93,7 @@ pub fn results(
     let matches = |text: &str| text.to_lowercase().contains(&q);
     let mut hits = Vec::new();
     for action in Action::ALL {
-        if matches(action.label()) {
+        if action.found_by(&q) {
             hits.push(Hit::Command {
                 action: *action,
                 keys: shortcuts.keys_for(*action),

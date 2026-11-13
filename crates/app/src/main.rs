@@ -40,6 +40,7 @@ mod settings;
 mod settings_sections;
 mod silence_panel;
 mod slow_pictures;
+mod status_line;
 mod sync_panel;
 mod system_keyboard;
 mod templates_window;

@@ -178,15 +178,30 @@ fn draw(
         }
     }
     if !note.is_empty() {
-        painter.text(
-            area.right_bottom() - vec2(12.0, 10.0),
-            Align2::RIGHT_BOTTOM,
-            note,
-            FontId::proportional(11.0),
-            theme.faint,
-        );
+        draw_note(&painter, theme, area, frame, note);
     }
     (frame, response)
+}
+
+/// The quiet note in the viewer's bottom right corner. Beside the picture
+/// it is plain faint text; where it would lie on the picture (a narrow
+/// viewer, such as each half of the split view) it is cut to the
+/// viewer's width and put on a dark pill like a caption, so it never mixes
+/// with the picture under it.
+fn draw_note(painter: &egui::Painter, theme: &Theme, area: Rect, frame: Rect, note: &str) {
+    let mut job =
+        egui::text::LayoutJob::simple_singleline(note.to_owned(), FontId::proportional(11.0), theme.faint);
+    job.wrap = egui::text::TextWrapping::truncate_at_width((area.width() - 36.0).max(40.0));
+    let galley = painter.layout_job(job);
+    let corner = area.right_bottom() - vec2(12.0, 10.0);
+    let place = Rect::from_min_max(corner - galley.size(), corner);
+    if !place.intersects(frame) {
+        painter.galley(place.min, galley, theme.faint);
+        return;
+    }
+    let pill = place.expand2(vec2(6.0, 3.0));
+    painter.rect_filled(pill, pill.height() / 2.0, theme.viewport.gamma_multiply(0.85));
+    painter.galley(place.min, galley, theme.text_secondary);
 }
 
 /// The part of a frame drawn by [`zoomed_viewer`] that is seen: inside the
@@ -334,6 +349,10 @@ pub struct Display {
     pub track_divider: bool,
     /// A click in the timeline's ruler moves the edit needle.
     pub click_moves_needle: bool,
+    /// The timeline is in the rough cut view.
+    pub rough_cut: bool,
+    /// Cuts, splits and pastes happen at the playhead (no edit needle).
+    pub edit_at_playhead: bool,
 }
 
 /// The Display menu's lines: the command each runs, its words, and whether
@@ -352,8 +371,9 @@ pub fn display_lines(display: Display) -> [(Action, &'static str, bool); 3] {
 
 /// The Display menu's lines under its Timeline heading: how the timeline's
 /// tracks are looked at.
-pub fn timeline_lines(display: Display) -> [(Action, &'static str, bool); 3] {
+pub fn timeline_lines(display: Display) -> [(Action, &'static str, bool); 5] {
     [
+        (Action::RoughCut, "Rough cut", display.rough_cut),
         (Action::CompactTracks, "Compact tracks", display.compact_tracks),
         (
             Action::TrackDivider,
@@ -364,6 +384,11 @@ pub fn timeline_lines(display: Display) -> [(Action, &'static str, bool); 3] {
             Action::ClickMovesNeedle,
             "Clicking the timeline moves the edit needle",
             display.click_moves_needle,
+        ),
+        (
+            Action::EditAtPlayhead,
+            "Edit at the playhead",
+            display.edit_at_playhead,
         ),
     ]
 }
@@ -376,6 +401,8 @@ pub fn timeline_lines(display: Display) -> [(Action, &'static str, bool); 3] {
 pub fn display_menu(ui: &mut Ui, display: Display, shortcuts: &ShortcutTable) -> Option<Action> {
     let mut picked = None;
     let mut line = |ui: &mut Ui, (action, words, on): (Action, &str, bool)| {
+        // A tick says which are on; the room for it keeps the words lined up.
+        let words = format!("{}  {words}", if on { "\u{2713}" } else { "\u{2003}" });
         let line = egui::Button::selectable(on, words).shortcut_text(shortcuts.keys_for(action));
         if ui.add(line).on_hover_text(action.label()).clicked() {
             picked = Some(action);
@@ -438,9 +465,11 @@ mod tests {
         assert_eq!(
             timeline.map(|(a, _, on)| (a, on)),
             [
+                (Action::RoughCut, false),
                 (Action::CompactTracks, true),
                 (Action::TrackDivider, false),
-                (Action::ClickMovesNeedle, true)
+                (Action::ClickMovesNeedle, true),
+                (Action::EditAtPlayhead, false)
             ]
         );
         // Each line's words are in its command's name, so the menu, search

@@ -152,7 +152,8 @@ impl ShortcutsPage {
             .filter(|(_, b)| {
                 // By the name of the keys, or as the keyboard in use prints them.
                 let printed = b.keys.map(|k| table.written(k)).unwrap_or_default();
-                self.searched(&[b.action.label(), &b.label(), &printed])
+                let q = self.search.trim().to_lowercase();
+                b.action.found_by(&q) || self.searched(&[&b.label(), &printed])
             })
             .map(|(i, _)| i)
             .collect()

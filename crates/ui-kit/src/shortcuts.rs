@@ -176,6 +176,7 @@ const USUAL: &[(Action, Shortcut)] = &[
     (Action::Redo, Shortcut::ctrl(Key::Y)),
     (Action::Save, Shortcut::ctrl(Key::S)),
     (Action::Copy, Shortcut::ctrl(Key::C)),
+    (Action::Cut, Shortcut::ctrl(Key::X)),
     (Action::Paste, Shortcut::ctrl(Key::V)),
     (Action::Search, Shortcut::ctrl(Key::K)),
     (Action::SelectAll, Shortcut::ctrl(Key::A)),
@@ -505,8 +506,8 @@ mod tests {
             got
         };
         assert_eq!(
-            pressed(vec![Event::Copy, Event::Paste("x".into())], false),
-            [Action::Copy, Action::Paste]
+            pressed(vec![Event::Copy, Event::Cut, Event::Paste("x".into())], false),
+            [Action::Copy, Action::Cut, Action::Paste]
         );
         assert!(pressed(vec![Event::Copy, Event::Paste("x".into())], true).is_empty());
         let ctrl_a = || Event::Key {
