@@ -11,7 +11,7 @@
 
 use crate::viewer::Viewer;
 use crate::viewer_window::{News, ViewerWindow, WindowPlace};
-use engine::source::{Source, file_alone, source};
+use engine::source::{NO_PICTURE_OF_ITS_OWN, Source, file_alone, source, timeline_alone};
 use project::{ClipId, MediaRef, Project, Time};
 use ui_kit::{PreviewQuality, ShortcutTable, Slot, Theme};
 
@@ -27,6 +27,9 @@ pub struct ViewerDisplay {
     source: Option<Viewer>,
     /// The file the Source shows, and the project of it alone.
     alone: Option<(MediaRef, Project)>,
+    /// The nested timeline the Source shows, the project it was made from
+    /// and that project with the timeline open.
+    nested: Option<(project::SequenceId, Project, Project)>,
     /// The viewer's own window, while it is open.
     window: Option<ViewerWindow>,
     /// Seconds per frame while playing, handed to the Source's viewer as
@@ -118,19 +121,51 @@ impl ViewerDisplay {
         let shot = project.active().map_or(Source::NothingSelected, |seq| {
             source(project, seq, selected, playhead)
         });
-        let (Source::Shot { media, at, .. }, Some(viewer)) = (shot, self.source.as_mut()) else {
+        let Some(viewer) = self.source.as_mut() else {
             ui_kit::viewer::empty(ui, theme, size, SELECT_A_CLIP);
             return;
         };
-        if self.alone.as_ref().is_none_or(|(kept, _)| kept != media) {
-            self.alone = file_alone(media).map(|alone| (media.clone(), alone));
+        match shot {
+            Source::NothingSelected => {
+                ui_kit::viewer::empty(ui, theme, size, SELECT_A_CLIP);
+            }
+            Source::Adjustment => {
+                ui_kit::viewer::empty(ui, theme, size, NO_PICTURE_OF_ITS_OWN);
+            }
+            Source::Nested { sequence, at, .. } => {
+                // The project with the nested timeline open, made again only
+                // when the project changes.
+                let fresh = self
+                    .nested
+                    .as_ref()
+                    .is_some_and(|(id, made_from, _)| *id == sequence && made_from == project);
+                if !fresh {
+                    self.nested =
+                        timeline_alone(project, sequence).map(|alone| (sequence, project.clone(), alone));
+                }
+                match &self.nested {
+                    Some((_, _, alone)) => {
+                        let name = alone.active().map_or("", |s| s.name.as_str());
+                        let caption = format!("Source · {name}");
+                        viewer.source_ui(ui, theme, size, alone, at, quality, &caption);
+                    }
+                    None => {
+                        ui_kit::viewer::empty(ui, theme, size, SELECT_A_CLIP);
+                    }
+                }
+            }
+            Source::Shot { media, at, .. } => {
+                if self.alone.as_ref().is_none_or(|(kept, _)| kept != media) {
+                    self.alone = file_alone(media).map(|alone| (media.clone(), alone));
+                }
+                let Some((_, alone)) = &self.alone else {
+                    ui_kit::viewer::empty(ui, theme, size, SELECT_A_CLIP);
+                    return;
+                };
+                let caption = caption(media);
+                viewer.source_ui(ui, theme, size, alone, at, quality, &caption);
+            }
         }
-        let Some((_, alone)) = &self.alone else {
-            ui_kit::viewer::empty(ui, theme, size, SELECT_A_CLIP);
-            return;
-        };
-        let caption = caption(media);
-        viewer.source_ui(ui, theme, size, alone, at, quality, &caption);
     }
 
     pub fn window_open(&self) -> bool {

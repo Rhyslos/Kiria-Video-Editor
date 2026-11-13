@@ -90,6 +90,70 @@ impl TrackProgress {
     }
 }
 
+/// How far `c`'s picture can slip inside what it plays, in seconds on the
+/// timeline (the Slip tool holds a drag to it). `None` for what can't be
+/// held this way: a still, an adjustment layer, a ramped clip.
+pub fn slip_room(project: &Project, c: &project::Clip) -> Option<ui_kit::SlipRoom> {
+    if !c.ramp.is_empty() {
+        return None;
+    }
+    let length = project.source_length(c)?.as_secs_f64();
+    let speed = c.speed.as_f64().max(1e-6);
+    let (from, to) = (
+        c.source_in.as_secs_f64(),
+        (c.source_in + c.source_len()).as_secs_f64(),
+    );
+    Some(ui_kit::SlipRoom {
+        before: (from / speed).max(0.0),
+        after: ((length - to) / speed).max(0.0),
+    })
+}
+
+/// Where what a nested clip plays ends on the timeline, in seconds, when
+/// its timeline got shorter than the clip: the rest shows nothing.
+pub fn plays_until(project: &Project, c: &project::Clip) -> Option<f64> {
+    nested_end(project, c).map(|end| end.as_secs_f64())
+}
+
+/// The frame a nested clip's timeline runs out on (the start of the first
+/// frame with nothing left to play), when that is before the clip ends.
+pub fn nested_end(project: &Project, c: &project::Clip) -> Option<project::Time> {
+    c.nested()?;
+    let rate = project.active()?.settings.frame_rate;
+    let left = project.source_length(c)? - c.source_in;
+    let shown = if left <= project::Time::ZERO {
+        project::Time::ZERO
+    } else {
+        c.speed.unscale(left)
+    };
+    let end = rate
+        .frame_start(rate.frame_at(c.start + shown))
+        .max(c.start + rate.frame_duration());
+    (end < c.end()).then_some(end)
+}
+
+/// `project` with the clip being slipped on `timeline` where it is now,
+/// for the viewer to show; `None` when none is (or it can't go there).
+pub fn slipped(timeline: &ui_kit::TimelineView, project: &Project) -> Option<(Project, project::ClipId)> {
+    let (clip, by) = timeline.slipping()?;
+    let seq = project.active()?;
+    let step = seq.settings.frame_rate.snap(crate::editor::seconds(by.abs()));
+    let by = if by < 0.0 {
+        project::Time::ZERO - step
+    } else {
+        step
+    };
+    let clip = project::ClipId(clip);
+    let moved = project::Command::Slip {
+        sequence: seq.id,
+        clip,
+        by,
+    }
+    .apply(project)
+    .ok()?;
+    Some((moved, clip))
+}
+
 /// The share of a clip whose waveform can be drawn: the clip shows
 /// Points along a ramped clip: where in its file it is (for its pictures
 /// and waveform) and how fast it plays (the line drawn on it). Nothing for
@@ -150,6 +214,43 @@ impl TrackPaces {
                 }
             }
         }
+    }
+}
+
+/// A clip's tooltip with where its sound is: a picture's linked sound
+/// clips by the tracks they are on ("its sound on Mic, Voice chat"), so a
+/// stream's own name is never read as a track's; a sound clip says which
+/// of its file's streams it plays.
+fn with_sound_place(
+    media: &project::MediaRef,
+    seq: &Sequence,
+    track: &project::Track,
+    c: &project::Clip,
+) -> String {
+    let summary = import::summary(media);
+    match track.kind {
+        project::TrackKind::Video => {
+            let on: Vec<&str> = seq
+                .audio_tracks
+                .iter()
+                .filter(|t| t.clips.iter().any(|s| s.link.is_some() && s.link == c.link))
+                .map(|t| t.name.as_str())
+                .collect();
+            match on.as_slice() {
+                [] => summary,
+                [one] => format!("{summary} · its sound on the track {one}"),
+                many => format!("{summary} · its sound on the tracks {}", many.join(", ")),
+            }
+        }
+        project::TrackKind::Audio => match media.info.audio.iter().find(|a| a.index == c.stream) {
+            Some(stream) if media.info.audio.len() > 1 => {
+                format!(
+                    "{summary} · this clip plays the stream \u{201c}{}\u{201d}",
+                    stream.name
+                )
+            }
+            _ => summary,
+        },
     }
 }
 
@@ -250,7 +351,7 @@ pub fn drawn(
                             seq.name,
                             import::settings_text(&seq.settings)
                         ),
-                        _ => media.map_or_else(String::new, import::summary),
+                        _ => media.map_or_else(String::new, |m| with_sound_place(m, seq, t, c)),
                     },
                     name,
                     selected: selected.contains(&c.id) || c.link.is_some_and(|l| links.contains(&l)),
@@ -282,6 +383,8 @@ pub fn drawn(
                         project::ClipKind::Adjustment => ClipShows::Adjustment,
                     },
                     line: None,
+                    slip_room: slip_room(project, c),
+                    plays_until: plays_until(project, c),
                 }
             })
             .collect();
@@ -391,20 +494,51 @@ pub fn label_colour(c: LabelColor) -> egui::Color32 {
 /// Where a clip's look has keyframes: a mark at the start of each
 /// timeline frame that holds one, inside the clip, saying which numbers are
 /// keyed there and how they go on to the next.
+/// The frames of the timeline (at `rate`) where `clip` has keyframes: of
+/// its look, and of its speed ramp (kept in timeline time from its start),
+/// in order, each once.
+pub fn all_keyframe_frames(clip: &project::Clip, rate: project::Rate) -> Vec<i64> {
+    let (first, end) = (rate.frame_at(clip.start), rate.frame_at(clip.end()));
+    let mut frames = clip.keyframe_frames(&project::LookField::ALL, rate);
+    frames.extend(
+        clip.ramp
+            .keys()
+            .iter()
+            .map(|k| rate.frame_at(clip.start + k.at))
+            .filter(|f| (first..end).contains(f)),
+    );
+    frames.sort_unstable();
+    frames.dedup();
+    frames
+}
+
+/// The words a mark uses for a speed keyframe.
+pub const SPEED_MARK: &str = "speed";
+
 pub fn keyframe_marks(clip: &project::Clip, rate: project::Rate) -> Vec<ui_kit::KeyframeMark> {
     use project::{Ease, LookField};
-    clip.keyframe_frames(&LookField::ALL, rate)
+    let speed_frames: Vec<i64> = clip
+        .ramp
+        .keys()
+        .iter()
+        .map(|k| rate.frame_at(clip.start + k.at))
+        .collect();
+    all_keyframe_frames(clip, rate)
         .into_iter()
         .map(|frame| {
             let at = rate.frame_start(frame);
             let near = clip.frame_in_file(at, rate);
             let fields: Vec<LookField> = clip.keyframes.fields_in(near).collect();
             // In the order the inspector shows them, each group once.
-            let keyed = LookField::GROUPS
+            let mut keyed: Vec<&'static str> = LookField::GROUPS
                 .iter()
                 .filter(|group| group.iter().any(|field| fields.contains(field)))
                 .filter_map(|group| group.first().map(|field| field.name()))
                 .collect();
+            // A speed keyframe there too (set in the inspector's Speed section).
+            if speed_frames.contains(&frame) {
+                keyed.push(SPEED_MARK);
+            }
             let mut eases = fields
                 .iter()
                 .flat_map(|field| clip.keyframes.of(*field))
@@ -478,6 +612,21 @@ pub fn keyframes_moved(timeline: &ui_kit::TimelineView, project: &Project) -> Op
         ui_kit::timeline::MarksChange::Move(by),
     )?;
     command.apply(project).ok()
+}
+
+/// Whether moving `clip` moves every selected clip with it: it is one of
+/// them (or linked to one) and another selected clip is not linked to it,
+/// as the timeline drew the drag.
+pub fn moves_together(seq: &Sequence, selected: &[ClipId], clip: ClipId) -> bool {
+    let link_of = |id: ClipId| {
+        seq.tracks()
+            .flat_map(|t| t.clips.iter())
+            .find(|c| c.id == id)
+            .and_then(|c| c.link)
+    };
+    let link = link_of(clip);
+    let same = |id: ClipId| id == clip || (link.is_some() && link_of(id) == link);
+    selected.iter().any(|id| same(*id)) && selected.iter().any(|id| !same(*id))
 }
 
 /// Clicking a clip: alone, or added to (or taken out of) the selection.
@@ -769,6 +918,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn speed_keyframes_are_marks_and_steps_too() {
+        let project = crate::inspector::tests::project_with_a_clip();
+        let rate = project.active().unwrap().settings.frame_rate;
+        let mut clip = project.active().unwrap().video_tracks[0].clips[0].clone();
+        clip.ramp = project::Ramp::new([
+            project::SpeedKey {
+                at: project::Time::seconds(1),
+                speed: project::Speed::NORMAL,
+                ease: Default::default(),
+            },
+            project::SpeedKey {
+                at: project::Time::seconds(2),
+                speed: project::Speed::new(1, 2).unwrap(),
+                ease: Default::default(),
+            },
+        ]);
+        let frames = all_keyframe_frames(&clip, rate);
+        assert_eq!(
+            frames,
+            vec![
+                rate.frame_at(clip.start + project::Time::seconds(1)),
+                rate.frame_at(clip.start + project::Time::seconds(2))
+            ]
+        );
+        let marks = keyframe_marks(&clip, rate);
+        assert_eq!(marks.len(), 2);
+        assert!(marks.iter().all(|m| m.keyed == vec![SPEED_MARK]), "{marks:?}");
+    }
+
+    #[test]
     fn selecting_alone_adding_and_taking_out() {
         let mut s = Vec::new();
         select(&mut s, ClipId(1), false);
@@ -804,6 +983,8 @@ mod tests {
             speed_curve: None,
             shows: Default::default(),
             line: None,
+            slip_room: None,
+            plays_until: None,
         }
     }
 

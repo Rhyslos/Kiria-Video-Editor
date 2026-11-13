@@ -20,6 +20,9 @@ pub struct Settings {
     pub resources: jobs::Budgets,
     /// Merge the red edit needle into the playhead.
     pub edit_at_playhead: bool,
+    /// Cut (the clipboard's) closes the gap the clips leave on every
+    /// track, as "Delete and close the gap" does; off, it leaves the gap.
+    pub cut_closes_gap: bool,
     /// How sharp the viewer's picture is.
     pub preview_quality: ui_kit::PreviewQuality,
     /// The timeline in the rough cut view (sound folded into the pictures).

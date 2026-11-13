@@ -251,6 +251,33 @@ impl Editor {
             self.open_timeline(id);
         }
     }
+
+    /// "Fit to the nested timeline": a nested clip longer than what its
+    /// timeline has left to play is trimmed to end where that ends (on a
+    /// frame, never past it), as one undo step. Never done by itself: a
+    /// timeline that gets shorter leaves the clips playing it as they are.
+    pub(super) fn fit_nested(&mut self, clip: ClipId) {
+        let result = self.with_document(|d| {
+            let p = d.project();
+            let Some(seq) = p.active() else { return Ok(()) };
+            let Some(c) = seq.tracks().flat_map(|t| t.clips.iter()).find(|c| c.id == clip) else {
+                return Ok(());
+            };
+            let Some(end) = crate::timeline_panel::nested_end(p, c) else {
+                return Ok(());
+            };
+            d.apply(project::Command::Trim {
+                sequence: seq.id,
+                clip,
+                edge: project::Edge::End,
+                to: end,
+            })
+        });
+        match result {
+            Ok(()) => self.status = "The clip now ends where its timeline does.".into(),
+            Err(err) => self.errors.push(&err),
+        }
+    }
 }
 
 #[cfg(test)]
