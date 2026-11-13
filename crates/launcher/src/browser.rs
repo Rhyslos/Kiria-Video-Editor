@@ -329,7 +329,7 @@ impl Browser {
     fn check_last_run(&mut self) {
         if self.rollback.is_some() {
             // The crash was the failed start that the rollback notice explains.
-            if let Err(err) = diag::session::forget_unfinished_run(&self.data_dir) {
+            if let Err(err) = recovery::forget_crashed_runs(&self.data_dir) {
                 tracing::warn!("{}", err.report());
             }
             return;
@@ -354,7 +354,7 @@ impl Browser {
             }
         };
         // Dealt with here, so the editor doesn't report it again.
-        if crashed && let Err(err) = diag::session::forget_unfinished_run(&self.data_dir) {
+        if crashed && let Err(err) = recovery::forget_crashed_runs(&self.data_dir) {
             tracing::warn!("{}", err.report());
         }
     }
@@ -383,6 +383,14 @@ impl Browser {
 
     /// Picks up finished background work.
     fn poll_work(&mut self, ctx: &egui::Context) {
+        // A file chooser that could not open: said in the New project
+        // dialog when it asked, else in the error strip.
+        if let Some(problem) = ui_kit::file_dialog::take_problem(ctx) {
+            match &mut self.new_project {
+                Some(dialog) => dialog.set_problem(&problem),
+                None => self.errors.push(&problem),
+            }
+        }
         if let Some(task) = &self.refresh {
             match task.poll() {
                 Poll::Running => {}
@@ -484,12 +492,13 @@ impl Browser {
             return;
         }
         let (title, start) = (title.to_owned(), self.default_project_folder());
+        let asker = ctx.clone();
         self.picker = Some(Task::spawn(ctx, move || {
             let mut dialog = rfd::FileDialog::new().set_title(title);
             if let Some(start) = start.filter(|s| s.is_dir()) {
                 dialog = dialog.set_directory(start);
             }
-            make(dialog.pick_folder())
+            make(ui_kit::file_dialog::run(&asker, || dialog.pick_folder()))
         }));
     }
 
@@ -498,6 +507,7 @@ impl Browser {
             return;
         }
         let start = self.default_project_folder();
+        let asker = ctx.clone();
         self.picker = Some(Task::spawn(ctx, move || {
             let mut dialog = rfd::FileDialog::new()
                 .set_title("Open a project")
@@ -505,7 +515,7 @@ impl Browser {
             if let Some(start) = start.filter(|s| s.is_dir()) {
                 dialog = dialog.set_directory(start);
             }
-            Picked::ProjectFile(dialog.pick_file())
+            Picked::ProjectFile(ui_kit::file_dialog::run(&asker, || dialog.pick_file()))
         }));
     }
 
@@ -514,8 +524,12 @@ impl Browser {
             return;
         }
         let title = format!("Add a folder to {}", kind.label());
+        let asker = ctx.clone();
         self.picker = Some(Task::spawn(ctx, move || {
-            Picked::Folder(kind, rfd::FileDialog::new().set_title(title).pick_folder())
+            Picked::Folder(
+                kind,
+                ui_kit::file_dialog::run(&asker, || rfd::FileDialog::new().set_title(title).pick_folder()),
+            )
         }));
     }
 
@@ -851,7 +865,7 @@ impl Browser {
             } else {
                 (
                     "No projects yet",
-                    "Make one with New project, or open a project file with Open….".to_owned(),
+                    "Make one with New project, or open a project file with the Open… button.".to_owned(),
                 )
             };
             empty_state(ui, &self.theme, head, &body);

@@ -117,9 +117,13 @@ pub fn prepare(count: usize, crash: bool) -> diag::Result<PathBuf> {
         }
         drop(doc);
         if crash {
+            // An editor's marker whose process is gone: a crash.
+            let markers = data.join("sessions");
+            std::fs::create_dir_all(&markers).or_explain(explain)?;
+            let pid = u32::MAX - 7;
             std::fs::write(
-                data.join("session.running"),
-                format!("pid {}\nproject {}\n", u32::MAX - 7, unsaved.display()),
+                markers.join(format!("{pid}.running")),
+                format!("pid {pid}\nproject {}\n", unsaved.display()),
             )
             .or_explain(explain)?;
         }
