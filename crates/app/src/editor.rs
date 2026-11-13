@@ -312,7 +312,7 @@ impl Editor {
             None => Page::default(),
         };
         let library_tab = project.as_ref().and_then(|p| p.library_tab.clone());
-        let library_page = crate::library_page::LibraryPage::selecting(
+        let mut library_page = crate::library_page::LibraryPage::selecting(
             project.as_ref().and_then(|p| p.library_select.clone()),
         );
         let full_screen = project.as_ref().is_some_and(|p| p.full_screen);
@@ -430,6 +430,10 @@ impl Editor {
             hold_reading,
         );
         waveforms.trim(&jobs);
+        // Files' loudness readings too.
+        if let Some(cache) = proxy_dir.parent() {
+            library_page.keep_loudness_in(cache.join("loudness"));
+        }
         let proxies = crate::proxies::ProxyBuilds::new(
             proxy_dir,
             settings.proxies,

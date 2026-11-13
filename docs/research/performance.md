@@ -70,3 +70,7 @@ Left for later, in the order of the review: each sound stream opening and readin
 | `AudioStreams` (waveforms), five 10-minute streams | 1.70 s | 1.40 s (two threads) | Packets are read a second at a time and each stream decoded on a thread of its own; on more cores it scales with the streams |
 
 Priming the tracks on threads of their own when playback starts was tried and left out: with the opens this quick it saves little, and what a track mixes depended on the order threads ran in by a few millionths, which playback's sample-exact tests rightly refuse. One demuxer handing packets to every stream's decoder during playback (a fifth of the reading for five streams) is left for later: tracks may play different moments of the same file, so they can't simply share one reader.
+
+### The Library's loudness (item 7)
+
+Each sound stream of a file was measured in a pass of its own (a five-stream 1440p recording read five times) and again every session. Now every stream is measured in one pass (`media::AudioStreams`, the streams decoded side by side) and the readings are kept by the file's fingerprint in the cache folder's `loudness/`, so a file is read for its loudness once, ever. The readings are exactly those of measuring each stream alone (tested).

@@ -2,8 +2,10 @@
 //! sound streams (game, microphone, chat…) read once, start to end, on a
 //! worker and measured as the master meter measures (`engine::loudness`:
 //! integrated loudness gated as the loudness standard says, true peak from
-//! four-times oversampling). Kept for the session; a file is measured only
-//! once someone looks at it. A stream of one channel (a microphone) is
+//! four-times oversampling). Every sound stream of a file is measured in
+//! one pass over it, once someone looks at it, and the readings are kept
+//! in the cache folder's `loudness/` by the file's fingerprint, so a file
+//! is measured once, not once a session. A stream of one channel (a microphone) is
 //! measured as one channel, as the loudness standard says: its peak is its
 //! own samples', not those of the two channels it is spread over to play.
 //!
@@ -13,10 +15,9 @@
 //! to timeline" puts on that stream's clips when it adds them.
 
 use jobs::{JobHandle, JobSystem, PoolKind, Priority};
-use media::AudioDecoder;
 use project::{MediaId, MediaRef};
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// The rate sound is read at to be measured.
 const RATE: u32 = 48_000;
@@ -33,21 +34,34 @@ pub struct Reading {
     pub true_peak: f32,
 }
 
-enum State {
-    Measuring(JobHandle<Reading>),
-    Done(Result<Reading, String>),
+/// What is known of one file's streams.
+enum File {
+    Measuring(JobHandle<Vec<(u32, Reading)>>),
+    Done(Result<Vec<(u32, Reading)>, String>),
 }
 
 #[derive(Default)]
 pub struct Measurements {
-    /// By file and sound stream number.
-    streams: HashMap<(MediaId, u32), State>,
+    /// By file.
+    files: HashMap<MediaId, File>,
+    /// Where readings are kept between sessions, by the file's fingerprint
+    /// (the cache folder's `loudness/`); none in tests.
+    kept: Option<PathBuf>,
 }
 
 impl Measurements {
+    /// Readings kept in `folder` (made when the first is written).
+    pub fn keeping_in(folder: PathBuf) -> Measurements {
+        Measurements {
+            files: HashMap::new(),
+            kept: Some(folder),
+        }
+    }
+
     /// What is known of the loudness of `media`'s sound stream `stream`:
-    /// `None` while it is measured (started now if nobody asked before),
-    /// else the reading or why there is none.
+    /// `None` while the file is measured (started now if nobody asked
+    /// before: every sound stream of it in one pass, or read back from
+    /// what an earlier session kept), else the reading or why there is none.
     pub fn get(
         &mut self,
         jobs: &JobSystem,
@@ -55,112 +69,190 @@ impl Measurements {
         media: &MediaRef,
         stream: u32,
     ) -> Option<Result<Reading, String>> {
-        let state = self.streams.entry((media.id, stream)).or_insert_with(|| {
+        let kept = self.kept.clone();
+        let file = self.files.entry(media.id).or_insert_with(|| {
             let (path, ctx) = (media.path.clone(), ctx.clone());
-            let channels = media
-                .info
-                .audio
-                .iter()
-                .find(|a| a.index == stream)
-                .map_or(2, |a| a.channels);
-            State::Measuring(jobs.submit(
+            let streams: Vec<(u32, u16)> = media.info.audio.iter().map(|a| (a.index, a.channels)).collect();
+            let fingerprint = media.fingerprint.clone();
+            File::Measuring(jobs.submit(
                 PoolKind::Analysis,
                 Priority::Interactive,
                 "measure loudness",
                 move |job| {
-                    let result = measure(&path, (stream, channels), || job.is_cancelled());
+                    let kept = kept.map(|folder| folder.join(kept_name(&fingerprint)));
+                    if let Some(readings) = kept.as_deref().and_then(|file| load(file, &streams)) {
+                        ctx.request_repaint();
+                        return Ok(readings);
+                    }
+                    let result = measure_streams(&path, &streams, || job.is_cancelled());
+                    if let (Ok(readings), Some(file)) = (&result, &kept) {
+                        save(file, &streams, readings);
+                    }
                     ctx.request_repaint();
-                    result
+                    result.map(|r| streams.iter().map(|s| s.0).zip(r).collect())
                 },
             ))
         });
-        if let State::Measuring(handle) = state
+        if let File::Measuring(handle) = file
             && let Some(result) = handle.try_result()
         {
-            *state = State::Done(result.map_err(|err| err.why_text().unwrap_or(err.what()).to_owned()));
+            *file = File::Done(result.map_err(|err| err.why_text().unwrap_or(err.what()).to_owned()));
         }
-        match state {
-            State::Measuring(_) => None,
-            State::Done(result) => Some(result.clone()),
+        match file {
+            File::Measuring(_) => None,
+            File::Done(Ok(readings)) => Some(
+                readings
+                    .iter()
+                    .find(|(s, _)| *s == stream)
+                    .map(|(_, r)| *r)
+                    .ok_or_else(|| "It has no such sound stream.".to_owned()),
+            ),
+            File::Done(Err(why)) => Some(Err(why.clone())),
         }
     }
 
-    /// Whether any of `media`'s streams is being measured now.
+    /// Whether `media` is being measured now.
     pub fn measuring(&self, media: MediaId) -> bool {
-        self.streams
-            .iter()
-            .any(|((m, _), state)| *m == media && matches!(state, State::Measuring(_)))
+        matches!(self.files.get(&media), Some(File::Measuring(_)))
     }
 
     /// Measures the file again next time (it was found somewhere else).
     pub fn forget(&mut self, media: MediaId) {
-        self.streams.retain(|(m, _), state| {
-            if *m == media
-                && let State::Measuring(handle) = state
-            {
-                handle.cancel();
-            }
-            *m != media
-        });
+        if let Some(File::Measuring(handle)) = self.files.remove(&media) {
+            handle.cancel();
+        }
     }
 
     /// The app is closing: measurements under way stop.
     pub fn stop(&self) {
-        for state in self.streams.values() {
-            if let State::Measuring(handle) = state {
+        for file in self.files.values() {
+            if let File::Measuring(handle) = file {
                 handle.cancel();
             }
         }
     }
 }
 
-/// Reads sound stream `stream` (of `channels` channels) of the file from
-/// start to end and measures it. Slow (the whole stream is decoded): run
-/// it on a worker. `cancelled` is asked between blocks.
-pub fn measure(
+/// The name a file's readings are kept under: its fingerprint, as its
+/// proxy's and waveforms' are.
+fn kept_name(fingerprint: &project::Fingerprint) -> String {
+    format!("{}-{}.txt", fingerprint.size, fingerprint.sample_hash)
+}
+
+/// The first line of a kept file: what it is and its format's version.
+const KEPT_HEADER: &str = "loudness 1";
+
+/// The readings kept in `file` for `streams`, when it holds every one.
+fn load(file: &Path, streams: &[(u32, u16)]) -> Option<Vec<(u32, Reading)>> {
+    let text = std::fs::read_to_string(file).ok()?;
+    let mut lines = text.lines();
+    if lines.next()? != KEPT_HEADER {
+        return None;
+    }
+    let mut kept = HashMap::new();
+    for line in lines {
+        let mut parts = line.split_whitespace();
+        let stream: u32 = parts.next()?.parse().ok()?;
+        let integrated: f32 = parts.next()?.parse().ok()?;
+        let true_peak: f32 = parts.next()?.parse().ok()?;
+        kept.insert(
+            stream,
+            Reading {
+                integrated,
+                true_peak,
+            },
+        );
+    }
+    streams.iter().map(|(s, _)| Some((*s, *kept.get(s)?))).collect()
+}
+
+/// Keeps the readings of `streams` in `file`, whole or not at all; a
+/// failure only means measuring again next session.
+fn save(file: &Path, streams: &[(u32, u16)], readings: &[Reading]) {
+    let mut text = format!("{KEPT_HEADER}\n");
+    for ((stream, _), r) in streams.iter().zip(readings) {
+        text.push_str(&format!("{stream} {} {}\n", r.integrated, r.true_peak));
+    }
+    let written = file
+        .parent()
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .map_err(|e| e.to_string())
+        .and_then(|()| project::disk::write_atomic(file, text.as_bytes()).map_err(|e| e.to_string()));
+    if let Err(why) = written {
+        tracing::info!("a file's loudness was not kept: {why}");
+    }
+}
+
+/// Reads every one of `streams` (number, channels) of the file from start
+/// to end, in one pass, and measures each. Slow (the whole file is read):
+/// run it on a worker. `cancelled` is asked between blocks.
+pub fn measure_streams(
     path: &Path,
-    (stream, channels): (u32, u16),
+    streams: &[(u32, u16)],
     cancelled: impl Fn() -> bool,
-) -> diag::Result<Reading> {
-    let mut decoder = AudioDecoder::open(path, stream, RATE)?;
-    decoder.seek(0.0);
-    let mono = channels == 1;
-    let mut meter = if mono {
-        engine::loudness::Loudness::mono(RATE)
-    } else {
-        engine::loudness::Loudness::new(RATE)
-    };
-    // A tenth of a second at a time, in stereo.
-    let mut block = vec![0f32; (RATE / 10) as usize * 2];
-    let mut one = vec![0f32; (RATE / 10) as usize];
+) -> diag::Result<Vec<Reading>> {
+    let numbers: Vec<u32> = streams.iter().map(|s| s.0).collect();
+    let mut reader = media::AudioStreams::open(path, &numbers, RATE)?;
+    let mut meters: Vec<(bool, engine::loudness::Loudness)> = streams
+        .iter()
+        .map(|&(_, channels)| {
+            let mono = channels == 1;
+            let meter = if mono {
+                engine::loudness::Loudness::mono(RATE)
+            } else {
+                engine::loudness::Loudness::new(RATE)
+            };
+            (mono, meter)
+        })
+        .collect();
+    let mut out = vec![Vec::new(); streams.len()];
+    let mut one = Vec::new();
     loop {
         if cancelled() {
             return Err(diag::AppError::new("Measuring the loudness stopped").why("It was no longer needed."));
         }
-        let frames = decoder.read(&mut block);
-        if frames == 0 {
-            break;
-        }
-        if mono {
-            // The decoder spreads one channel over two at -3 dB each (the
-            // same power, as it is played); the channel itself is either
-            // of them brought back up.
-            for (o, pair) in one.iter_mut().zip(block[..frames * 2].chunks_exact(2)) {
-                *o = pair[0] * std::f32::consts::SQRT_2;
+        // A tenth of a second at a time, in stereo.
+        let going = reader.read((RATE / 10) as usize, &mut out);
+        for ((mono, meter), samples) in meters.iter_mut().zip(&mut out) {
+            if *mono {
+                // The decoder spreads one channel over two at -3 dB each
+                // (the same power, as it is played); the channel itself is
+                // either of them brought back up.
+                one.clear();
+                one.extend(
+                    samples
+                        .chunks_exact(2)
+                        .map(|pair| pair[0] * std::f32::consts::SQRT_2),
+                );
+                meter.feed(&one);
+            } else {
+                meter.feed(samples);
             }
-            meter.feed(&one[..frames]);
-        } else {
-            meter.feed(&block[..frames * 2]);
+            samples.clear();
         }
-        if frames * 2 < block.len() {
+        if !going {
             break;
         }
     }
-    let measured = meter.measured();
-    Ok(Reading {
-        integrated: measured.integrated,
-        true_peak: measured.true_peak_max,
-    })
+    Ok(meters
+        .iter()
+        .map(|(_, meter)| {
+            let measured = meter.measured();
+            Reading {
+                integrated: measured.integrated,
+                true_peak: measured.true_peak_max,
+            }
+        })
+        .collect())
+}
+
+/// Reads sound stream `stream` (of `channels` channels) of the file from
+/// start to end and measures it (see [`measure_streams`]).
+#[cfg(test)]
+pub fn measure(path: &Path, stream: (u32, u16), cancelled: impl Fn() -> bool) -> diag::Result<Reading> {
+    measure_streams(path, &[stream], cancelled)?
+        .pop()
+        .ok_or_else(|| diag::AppError::new("The loudness can't be measured").why("No sound stream was read."))
 }
 
 /// What the detail panel says about a reading, and the change of level it offers.
@@ -221,6 +313,64 @@ pub fn advice(reading: Reading, target: Option<f32>) -> Advice {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What `measurements` says of every sound stream of `media`, waited for.
+    fn every_stream(measurements: &mut Measurements, jobs: &JobSystem, media: &MediaRef) -> Vec<Reading> {
+        let ctx = egui::Context::default();
+        let give_up = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        media
+            .info
+            .audio
+            .iter()
+            .map(|a| {
+                loop {
+                    if let Some(result) = measurements.get(jobs, &ctx, media, a.index) {
+                        break result.unwrap();
+                    }
+                    assert!(std::time::Instant::now() < give_up, "measured in time");
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn every_stream_is_measured_in_one_pass_and_kept_for_the_next_session() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../media/tests/fixtures/game-3-audio.mkv");
+        let media = media::describe(&fixture).unwrap();
+        let jobs = JobSystem::new(jobs::Budgets::default().resolve(&jobs::Machine::detect()));
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("loudness");
+        // Each stream as it reads alone.
+        let alone: Vec<Reading> = media
+            .info
+            .audio
+            .iter()
+            .map(|a| measure(&fixture, (a.index, a.channels), || false).unwrap())
+            .collect();
+        let first = every_stream(&mut Measurements::keeping_in(folder.clone()), &jobs, &media);
+        assert_eq!(first, alone, "read together, each as it reads alone");
+        assert!(folder.join(kept_name(&media.fingerprint)).is_file(), "kept");
+        // The next session reads them back: even a file that is gone.
+        let mut gone = media.clone();
+        gone.path = dir.path().join("moved away.mkv");
+        let again = every_stream(&mut Measurements::keeping_in(folder.clone()), &jobs, &gone);
+        assert_eq!(again, first);
+        // Another file (another fingerprint) is measured afresh.
+        let mut other = gone.clone();
+        other.fingerprint.sample_hash.push('x');
+        let mut fresh = Measurements::keeping_in(folder);
+        let ctx = egui::Context::default();
+        let give_up = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        let failed = loop {
+            if let Some(result) = fresh.get(&jobs, &ctx, &other, other.info.audio[0].index) {
+                break result;
+            }
+            assert!(std::time::Instant::now() < give_up);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        assert!(failed.is_err(), "not read back for another file");
+    }
 
     #[test]
     fn a_sound_file_is_measured() {
