@@ -56,7 +56,12 @@ use std::path::Path;
 /// Everything the project keeps about a file, read from disk. The id is a
 /// placeholder; the project gives a real one when the file is imported.
 pub fn describe(path: &Path) -> diag::Result<MediaRef> {
-    let probe = probe(path)?;
+    describe_input(&probe::open(path)?, path)
+}
+
+/// [`describe`] of a file opened already.
+pub(crate) fn describe_input(input: &ffi::Input, path: &Path) -> diag::Result<MediaRef> {
+    let probe = probe::probe_input(input, path)?;
     Ok(MediaRef {
         id: MediaId(0),
         path: path.to_path_buf(),

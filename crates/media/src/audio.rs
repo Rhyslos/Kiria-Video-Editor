@@ -126,6 +126,19 @@ fn open_input(path: &Path, stream: u32) -> Result<(Input, Starts), crate::ffi::O
     Ok((input, starts))
 }
 
+/// Keeps what probing `input` (opened and probed by someone else: the
+/// import's look at the file) found, so the file's sound decoders read
+/// only its header from the start.
+pub(crate) fn remember_probed(path: &Path, input: &Input) {
+    let Some(stamp) = stamp(path) else { return };
+    // SAFETY: `input` was opened and probed and owns its context.
+    let starts = unsafe { starts_of(input.raw()) };
+    let mut probed = PROBED.lock().unwrap_or_else(|p| p.into_inner());
+    probed
+        .get_or_insert_with(Default::default)
+        .insert(path.to_path_buf(), (stamp, starts));
+}
+
 /// Whether the header of `raw`, opened without probing, holds everything
 /// sound stream `stream` needs: the same number of streams as probing
 /// found, and the sound's codec, rate and channels.
@@ -1009,6 +1022,19 @@ mod tests {
                 assert!(probed == header, "{name} stream {stream} reads the same");
             }
         }
+    }
+
+    #[test]
+    fn after_the_import_check_a_files_sound_opens_from_its_header() {
+        let path = fixture("game-3-audio.mkv");
+        PROBED.lock().unwrap().take();
+        crate::check::check(&path).unwrap();
+        let before = FROM_HEADER.load(std::sync::atomic::Ordering::Relaxed);
+        AudioDecoder::open(&path, 1, 48_000).unwrap();
+        assert!(
+            FROM_HEADER.load(std::sync::atomic::Ordering::Relaxed) > before,
+            "what the check probed is kept"
+        );
     }
 
     #[test]

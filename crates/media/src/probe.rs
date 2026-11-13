@@ -16,7 +16,13 @@ pub struct Probe {
 
 /// Reads a file's container, streams, codecs, frame rate, length and rotation.
 pub fn probe(path: &Path) -> diag::Result<Probe> {
-    let input = Input::open(path).map_err(|e| {
+    let input = open(path)?;
+    probe_input(&input, path)
+}
+
+/// Opens `path` for probing, with the error a probe gives.
+pub(crate) fn open(path: &Path) -> diag::Result<Input> {
+    Input::open(path).map_err(|e| {
         if e.not_media {
             AppError::new("This file can't be imported")
                 .why(format!(
@@ -30,8 +36,14 @@ pub fn probe(path: &Path) -> diag::Result<Probe> {
                 .why(format!("{}: {}.", path.display(), e.text))
                 .fix("Check that the file still exists and that the drive is connected.")
         }
-    })?;
+    })
+}
 
+/// [`probe`] of a file opened already (by [`open`]), so whoever goes on
+/// to look at it doesn't open it again. What probing found is kept for
+/// the file's sound decoders, which then read only its header.
+pub(crate) fn probe_input(input: &Input, path: &Path) -> diag::Result<Probe> {
+    crate::audio::remember_probed(path, input);
     let streams = input.streams();
     let container = input.container();
     let picture = streams
@@ -58,13 +70,13 @@ pub fn probe(path: &Path) -> diag::Result<Probe> {
     let duration = if kind == MediaKind::Image {
         Time::ZERO
     } else {
-        length(&input, &streams)
+        length(input, &streams)
     };
     drop(streams);
     if kind == MediaKind::Video
         && let Some(v) = video.as_mut()
     {
-        measure_timing(&input, v, duration);
+        measure_timing(input, v, duration);
     }
     Ok(Probe {
         kind,

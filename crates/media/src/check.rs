@@ -67,21 +67,19 @@ pub struct Refused {
 /// Everything the project keeps about a file, once it has passed every
 /// check; otherwise why it can't be imported.
 pub fn check(path: &Path) -> Result<MediaRef, Refused> {
-    let media = crate::describe(path).map_err(|error| Refused {
+    let refused = |error: AppError| Refused {
         refusal: if error.what().contains("can't be opened") {
             Refusal::Unreadable
         } else {
             Refusal::NotMedia
         },
         error,
-    })?;
+    };
+    // Opened once: described from it, its codecs checked on it, and its
+    // sound decoders read only its header after.
+    let input = crate::probe::open(path).map_err(refused)?;
+    let media = crate::describe_input(&input, path).map_err(refused)?;
     let name = crate::probe::file_name(path);
-    let input = Input::open(path).map_err(|e| Refused {
-        refusal: Refusal::Unreadable,
-        error: AppError::new("The file can't be opened")
-            .why(format!("{}: {}.", path.display(), e.text))
-            .fix("Check that the file still exists and that the drive is connected."),
-    })?;
     let used = |index: u32| {
         media.info.video.as_ref().is_some_and(|v| v.index == index)
             || media.info.audio.iter().any(|a| a.index == index)
@@ -116,7 +114,9 @@ pub fn check(path: &Path) -> Result<MediaRef, Refused> {
     }
     let duration = media.duration.as_secs_f64();
     if let Some(video) = &media.info.video {
-        let decoded = VideoDecoder::open(path, video.index, video.rotation, Decoding::Software)
+        // One frame: a decoder of one thread gives it without waiting for
+        // the frames others would decode, and opens quicker.
+        let decoded = VideoDecoder::open_for_glances(path, video.index, video.rotation, Decoding::Software)
             .and_then(|mut d| d.frame_at(0.0, 64, 64));
         if let Err(err) = decoded {
             tracing::info!(path = %path.display(), "first picture didn't decode: {}", err.report());
