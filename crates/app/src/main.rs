@@ -143,6 +143,7 @@ fn main() -> ExitCode {
         find: options.find.clone(),
         watch_folders: options.watch_folders.clone(),
         export_page: options.export_page,
+        export_queue: options.export_queue,
         page: options.page,
         library_tab: options.library_tab.clone(),
         library_select: options.library_select.clone(),

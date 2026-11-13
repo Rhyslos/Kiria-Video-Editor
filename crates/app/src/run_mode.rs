@@ -26,6 +26,10 @@ pub struct Options {
     pub watch_folders: Vec<PathBuf>,
     /// Start on the Export page (`--export-page`, for screenshots).
     pub export_page: bool,
+    /// Start on the Export page with its queue filled: an export done, one
+    /// paused a third through, one waiting (`--export-queue`, for
+    /// screenshots of the queue; the files go beside the project).
+    pub export_queue: bool,
     /// Start on this page (`--page library`, for screenshots and the
     /// responsiveness test of a page).
     pub page: Option<ui_kit::Page>,
@@ -124,6 +128,7 @@ impl Options {
                     options.find = Some(words);
                 }
                 "--export-page" => options.export_page = true,
+                "--export-queue" => options.export_queue = true,
                 "--page" => {
                     let name = args.next().unwrap_or_default();
                     let page = ui_kit::Page::ALL
@@ -307,6 +312,7 @@ mod tests {
         assert!(parse(&["--import"]).is_err());
         assert!(parse(&["p.x", "--cpu-colour"]).unwrap().cpu_colour);
         assert!(parse(&["p.x", "--export-page"]).unwrap().export_page);
+        assert!(parse(&["p.x", "--export-queue"]).unwrap().export_queue);
         assert_eq!(
             parse(&["p.x", "--page", "Library"]).unwrap().page,
             Some(ui_kit::Page::Library)

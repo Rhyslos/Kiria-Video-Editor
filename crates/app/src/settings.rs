@@ -63,6 +63,9 @@ pub struct Settings {
     /// Where the Library page keeps a file's in and out marks and the
     /// levels chosen for its sound streams.
     pub library_marks: LibraryMarks,
+    /// How fast exports went on this machine (measured by the newest of
+    /// each kind), for the time the Export page says one will take.
+    pub export_pace: crate::export_page::Pace,
 }
 
 /// Where the Library page keeps what is marked to add (Settings › Library).
