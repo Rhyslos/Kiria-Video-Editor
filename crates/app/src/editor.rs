@@ -662,7 +662,18 @@ impl Editor {
                 self.status = match count {
                     0 => "Every video file of the project has its proxy, or one being built".into(),
                     1 => "Building 1 proxy in the background".into(),
-                    n => format!("Building {n} proxies in the background, one at a time"),
+                    n => format!("Building {n} proxies in the background"),
+                };
+            }),
+            Action::BuildProxiesFullSpeed => self.with_document(|_| Ok(())).map(|()| {
+                let count = self.proxies.build_all();
+                self.proxies.set_full_speed(true);
+                self.status = match count {
+                    0 => "Every video file has its proxy; any being built now carries on, the next ones at full speed".into(),
+                    n => format!(
+                        "Building {n} {} at full speed, also while playing: the editor may feel slower until they are done",
+                        if n == 1 { "proxy" } else { "proxies" }
+                    ),
                 };
             }),
             Action::ClearSelection => {

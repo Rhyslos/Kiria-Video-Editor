@@ -216,6 +216,7 @@ impl Shelf {
     /// seconds long), decoding the original `decoding`'s way. Slow (the
     /// whole file is decoded): run it on a worker. The file appears only
     /// when complete; stopped or failed, nothing is left.
+    #[allow(clippy::too_many_arguments)]
     pub fn build(
         &self,
         original: &Path,
@@ -223,6 +224,7 @@ impl Shelf {
         length: f64,
         fingerprint: &Fingerprint,
         decoding: Decoding,
+        workers: usize,
         steps: &Steps<'_>,
     ) -> diag::Result<Written> {
         std::fs::create_dir_all(&self.folder).or_explain(|| {
@@ -239,7 +241,9 @@ impl Shelf {
         }
         let done = self.file_for(fingerprint, stream);
         let building = done.with_extension(format!("{}.{BUILDING}", std::process::id()));
-        let written = media::proxy::write(original, stream, length, &building, decoding, false, steps)?;
+        let written = media::proxy::write(
+            original, stream, length, &building, decoding, false, workers, steps,
+        )?;
         std::fs::rename(&building, &done).or_explain(|| {
             let _ = std::fs::remove_file(&building);
             AppError::new("The proxy can't be made")
@@ -604,7 +608,7 @@ mod tests {
         let fingerprint = media::fingerprint(&original).unwrap();
         let before = shelf.generation();
         let written = shelf
-            .build(&original, 0, 2.0, &fingerprint, Decoding::Software, &quietly())
+            .build(&original, 0, 2.0, &fingerprint, Decoding::Software, 1, &quietly())
             .unwrap();
         assert!(written.frames > 0);
         let path = shelf.ready(&fingerprint, 0).expect("built");

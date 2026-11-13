@@ -1,6 +1,12 @@
 //! Proxies for the open project's video files (`cache::proxy`): looked at,
-//! judged, built and deleted on workers, one build at a time, newest file
-//! first; and what each file's proxy is up to, for the media drawer.
+//! judged, built and deleted on workers, newest file first, a few at once
+//! on a processor with many cores ([`BuildPace`]: each long file also built in
+//! stretches side by side, `media::proxy::write`); and what each file's
+//! proxy is up to, for the media drawer.
+//!
+//! "Build proxies at full speed" ([`ProxyBuilds::set_full_speed`]) builds
+//! more at once, in more stretches, and keeps building while the timeline
+//! plays, until nothing is left to build.
 //!
 //! - Proxies Auto: a file gets a proxy when a jump in it can't make 50 ms
 //!   (`cache::proxy::judge`, timed once per file per session).
@@ -88,7 +94,35 @@ struct File {
     state: State,
 }
 
-/// The build under way.
+/// How many proxies are built at once, and in how many stretches each
+/// (`media::proxy::write`'s `workers`), for a processor with `cores`
+/// threads. Graphics cards' encoders allow only a few sessions at once,
+/// so the product stays at eight or under.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BuildPace {
+    pub at_once: usize,
+    pub workers: usize,
+}
+
+impl BuildPace {
+    /// In the background: leaves most of the machine to the editor.
+    pub fn background(cores: usize) -> BuildPace {
+        BuildPace {
+            at_once: if cores >= 12 { 2 } else { 1 },
+            workers: (cores / 8).clamp(1, 3),
+        }
+    }
+
+    /// At full speed: as much of the machine as building can use.
+    pub fn full(cores: usize) -> BuildPace {
+        BuildPace {
+            at_once: (cores / 8).clamp(1, 2),
+            workers: (cores / 4).clamp(1, 4),
+        }
+    }
+}
+
+/// A build under way.
 struct Build {
     media: MediaId,
     handle: JobHandle<media::proxy::Written>,
@@ -101,7 +135,10 @@ struct Build {
 pub struct ProxyBuilds {
     shelf: Arc<Shelf>,
     files: HashMap<MediaId, File>,
-    build: Option<Build>,
+    builds: Vec<Build>,
+    /// Building at full speed until nothing is left to build.
+    full_speed: bool,
+    cores: usize,
     /// Files asked for by hand, first in line.
     asked: Vec<MediaId>,
     /// The disk budget for proxies, in bytes.
@@ -122,7 +159,9 @@ impl ProxyBuilds {
         ProxyBuilds {
             shelf: Shelf::new(folder, mode),
             files: HashMap::new(),
-            build: None,
+            builds: Vec::new(),
+            full_speed: false,
+            cores: std::thread::available_parallelism().map_or(2, |n| n.get()),
             asked: Vec::new(),
             budget: disk_gb.max(1).saturating_mul(GB),
             trim: None,
@@ -162,9 +201,9 @@ impl ProxyBuilds {
                 Status::Needed
             }
             State::Judged(_) => Status::NotNeeded,
-            State::Building(_) => match &self.build {
-                Some(build) if build.media == media => Status::Building(build.state),
-                _ => Status::Needed,
+            State::Building(_) => match self.builds.iter().find(|b| b.media == media) {
+                Some(build) => Status::Building(build.state),
+                None => Status::Needed,
             },
             State::Ready => Status::Ready,
             State::Deleting(_) => Status::Deleting,
@@ -182,10 +221,10 @@ impl ProxyBuilds {
         }
         self.asked.retain(|m| *m != media);
         self.asked.insert(0, media);
-        // An automatic build gives way.
-        if let Some(build) = &self.build
-            && !build.asked
-            && build.media != media
+        // An automatic build gives way when no room is left for it.
+        if self.builds.len() >= self.pace().at_once
+            && !self.builds.iter().any(|b| b.media == media)
+            && let Some(build) = self.builds.iter().rev().find(|b| !b.asked)
         {
             build.handle.cancel();
         }
@@ -235,9 +274,7 @@ impl ProxyBuilds {
         let Some(file) = self.files.get_mut(&media) else {
             return;
         };
-        if let Some(build) = &self.build
-            && build.media == media
-        {
+        for build in self.builds.iter().filter(|b| b.media == media) {
             build.handle.cancel();
         }
         self.asked.retain(|m| *m != media);
@@ -257,16 +294,32 @@ impl ProxyBuilds {
         let Some(hold_at) = self.hold_at else {
             return true;
         };
-        self.build.as_ref().is_some_and(|build| match build.state {
+        self.builds.iter().any(|build| match build.state {
             LoadState::Reading { done, .. } => done >= hold_at,
             _ => false,
         })
     }
 
-    /// Stops the build under way (the app is closing).
+    /// Stops the builds under way (the app is closing).
     pub fn stop(&self) {
-        if let Some(build) = &self.build {
+        for build in &self.builds {
             build.handle.cancel();
+        }
+    }
+
+    /// Builds at full speed (more at once, in more stretches, also while
+    /// the timeline plays) until nothing is left to build, or back at the
+    /// usual pace. Builds already under way finish at the pace they began.
+    pub fn set_full_speed(&mut self, on: bool) {
+        self.full_speed = on;
+    }
+
+    /// How many at once, in how many stretches, now.
+    fn pace(&self) -> BuildPace {
+        if self.full_speed {
+            BuildPace::full(self.cores)
+        } else {
+            BuildPace::background(self.cores)
         }
     }
 
@@ -295,7 +348,10 @@ impl ProxyBuilds {
             self.trim = None;
         }
         self.start_build(jobs, ctx, mode);
-        if self.build.is_some() {
+        if self.builds.is_empty() && self.asked.is_empty() {
+            // Nothing left: full speed was for this round of building.
+            self.full_speed = false;
+        } else {
             ctx.request_repaint_after(REDRAW_EVERY);
         }
         problem
@@ -427,18 +483,33 @@ impl ProxyBuilds {
         problem
     }
 
-    /// Takes in the build under way when it has finished, and reads how far
-    /// it is otherwise.
+    /// Takes in the builds that have finished, and reads how far the
+    /// others are.
     fn finish_build(&mut self, jobs: &JobSystem, project: &Project, now: Instant) {
-        let Some(build) = &mut self.build else {
-            return;
-        };
-        let Some(result) = build.handle.try_result() else {
-            build.state = build.pace.of_job(build.handle.progress(), now);
-            return;
-        };
-        let media = build.media;
-        self.build = None;
+        let mut finished = Vec::new();
+        self.builds.retain_mut(|build| match build.handle.try_result() {
+            Some(result) => {
+                finished.push((build.media, result));
+                false
+            }
+            None => {
+                build.state = build.pace.of_job(build.handle.progress(), now);
+                true
+            }
+        });
+        for (media, result) in finished {
+            self.finished(jobs, project, media, result);
+        }
+    }
+
+    /// Takes in one finished build.
+    fn finished(
+        &mut self,
+        jobs: &JobSystem,
+        project: &Project,
+        media: MediaId,
+        result: diag::Result<media::proxy::Written>,
+    ) {
         let Some(file) = self.files.get_mut(&media) else {
             return;
         };
@@ -474,7 +545,7 @@ impl ProxyBuilds {
     /// The cache is about to be cleared (Settings › Cache): the build
     /// under way stops, and so do builds asked for by hand.
     pub fn clearing(&mut self) {
-        if let Some(build) = &self.build {
+        for build in &self.builds {
             build.handle.cancel();
         }
         self.asked.clear();
@@ -508,33 +579,50 @@ impl ProxyBuilds {
         ));
     }
 
-    /// Starts the next build when none is under way: a file asked for by
-    /// hand first, then (unless proxies are Off) the newest file that
-    /// needs one.
+    /// Starts builds while there is room for them ([`BuildPace::at_once`]): a
+    /// file asked for by hand first, then (unless proxies are Off) the
+    /// newest file that needs one.
     fn start_build(&mut self, jobs: &JobSystem, ctx: &egui::Context, mode: ProxyMode) {
-        if let Some(build) = &self.build {
-            // Proxies turned Off: an automatic build stops.
-            if mode == ProxyMode::Off && !build.asked {
+        // Proxies turned Off: automatic builds stop.
+        if mode == ProxyMode::Off {
+            for build in self.builds.iter().filter(|b| !b.asked) {
                 build.handle.cancel();
             }
-            return;
         }
-        let asked = self.asked.iter().copied().find(|id| {
-            self.files
-                .get(id)
-                .is_some_and(|f| buildable(&f.state, true, mode))
-        });
-        let next = asked.or_else(|| {
-            self.files
-                .iter()
-                .filter(|(_, f)| buildable(&f.state, false, mode))
-                .map(|(id, _)| *id)
-                // Newest files first: ids grow as files are imported.
-                .max_by_key(|id| id.0)
-        });
-        let Some(media) = next else {
-            return;
-        };
+        let pace = self.pace();
+        while self.builds.len() < pace.at_once {
+            let building: Vec<MediaId> = self.builds.iter().map(|b| b.media).collect();
+            let asked = self.asked.iter().copied().find(|id| {
+                !building.contains(id)
+                    && self
+                        .files
+                        .get(id)
+                        .is_some_and(|f| buildable(&f.state, true, mode))
+            });
+            let next = asked.or_else(|| {
+                self.files
+                    .iter()
+                    .filter(|(id, f)| !building.contains(id) && buildable(&f.state, false, mode))
+                    .map(|(id, _)| *id)
+                    // Newest files first: ids grow as files are imported.
+                    .max_by_key(|id| id.0)
+            });
+            let Some(media) = next else {
+                return;
+            };
+            self.start_one(jobs, ctx, media, asked.is_some(), pace);
+        }
+    }
+
+    /// Starts building `media`'s proxy.
+    fn start_one(
+        &mut self,
+        jobs: &JobSystem,
+        ctx: &egui::Context,
+        media: MediaId,
+        asked: bool,
+        pace: BuildPace,
+    ) {
         let Some(file) = self.files.get_mut(&media) else {
             return;
         };
@@ -545,7 +633,14 @@ impl ProxyBuilds {
             file.stream,
             file.length,
         );
-        let handle = jobs.submit(PoolKind::Analysis, Priority::Background, "proxy", move |job| {
+        // At full speed it is not background work: it goes on while the
+        // timeline plays.
+        let priority = if self.full_speed {
+            Priority::Interactive
+        } else {
+            Priority::Background
+        };
+        let handle = jobs.submit(PoolKind::Analysis, priority, "proxy", move |job| {
             let cancelled = || job.is_cancelled();
             let progress = |done: f32| {
                 job.set_progress(done);
@@ -558,7 +653,15 @@ impl ProxyBuilds {
                 pause: &pause,
             };
             // Decoding the original is most of the work: on the GPU's decoder when it can.
-            let built = shelf.build(&path, stream, length, &fingerprint, media::Decoding::Best, &steps);
+            let built = shelf.build(
+                &path,
+                stream,
+                length,
+                &fingerprint,
+                media::Decoding::Best,
+                pace.workers,
+                &steps,
+            );
             ctx.request_repaint();
             built
         });
@@ -566,10 +669,10 @@ impl ProxyBuilds {
             State::Judged(judged) => Some(judged),
             _ => None,
         });
-        self.build = Some(Build {
+        self.builds.push(Build {
             media,
             handle,
-            asked: asked.is_some(),
+            asked,
             pace: Pace::default(),
             state: LoadState::Waiting,
         });
@@ -695,6 +798,40 @@ mod tests {
             typical_jump: Duration::from_millis(if needs_proxy { 90 } else { 20 }),
             needs_proxy,
         })
+    }
+
+    #[test]
+    fn more_is_built_at_once_on_more_cores_and_at_full_speed() {
+        assert_eq!(
+            BuildPace::background(2),
+            BuildPace {
+                at_once: 1,
+                workers: 1
+            }
+        );
+        assert_eq!(
+            BuildPace::background(24),
+            BuildPace {
+                at_once: 2,
+                workers: 3
+            }
+        );
+        assert_eq!(
+            BuildPace::full(24),
+            BuildPace {
+                at_once: 2,
+                workers: 4
+            }
+        );
+        for cores in [1, 2, 4, 8, 16, 24, 64, 128] {
+            for pace in [BuildPace::background(cores), BuildPace::full(cores)] {
+                assert!(pace.at_once >= 1 && pace.workers >= 1);
+                assert!(
+                    pace.at_once * pace.workers <= 8,
+                    "graphics cards allow few encoders"
+                );
+            }
+        }
     }
 
     #[test]

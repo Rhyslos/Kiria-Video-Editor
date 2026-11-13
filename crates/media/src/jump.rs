@@ -112,6 +112,11 @@ impl KeyFrames {
         widest.max(length - last).max(first)
     }
 
+    /// The listed times, ascending.
+    pub fn times(&self) -> &[f64] {
+        &self.times
+    }
+
     /// How many are listed.
     pub fn len(&self) -> usize {
         self.times.len()

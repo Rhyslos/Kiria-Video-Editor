@@ -31,3 +31,15 @@ A pass over the whole app for work that grows faster than it should, measured on
 - Making the timeline's clip data only when the project, the selection or a reading changes, instead of every frame.
 - Clip pictures kept on disk like waveforms.
 - A pool of the images frames are copied into on the window's device, and no wait after each copy.
+
+## Proxies and export (second pass)
+
+Proxy building and export had the same shape: one long chain of steps per frame, one after another.
+
+- **Proxies.** A build decoded a frame, copied it back from the graphics card, shrank it on the processor and encoded it, in one line of work per file and one file at a time. Measured here (2 threads, software): 1440p60 builds at 4 to 5 times real time with the processor full, about half of it the one thread shrinking and encoding. Now:
+  - several files at once on a processor with many cores (`app::proxies::BuildPace`);
+  - a long file in stretches between key frames, each with its own decoder, shrinker and encoder, joined at the end by copying packets (`media::proxy::write`'s `workers`). A test checks that a proxy built in three stretches has exactly the frames, times and order of one built in one pass, with groups of pictures open and closed. On this 2-thread machine it can't be faster (the processor is already full: 3.2 to 4.0 times real time against 3.9 to 4.1); on a 24-thread processor the stretches use the cores one pass leaves idle;
+  - the processor's encoder with as many threads as it finds useful (it had one);
+  - "Build proxies at full speed": more at once, not waiting while the timeline plays.
+  - Left: keeping the whole chain on the graphics card (decode, shrink and encode there, with no copy back). That needs the card's own scaling and an encoder fed from it, different for each card maker's encoder, and can only be built and measured on the owner's PC. A key frame every 16 frames instead of 8 was looked at and left: the encoder at `ultrafast` spends little on key frames, and jumps inside a proxy would cost more.
+- **Export.** For each frame it asked for the picture and waited, read it back and waited, encoded it and waited, then mixed the sound. Now the encoder has a thread of its own with a few frames' room, the next frame is asked for before the current one is read back, and read-back buffers are reused. The export tests (frame-exact pictures, sound to the sample, letterboxing) pass unchanged. Timing here means nothing (software graphics take both threads, and other work was running): it needs the owner's PC, where decoding, putting together, read-back and encoding use different parts of the machine and can overlap. Left: handing frames to a graphics card's encoder without the copy back to memory.

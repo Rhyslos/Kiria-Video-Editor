@@ -127,7 +127,7 @@ impl Editor {
                     self.proxies.build_now(*id);
                 }
                 self.status = format!(
-                    "Building {} proxies, one at a time: their cards show how far each is",
+                    "Building {} proxies: their cards show how far each is",
                     media.len()
                 );
             }

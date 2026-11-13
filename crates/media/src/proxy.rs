@@ -49,12 +49,13 @@ pub struct Written {
 /// What a proxy build is told and asks while it runs.
 pub struct Steps<'a> {
     /// Asked between frames: stop and leave nothing behind.
-    pub cancelled: &'a dyn Fn() -> bool,
+    pub cancelled: &'a (dyn Fn() -> bool + Sync),
     /// Told the share done (0 to 1) now and then.
-    pub progress: &'a dyn Fn(f32),
+    pub progress: &'a (dyn Fn(f32) + Sync),
     /// Called between frames; returns when the build may go on (it waits
-    /// there while the timeline plays).
-    pub pause: &'a dyn Fn(),
+    /// there while the timeline plays). Several stretches of one file may
+    /// be built side by side, so all three are called from several threads.
+    pub pause: &'a (dyn Fn() + Sync),
 }
 
 impl std::fmt::Debug for Steps<'_> {
@@ -105,6 +106,13 @@ pub fn stopped() -> AppError {
 /// way. `length` is the stream's length in seconds, for progress. With
 /// `software` only the CPU's encoder is tried. A file left by a failed or
 /// stopped build is removed.
+///
+/// With `workers` over one, a long file is built in that many stretches
+/// side by side ([`stretches`]: each from a key frame, each decoded,
+/// shrunk and encoded on threads of its own) and the stretches joined
+/// into one file: the same frames and times as one pass, in a fraction of
+/// the time on a processor with many cores.
+#[allow(clippy::too_many_arguments)]
 pub fn write(
     original: &Path,
     stream: u32,
@@ -112,6 +120,7 @@ pub fn write(
     out: &Path,
     decoding: Decoding,
     software: bool,
+    workers: usize,
     steps: &Steps<'_>,
 ) -> diag::Result<Written> {
     let mut last = cannot("This build has no H.264 encoder.");
@@ -122,7 +131,27 @@ pub fn write(
         if !encoder_present(name) {
             continue;
         }
-        match write_with(original, stream, length, out, decoding, name, steps) {
+        let built = if workers > 1 {
+            let split = Split {
+                workers,
+                shortest: SHORTEST_STRETCH,
+            };
+            write_split(original, stream, length, out, decoding, name, split, steps).or_else(|err| {
+                if (steps.cancelled)() {
+                    return Err(err);
+                }
+                // In one pass, as before: slower, but known to work.
+                tracing::info!(
+                    "a proxy in stretches did not work, building it in one pass: {}",
+                    err.report()
+                );
+                let _ = std::fs::remove_file(out);
+                write_with(original, stream, length, out, decoding, name, steps)
+            })
+        } else {
+            write_with(original, stream, length, out, decoding, name, steps)
+        };
+        match built {
             Ok(written) => return Ok(written),
             Err(err) => {
                 let _ = std::fs::remove_file(out);
@@ -195,6 +224,315 @@ fn write_with(
         encoder: encoder.to_owned(),
         size,
     })
+}
+
+/// The shortest stretch worth building on its own (seconds): opening a
+/// decoder and an encoder for less costs more than it saves.
+const SHORTEST_STRETCH: f64 = 20.0;
+
+/// Where the stretches after the first start, for a stream `length`
+/// seconds long built by up to `workers` side by side: listed key frames
+/// (`keys`, ascending) near equal shares of the length, each stretch at
+/// least `shortest` seconds long ([`SHORTEST_STRETCH`] in a build). Empty:
+/// build it in one pass.
+pub fn stretches(keys: &[f64], length: f64, workers: usize, shortest: f64) -> Vec<f64> {
+    let workers = workers.min((length / shortest.max(0.001)) as usize).max(1);
+    let mut starts: Vec<f64> = Vec::new();
+    for j in 1..workers {
+        let aim = length * j as f64 / workers as f64;
+        let Some(key) = keys.iter().copied().find(|k| *k >= aim) else {
+            break;
+        };
+        let after = starts.last().copied().unwrap_or(0.0);
+        if key - after >= shortest && length - key >= shortest {
+            starts.push(key);
+        }
+    }
+    starts
+}
+
+/// How a build is split ([`stretches`]).
+#[derive(Debug, Clone, Copy)]
+struct Split {
+    workers: usize,
+    shortest: f64,
+}
+
+/// [`write_with`] in stretches side by side, joined at the end. Falls
+/// back to one pass where the file lists too few key frames.
+#[allow(clippy::too_many_arguments)]
+fn write_split(
+    original: &Path,
+    stream: u32,
+    length: f64,
+    out: &Path,
+    decoding: Decoding,
+    encoder: &str,
+    split: Split,
+    steps: &Steps<'_>,
+) -> diag::Result<Written> {
+    let keys = VideoDecoder::open_for_pass(original, stream, decoding, 1)?.listed_key_times();
+    let starts = stretches(&keys, length, split.workers, split.shortest);
+    if starts.is_empty() {
+        return write_with(original, stream, length, out, decoding, encoder, steps);
+    }
+    let count = starts.len() + 1;
+    let bounds: Vec<(Option<f64>, Option<f64>)> = (0..count)
+        .map(|i| (i.checked_sub(1).map(|j| starts[j]), starts.get(i).copied()))
+        .collect();
+    let cores = std::thread::available_parallelism().map_or(2, |n| n.get());
+    let threads = i32::try_from((cores / count).max(2)).unwrap_or(2);
+    let parts: Vec<std::path::PathBuf> = (0..count)
+        .map(|i| out.with_extension(format!("part{i}")))
+        .collect();
+    // Each stretch's share done, as f32 bits; told together.
+    let shares: Vec<std::sync::atomic::AtomicU32> =
+        (0..count).map(|_| std::sync::atomic::AtomicU32::new(0)).collect();
+    let tell = || {
+        let done: f32 = bounds
+            .iter()
+            .zip(&shares)
+            .map(|((from, until), share)| {
+                let span = until.unwrap_or(length) - from.unwrap_or(0.0);
+                f32::from_bits(share.load(std::sync::atomic::Ordering::Relaxed))
+                    * (span / length.max(0.001)) as f32
+            })
+            .sum();
+        (steps.progress)(done.clamp(0.0, 1.0));
+    };
+    let built: Vec<diag::Result<Option<Written>>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = bounds
+            .iter()
+            .zip(&parts)
+            .zip(&shares)
+            .map(|((range, part), share)| {
+                let tell = &tell;
+                scope.spawn(move || {
+                    let mut decoder = VideoDecoder::open_for_pass(original, stream, decoding, threads)?;
+                    let span = range.1.unwrap_or(length) - range.0.unwrap_or(0.0);
+                    let started = range.0.unwrap_or(0.0);
+                    let progress = |seconds: f64| {
+                        let done = ((seconds - started) / span.max(0.001)).clamp(0.0, 1.0) as f32;
+                        share.store(done.to_bits(), std::sync::atomic::Ordering::Relaxed);
+                        tell();
+                    };
+                    write_stretch(&mut decoder, *range, part, encoder, steps, &progress)
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| {
+                h.join()
+                    .unwrap_or_else(|_| Err(cannot("A part of the build stopped unexpectedly.")))
+            })
+            .collect()
+    });
+    let mut written = Vec::new();
+    let mut failure = None;
+    for (result, part) in built.into_iter().zip(&parts) {
+        match result {
+            Ok(Some(w)) => written.push((part.clone(), w)),
+            Ok(None) => {}
+            Err(err) => {
+                failure.get_or_insert(err);
+            }
+        }
+    }
+    if (steps.cancelled)() {
+        failure = Some(stopped());
+    }
+    let joined = match failure {
+        Some(err) => Err(err),
+        None => join(&written.iter().map(|(p, _)| p.clone()).collect::<Vec<_>>(), out),
+    };
+    for part in &parts {
+        let _ = std::fs::remove_file(part);
+    }
+    joined?;
+    let first = written
+        .first()
+        .ok_or_else(|| cannot("The original has no picture that could be decoded."))?;
+    (steps.progress)(1.0);
+    Ok(Written {
+        frames: written.iter().map(|(_, w)| w.frames).sum(),
+        encoder: encoder.to_owned(),
+        size: first.1.size,
+    })
+}
+
+/// One stretch of [`write_split`] into its own file. `None`: the stretch
+/// held no frame.
+fn write_stretch(
+    decoder: &mut VideoDecoder,
+    (from, until): (Option<f64>, Option<f64>),
+    out: &Path,
+    encoder: &str,
+    steps: &Steps<'_>,
+    progress: &dyn Fn(f64),
+) -> diag::Result<Option<Written>> {
+    let time_base = decoder.time_base_rational();
+    let start = decoder.start_timestamp();
+    let coded = decoder.coded_size();
+    let size = size_for(coded);
+    let seconds = f64::from(time_base.num) / f64::from(time_base.den.max(1));
+    let mut writer: Option<Encoder> = None;
+    let mut told = 0u32;
+    decoder.each_frame_in(from, until, &mut |passed: &PassedFrame| {
+        (steps.pause)();
+        if (steps.cancelled)() {
+            return Ok(false);
+        }
+        let writer = match &mut writer {
+            Some(writer) => writer,
+            None => writer.insert(Encoder::open(out, encoder, time_base, size, coded, passed.frame)?),
+        };
+        let timestamp = passed.timestamp - start;
+        writer.add(passed.frame, timestamp)?;
+        told += 1;
+        if told.is_multiple_of(30) {
+            progress(timestamp as f64 * seconds);
+        }
+        Ok(true)
+    })?;
+    if (steps.cancelled)() {
+        return Err(stopped());
+    }
+    let Some(writer) = writer else {
+        return Ok(None);
+    };
+    let frames = writer.frames;
+    writer.finish()?;
+    progress(f64::INFINITY);
+    Ok(Some(Written {
+        frames,
+        encoder: encoder.to_owned(),
+        size,
+    }))
+}
+
+/// Joins proxy files written by [`write_stretch`], in order, into `out`:
+/// their packets copied as they are (no decoding), each lasting until the
+/// next begins. The stretches were encoded alike, so their streams are
+/// described alike; one that isn't refuses the join, and the build is
+/// done in one pass instead.
+fn join(parts: &[std::path::PathBuf], out: &Path) -> diag::Result<()> {
+    let inputs = parts
+        .iter()
+        .map(|p| {
+            crate::ffi::Input::open(p)
+                .map_err(|e| cannot(format!("A part could not be read again: {}.", e.text)))
+        })
+        .collect::<diag::Result<Vec<_>>>()?;
+    let first = inputs
+        .first()
+        .ok_or_else(|| cannot("There was nothing to join."))?;
+    let c_path = out
+        .to_str()
+        .and_then(|text| CString::new(text).ok())
+        .ok_or_else(|| cannot("The cache folder's name has characters that can't be passed on."))?;
+    // SAFETY: every context is opened by FFmpeg and owned here (inputs by
+    // `Input`, the output freed below on every path); each part has its
+    // one picture stream at index 0, written by `Encoder`; packets are
+    // unreferenced after each use.
+    unsafe {
+        let stream_of = |input: &crate::ffi::Input| *(*input.raw()).streams;
+        let model = (*stream_of(first)).codecpar;
+        let extradata = |par: *const ff::AVCodecParameters| {
+            std::slice::from_raw_parts((*par).extradata, (*par).extradata_size.max(0) as usize).to_vec()
+        };
+        let described = extradata(model);
+        for input in &inputs[1..] {
+            let par = (*stream_of(input)).codecpar;
+            if extradata(par) != described
+                || (*par).width != (*model).width
+                || (*par).height != (*model).height
+            {
+                return Err(cannot("The parts were encoded differently and can't be joined."));
+            }
+        }
+        let mut format: *mut ff::AVFormatContext = ptr::null_mut();
+        let r =
+            ff::avformat_alloc_output_context2(&mut format, ptr::null(), c"mp4".as_ptr(), c_path.as_ptr());
+        if r < 0 || format.is_null() {
+            return Err(failed("Starting the proxy file", r));
+        }
+        let result = (|| {
+            let stream = ff::avformat_new_stream(format, ptr::null());
+            if stream.is_null() {
+                return Err(cannot("There is no memory for a stream."));
+            }
+            let r = ff::avcodec_parameters_copy((*stream).codecpar, model);
+            if r < 0 {
+                return Err(failed("Describing the picture stream", r));
+            }
+            (*(*stream).codecpar).codec_tag = 0;
+            let in_base = (*stream_of(first)).time_base;
+            (*stream).time_base = in_base;
+            let r = ff::avio_open(&mut (*format).pb, c_path.as_ptr(), ff::AVIO_FLAG_WRITE);
+            if r < 0 {
+                return Err(failed("Opening the proxy file for writing", r));
+            }
+            let r = ff::avformat_write_header(format, ptr::null_mut());
+            if r < 0 {
+                return Err(failed("Starting the proxy file", r));
+            }
+            let out_base = (*stream).time_base;
+            let mut packet = ff::av_packet_alloc();
+            let mut waiting = ff::av_packet_alloc();
+            let mut has_waiting = false;
+            let mut last_length = 1;
+            let written = (|| {
+                for input in &inputs {
+                    let from_base = (*stream_of(input)).time_base;
+                    while ff::av_read_frame(input.raw(), packet) >= 0 {
+                        ff::av_packet_rescale_ts(packet, from_base, out_base);
+                        (*packet).stream_index = 0;
+                        (*packet).dts = (*packet).pts;
+                        if has_waiting {
+                            if (*packet).pts <= (*waiting).pts {
+                                // Two stretches overlapping: leaving a packet out
+                                // could leave the next ones without their key frame.
+                                ff::av_packet_unref(packet);
+                                return Err(cannot("The parts overlap and can't be joined."));
+                            }
+                            (*waiting).duration = (*packet).pts - (*waiting).pts;
+                            last_length = (*waiting).duration;
+                            let r = ff::av_interleaved_write_frame(format, waiting);
+                            if r < 0 {
+                                return Err(failed("Writing the proxy file", r));
+                            }
+                        }
+                        ff::av_packet_move_ref(waiting, packet);
+                        has_waiting = true;
+                    }
+                }
+                if has_waiting {
+                    (*waiting).duration = (*waiting).duration.max(last_length).max(1);
+                    let r = ff::av_interleaved_write_frame(format, waiting);
+                    if r < 0 {
+                        return Err(failed("Writing the proxy file", r));
+                    }
+                }
+                let r = ff::av_write_trailer(format);
+                if r < 0 {
+                    return Err(failed("Completing the proxy file", r));
+                }
+                Ok(())
+            })();
+            ff::av_packet_free(&mut packet);
+            ff::av_packet_free(&mut waiting);
+            written
+        })();
+        if !(*format).pb.is_null() {
+            ff::avio_closep(&mut (*format).pb);
+        }
+        ff::avformat_free_context(format);
+        if result.is_err() {
+            let _ = std::fs::remove_file(out);
+        }
+        result
+    }
 }
 
 /// The proxy's encoder and file.
@@ -287,6 +625,8 @@ impl Encoder {
             c.gop_size = KEY_EVERY;
             c.keyint_min = KEY_EVERY;
             c.max_b_frames = 0;
+            // As many threads as the encoder finds useful (FFmpeg's default is one).
+            c.thread_count = 0;
             let src = &*first;
             c.color_range = if src.color_range == ff::AVColorRange::AVCOL_RANGE_JPEG {
                 ff::AVColorRange::AVCOL_RANGE_JPEG
@@ -586,14 +926,107 @@ mod tests {
 
     /// Builds without stopping, noting the progress told.
     fn write_all(original: &Path, stream: u32, length: f64, out: &Path, told: &mut Vec<f32>) -> Written {
-        let told = std::cell::RefCell::new(told);
-        let progress = |done| told.borrow_mut().push(done);
+        let told = std::sync::Mutex::new(told);
+        let progress = |done| told.lock().unwrap().push(done);
         let steps = Steps {
             cancelled: &|| false,
             progress: &progress,
             pause: &|| {},
         };
-        write(original, stream, length, out, Decoding::Software, true, &steps).unwrap()
+        write(original, stream, length, out, Decoding::Software, true, 1, &steps).unwrap()
+    }
+
+    /// The frame number `counted-*` fixtures show in their bars.
+    fn counted(frame: &crate::Frame) -> u32 {
+        let width = frame.width as usize;
+        (0..8).fold(0, |n, bar| {
+            let red = frame.rgba[(width * 16 + bar * 16 + 8) * 4];
+            if red > 127 { n | 1 << bar } else { n }
+        })
+    }
+
+    /// Every frame of a proxy as (time, the number its bars show).
+    fn counted_frames(proxy: &Path) -> Vec<(f64, u32)> {
+        let mut decoder = VideoDecoder::open_proxy(proxy, 0).unwrap();
+        let times = frame_times(&mut decoder, true);
+        times
+            .iter()
+            .map(|t| (*t, counted(&decoder.frame_at(*t + 1e-4, 128, 32).unwrap())))
+            .collect()
+    }
+
+    #[test]
+    fn stretches_start_at_key_frames_near_equal_shares() {
+        let keys: Vec<f64> = (0..60).map(|k| f64::from(k) * 4.0).collect();
+        assert_eq!(stretches(&keys, 240.0, 3, 20.0), [80.0, 160.0]);
+        assert_eq!(
+            stretches(&keys, 30.0, 3, 20.0),
+            Vec::<f64>::new(),
+            "too short to split"
+        );
+        assert_eq!(
+            stretches(&[0.0], 240.0, 3, 20.0),
+            Vec::<f64>::new(),
+            "one key frame: one pass"
+        );
+        assert_eq!(stretches(&keys, 240.0, 1, 20.0), Vec::<f64>::new());
+    }
+
+    #[test]
+    fn a_proxy_built_in_stretches_has_every_frame_once_in_order() {
+        // Key frames every quarter second, B-frames, and groups of
+        // pictures open and closed: stretches meet at key frames whose
+        // neighbours are made from both sides.
+        for name in ["counted-open-gop.mkv", "counted-b-frames.mkv", "counted-120.mkv"] {
+            let original = fixture(name);
+            let dir = tempfile::tempdir().unwrap();
+            let (one, split) = (dir.path().join("one.mp4"), dir.path().join("split.mp4"));
+            let steps = Steps {
+                cancelled: &|| false,
+                progress: &|_| {},
+                pause: &|| {},
+            };
+            write_with(
+                &original,
+                0,
+                2.0,
+                &one,
+                Decoding::Software,
+                SOFTWARE_ENCODER,
+                &steps,
+            )
+            .unwrap();
+            let parts = Split {
+                workers: 3,
+                shortest: 0.4,
+            };
+            let written = write_split(
+                &original,
+                0,
+                2.0,
+                &split,
+                Decoding::Software,
+                SOFTWARE_ENCODER,
+                parts,
+                &steps,
+            )
+            .unwrap();
+            let keys = VideoDecoder::open_for_pass(&original, 0, Decoding::Software, 1)
+                .unwrap()
+                .listed_key_times();
+            let starts = stretches(&keys, 2.0, 3, 0.4).len();
+            if name != "counted-b-frames.mkv" {
+                assert_eq!(starts, 2, "{name}: built in three stretches");
+            }
+            let (a, b) = (counted_frames(&one), counted_frames(&split));
+            assert_eq!(written.frames as usize, a.len(), "{name}");
+            assert_eq!(a.len(), 240, "{name}: two seconds at 120 a second");
+            assert_eq!(a, b, "{name}: the same frames at the same times");
+            assert!(
+                b.iter().enumerate().all(|(i, (_, n))| *n == i as u32),
+                "{name}: in order"
+            );
+        }
     }
 
     #[test]
@@ -672,11 +1105,8 @@ mod tests {
         let original = fixture("game-3-audio.mkv");
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("proxy.mp4");
-        let frames = std::cell::Cell::new(0);
-        let stop = || {
-            frames.set(frames.get() + 1);
-            frames.get() > 5
-        };
+        let frames = std::sync::atomic::AtomicU32::new(0);
+        let stop = || frames.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1 > 5;
         let result = write(
             &original,
             0,
@@ -684,6 +1114,7 @@ mod tests {
             &out,
             Decoding::Software,
             true,
+            1,
             &Steps {
                 cancelled: &stop,
                 progress: &|_| {},
