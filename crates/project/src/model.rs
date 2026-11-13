@@ -8,7 +8,7 @@ use crate::ids::{ClipId, LabelId, LinkId, MediaId, SequenceId, TrackId};
 use crate::keyframes::Keyframes;
 use crate::look::Look;
 use crate::ramp::Ramp;
-use crate::sound::Sound;
+use crate::sound::{ClipLines, Sound};
 use crate::time::{Rate, Speed, Time};
 use crate::track_sound::{MasterSound, TrackSound};
 use diag::AppError;
@@ -295,6 +295,10 @@ pub struct Clip {
     /// adjustment layer). A file when missing.
     #[serde(default)]
     pub kind: ClipKind,
+    /// Its own volume and pan lines (format 17), at moments of its file;
+    /// none when missing. Set on clips on audio tracks only.
+    #[serde(default)]
+    pub lines: ClipLines,
 }
 
 /// What a clip shows and plays.
@@ -739,6 +743,7 @@ mod tests {
         let link = Some(p.allocate_id());
         let seq = p.sequences.front_mut().unwrap();
         seq.video_tracks[0].clips.push_back(Clip {
+            lines: Default::default(),
             id: clip_id,
             media,
             stream: 0,

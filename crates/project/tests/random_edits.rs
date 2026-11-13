@@ -273,6 +273,7 @@ fn command_for(action: &Action, p: &Project, media: MediaId, recording: MediaId)
                 sequence,
                 track,
                 clip: Clip {
+                    lines: Default::default(),
                     id: ClipId(0),
                     media,
                     stream: 0,

@@ -300,7 +300,7 @@ impl Compressor {
 
 /// Points in time order, never two at one moment, none before the start,
 /// values from `low` to `high`.
-fn check_line(line: &Vector<LinePoint>, low: i32, high: i32) -> bool {
+pub(crate) fn check_line(line: &Vector<LinePoint>, low: i32, high: i32) -> bool {
     line.iter()
         .all(|p| !p.at.is_negative() && within(p.value, low, high))
         && line.iter().zip(line.iter().skip(1)).all(|(a, b)| a.at < b.at)

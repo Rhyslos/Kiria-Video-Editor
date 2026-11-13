@@ -169,6 +169,171 @@ impl Gate {
     }
 }
 
+/// The loudness range (LRA, as the European broadcast rule's loudness
+/// range supplement says): how far apart the quieter and the louder
+/// stretches of a programme are, from its 3 s (short-term) loudness taken
+/// every 100 ms. Readings under -70 LUFS are left out (silence), then
+/// those more than 20 LU under the loudness of what is left (energy
+/// mean); the range is the 95th percentile less the 10th of what remains,
+/// in LU. Counted in a histogram of 0.01 LU steps, like [`Gate`], so it
+/// takes the same memory however long it runs.
+#[derive(Debug, Clone)]
+struct Range {
+    counts: Vec<u64>,
+    energy: Vec<f64>,
+}
+
+impl Range {
+    /// Below the absolute-gated loudness, the relative gate, in LU.
+    const RELATIVE: f64 = 20.0;
+    /// The percentiles whose distance is the range.
+    const LOW: f64 = 0.10;
+    const HIGH: f64 = 0.95;
+
+    fn new() -> Range {
+        let gate = Gate::new();
+        Range {
+            counts: gate.counts,
+            energy: gate.energy,
+        }
+    }
+
+    fn clear(&mut self) {
+        self.counts.fill(0);
+        self.energy.fill(0.0);
+    }
+
+    fn step_of(&self, lufs: f64) -> usize {
+        (((lufs - Gate::FLOOR) / Gate::STEP).floor().max(0.0) as usize).min(self.counts.len() - 1)
+    }
+
+    /// Counts one short-term reading's mean square.
+    fn add(&mut self, mean_square: f64) {
+        let loudness = f64::from(lufs(mean_square));
+        if loudness <= Gate::FLOOR {
+            return;
+        }
+        let i = self.step_of(loudness);
+        self.counts[i] += 1;
+        self.energy[i] += mean_square;
+    }
+
+    /// The range in LU, `-inf` before anything was counted.
+    fn range(&self) -> f32 {
+        let n: u64 = self.counts.iter().sum();
+        if n == 0 {
+            return f32::NEG_INFINITY;
+        }
+        let mean = self.energy.iter().sum::<f64>() / n as f64;
+        let relative = f64::from(lufs(mean)) - Range::RELATIVE;
+        let from = if relative <= Gate::FLOOR {
+            0
+        } else {
+            self.step_of(relative) + 1
+        };
+        let kept = &self.counts[from.min(self.counts.len())..];
+        let total: u64 = kept.iter().sum();
+        if total == 0 {
+            return 0.0;
+        }
+        // The step holding the reading at a share of those kept (nearest rank).
+        let at = |share: f64| {
+            let rank = ((share * total as f64).ceil() as u64).clamp(1, total);
+            let mut seen = 0;
+            for (i, count) in kept.iter().enumerate() {
+                seen += count;
+                if seen >= rank {
+                    return Gate::FLOOR + (from + i) as f64 * Gate::STEP;
+                }
+            }
+            Gate::FLOOR + (from + kept.len()) as f64 * Gate::STEP
+        };
+        (at(Range::HIGH) - at(Range::LOW)).max(0.0) as f32
+    }
+}
+
+/// What a meter counts over a while from readings taken every 100 ms of
+/// sound (its momentary and short-term loudness, its highest true or
+/// sample peak): integrated loudness, loudness range and the highest
+/// peak. For counting across several plays, or only inside a region,
+/// where the meter itself starts again each time. A reading's momentary
+/// loudness is the 400 ms block the integrated loudness gates, so taken
+/// every 100 ms it counts as the meter does. Allocates only when made.
+#[derive(Debug, Clone)]
+pub struct Tally {
+    gate: Gate,
+    range: Range,
+    peak: f32,
+    readings: u64,
+}
+
+impl Default for Tally {
+    fn default() -> Tally {
+        Tally::new()
+    }
+}
+
+/// The mean square of a loudness, the inverse of [`lufs`].
+fn mean_square_of(loudness: f32) -> f64 {
+    if loudness.is_finite() {
+        10f64.powf((f64::from(loudness) + 0.691) / 10.0)
+    } else {
+        0.0
+    }
+}
+
+impl Tally {
+    pub fn new() -> Tally {
+        Tally {
+            gate: Gate::new(),
+            range: Range::new(),
+            peak: f32::NEG_INFINITY,
+            readings: 0,
+        }
+    }
+
+    /// Forgets everything counted.
+    pub fn clear(&mut self) {
+        self.gate.clear();
+        self.range.clear();
+        self.peak = f32::NEG_INFINITY;
+        self.readings = 0;
+    }
+
+    /// Counts one reading: the momentary and short-term loudness (LUFS)
+    /// and the highest peak since the last reading (dB). Silence is `-inf`.
+    pub fn add(&mut self, momentary: f32, short_term: f32, peak_db: f32) {
+        self.readings += 1;
+        if momentary.is_finite() {
+            self.gate.add(mean_square_of(momentary));
+        }
+        if short_term.is_finite() {
+            self.range.add(mean_square_of(short_term));
+        }
+        self.peak = self.peak.max(peak_db);
+    }
+
+    /// How many readings were counted (each stands for 100 ms).
+    pub fn readings(&self) -> u64 {
+        self.readings
+    }
+
+    /// The integrated loudness of what was counted, LUFS (`-inf`: none).
+    pub fn integrated(&self) -> f32 {
+        self.gate.integrated()
+    }
+
+    /// The loudness range of what was counted, LU (`-inf`: none).
+    pub fn range(&self) -> f32 {
+        self.range.range()
+    }
+
+    /// The highest peak counted, dB (`-inf`: none).
+    pub fn peak(&self) -> f32 {
+        self.peak
+    }
+}
+
 /// Taps of each of the interpolator's phases.
 pub const TAPS: usize = 16;
 /// How many times over a channel is sampled for its true peak.
@@ -300,6 +465,8 @@ pub struct Loudness {
     /// blocks wholly after it count.
     gated_from: usize,
     gate: Gate,
+    /// The loudness range, from the short-term loudness of every full 3 s.
+    range: Range,
     phases: [[f32; TAPS]; OVERSAMPLE],
     true_peaks: [TruePeak; 2],
     true_peak_max: f32,
@@ -317,6 +484,7 @@ impl Loudness {
             done: 0,
             gated_from: 0,
             gate: Gate::new(),
+            range: Range::new(),
             phases: interpolator(),
             true_peaks: [TruePeak::new(), TruePeak::new()],
             true_peak_max: 0.0,
@@ -328,6 +496,7 @@ impl Loudness {
     /// (momentary and short-term go on: they only look back a while).
     pub fn reset(&mut self) {
         self.gate.clear();
+        self.range.clear();
         self.gated_from = self.done;
         // What was before plays no part in the peaks from here.
         self.true_peaks = [TruePeak::new(), TruePeak::new()];
@@ -374,6 +543,11 @@ impl Loudness {
                     self.gate.add(block);
                     self.measured.integrated = self.gate.integrated();
                 }
+                if self.done - self.gated_from >= BLOCKS
+                    && let Some(short) = self.last(BLOCKS)
+                {
+                    self.range.add(short);
+                }
             }
         }
         self.true_peak_max = self.true_peak_max.max(true_peak[0]).max(true_peak[1]);
@@ -395,6 +569,13 @@ impl Loudness {
     /// What was measured last.
     pub fn measured(&self) -> Measured {
         self.measured
+    }
+
+    /// The loudness range since the start (or the last reset), LU, from
+    /// the short-term loudness of every full 3 s; `-inf` before the first.
+    /// Worked out when asked (a walk through its histogram), not per block.
+    pub fn range(&self) -> f32 {
+        self.range.range()
     }
 }
 
@@ -513,6 +694,85 @@ mod tests {
         assert!(
             near(between.peak_db[0], -9.01, 0.05),
             "the samples alone miss 3 dB: {between:?}"
+        );
+    }
+
+    /// Two tones of 20 s each at `a` and `b` dBFS in both channels.
+    fn two_tones(rate: u32, a: f64, b: f64) -> Vec<f32> {
+        let mut tones = sine(rate, 1_000.0, of_db(a), 0.0, 20.0, [true; 2]);
+        tones.extend(sine(rate, 1_000.0, of_db(b), 0.0, 20.0, [true; 2]));
+        tones
+    }
+
+    #[test]
+    fn the_loudness_range_reads_as_its_test_signals_say() {
+        // The range supplement's first three test signals: 20 s of 1 kHz at
+        // -20 then -30, -15 or -40 dBFS read 10, 5 and 20 LU (within 1 LU).
+        let rate = 48_000;
+        for (a, b, range) in [(-20.0, -30.0, 10.0), (-20.0, -15.0, 5.0), (-40.0, -20.0, 20.0)] {
+            let mut meter = Loudness::new(rate);
+            for block in two_tones(rate, a, b).chunks(1024) {
+                meter.feed(block);
+            }
+            assert!(near(meter.range(), range, 1.0), "{a} then {b}: {}", meter.range());
+        }
+        // One steady tone has no range; silence has none to tell.
+        let mut steady = Loudness::new(rate);
+        steady.feed(&sine(rate, 1_000.0, of_db(-23.0), 0.0, 10.0, [true; 2]));
+        assert!(near(steady.range(), 0.0, 0.05), "{}", steady.range());
+        let mut silent = Loudness::new(rate);
+        silent.feed(&vec![0.0; 2 * 48_000 * 5]);
+        assert_eq!(silent.range(), f32::NEG_INFINITY);
+        steady.reset();
+        assert_eq!(steady.range(), f32::NEG_INFINITY, "a reset starts it again");
+    }
+
+    #[test]
+    fn a_tally_of_readings_every_100_ms_counts_as_the_meter_does() {
+        // Readings taken off the meter every 100 ms of sound, as the
+        // Audio page takes them while playing, give the meter's own
+        // integrated loudness and range, and the highest peak.
+        let rate = 48_000;
+        let tones = two_tones(rate, -20.0, -30.0);
+        let mut meter = Loudness::new(rate);
+        let mut tally = Tally::new();
+        for block in tones.chunks(2 * 4_800) {
+            let m = meter.feed(block);
+            tally.add(
+                m.momentary,
+                m.short_term,
+                m.true_peak_db[0].max(m.true_peak_db[1]),
+            );
+        }
+        let m = meter.measured();
+        assert_eq!(tally.readings(), 400);
+        assert!(
+            near(tally.integrated(), m.integrated, 0.05),
+            "{} {}",
+            tally.integrated(),
+            m.integrated
+        );
+        assert!(
+            near(tally.range(), meter.range(), 0.3),
+            "{} {}",
+            tally.range(),
+            meter.range()
+        );
+        assert!(near(tally.peak(), m.true_peak_max, 0.01));
+        // Split over two plays, it adds them up; cleared, it has nothing.
+        let mut twice = Tally::new();
+        for _ in 0..2 {
+            let mut meter = Loudness::new(rate);
+            for block in tones[..tones.len() / 2].chunks(2 * 4_800) {
+                let m = meter.feed(block);
+                twice.add(m.momentary, m.short_term, m.true_peak_max);
+            }
+        }
+        assert!(near(twice.integrated(), -20.0, 0.1), "{}", twice.integrated());
+        twice.clear();
+        assert_eq!(
+            (twice.integrated(), twice.range(), twice.peak(), twice.readings()),
+            (f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY, 0)
         );
     }
 

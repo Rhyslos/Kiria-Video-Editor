@@ -171,6 +171,7 @@ mod tests {
             sequence: p.active_sequence,
             track,
             clip: Clip {
+                lines: Default::default(),
                 id: ClipId(0),
                 media: *p.media.keys().next().unwrap(),
                 stream: 0,

@@ -67,7 +67,7 @@ pub use model::{
 };
 pub use ramp::{Ramp, SpeedKey};
 pub use side_files::SideFile;
-pub use sound::Sound;
+pub use sound::{ClipLines, Sound};
 pub use templates::Template;
 pub use time::{Rate, Speed, Time};
 pub use track_sound::{MasterSound, TrackRole, TrackSound};

@@ -30,6 +30,7 @@ pub mod limiter;
 pub mod loudness;
 pub mod meter;
 pub mod mix;
+pub mod noise;
 pub mod offline;
 pub mod output;
 pub mod playback;
