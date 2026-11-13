@@ -3580,6 +3580,7 @@ impl eframe::App for Editor {
             self.run_action(Action::PlayPause);
         }
         self.follow_playback(&ctx);
+        self.viewer.looping = self.looping;
         self.waveforms.poll(&ctx, now);
         self.pictures.poll(&ctx, now);
         let project = self.document.as_ref().map(Document::project);

@@ -161,6 +161,8 @@ pub struct Viewer {
     zoom_place: Option<(egui::Rect, (u32, u32), f32)>,
     /// A zoom asked for before the picture was first drawn: done then.
     zoom_waiting: Option<ZoomPick>,
+    /// Playback loops inside the region: lights the transport's loop button.
+    pub looping: bool,
 }
 
 impl Viewer {
@@ -203,6 +205,7 @@ impl Viewer {
             zoom: ui_kit::viewer::Zoom::FIT,
             zoom_place: None,
             zoom_waiting: None,
+            looping: false,
         }
     }
 
@@ -599,13 +602,8 @@ impl Viewer {
             .inner,
             self.frame_interval.is_some(),
         );
-        let click = ui_kit::transport::transport(ui, theme, seen, playing, shortcuts);
-        command = command.or(click.map(|click| match click {
-            TransportClick::FrameBack => Action::PreviousFrame,
-            TransportClick::FrameForward => Action::NextFrame,
-            TransportClick::PlayPause => Action::PlayPause,
-            TransportClick::Stop => Action::Stop,
-        }));
+        let click = ui_kit::transport::transport(ui, theme, seen, playing, Some(self.looping), shortcuts);
+        command = command.or(click.map(TransportClick::action));
 
         ui.add_space(6.0);
         ui.horizontal(|ui| {

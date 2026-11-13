@@ -303,11 +303,15 @@ fn transport_under(
     let (strip, _) = ui.allocate_exact_size(egui::vec2(above.width(), TRANSPORT_ROOM), egui::Sense::hover());
     // The transport sits at the bottom of the rectangle it is given.
     let rect = egui::Rect::from_min_max(above.min, strip.max);
-    match transport(ui, theme, rect, page.player.playing(), about.shortcuts) {
+    // The player has no looping: its button is greyed.
+    match transport(ui, theme, rect, page.player.playing(), None, about.shortcuts) {
         Some(TransportClick::PlayPause) => page.player.play_pause(marks),
         Some(TransportClick::Stop) => page.player.stop_here(),
         Some(TransportClick::FrameBack) => page.player.step(-1, marks),
         Some(TransportClick::FrameForward) => page.player.step(1, marks),
+        Some(click) => {
+            page.command(click.action());
+        }
         None => {}
     }
 }
