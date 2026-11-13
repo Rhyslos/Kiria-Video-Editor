@@ -2294,6 +2294,7 @@ name = "jobs"
 version = "0.1.0"
 dependencies = [
  "diag",
+ "os",
  "serde",
  "sysinfo",
  "tracing",
@@ -3196,6 +3197,7 @@ dependencies = [
 name = "os"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "tracing",
  "windows-sys 0.61.2",
  "x11rb",
