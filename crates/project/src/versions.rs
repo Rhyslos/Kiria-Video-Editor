@@ -95,9 +95,18 @@ pub fn list(project_file: &Path) -> Vec<Version> {
     versions
 }
 
-/// Reads a version (older formats are upgraded as they are read).
+/// Reads a version (older formats are upgraded as they are read). Its
+/// relative media paths (a packaged project's) are from the project's
+/// folder, the one its versions folder is in.
 pub fn load(version: &Version) -> diag::Result<Project> {
-    file::load(&version.path)
+    let mut project = file::load(&version.path)?;
+    let project_folder = version
+        .path
+        .parent()
+        .and_then(Path::parent)
+        .unwrap_or(Path::new(""));
+    file::resolve_media_paths(&mut project, project_folder);
+    Ok(project)
 }
 
 /// A name that is safe in a file name: no path or reserved characters,

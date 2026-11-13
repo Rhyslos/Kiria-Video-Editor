@@ -10,7 +10,7 @@ mod budget;
 mod pool;
 mod usage;
 
-pub use budget::{BackgroundPolicy, Budgets, Limit, Machine, Resolved};
+pub use budget::{BackgroundPolicy, Budgets, Limit, Machine, Resolved, free_space};
 pub use usage::{Usage, UsageMonitor};
 
 use diag::AppError;

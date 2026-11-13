@@ -1274,7 +1274,18 @@ mod tests {
         assert_eq!(doc.project(), &after);
         drop(doc); // a crash before any save
         let recovered = Document::open(&path, Recovery::Recover).unwrap();
-        assert_eq!(recovered.project(), &after);
+        // Opening makes the saved project's relative media paths full ones
+        // (from the project's folder); the replayed step is the same.
+        let mut expected = before.clone();
+        crate::file::resolve_media_paths(&mut expected, dir.path());
+        let expected = Command::InsertTemplate {
+            sequence: before.active_sequence,
+            template: Box::new(intro()),
+            at: Time::seconds(25),
+        }
+        .apply(&expected)
+        .unwrap();
+        assert_eq!(recovered.project(), &expected);
     }
 
     #[test]

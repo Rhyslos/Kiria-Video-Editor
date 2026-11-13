@@ -63,6 +63,12 @@ pub struct Options {
     /// Stop proxy builds at this share, 0 to 1 (`--hold-proxy 0.43`, for
     /// screenshots of a proxy being built).
     pub hold_proxy: Option<f32>,
+    /// Open Package project with this folder chosen (`--package-to out`,
+    /// for screenshots of the sizes shown first).
+    pub package_to: Option<PathBuf>,
+    /// With `--package-to`, also start packaging and stop copying at this
+    /// share, 0 to 1 (`--hold-package 0.4`, for screenshots of progress).
+    pub hold_package: Option<f32>,
     /// Put the pointer here, and maybe drag it from there with the left
     /// button held (`--pointer 640,420 [--drag-to 640,480]`, for
     /// screenshots of what pointing and dragging show). `--release` after
@@ -208,6 +214,17 @@ impl Options {
                         .ok_or("--hold-proxy needs a share between 0 and 1")?;
                     options.hold_proxy = Some(share);
                 }
+                "--package-to" => {
+                    let folder = args.next().ok_or("--package-to needs a folder")?;
+                    options.package_to = Some(folder.into());
+                }
+                "--hold-package" => {
+                    let share = args
+                        .next()
+                        .and_then(|s| s.parse().ok())
+                        .ok_or("--hold-package needs a share between 0 and 1")?;
+                    options.hold_package = Some(share);
+                }
                 "--playhead" => {
                     let secs = args
                         .next()
@@ -272,6 +289,9 @@ mod tests {
             parse(&["p.x", "--hold-proxy", "0.43"]).unwrap().hold_proxy,
             Some(0.43)
         );
+        let packaged = parse(&["p.x", "--package-to", "out", "--hold-package", "0.4"]).unwrap();
+        assert_eq!(packaged.package_to, Some(PathBuf::from("out")));
+        assert_eq!(packaged.hold_package, Some(0.4));
         let o = parse(&["p.x", "--pointer", "1200,400", "--scroll", "400"]).unwrap();
         assert_eq!(o.pointer.map(|p| p.scroll), Some(400.0));
         assert!(parse(&["p.x", "--scroll", "400"]).is_err());

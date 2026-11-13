@@ -178,6 +178,12 @@ impl Importer {
         if paths.is_empty() {
             return;
         }
+        // Full paths in the project: a relative one would mean "from the
+        // project's folder" when it is opened again (`file::resolve_media_paths`).
+        let paths: Vec<PathBuf> = paths
+            .into_iter()
+            .map(|p| std::path::absolute(&p).unwrap_or(p))
+            .collect();
         let batch = self.next_batch;
         self.next_batch += 1;
         self.batches.push(Batch {

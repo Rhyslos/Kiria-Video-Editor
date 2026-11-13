@@ -45,7 +45,7 @@ pub enum Picked {
     AddFound(Vec<std::path::PathBuf>),
     /// Hide a new file from the media folders for this session.
     Dismiss(std::path::PathBuf),
-    /// A command of the ⋯ menu (Prune).
+    /// A command of the ⋯ menu (Prune, Package project).
     Run(ui_kit::Action),
 }
 
@@ -294,6 +294,14 @@ fn more_menu(ui: &mut egui::Ui) -> Option<Picked> {
             .clicked()
         {
             ran = Some(Picked::Run(ui_kit::Action::Prune));
+            ui.close();
+        }
+        if ui
+            .button("Package project…")
+            .on_hover_text("Copies the project and only the media its timelines use into one folder, to open on another machine.")
+            .clicked()
+        {
+            ran = Some(Picked::Run(ui_kit::Action::PackageProject));
             ui.close();
         }
     })

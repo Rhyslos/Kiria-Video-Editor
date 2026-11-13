@@ -118,7 +118,11 @@ impl Document {
         if format > file::FORMAT_VERSION {
             return Ok(Document {
                 path: path.to_owned(),
-                history: History::new(file::load_newer(path)?),
+                history: History::new({
+                    let mut project = file::load_newer(path)?;
+                    file::resolve_media_paths(&mut project, file::folder_of(path));
+                    project
+                }),
                 journal: None,
                 seq: 0,
                 unsaved_since: None,
@@ -128,7 +132,9 @@ impl Document {
         if format < file::FORMAT_VERSION {
             file::back_up_before_upgrade(path, format)?;
         }
-        let (project, saved_seq) = file::load_with_journal_seq(path)?;
+        let (mut project, saved_seq) = file::load_with_journal_seq(path)?;
+        // Relative media paths are from the project's folder (a package).
+        file::resolve_media_paths(&mut project, file::folder_of(path));
         let journal_file = journal_path(path);
         let entries: Vec<(u64, JournalEntry)> = read_journal(&journal_file)?
             .into_iter()

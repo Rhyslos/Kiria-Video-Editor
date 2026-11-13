@@ -64,6 +64,36 @@ impl Machine {
     }
 }
 
+/// Free space on the drive that holds `path`, when it can be told: the
+/// drive whose mount point is the longest that `path` lies under. Lists
+/// the drives (a few milliseconds): on a worker.
+pub fn free_space(path: &std::path::Path) -> Option<u64> {
+    let path = std::path::absolute(path).ok()?;
+    let disks = sysinfo::Disks::new_with_refreshed_list().ok()?;
+    let mounts = disks
+        .iter()
+        .map(|d| (d.mount_point().to_path_buf(), d.available_space()));
+    on_drive(&path, mounts)
+}
+
+/// The free space of the mount point `path` lies under, the longest one
+/// when several do (a drive mounted inside another). Windows drive letters
+/// are compared whatever their capitals.
+fn on_drive(path: &std::path::Path, mounts: impl Iterator<Item = (std::path::PathBuf, u64)>) -> Option<u64> {
+    let fold = |p: &std::path::Path| -> std::path::PathBuf {
+        if cfg!(windows) {
+            std::path::PathBuf::from(p.to_string_lossy().to_lowercase())
+        } else {
+            p.to_path_buf()
+        }
+    };
+    let path = fold(path);
+    mounts
+        .filter(|(mount, _)| path.starts_with(fold(mount)))
+        .max_by_key(|(mount, _)| mount.components().count())
+        .map(|(_, free)| free)
+}
+
 const MB: u64 = 1024 * 1024;
 const GB: u64 = 1024 * MB;
 
@@ -110,6 +140,25 @@ impl Budgets {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn free_space_is_the_innermost_drives() {
+        use std::path::PathBuf;
+        let root = std::path::absolute("/").unwrap();
+        let games = root.join("games");
+        let mounts = || vec![(root.clone(), 10), (games.clone(), 99)].into_iter();
+        assert_eq!(on_drive(&games.join("recordings/a"), mounts()), Some(99));
+        assert_eq!(on_drive(&root.join("home"), mounts()), Some(10));
+        assert_eq!(
+            on_drive(&root.join("x"), std::iter::empty::<(PathBuf, u64)>()),
+            None
+        );
+        assert!(
+            free_space(&std::env::temp_dir()).is_some(),
+            "the temporary folder's drive is found"
+        );
+    }
+
     use super::*;
 
     const MACHINE: Machine = Machine {

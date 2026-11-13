@@ -276,6 +276,44 @@ pub fn load_with_journal_seq(path: &Path) -> diag::Result<(Project, u64)> {
     Ok((from_str(&text)?, journal_seq))
 }
 
+/// Makes the project's relative media paths full ones, from `folder` (the
+/// project file's folder). A relative media path means "from the project
+/// file's folder": a packaged project (`crate::package`) is written that
+/// way, so it opens wherever its folder is moved. Everything that opens a
+/// project to use its media goes through this ([`crate::Document::open`],
+/// [`read_info`]); the model in memory always holds full paths, so a
+/// project saved again writes full paths.
+pub fn resolve_media_paths(project: &mut Project, folder: &Path) {
+    let folder = full_folder(folder);
+    let relative: Vec<_> = project
+        .media
+        .values()
+        .filter(|m| m.path.is_relative())
+        .map(|m| m.id)
+        .collect();
+    for id in relative {
+        if let Some(media) = project.media.get_mut(&id) {
+            media.path = folder.join(&media.path);
+        }
+    }
+}
+
+/// `folder` made absolute (the folder the app started in for an empty one),
+/// without touching the disk.
+fn full_folder(folder: &Path) -> PathBuf {
+    let folder = if folder.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        folder
+    };
+    std::path::absolute(folder).unwrap_or_else(|_| folder.to_path_buf())
+}
+
+/// The folder a project file is in.
+pub fn folder_of(path: &Path) -> &Path {
+    path.parent().unwrap_or(Path::new(""))
+}
+
 /// What a project list needs to know about a file, read without loading the project.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FileInfo {
@@ -289,9 +327,18 @@ pub struct FileInfo {
 pub fn read_info(path: &Path) -> diag::Result<FileInfo> {
     let head = read_head(path)?;
     let header: Header = ron::from_str(&head).or_explain(damaged)?;
+    let mut summary = header.summary;
+    if let Some(summary) = &mut summary {
+        let folder = full_folder(folder_of(path));
+        for media in &mut summary.media {
+            if media.is_relative() {
+                *media = folder.join(&*media);
+            }
+        }
+    }
     Ok(FileInfo {
         format_version: header.format_version,
-        summary: header.summary,
+        summary,
     })
 }
 
