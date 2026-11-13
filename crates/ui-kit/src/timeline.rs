@@ -1588,6 +1588,18 @@ impl TimelineView {
         let mut events = Vec::new();
         let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
         self.notice_new_tracks(rect, data);
+        // A selected gap that is no longer there (closed, filled, undone) is forgotten.
+        if let Some(gap) = self.gap {
+            let still = data
+                .video
+                .iter()
+                .chain(data.audio)
+                .find(|t| t.id == gap.track)
+                .and_then(|t| gaps::gap_at(t, (gap.start + gap.end) / 2.0));
+            if still != Some(gap) {
+                self.gap = None;
+            }
+        }
         let layout = self.layout(rect, data);
         let left = layout.time_left();
         let visible = (self.time_at(left, left), self.time_at(left, rect.right()));
@@ -2236,10 +2248,15 @@ impl TimelineView {
             };
             let t = ((self.time_at(left, p.x) / frame).round() * frame).clamp(bounds.0, bounds.1);
             if r.drag_started_by(egui::PointerButton::Primary) {
-                // A point taken, or one made where the drag began.
+                // A point taken where the button went down (the pointer has
+                // moved a little by the time a drag is noticed), or one made
+                // there.
+                let origin = ui.input(|i| i.pointer.press_origin()).unwrap_or(p);
+                let hit = point_at(origin, *rect, points);
+                let t = ((self.time_at(left, origin.x) / frame).round() * frame).clamp(bounds.0, bounds.1);
                 let (points, index) = match hit {
                     Some(i) => (points.clone(), i),
-                    None => lines::added(points, t, lines::value_at(kind, *rect, p.y)),
+                    None => lines::added(points, t, lines::value_at(kind, *rect, origin.y)),
                 };
                 let height = points
                     .get(index)
@@ -2252,7 +2269,9 @@ impl TimelineView {
                     bounds: *bounds,
                     rect: *rect,
                     height,
-                    last_y: p.y,
+                    // From where the button went down, so the way moved
+                    // before the drag was noticed counts too.
+                    last_y: origin.y,
                 });
             } else if r.double_clicked() {
                 if let Some(i) = hit {

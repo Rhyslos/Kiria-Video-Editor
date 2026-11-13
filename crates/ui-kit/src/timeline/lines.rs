@@ -260,11 +260,16 @@ pub(super) struct LineDrag {
 
 impl LineDrag {
     /// The pointer moved to `y`; `fine` (Shift or Alt held) moves the point
-    /// a fifth as fast. Returns the value it is at now.
+    /// a fifth as far as the pointer. Returns the value it is at now.
+    /// Without it the point is where the pointer is.
     pub fn follow(&mut self, y: f32, fine: bool) -> f32 {
-        let scale = if fine { level::FINE } else { 1.0 };
-        let travel = travel(self.rect).height().max(1.0);
-        self.height = (self.height + (self.last_y - y) / travel * scale).clamp(0.0, 1.0);
+        let t = travel(self.rect);
+        self.height = if fine {
+            self.height + (self.last_y - y) / t.height().max(1.0) * level::FINE
+        } else {
+            (t.bottom() - y) / t.height().max(1.0)
+        }
+        .clamp(0.0, 1.0);
         self.last_y = y;
         value_at_height(self.kind, self.height)
     }
