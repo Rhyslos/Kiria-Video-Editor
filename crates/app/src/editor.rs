@@ -2888,9 +2888,19 @@ impl Editor {
         let has_project = self.document.is_some();
         let mut open = self.show_settings;
         let before = self.settings.clone();
+        // Below the top bar at the right, under the gear that opens it; held
+        // to the screen, with what doesn't fit scrolling inside.
+        let area = ui_kit::layout::window_area(ctx.content_rect());
         egui::Window::new("Settings")
             .open(&mut open)
-            .default_width(420.0)
+            .collapsible(false)
+            .pivot(egui::Align2::RIGHT_TOP)
+            .default_pos(area.right_top())
+            .default_width(ui_kit::layout::SETTINGS_WIDTH)
+            .default_height(area.height())
+            .max_height(area.height())
+            .constrain_to(area)
+            .vscroll(true)
             .show(ctx, |ui| {
                 ui.heading("Look");
                 egui::ComboBox::from_label("Theme")
