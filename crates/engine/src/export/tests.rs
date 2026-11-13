@@ -61,12 +61,12 @@ fn a_stretch_of_the_timeline_becomes_a_file_that_matches_it() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("out.mp4");
     let settings = ExportSettings {
-        path: path.clone(),
         range: Some((Time::seconds(1), Time::seconds(2))),
         quality: Quality::Small,
         software: true,
+        ..ExportSettings::mp4(path.clone())
     };
-    let export = Export::start(project, seq, settings, devices, || {});
+    let export = Export::start(project, seq, settings, Some(devices), || {});
     let Outcome::Done(done) = wait(&export) else {
         panic!("the export did not finish well");
     };
@@ -176,12 +176,12 @@ fn an_exported_fade_and_pan_are_in_the_file() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("faded.mp4");
     let settings = ExportSettings {
-        path: path.clone(),
         range: Some((Time::ZERO, Time::seconds(1))),
         quality: Quality::Small,
         software: true,
+        ..ExportSettings::mp4(path.clone())
     };
-    let export = Export::start(project.clone(), seq, settings, devices, || {});
+    let export = Export::start(project.clone(), seq, settings, Some(devices), || {});
     let Outcome::Done(_) = wait(&export) else {
         panic!("the export did not finish well");
     };
@@ -288,12 +288,12 @@ fn an_animated_place_and_opacity_change_across_the_exported_frames() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("moving.mp4");
     let settings = ExportSettings {
-        path: path.clone(),
         range: Some((Time::ZERO, Time::seconds(1))),
         quality: Quality::Small,
         software: true,
+        ..ExportSettings::mp4(path.clone())
     };
-    let export = Export::start(project, seq, settings, devices, || {});
+    let export = Export::start(project, seq, settings, Some(devices), || {});
     let Outcome::Done(_) = wait(&export) else {
         panic!("the export did not finish well");
     };
@@ -325,12 +325,12 @@ fn an_animated_place_and_opacity_change_across_the_exported_frames() {
 fn export_second(project: Project, seq: SequenceId, devices: Devices, dir: &Path, name: &str) -> PathBuf {
     let path = dir.join(name);
     let settings = ExportSettings {
-        path: path.clone(),
         range: Some((Time::ZERO, Time::seconds(1))),
         quality: Quality::Small,
         software: true,
+        ..ExportSettings::mp4(path.clone())
     };
-    let export = Export::start(project, seq, settings, devices, || {});
+    let export = Export::start(project, seq, settings, Some(devices), || {});
     let Outcome::Done(_) = wait(&export) else {
         panic!("the export did not finish well");
     };
@@ -422,12 +422,12 @@ fn a_cancelled_export_leaves_nothing_behind() {
     let (project, seq) = recording();
     let dir = tempfile::tempdir().unwrap();
     let settings = ExportSettings {
-        path: dir.path().join("out.mp4"),
         range: None,
         quality: Quality::Small,
         software: true,
+        ..ExportSettings::mp4(dir.path().join("out.mp4"))
     };
-    let export = Export::start(project, seq, settings, devices, || {});
+    let export = Export::start(project, seq, settings, Some(devices), || {});
     export.cancel();
     assert!(matches!(wait(&export), Outcome::Cancelled));
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
@@ -440,12 +440,12 @@ fn an_empty_stretch_is_refused_with_an_explanation() {
     let seq = project.active_sequence;
     let dir = tempfile::tempdir().unwrap();
     let settings = ExportSettings {
-        path: dir.path().join("out.mp4"),
         range: None,
         quality: Quality::Medium,
         software: true,
+        ..ExportSettings::mp4(dir.path().join("out.mp4"))
     };
-    let export = Export::start(project, seq, settings, devices, || {});
+    let export = Export::start(project, seq, settings, Some(devices), || {});
     let Outcome::Failed(err) = wait(&export) else {
         panic!("an empty timeline exported");
     };
@@ -580,12 +580,12 @@ fn export_of(
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join(name);
     let settings = ExportSettings {
-        path: path.clone(),
         range: Some((Time::ZERO, project::Rate::FPS_60.frame_start(frames))),
         quality: Quality::Small,
         software: true,
+        ..ExportSettings::mp4(path.clone())
     };
-    let export = Export::start(project, seq, settings, devices, || {});
+    let export = Export::start(project, seq, settings, Some(devices), || {});
     let Outcome::Done(done) = wait(&export) else {
         panic!("the export did not finish well");
     };
@@ -725,4 +725,348 @@ fn frame_blending_mixes_the_recorded_frames_around_each_moment() {
             assert!((140..=215).contains(&bars[0]), "frame {frame} blended: {bars:?}");
         }
     }
+}
+
+#[test]
+fn an_export_starts_on_the_exact_frame_never_the_key_frame_before_it() {
+    let Some(devices) = devices() else {
+        eprintln!("no graphics device here: exporting isn't checked");
+        return;
+    };
+    // The counted recording has a key frame every 30 recorded frames; the
+    // stretch starts at recorded frame 82, between those at 60 and 90.
+    let (project, seq) = counted();
+    let rate = project::Rate::FPS_60;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("late.mp4");
+    let settings = ExportSettings {
+        range: Some((rate.frame_start(41), rate.frame_start(48))),
+        quality: Quality::High,
+        software: true,
+        ..ExportSettings::mp4(path.clone())
+    };
+    let export = Export::start(project, seq, settings, Some(devices), || {});
+    let Outcome::Done(done) = wait(&export) else {
+        panic!("the export did not finish well");
+    };
+    assert_eq!(done.frames, 7);
+    let numbers: Vec<Option<u32>> = exported_bars(&path, 7).into_iter().map(number).collect();
+    let expected: Vec<Option<u32>> = (41..48).map(|frame| Some(frame * 2)).collect();
+    assert_eq!(numbers, expected);
+}
+
+/// A one-second recording, 192×108 at 30 fps, of stripes one pixel wide,
+/// alternately black and white: detail that any smaller picture loses.
+fn stripes(dir: &Path) -> PathBuf {
+    use media::encode::{VideoSettings, Writer};
+    let path = dir.join("stripes.mkv");
+    let video = VideoSettings {
+        codec: VideoCodec::H264,
+        width: 192,
+        height: 108,
+        rate: (30, 1),
+        bit_rate: 8_000_000,
+        software: true,
+    };
+    let mut writer = Writer::create(&path, Container::Mkv, Some(&video), None).unwrap();
+    let mut picture: Vec<u8> = (0..192 * 108)
+        .map(|i| if i % 2 == 0 { 16 } else { 235 })
+        .collect();
+    picture.extend(std::iter::repeat_n(128u8, 192 * 108 / 2));
+    for _ in 0..30 {
+        writer.write_picture(&picture).unwrap();
+    }
+    writer.finish().unwrap();
+    path
+}
+
+#[test]
+fn the_exported_picture_is_the_recording_at_full_size() {
+    let Some(devices) = devices() else {
+        eprintln!("no graphics device here: exporting isn't checked");
+        return;
+    };
+    // Whatever the viewer shows (a smaller picture to keep playing, a
+    // proxy, a key frame first), the export is the recording at the
+    // timeline's own size, pixel for pixel: stripes one pixel wide stay
+    // stripes, where any smaller picture would make them grey.
+    let dir = tempfile::tempdir().unwrap();
+    let source = stripes(dir.path());
+    let settings = SequenceSettings {
+        width: 192,
+        height: 108,
+        frame_rate: project::Rate::FPS_30,
+        sample_rate: 48_000,
+    };
+    let project = Project::new("T", settings);
+    let seq = project.active_sequence;
+    let media = media::describe(&source).unwrap();
+    let project = Command::Import { sequence: seq, media }.apply(&project).unwrap();
+    let path = dir.path().join("full.mp4");
+    let settings = ExportSettings {
+        quality: Quality::High,
+        software: true,
+        ..ExportSettings::mp4(path.clone())
+    };
+    let export = Export::start(project, seq, settings, Some(devices), || {});
+    let Outcome::Done(_) = wait(&export) else {
+        panic!("the export did not finish well");
+    };
+    let (exported, width) = luma_at(&path, 0.5);
+    let (original, original_width) = luma_at(&source, 0.5);
+    assert_eq!((width, original_width), (192, 192));
+    let apart = exported
+        .iter()
+        .zip(&original)
+        .map(|(a, b)| f64::from(a.abs_diff(*b)))
+        .sum::<f64>()
+        / exported.len() as f64;
+    assert!(apart < 12.0, "on average {apart} levels apart");
+    let contrast = exported
+        .windows(2)
+        .map(|pair| f64::from(pair[0].abs_diff(pair[1])))
+        .sum::<f64>()
+        / (exported.len() - 1) as f64;
+    assert!(contrast > 150.0, "neighbours only {contrast} levels apart");
+}
+
+/// A 2-second recording, 192×108 at 30 fps, black but for frames 30 to 32,
+/// which are white, with silence but for a tone from exactly 1 s to 1.1 s:
+/// written losslessly enough (H.264 at a high rate, FLAC) to find both.
+fn flash_and_beep(dir: &Path) -> PathBuf {
+    use media::encode::{AudioSettings, VideoSettings, Writer};
+    let path = dir.join("flash.mkv");
+    let video = VideoSettings {
+        codec: VideoCodec::H264,
+        width: 192,
+        height: 108,
+        rate: (30, 1),
+        bit_rate: 4_000_000,
+        software: true,
+    };
+    let audio = AudioSettings {
+        codec: AudioCodec::Flac,
+        sample_rate: 48_000,
+        bit_rate: 0,
+    };
+    let mut writer = Writer::create(&path, Container::Mkv, Some(&video), Some(&audio)).unwrap();
+    for frame in 0..60 {
+        let luma = if (30..33).contains(&frame) { 235 } else { 16 };
+        let mut picture = vec![luma; 192 * 108];
+        picture.extend(std::iter::repeat_n(128u8, 192 * 108 / 2));
+        writer.write_picture(&picture).unwrap();
+        let sound: Vec<f32> = (frame * 1600..(frame + 1) * 1600)
+            .flat_map(|i| {
+                let s = if (48_000..52_800).contains(&i) {
+                    (i as f32 * 1000.0 * std::f32::consts::TAU / 48_000.0).sin() * 0.5
+                } else {
+                    0.0
+                };
+                [s, s]
+            })
+            .collect();
+        writer.write_sound(&sound).unwrap();
+    }
+    writer.finish().unwrap();
+    path
+}
+
+/// The moment the sound in `path` first gets loud, in seconds.
+fn beep_at(path: &Path) -> f64 {
+    let made = media::describe(path).unwrap();
+    let stream = &made.info.audio[0];
+    assert_eq!(stream.channels, 2, "{}", path.display());
+    let rate = stream.sample_rate;
+    let mut sound = media::AudioDecoder::open(path, stream.index, rate).unwrap();
+    let mut heard = vec![0.0f32; rate as usize * 2 * 2];
+    let got = sound.read(&mut heard);
+    let first = heard[..got * 2]
+        .chunks_exact(2)
+        .position(|pair| pair[0].abs() > 0.1 && pair[1].abs() > 0.1)
+        .expect("the beep");
+    first as f64 / f64::from(rate)
+}
+
+/// The moment the picture in `path` first turns white, and how many frames it has.
+fn flash_at(path: &Path) -> (f64, u32) {
+    let made = media::describe(path).unwrap();
+    let video = made.info.video.expect("a picture stream");
+    let mut decoder = media::VideoDecoder::open(path, video.index, 0, Decoding::Software).unwrap();
+    let mut flash = None;
+    let mut frames = 0;
+    for frame in 0..80u32 {
+        let Ok(media::Decoded::Yuv(picture)) =
+            decoder.picture_at((f64::from(frame) + 0.5) / 30.0, video.width, video.height)
+        else {
+            break;
+        };
+        // Past the end the last frame comes again.
+        if (picture.time - f64::from(frame) / 30.0).abs() > 0.002 {
+            break;
+        }
+        frames += 1;
+        let middle = picture.into_planes().as_ref()[(108 / 2) * 192 + 96];
+        if middle > 128 && flash.is_none() {
+            flash = Some(f64::from(frame) / 30.0);
+        }
+    }
+    (flash.expect("the flash"), frames)
+}
+
+#[test]
+fn every_format_this_build_encodes_exports_in_sync() {
+    let Some(devices) = devices() else {
+        eprintln!("no graphics device here: exporting isn't checked");
+        return;
+    };
+    let encoders = Encoders::detect();
+    let all = encoders.combinations();
+    // The pinned FFmpeg build has an encoder for every one of them.
+    assert_eq!(all, combinations());
+    let dir = tempfile::tempdir().unwrap();
+    let source = flash_and_beep(dir.path());
+    let settings = SequenceSettings {
+        width: 192,
+        height: 108,
+        frame_rate: project::Rate::FPS_30,
+        sample_rate: 44_100,
+    };
+    let project = Project::new("T", settings);
+    let seq = project.active_sequence;
+    let media = media::describe(&source).unwrap();
+    let project = Command::Import { sequence: seq, media }.apply(&project).unwrap();
+    for (container, video, audio) in all {
+        let what = format!("{container:?} {video:?} {audio:?}");
+        let path = dir.path().join(format!("out.{}", container.extension()));
+        let settings = ExportSettings {
+            path: path.clone(),
+            range: None,
+            container,
+            video,
+            audio,
+            quality: Quality::Small,
+            software: true,
+        };
+        let export = Export::start(project.clone(), seq, settings, Some(devices.clone()), || {});
+        let done = match wait(&export) {
+            Outcome::Done(done) => done,
+            Outcome::Failed(err) => panic!("{what}: {}", err.report()),
+            Outcome::Cancelled => panic!("{what}: cancelled"),
+        };
+        assert_eq!(done.frames, 60, "{what}");
+        assert!(!done.on_graphics_card, "{what}");
+        let made = media::describe(&path).unwrap();
+        let seconds = made.duration.as_secs_f64();
+        assert!((seconds - 2.0).abs() < 0.08, "{what}: {seconds} s");
+        assert_eq!(made.info.audio.len(), 1, "{what}");
+        assert_eq!(
+            made.info.audio[0].sample_rate,
+            audio.sample_rate_for(44_100),
+            "{what}"
+        );
+        let beep = beep_at(&path);
+        assert!((beep - 1.0).abs() < 0.005, "{what}: the beep at {beep} s");
+        match video {
+            Some(_) => {
+                let (flash, frames) = flash_at(&path);
+                assert_eq!(frames, 60, "{what}");
+                assert!((flash - 1.0).abs() < 0.001, "{what}: the flash at {flash} s");
+                assert!(
+                    (beep - flash).abs() < 0.5 / 30.0,
+                    "{what}: {beep} against {flash}"
+                );
+            }
+            None => assert!(made.info.video.is_none(), "{what}"),
+        }
+        std::fs::remove_file(&path).unwrap();
+    }
+}
+
+#[test]
+fn a_sound_only_file_needs_no_graphics_card() {
+    let (project, seq) = recording();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("sound.wav");
+    let settings = ExportSettings {
+        range: Some((Time::seconds(1), Time::seconds(2))),
+        container: Container::Wav,
+        video: None,
+        audio: AudioCodec::Pcm24,
+        ..ExportSettings::mp4(path.clone())
+    };
+    let export = Export::start(project.clone(), seq, settings, None, || {});
+    let Outcome::Done(done) = wait(&export) else {
+        panic!("the export did not finish well");
+    };
+    assert_eq!(done.encoder, "pcm_s24le");
+    assert!(done.loudness.is_finite());
+    let made = media::describe(&path).unwrap();
+    assert!(made.info.video.is_none());
+    assert_eq!(made.info.audio[0].codec, "pcm_s24le");
+    // A video without a graphics card is refused with the way out.
+    let settings = ExportSettings::mp4(dir.path().join("video.mp4"));
+    let export = Export::start(project, seq, settings, None, || {});
+    let Outcome::Failed(err) = wait(&export) else {
+        panic!("a video can't be made without a graphics card");
+    };
+    assert!(err.report().contains("sound only"), "{}", err.report());
+}
+
+#[test]
+fn settings_that_dont_go_together_are_refused_before_anything_is_written() {
+    let (project, seq) = recording();
+    let dir = tempfile::tempdir().unwrap();
+    let settings = ExportSettings {
+        audio: AudioCodec::Flac,
+        ..ExportSettings::mp4(dir.path().join("x.mp4"))
+    };
+    let err = settings.check().unwrap_err();
+    assert!(
+        err.report().contains("can't hold H.264 pictures with FLAC sound"),
+        "{}",
+        err.report()
+    );
+    assert!(err.report().contains("AAC, Opus"), "{}", err.report());
+    let export = Export::start(project, seq, settings, None, || {});
+    assert!(matches!(wait(&export), Outcome::Failed(_)));
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+}
+
+#[test]
+fn each_codec_and_quality_has_its_bit_rate_and_size() {
+    let hd = (1920, 1080);
+    let h264 = Quality::Medium.video_bit_rate(VideoCodec::H264, hd, Rate::FPS_60);
+    assert_eq!(h264, Quality::Medium.bit_rate(hd, Rate::FPS_60));
+    let h265 = Quality::Medium.video_bit_rate(VideoCodec::H265, hd, Rate::FPS_60);
+    let av1 = Quality::Medium.video_bit_rate(VideoCodec::Av1, hd, Rate::FPS_60);
+    assert!(av1 < h265 && h265 < h264);
+    for codec in AudioCodec::ALL {
+        let rates: Vec<Option<u64>> = Quality::ALL.iter().map(|q| q.audio_bit_rate(codec)).collect();
+        if codec.lossless() {
+            assert!(rates.iter().all(Option::is_none));
+        } else {
+            assert!(rates[0] > rates[1] && rates[1] > rates[2], "{codec:?}");
+        }
+    }
+    // Ten minutes of 1080p 60 H.264 with AAC at Medium: about 1.1 GB.
+    let ten = Duration::from_secs(600);
+    let mp4 = ExportSettings::mp4(PathBuf::from("a.mp4"));
+    let bytes = mp4.estimated_bytes(hd, Rate::FPS_60, 48_000, ten);
+    assert_eq!(bytes, (h264 + 192_000) * 600 / 8);
+    // A WAV of the same: 24-bit stereo at 48 kHz, 172.8 MB.
+    let wav = ExportSettings {
+        container: Container::Wav,
+        video: None,
+        audio: AudioCodec::Pcm24,
+        ..mp4
+    };
+    assert_eq!(wav.estimated_bytes(hd, Rate::FPS_60, 48_000, ten), 172_800_000);
+}
+
+#[test]
+fn encoders_are_said_by_where_they_work() {
+    assert_eq!(encoder_place("libx265"), Place::Processor);
+    assert_eq!(encoder_place("av1_nvenc"), Place::GraphicsCard);
+    assert_eq!(encoder_place("hevc_mf"), Place::System);
+    assert_eq!(encoder_place("aac"), Place::Processor);
 }
