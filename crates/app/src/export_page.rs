@@ -38,6 +38,10 @@ pub struct ExportPage {
     audio: AudioCodec,
     quality: Quality,
     software: bool,
+    /// Normalise the sound to the loudness aimed for (with the limiter).
+    normalise: bool,
+    /// The loudness aimed for, from Settings › Audio (none: no target).
+    target: Option<f32>,
     /// What this machine can encode, once a worker has found out.
     encoders: Option<Encoders>,
     /// The worker finding out, from when the page is first drawn.
@@ -58,6 +62,8 @@ impl Default for ExportPage {
             audio: AudioCodec::Aac,
             quality: Quality::default(),
             software: false,
+            normalise: false,
+            target: Some(-14.0),
             encoders: None,
             finding: None,
             dialog: None,
@@ -68,6 +74,11 @@ impl Default for ExportPage {
 }
 
 impl ExportPage {
+    /// The loudness aimed for, as Settings has it now (`None`: no target).
+    pub fn aim_at(&mut self, target: Option<f32>) {
+        self.target = target;
+    }
+
     /// Stops the export under way, if any, and waits briefly for it to let
     /// go of its file: for closing the app.
     pub fn stop(&mut self) {
@@ -408,6 +419,8 @@ impl ExportPage {
             audio: self.audio,
             quality: self.quality,
             software: self.software,
+            normalise: self.target.filter(|_| self.normalise),
+            limit: self.normalise && self.target.is_some(),
         }
     }
 
@@ -485,6 +498,24 @@ impl ExportPage {
                             .on_hover_text(tip);
                     });
                 }
+            });
+        });
+        row(ui, theme, "Loudness", |ui| {
+            ui.vertical(|ui| {
+                ui.radio_value(&mut self.normalise, false, "As mixed: the sound exactly as it plays");
+                let label = match self.target {
+                    Some(target) => format!(
+                        "Normalise to {} LUFS, peaks under {} dBTP",
+                        ui_kit::master::db_text(target),
+                        ui_kit::master::db_text(engine::export::TRUE_PEAK_CEILING)
+                    ),
+                    None => "Normalise (choose a loudness to aim for in Settings, under Audio)".to_owned(),
+                };
+                ui.add_enabled_ui(self.target.is_some(), |ui| {
+                    ui.radio_value(&mut self.normalise, true, label).on_hover_text(
+                        "The whole stretch is measured first, then exported turned up or down to the loudness aimed for, with a limiter keeping the peaks safe",
+                    );
+                });
             });
         });
     }
@@ -620,6 +651,12 @@ fn encoder_text(name: &str) -> String {
 }
 
 fn progress_text(progress: &Progress, frames_a_second: f64) -> String {
+    if progress.measuring {
+        return format!(
+            "Measuring the loudness first · frame {} of {}",
+            progress.frames_done, progress.frames
+        );
+    }
     let mut parts = vec![format!("Frame {} of {}", progress.frames_done, progress.frames)];
     let elapsed = progress.elapsed.as_secs_f64();
     if progress.frames_done >= 10 && elapsed > 0.0 {
@@ -643,16 +680,31 @@ fn done_text(done: &Exported) -> String {
         seconds_text(done.took),
         done.length.as_secs_f64() / took,
         encoder_text(&done.encoder),
-        sound_text(done.loudness, done.true_peak)
+        sound_text(done)
     )
 }
 
 /// What the exported sound measured: its integrated loudness and highest
 /// true peak, with a word when the peak is over the usual ceiling.
-fn sound_text(loudness: f32, true_peak: f32) -> String {
+fn sound_text(done: &Exported) -> String {
+    let (loudness, true_peak) = (done.loudness, done.true_peak);
     if !loudness.is_finite() {
         return "The sound is silent.".to_owned();
     }
+    let normalised = match done.normalised {
+        Some(n) => format!(
+            " (it measured {} LUFS and was turned {} by {} dB{})",
+            ui_kit::master::db_text(n.measured),
+            if n.gain_db >= 0.0 { "up" } else { "down" },
+            ui_kit::master::db_text(n.gain_db.abs()),
+            match done.limited_db {
+                Some(db) if db < -0.05 =>
+                    format!(", its peaks by up to {} dB more", ui_kit::master::db_text(-db)),
+                _ => String::new(),
+            }
+        ),
+        None => String::new(),
+    };
     let over = if true_peak > ui_kit::master::TRUE_PEAK_CEILING {
         format!(
             " (over {:.0} dBTP: it may distort when played or encoded again)",
@@ -662,7 +714,7 @@ fn sound_text(loudness: f32, true_peak: f32) -> String {
         String::new()
     };
     format!(
-        "Loudness {} LUFS integrated, true peak {} dBTP{over}.",
+        "Loudness {} LUFS integrated{normalised}, true peak {} dBTP{over}.",
         ui_kit::master::db_text(loudness),
         ui_kit::master::db_text(true_peak)
     )
@@ -718,6 +770,7 @@ mod tests {
             frames: 3600,
             elapsed: Duration::from_secs(5),
             encoder: Some("h264_amf".to_owned()),
+            measuring: false,
         };
         assert_eq!(
             progress_text(&progress, 60.0),
@@ -728,6 +781,7 @@ mod tests {
             frames: 3600,
             elapsed: Duration::ZERO,
             encoder: None,
+            measuring: false,
         };
         assert_eq!(progress_text(&starting, 60.0), "Frame 0 of 3600");
         let done = Exported {
@@ -740,16 +794,45 @@ mod tests {
             on_graphics_card: false,
             loudness: -14.04,
             true_peak: -1.52,
+            normalised: None,
+            limited_db: None,
         };
         assert_eq!(
             done_text(&done),
             "Saved 1 min 0 s of video in 20 s, 3.0× as fast as it plays, encoded on the processor. Loudness -14.0 LUFS integrated, true peak -1.5 dBTP."
         );
+        let silent = Exported {
+            loudness: f32::NEG_INFINITY,
+            true_peak: f32::NEG_INFINITY,
+            ..done.clone()
+        };
+        assert_eq!(sound_text(&silent), "The sound is silent.");
+        let hot = Exported {
+            loudness: -9.0,
+            true_peak: 0.4,
+            ..done.clone()
+        };
+        assert!(sound_text(&hot).contains("over -1 dBTP"));
+        let normalised = Exported {
+            normalised: Some(engine::export::Normalised {
+                measured: -20.0,
+                gain_db: 6.0,
+            }),
+            limited_db: Some(-2.3),
+            ..done.clone()
+        };
         assert_eq!(
-            sound_text(f32::NEG_INFINITY, f32::NEG_INFINITY),
-            "The sound is silent."
+            sound_text(&normalised),
+            "Loudness -14.0 LUFS integrated (it measured -20.0 LUFS and was turned up by 6.0 dB, its peaks by up to 2.3 dB more), true peak -1.5 dBTP."
         );
-        assert!(sound_text(-9.0, 0.4).contains("over -1 dBTP"));
+        let measuring = Progress {
+            measuring: true,
+            ..starting
+        };
+        assert_eq!(
+            progress_text(&measuring, 60.0),
+            "Measuring the loudness first · frame 0 of 3600"
+        );
     }
 
     #[test]

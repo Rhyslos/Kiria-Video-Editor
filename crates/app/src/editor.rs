@@ -2210,6 +2210,7 @@ impl Editor {
             && let Some(document) = &self.document
         {
             let viewer = &self.viewer;
+            self.export_page.aim_at(self.settings.loudness_target.lufs());
             let problem = self
                 .export_page
                 .ui(ui, &self.theme, document.project(), document.path(), || {

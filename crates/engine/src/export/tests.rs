@@ -503,6 +503,7 @@ fn progress_says_how_far_and_how_long_still() {
         frames: 1200,
         elapsed: Duration::from_secs(10),
         encoder: None,
+        measuring: false,
     };
     assert_eq!(progress.share(), 0.25);
     assert_eq!(progress.time_left(), Some(Duration::from_secs(30)));
@@ -946,6 +947,8 @@ fn every_format_this_build_encodes_exports_in_sync() {
             audio,
             quality: Quality::Small,
             software: true,
+            normalise: None,
+            limit: false,
         };
         let export = Export::start(project.clone(), seq, settings, Some(devices.clone()), || {});
         let done = match wait(&export) {
@@ -1069,4 +1072,174 @@ fn encoders_are_said_by_where_they_work() {
     assert_eq!(encoder_place("av1_nvenc"), Place::GraphicsCard);
     assert_eq!(encoder_place("hevc_mf"), Place::System);
     assert_eq!(encoder_place("aac"), Place::Processor);
+}
+
+/// The recording's sound turned up by `db`, as a project.
+fn louder(db: i32) -> (Project, SequenceId) {
+    let (project, seq) = recording();
+    let sounds = project
+        .active()
+        .unwrap()
+        .audio_tracks
+        .iter()
+        .flat_map(|t| t.clips.iter())
+        .map(|c| {
+            let sound = project::Sound {
+                gain_mdb: db * 1000,
+                ..project::Sound::PLAIN
+            };
+            (c.id, sound)
+        })
+        .collect();
+    let project = Command::SetSound {
+        sequence: seq,
+        sounds,
+    }
+    .apply(&project)
+    .unwrap();
+    (project, seq)
+}
+
+/// Exports two seconds of `project` as WAV with these loudness settings.
+fn wav(
+    project: Project,
+    seq: SequenceId,
+    normalise: Option<f32>,
+    limit: bool,
+) -> (Exported, PathBuf, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("sound.wav");
+    let settings = ExportSettings {
+        range: Some((Time::ZERO, Time::seconds(2))),
+        container: Container::Wav,
+        video: None,
+        audio: AudioCodec::Pcm24,
+        normalise,
+        limit,
+        ..ExportSettings::mp4(path.clone())
+    };
+    let export = Export::start(project, seq, settings, None, || {});
+    match wait(&export) {
+        Outcome::Done(done) => (done, path, dir),
+        Outcome::Failed(err) => panic!("{}", err.report()),
+        Outcome::Cancelled => panic!("cancelled"),
+    }
+}
+
+/// The integrated loudness and highest true peak of a sound file, decoded.
+fn measured(path: &Path) -> (f32, f32) {
+    let made = media::describe(path).unwrap();
+    let stream = &made.info.audio[0];
+    let mut sound = media::AudioDecoder::open(path, stream.index, stream.sample_rate).unwrap();
+    let mut meter = crate::loudness::Loudness::new(stream.sample_rate);
+    let mut block = vec![0.0f32; 4096];
+    loop {
+        let got = sound.read(&mut block);
+        if got == 0 {
+            break;
+        }
+        meter.feed(&block[..got * 2]);
+    }
+    (meter.measured().integrated, meter.measured().true_peak_max)
+}
+
+#[test]
+fn normalising_brings_the_sound_to_the_loudness_aimed_at_under_the_ceiling() {
+    for (db, target) in [(0, -14.0f32), (0, -23.0), (12, -14.0)] {
+        let (project, seq) = louder(db);
+        let (plain, _, _plain_dir) = wav(project.clone(), seq, None, false);
+        let (done, path, _dir) = wav(project, seq, Some(target), true);
+        let normalised = done.normalised.expect("normalised");
+        // The first pass measured what an export without it writes.
+        assert!(
+            (normalised.measured - plain.loudness).abs() < 0.05,
+            "{} against {}",
+            normalised.measured,
+            plain.loudness
+        );
+        assert!((normalised.gain_db - (target - plain.loudness)).abs() < 0.01);
+        // What was written is on target (the limiter may take a little
+        // off) and its true peak under the ceiling, as written and as the
+        // file reads back.
+        assert!(
+            (done.loudness - target).abs() < 1.0,
+            "{db} dB louder, aiming at {target}: {} LUFS",
+            done.loudness
+        );
+        assert!(done.true_peak <= TRUE_PEAK_CEILING, "{} dBTP", done.true_peak);
+        let (loudness, peak) = measured(&path);
+        assert!((loudness - done.loudness).abs() < 0.05, "{loudness} read back");
+        assert!(peak <= TRUE_PEAK_CEILING + 0.01, "{peak} dBTP read back");
+        assert!(done.limited_db.is_some());
+    }
+}
+
+#[test]
+fn without_normalising_the_mix_is_exported_sample_for_sample() {
+    let (project, seq) = louder(12);
+    let (plain, path, _dir) = wav(project.clone(), seq, None, false);
+    assert!(plain.normalised.is_none() && plain.limited_db.is_none());
+    // Twelve decibels up, the recording peaks over full scale: left as it is.
+    assert!(plain.true_peak > 0.0, "{}", plain.true_peak);
+    let rate = project.active().unwrap().settings.sample_rate;
+    let made = media::describe(&path).unwrap();
+    let mut sound = media::AudioDecoder::open(&path, made.info.audio[0].index, rate).unwrap();
+    let mut heard = vec![0.0f32; rate as usize * 2];
+    sound.read(&mut heard);
+    // Mixed a frame at a time (60 a second), as the export mixes.
+    let mut mixed = vec![0.0f32; rate as usize * 2];
+    let mut mixer = Mixer::new(rate);
+    for (n, chunk) in mixed.chunks_mut(1600).enumerate() {
+        mixer.mix(
+            &project,
+            project.active().unwrap(),
+            n as f64 * 800.0 / f64::from(rate),
+            chunk,
+        );
+    }
+    let off = heard
+        .iter()
+        .zip(&mixed)
+        .map(|(a, b)| (a - b.clamp(-1.0, 1.0)).abs())
+        .fold(0f32, f32::max);
+    assert!(off < 1e-6, "{off}");
+    // The limiter alone keeps it under the ceiling, the loudness about as it was.
+    let (limited, _, _limited_dir) = wav(project, seq, None, true);
+    assert!(limited.true_peak <= TRUE_PEAK_CEILING, "{}", limited.true_peak);
+    assert!(limited.limited_db.is_some_and(|db| db < 0.0));
+}
+
+#[test]
+fn normalising_silence_or_quiet_turns_it_up_no_more_than_allowed() {
+    assert_eq!(Normalised::for_target(f32::NEG_INFINITY, -14.0).gain_db, 0.0);
+    assert_eq!(Normalised::for_target(-60.0, -14.0).gain_db, MOST_GAIN_DB);
+    assert_eq!(Normalised::for_target(-10.0, -14.0).gain_db, -4.0);
+}
+
+#[test]
+fn a_video_export_measures_first_then_writes_on_target() {
+    let Some(devices) = devices() else {
+        eprintln!("no graphics device here: exporting isn't checked");
+        return;
+    };
+    let (project, seq) = recording();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("loud.mp4");
+    let settings = ExportSettings {
+        range: Some((Time::seconds(1), Time::seconds(2))),
+        software: true,
+        normalise: Some(-16.0),
+        limit: true,
+        ..ExportSettings::mp4(path.clone())
+    };
+    let export = Export::start(project, seq, settings, Some(devices), || {});
+    let Outcome::Done(done) = wait(&export) else {
+        panic!("the export did not finish well");
+    };
+    assert!(done.normalised.is_some());
+    assert!((done.loudness + 16.0).abs() < 1.0, "{}", done.loudness);
+    assert!(done.true_peak <= TRUE_PEAK_CEILING);
+    assert!(!export.progress().measuring);
+    let (exported, _) = measured(&path);
+    assert!((exported + 16.0).abs() < 1.0, "{exported} read back");
 }
