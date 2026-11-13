@@ -283,6 +283,7 @@ fn clip(start: f64, source_in: f64, duration: f64) -> Clip {
         ramp: Default::default(),
         blend: Default::default(),
         kind: Default::default(),
+        lines: Default::default(),
     }
 }
 
