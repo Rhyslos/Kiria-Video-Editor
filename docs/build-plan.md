@@ -426,6 +426,8 @@ Phase 8 builds the audio engine's effects and the Audio page from the mockup: vi
 
 **8.1 DSP (`audio`)** (research workflow for the engine)
 
+Research done: `docs/research/audio-engine.md` and `spikes/audio-engine/` (on the cloud machine, 32 tracks with every effect took about 15 % of one core in 256-sample blocks with no allocations; chosen: a fixed effect strip per track, mixed in the sound card's callback at raised priority, decoding on a feeder thread into a ring per track, settings as a command queue with pre-built swaps for what needs memory, noise clean-up by spectral gating). The build follows the note's section 5.
+
 - [ ] Real-time thread with no allocations or locks; every effect processes fixed-size blocks; tested with a stress run of 32 tracks.
 - [ ] Per track: high-pass filter, parametric EQ with an analyser overlay, compressor (threshold, ratio, attack, release, knee, makeup, gain-reduction meter, plain presets), noise clean-up, ducking (sidechain under dialogue), loudness.
 - [ ] Master: compressor, true-peak limiter; meters for integrated, short-term and true-peak loudness.

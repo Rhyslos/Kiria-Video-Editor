@@ -1,0 +1,38 @@
+# Builds the audio engine measurement program (spikes/audio-engine) for
+# Windows as a ready-to-run zip. Started by hand, or when the spike changes.
+name: Audio engine spike
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ["spikes/audio-engine/**", ".github/workflows/spike-audio.yml"]
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+      - name: Toolchain
+        run: rustup toolchain install stable --profile minimal
+      - name: Build, test and a short run
+        working-directory: spikes/audio-engine
+        env:
+          RUSTUP_TOOLCHAIN: stable
+        run: |
+          cargo build --release
+          cargo test --release
+          target/release/audio-bench.exe quick > quick-results.md
+          cat quick-results.md
+      - name: Package
+        run: |
+          mkdir -p pkg
+          cp spikes/audio-engine/run.bat spikes/audio-engine/README.md spikes/audio-engine/quick-results.md pkg/
+          cp spikes/audio-engine/target/release/audio-bench.exe pkg/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: audio-bench-windows
+          path: pkg/
