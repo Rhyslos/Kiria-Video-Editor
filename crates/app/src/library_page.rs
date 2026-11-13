@@ -317,6 +317,11 @@ impl LibraryPage {
         }
     }
 
+    /// Keeps files' loudness readings in `folder` between sessions.
+    pub fn keep_loudness_in(&mut self, folder: std::path::PathBuf) {
+        self.loudness = loudness::Measurements::keeping_in(folder);
+    }
+
     /// Opens a tab by its name: a type ("video", "audio", "images",
     /// "effects") or a list of the project. Returns whether one was found.
     pub fn open_tab_named(&mut self, name: &str, project: &Project) -> bool {
