@@ -546,7 +546,8 @@ impl Editor {
                     "The edit needle is back: cuts, splits and pastes happen at the red needle."
                 }
                 .into();
-                self.settings.save(&self.data_dir)
+                // The settings keeper writes it once it has settled.
+                Ok(())
             }
             Action::MarkIn | Action::MarkOut => self.mark(action == Action::MarkIn),
             Action::RemoveSilence => self.with_document(|_| Ok(())).map(|()| self.silence.open = true),

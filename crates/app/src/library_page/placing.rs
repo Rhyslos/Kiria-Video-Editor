@@ -143,6 +143,7 @@ pub fn command_many(
             AddAt::End => before,
             AddAt::EditPoint => edit_point,
         },
+        name_tracks: true,
     })
 }
 
