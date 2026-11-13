@@ -166,8 +166,17 @@ impl Editor {
             let Some(seq) = d.project().active() else {
                 return Ok(());
             };
+            // The exact edges of the clips around it (they need not be on
+            // the timeline's frames), else the nearest frames.
             let rate = seq.settings.frame_rate;
-            let (start, end) = (rate.snap(super::seconds(start)), rate.snap(super::seconds(end)));
+            let edge = |at: f64, ends: bool| {
+                seq.tracks()
+                    .flat_map(|t| t.clips.iter())
+                    .map(|c| if ends { c.end() } else { c.start })
+                    .find(|t| (t.as_secs_f64() - at).abs() < 1e-6)
+                    .unwrap_or_else(|| rate.snap(super::seconds(at)))
+            };
+            let (start, end) = (edge(start, true), edge(end, false));
             d.apply(Command::CloseGap {
                 sequence: seq.id,
                 start,

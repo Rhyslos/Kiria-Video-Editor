@@ -2450,6 +2450,10 @@ impl Editor {
         // A fixed id: its place in the panel is kept whatever comes before
         // it, so a click in it (an arrow beside a diamond) never scrolls it
         // back to the top.
+        // A scroll bar with room of its own, beside the rows instead of over
+        // their right end, where the keyframe arrows are (a click there went
+        // to the bar and scrolled the panel to the top).
+        ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
         let commands = egui::ScrollArea::vertical()
             .id_salt("inspector")
             .auto_shrink([false, false])

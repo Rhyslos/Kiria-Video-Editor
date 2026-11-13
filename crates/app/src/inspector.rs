@@ -773,7 +773,7 @@ fn picture_sections(
                 &k(LookField::Opacity),
             );
             asks.row(touched, LookField::Opacity, keyed);
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.add_space(90.0);
                 if ui
                     .button("Fit")
@@ -800,7 +800,7 @@ fn picture_sections(
             // frame (two pictures stacked on a vertical timeline).
             let now = values.look(frame, &before);
             let mut placed = None;
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 inspector::label_cell(ui, theme, "Layout", 86.0);
                 ui.spacing_mut().item_spacing.x = 4.0;
                 for (label, tip, right, bottom) in [
@@ -814,7 +814,7 @@ fn picture_sections(
                     }
                 }
             });
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.add_space(90.0);
                 ui.spacing_mut().item_spacing.x = 4.0;
                 for (label, tip, bottom) in [
