@@ -18,6 +18,9 @@ impl Editor {
         self.library_page.player.ensure_viewer(&self.viewer);
         let proxies = &self.proxies;
         let status = |media| proxies.status(media);
+        let new_files = self.media_folders.new_files(document.project());
+        let importer = &self.importer;
+        let checking = |path: &std::path::Path| importer.is_reading(path);
         let about = About {
             project: document.project(),
             answer: self.library.answer(crate::library_page::ASKER),
@@ -31,6 +34,10 @@ impl Editor {
             jobs: &self.jobs,
             importing: self.importer.busy(),
             status: &self.status,
+            new_files: crate::new_files::NewFiles {
+                files: &new_files,
+                checking: &checking,
+            },
         };
         let (jobs, waveforms, pictures, ctx) = (
             &self.jobs,
@@ -46,11 +53,11 @@ impl Editor {
         };
         let picked = self.library_page.ui(ui, &self.theme, &about, &mut readers);
         for asked in picked {
-            self.library_picked(asked);
+            self.library_picked(&ctx, asked);
         }
     }
 
-    fn library_picked(&mut self, asked: Picked) {
+    fn library_picked(&mut self, ctx: &egui::Context, asked: Picked) {
         match asked {
             Picked::Edit(command) => {
                 if let Err(err) = self.with_document(|d| d.apply(*command)) {
@@ -67,7 +74,7 @@ impl Editor {
                 let result = self.with_document(|d: &mut Document| {
                     let command = placing::command(d.project(), adding.clone(), at)?;
                     if let Some(media) = d.project().media.get(&adding.media) {
-                        says = placing::says(&library::file_name(&media.path), &adding);
+                        says = placing::says(media, &adding);
                     }
                     d.apply(command)
                 });
@@ -79,10 +86,88 @@ impl Editor {
                     Err(err) => self.errors.push(&err),
                 }
             }
-            Picked::BuildProxy(media) => self.proxies.build_now(media),
+            Picked::AddSeveral(addings, at) => {
+                let edit_point = self.edit_point();
+                let count = addings.len();
+                let result = self.with_document(|d: &mut Document| {
+                    // An automatic timeline takes what most of them share.
+                    if let Some(settle) = placing::settle_first(d.project(), &addings) {
+                        d.apply(settle)?;
+                    }
+                    let command = placing::command_many(d.project(), addings, at, edit_point)?;
+                    d.apply(command)
+                });
+                match result {
+                    Ok(()) => {
+                        let undo = self.shortcuts.keys_or_name(Action::Undo);
+                        self.status = format!(
+                            "Added {count} files {}, one after another ({undo} takes them all out)",
+                            match at {
+                                placing::AddAt::End => "at the end of the timeline",
+                                placing::AddAt::EditPoint => "at the edit point",
+                            }
+                        );
+                        self.fitted = false;
+                    }
+                    Err(err) => self.errors.push(&err),
+                }
+            }
+            Picked::BuildProxy(media) => {
+                self.proxies.build_now(media);
+                let name = self
+                    .document
+                    .as_ref()
+                    .and_then(|d| d.project().media.get(&media))
+                    .map(|m| library::file_name(&m.path))
+                    .unwrap_or_default();
+                self.status = format!("Building the proxy of {name} next: its card shows how far it is");
+            }
+            Picked::BuildProxies(media) => {
+                for id in &media {
+                    self.proxies.build_now(*id);
+                }
+                self.status = format!(
+                    "Building {} proxies, one at a time: their cards show how far each is",
+                    media.len()
+                );
+            }
             Picked::DeleteProxy(media) => self.proxies.delete(&self.jobs, media),
+            Picked::Remove(media) => self.remove_from_project(media),
             Picked::Import => self.run_action(Action::Import),
+            Picked::AddFound(paths) => self.importer.add(&self.jobs, ctx, paths),
+            Picked::Dismiss(path) => self.media_folders.dismiss(path),
             Picked::Prune => self.run_action(Action::Prune),
+        }
+    }
+
+    /// Takes the chosen files out of the project as one step: those no
+    /// timeline uses (the others stay, and the status line says so).
+    fn remove_from_project(&mut self, media: Vec<project::MediaId>) {
+        let Some(document) = &self.document else { return };
+        let used = project::prune::used_media(document.project());
+        let (kept, going): (Vec<_>, Vec<_>) = media.into_iter().partition(|m| used.contains(m));
+        if going.is_empty() {
+            self.errors.push(
+                &diag::AppError::new("These files are used on a timeline")
+                    .why("Only files no timeline uses can be taken out of the project; a clip still plays each of them.")
+                    .fix("Remove their clips first, or choose files that are \"Not in a timeline\"."),
+            );
+            return;
+        }
+        let count = going.len();
+        match self.with_document(|d| d.apply(project::Command::RemoveMedia { media: going })) {
+            Ok(()) => {
+                let undo = self.shortcuts.keys_or_name(Action::Undo);
+                let stayed = match kept.len() {
+                    0 => String::new(),
+                    1 => "; 1 a timeline uses stayed".into(),
+                    n => format!("; {n} a timeline uses stayed"),
+                };
+                self.status = format!(
+                    "Took {count} files out of the project{stayed}. Nothing was deleted from disk ({undo} brings them back)."
+                );
+            }
+            Err(err) => self.errors.push(&err),
         }
     }
 

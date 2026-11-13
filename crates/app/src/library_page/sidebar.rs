@@ -1,4 +1,6 @@
-//! The Library's sidebar: Import, the labels (with how many files of the
+//! The Library's sidebar: Import (into the project's media only), "New in
+//! your folders" (`crate::new_files`, as in the media drawer), the labels
+//! (with how many files of the
 //! open tab have each; a click narrows the files to those with it, as a
 //! chip in the filter row; right-click to rename, recolour, offer in every
 //! project or remove), labels offered in every project that this one hasn't
@@ -6,15 +8,13 @@
 
 use super::arrange::Facts;
 use super::{About, LibraryPage, Picked, Smart};
-use crate::organise::{Everywhere, name_field, new_label};
+use crate::organise::Everywhere;
 use project::{Command, LabelColor, MediaLabel, MediaLabelId};
 use ui_kit::{Action, Theme};
 
-/// What is being typed in the sidebar: a new label's name, and the new
-/// name of the label being renamed.
+/// What is being typed in the sidebar: the new name of the label being renamed.
 #[derive(Debug, Default)]
 pub struct Drafts {
-    new_label: String,
     renaming: Option<(MediaLabelId, String)>,
 }
 
@@ -37,7 +37,10 @@ pub fn ui(
             egui::Button::new(egui::RichText::new("Import media…").color(theme.accent_ink))
                 .fill(theme.accent),
         )
-        .on_hover_text(about.shortcuts.tip(Action::Import));
+        .on_hover_text(format!(
+            "{}: the files go into the project's media, ready to add to a timeline from here",
+            about.shortcuts.tip(Action::Import)
+        ));
     if import.clicked() {
         picked.push(Picked::Import);
     }
@@ -54,6 +57,15 @@ pub fn ui(
                 .color(theme.text_secondary),
             );
         });
+    }
+    if !about.new_files.files.is_empty() {
+        ui.add_space(8.0);
+        if let Some(asked) = crate::new_files::ui(ui, theme, &about.new_files) {
+            picked.push(match asked {
+                crate::new_files::Asked::Add(paths) => Picked::AddFound(paths),
+                crate::new_files::Asked::Dismiss(path) => Picked::Dismiss(path),
+            });
+        }
     }
     ui.add_space(10.0);
     let prune_room = 40.0;
@@ -99,25 +111,13 @@ fn labels(
     ui.horizontal(|ui| {
         heading(ui, theme, "Labels");
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.menu_button("+", |ui| {
-                ui.label(
-                    egui::RichText::new("A new label, on no file yet")
-                        .size(12.0)
-                        .color(theme.muted),
-                );
-                if let Some(name) = name_field(ui, &mut page.sidebar.new_label, "New label") {
-                    picked.push(Picked::Edit(Box::new(new_label(
-                        library,
-                        about.global,
-                        name,
-                        Vec::new(),
-                    ))));
-                    page.sidebar.new_label.clear();
-                    ui.close();
-                }
-            })
-            .response
-            .on_hover_text("Make a label");
+            if ui
+                .button("+")
+                .on_hover_text("Make a label, on no file yet")
+                .clicked()
+            {
+                page.organiser.ask_label(Vec::new());
+            }
         });
     });
     let others: Vec<&project::GlobalLabel> = about

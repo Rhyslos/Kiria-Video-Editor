@@ -172,9 +172,11 @@ impl Relinker {
         let (tx, rx) = channel();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
-            let picked = rfd::FileDialog::new()
-                .set_title("Where are the missing files?")
-                .pick_folder();
+            let picked = ui_kit::file_dialog::run(&ctx, || {
+                rfd::FileDialog::new()
+                    .set_title("Where are the missing files?")
+                    .pick_folder()
+            });
             let _ = tx.send(picked);
             ctx.request_repaint();
         });

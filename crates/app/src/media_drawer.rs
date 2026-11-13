@@ -49,13 +49,6 @@ pub enum Picked {
     Run(ui_kit::Action),
 }
 
-/// New files in the media folders, for the drawer's "New in your folders".
-pub struct NewFiles<'a> {
-    pub files: &'a [library::Found],
-    /// Whether a file is being checked for adding now.
-    pub checking: &'a dyn Fn(&std::path::Path) -> bool,
-}
-
 /// What the drawer is told besides the project.
 pub struct About<'a> {
     /// The library index's newest answer (`None` until it has one).
@@ -65,11 +58,8 @@ pub struct About<'a> {
     pub proxy: ProxyInfo<'a>,
     /// The labels offered in every project.
     pub global: &'a GlobalLabels,
-    pub new_files: NewFiles<'a>,
+    pub new_files: crate::new_files::NewFiles<'a>,
 }
-
-/// At most this many new files are listed; "Add all" takes every one.
-const NEW_SHOWN: usize = 4;
 
 /// What the drawer is told about proxies: each file's, and the mode.
 pub struct ProxyInfo<'a> {
@@ -141,6 +131,24 @@ impl MediaDrawer {
         }
     }
 
+    /// The name dialog of a new label or list asked for in a file's menu:
+    /// call every frame, whether the drawer is shown or not (it may have
+    /// closed as the menu did).
+    pub fn dialog(
+        &mut self,
+        ctx: &egui::Context,
+        theme: &Theme,
+        project: &Project,
+        global: &GlobalLabels,
+    ) -> Option<Picked> {
+        self.organiser
+            .dialog(ctx, theme, project, global)
+            .map(|asked| match asked {
+                Organised::Edit(command) => Picked::Edit(command),
+                Organised::Everywhere(change) => Picked::Everywhere(change),
+            })
+    }
+
     /// Whether anything besides the words narrows the list.
     fn narrowed(&self) -> bool {
         self.kind.is_some() || self.label.is_some() || self.list.is_some()
@@ -184,7 +192,10 @@ impl MediaDrawer {
         ui.add_space(6.0);
         let mut new_picked = None;
         if !new_files.files.is_empty() {
-            new_picked = new_in_folders(ui, theme, new_files);
+            new_picked = crate::new_files::ui(ui, theme, new_files).map(|asked| match asked {
+                crate::new_files::Asked::Add(paths) => Picked::AddFound(paths),
+                crate::new_files::Asked::Dismiss(path) => Picked::Dismiss(path),
+            });
             ui.add_space(4.0);
             ui.separator();
         }
@@ -310,93 +321,6 @@ fn more_menu(ui: &mut egui::Ui) -> Option<Picked> {
     ran
 }
 
-/// "New in your folders": the newest few new files, each with Add and ×,
-/// and "Add all" when there are several.
-fn new_in_folders(ui: &mut egui::Ui, theme: &Theme, new: &NewFiles<'_>) -> Option<Picked> {
-    let mut picked = None;
-    ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new(format!("New in your folders ({})", new.files.len()))
-                .font(egui::FontId::new(12.5, ui_kit::fonts::semibold()))
-                .color(theme.text),
-        )
-        .on_hover_text(
-            "Recordings in your media folders (the launcher's Media folders) changed since this project was last saved and finished being written. Nothing is added by itself.",
-        );
-        if new.files.len() > 1
-            && ui
-                .small_button("Add all")
-                .on_hover_text("Add every one to the project's media, after checking it")
-                .clicked()
-        {
-            picked = Some(Picked::AddFound(new.files.iter().map(|f| f.path.clone()).collect()));
-        }
-    });
-    for file in new.files.iter().take(NEW_SHOWN) {
-        let checking = (new.checking)(&file.path);
-        ui.allocate_ui_with_layout(
-            egui::vec2(ui.available_width(), 20.0),
-            egui::Layout::right_to_left(egui::Align::Center),
-            |ui| {
-                if checking {
-                    ui.spinner();
-                } else {
-                    if ui.small_button("×").on_hover_text("Hide it for now").clicked() {
-                        picked = Some(Picked::Dismiss(file.path.clone()));
-                    }
-                    if ui
-                        .small_button("Add")
-                        .on_hover_text("Add it to the project's media, after checking it")
-                        .clicked()
-                    {
-                        picked = Some(Picked::AddFound(vec![file.path.clone()]));
-                    }
-                }
-                let mut job = egui::text::LayoutJob::default();
-                job.append(
-                    &library::file_name(&file.path),
-                    0.0,
-                    egui::TextFormat::simple(egui::FontId::proportional(12.0), theme.text),
-                );
-                job.append(
-                    &format!(
-                        "  {} · {}",
-                        size_text(file.size),
-                        library::file_name(&file.folder)
-                    ),
-                    0.0,
-                    egui::TextFormat::simple(egui::FontId::proportional(11.0), theme.muted),
-                );
-                job.wrap = egui::text::TextWrapping::truncate_at_width(ui.available_width());
-                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    ui.add(egui::Label::new(job).truncate())
-                        .on_hover_text(file.path.display().to_string());
-                });
-            },
-        );
-    }
-    if new.files.len() > NEW_SHOWN {
-        ui.label(
-            egui::RichText::new(format!("and {} more", new.files.len() - NEW_SHOWN))
-                .size(11.0)
-                .color(theme.muted),
-        );
-    }
-    picked
-}
-
-/// A file size in a few characters: "840 KB", "12.3 MB", "4.1 GB".
-fn size_text(bytes: u64) -> String {
-    let b = bytes as f64;
-    if b >= 1e9 {
-        format!("{:.1} GB", b / 1e9)
-    } else if b >= 1e6 {
-        format!("{:.1} MB", b / 1e6)
-    } else {
-        format!("{:.0} KB", (b / 1e3).max(1.0))
-    }
-}
-
 /// Every row is this tall, so only the rows in view are drawn (10 000
 /// files scroll as smoothly as ten).
 const ROW_HEIGHT: f32 = 58.0;
@@ -489,11 +413,7 @@ impl MediaDrawer {
             );
         }
         if let Some(text) = proxy_line {
-            let colour = match proxy {
-                Status::Failed(_) => ui_kit::status::ERROR,
-                Status::Ready => theme.accent,
-                _ => theme.muted,
-            };
+            let colour = proxies::colour(proxy, theme);
             let gap = if line.text.is_empty() { 0.0 } else { 8.0 };
             line.append(&text, gap, egui::TextFormat::simple(small.clone(), colour));
         }
@@ -576,7 +496,7 @@ impl MediaDrawer {
                 ui.close();
             }
             ui.separator();
-            if let Some(asked) = self.organiser.menus(ui, project, global, media.id) {
+            if let Some(asked) = self.organiser.menus(ui, project, global, &[media.id]) {
                 picked = Some(match asked {
                     Organised::Edit(command) => Picked::Edit(command),
                     Organised::Everywhere(change) => Picked::Everywhere(change),
@@ -629,14 +549,6 @@ mod tests {
             duration: Time::seconds(1),
             info: MediaInfo::default(),
         }
-    }
-
-    #[test]
-    fn sizes_in_a_few_characters() {
-        assert_eq!(size_text(200), "1 KB");
-        assert_eq!(size_text(840_000), "840 KB");
-        assert_eq!(size_text(12_300_000), "12.3 MB");
-        assert_eq!(size_text(4_100_000_000), "4.1 GB");
     }
 
     #[test]

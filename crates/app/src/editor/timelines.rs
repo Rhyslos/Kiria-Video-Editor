@@ -122,15 +122,16 @@ impl Editor {
             .map_or_else(|| "The timeline".into(), |s| s.name.clone())
     }
 
-    /// A new, empty timeline the size and rate of the open one, or (with
-    /// `copy`) a copy of the open one; it opens.
+    /// A new, empty timeline the size and rate of the open one ("Timeline
+    /// 2"), or (with `copy`) a copy of the open one; it opens, and its tab
+    /// is renamed by a double-click like any other.
     pub(super) fn new_timeline(&mut self, copy: bool) -> diag::Result<()> {
         self.with_document(|d| {
             let p = d.project();
             let Some(seq) = p.active() else { return Ok(()) };
             let command = match copy {
                 false => Command::AddSequence {
-                    name: p.free_sequence_name("Timeline"),
+                    name: p.new_sequence_name(),
                     settings: seq.settings,
                 },
                 true => Command::DuplicateSequence {
@@ -142,9 +143,10 @@ impl Editor {
         })?;
         self.follow_open_timeline();
         if let Some(seq) = self.document.as_ref().and_then(|d| d.project().active()) {
-            let (id, name) = (seq.id.0, seq.name.clone());
-            self.tabs.rename(id, &name);
-            self.status = format!("{name} is open: type a name for it, or press Enter to keep this one.");
+            self.status = format!(
+                "{} is open. Double-click its tab to rename it; the other timelines are beside it.",
+                seq.name
+            );
         }
         Ok(())
     }

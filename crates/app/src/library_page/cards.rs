@@ -254,14 +254,14 @@ fn file_card(
             theme.accent_ink,
         );
     }
-    if let Some((text, fill)) = proxy_badge(&(about.proxy)(media.id), theme).filter(|_| !missing) {
+    if let Some((text, fill, ink)) = proxy_badge(&(about.proxy)(media.id), theme).filter(|_| !missing) {
         badge(
             &painter,
             corner.right_top(),
             egui::Align2::RIGHT_TOP,
             &text,
             fill,
-            theme.bg,
+            ink,
         );
     }
     if media.info.stated_length.is_some() {
@@ -285,7 +285,7 @@ fn file_card(
             theme.text,
         );
     }
-    let selected = page.selected == Some(media.id);
+    let selected = page.is_chosen(media.id);
     if selected || response.hovered() {
         let stroke = if selected {
             egui::Stroke::new(2.0, theme.accent)
@@ -337,7 +337,7 @@ fn file_row(
         ui.scope_id().with(("library-file", media.id.0)),
         egui::Sense::click(),
     );
-    let selected = page.selected == Some(media.id);
+    let selected = page.is_chosen(media.id);
     let painter = ui.painter_at(rect);
     if selected {
         painter.rect_filled(rect, 6.0, theme.active);
@@ -405,14 +405,14 @@ fn file_row(
         );
         right = r.left() - 10.0;
     }
-    if let Some((text, fill)) = proxy_badge(&(about.proxy)(media.id), theme).filter(|_| !missing) {
+    if let Some((text, fill, ink)) = proxy_badge(&(about.proxy)(media.id), theme).filter(|_| !missing) {
         let r = badge(
             &painter,
             egui::pos2(right, mid),
             egui::Align2::RIGHT_CENTER,
             &text,
             fill,
-            theme.bg,
+            ink,
         );
         right = r.left() - 6.0;
     }
@@ -449,14 +449,10 @@ pub fn label_edge(painter: &egui::Painter, project: &project::Project, media: Me
     }
 }
 
-/// The proxy badge's words and colour: needed, or being built.
-pub fn proxy_badge(status: &Status, theme: &Theme) -> Option<(String, egui::Color32)> {
-    match status {
-        Status::Needed => Some(("Needs proxy".into(), ui_kit::status::WARNING)),
-        Status::Building(_) => proxies::label(status).map(|t| (t, theme.text_secondary)),
-        Status::Failed(_) => Some(("Proxy failed".into(), ui_kit::status::ERROR)),
-        _ => None,
-    }
+/// The proxy badge's words, fill and ink: as the media drawer says it
+/// (`proxies::badge`), from "Needs proxy" through the build to "Proxy".
+pub fn proxy_badge(status: &Status, theme: &Theme) -> Option<(String, egui::Color32, egui::Color32)> {
+    proxies::badge(status, theme)
 }
 
 /// A small filled pill with `text`, placed by `align` at `at`. Returns where it went.

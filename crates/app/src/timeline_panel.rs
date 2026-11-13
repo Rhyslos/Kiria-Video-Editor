@@ -669,6 +669,11 @@ pub fn first_clip(seq: &Sequence) -> Option<ClipId> {
         .map(|clip| clip.id)
 }
 
+/// Every clip of the timeline, on every track: what Select all selects.
+pub fn all_clips(seq: &Sequence) -> Vec<ClipId> {
+    seq.tracks().flat_map(|t| t.clips.iter().map(|c| c.id)).collect()
+}
+
 /// Drops clips that no longer exist (after a delete or an undo).
 pub fn keep_existing(selected: &mut Vec<ClipId>, seq: &Sequence) {
     selected.retain(|id| seq.tracks().any(|t| t.clips.iter().any(|c| c.id == *id)));
@@ -1003,6 +1008,18 @@ mod tests {
         // Nothing on the timeline, nothing to select.
         let empty = Project::new("Test", SequenceSettings::GAME_CLIP);
         assert_eq!(first_clip(empty.active().unwrap()), None);
+    }
+
+    #[test]
+    fn select_all_takes_every_clip_on_every_track() {
+        let p = crate::inspector::tests::project_with_a_clip();
+        let seq = p.active().unwrap();
+        let all = all_clips(seq);
+        let count: usize = seq.tracks().map(|t| t.clips.len()).sum();
+        assert_eq!(all.len(), count);
+        assert!(!all.is_empty());
+        let empty = Project::new("Test", project::SequenceSettings::GAME_CLIP);
+        assert!(all_clips(empty.active().unwrap()).is_empty());
     }
 
     #[test]

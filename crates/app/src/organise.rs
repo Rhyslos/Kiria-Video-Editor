@@ -26,23 +26,64 @@ pub enum Everywhere {
     StopOffering(String),
 }
 
-/// What is being typed in the menus: a new label's or list's name, and
-/// the note of the file being written.
+/// What the menus keep between frames: a new label's or list's name being
+/// asked for (a small dialog, so the field keeps the keys: a field inside a
+/// menu loses them when the menu closes), and the note being written.
 #[derive(Debug, Default)]
 pub struct Organiser {
-    name_draft: String,
+    naming: Option<Naming>,
     note_draft: String,
     editing: Option<MediaId>,
 }
 
+/// A name being asked for, and for which files.
+#[derive(Debug)]
+struct Naming {
+    what: NewName,
+    media: Vec<MediaId>,
+    ask: ui_kit::dialog::NameAsk,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NewName {
+    Label,
+    List,
+}
+
+/// Whether every one, some or none of a set of files has something.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Share {
+    All,
+    Some,
+    None,
+}
+
+impl Share {
+    pub fn of(media: &[MediaId], has: impl Fn(MediaId) -> bool) -> Share {
+        let count = media.iter().filter(|m| has(**m)).count();
+        match count {
+            0 => Share::None,
+            n if n == media.len() => Share::All,
+            _ => Share::Some,
+        }
+    }
+
+    /// What a click on its tick does: every file gets it, unless every one
+    /// has it already, when every one loses it.
+    pub fn clicked_on(self) -> bool {
+        self != Share::All
+    }
+}
+
 impl Organiser {
-    /// Labels, Lists and Note as three submenus of a right-click menu.
+    /// Labels, Lists and Note as three submenus of a right-click menu, for
+    /// one file or several (`media`; Note only for one).
     pub fn menus(
         &mut self,
         ui: &mut egui::Ui,
         project: &Project,
         global: &GlobalLabels,
-        media: MediaId,
+        media: &[MediaId],
     ) -> Option<Organised> {
         let mut asked = None;
         ui.menu_button("Labels", |ui| {
@@ -51,80 +92,139 @@ impl Organiser {
         ui.menu_button("Lists", |ui| {
             asked = asked.take().or(self.lists_menu(ui, project, media));
         });
-        ui.menu_button("Note", |ui| {
-            asked = asked.take().or(self.note_menu(ui, project, media));
-        });
+        if let [one] = media {
+            ui.menu_button("Note", |ui| {
+                asked = asked.take().or(self.note_menu(ui, project, *one));
+            });
+        }
         asked
     }
 
     /// The Labels menu's contents: every label to tick (the project's, then
-    /// those offered everywhere it hasn't got yet, marked "everywhere"), a
-    /// field for a new one, and "Every project".
+    /// those offered everywhere it hasn't got yet, marked "everywhere";
+    /// half-ticked when some of the files have it), "New label…" (asks for
+    /// the name in a dialog), and "Every project".
     pub fn labels_menu(
         &mut self,
         ui: &mut egui::Ui,
         project: &Project,
         global: &GlobalLabels,
-        media: MediaId,
+        media: &[MediaId],
     ) -> Option<Organised> {
         let library = &project.library;
         let mut asked = None;
         let choices = label_choices(library, global);
         for choice in &choices {
             let (name, color, everywhere) = choice.shown();
-            let mut on = choice
-                .project_label()
-                .is_some_and(|l| library.has_label(media, l));
+            let share = match choice.project_label() {
+                Some(l) => Share::of(media, |m| library.has_label(m, l)),
+                None => Share::None,
+            };
+            let mut on = share == Share::All;
             let text = label_text(ui, name, color, everywhere);
-            if ui.checkbox(&mut on, text).changed() {
-                asked = Some(Organised::Edit(Box::new(choice.command(media, on))));
+            let tick = egui::Checkbox::new(&mut on, text).indeterminate(share == Share::Some);
+            if ui.add(tick).clicked() {
+                asked = Some(Organised::Edit(Box::new(
+                    choice.command(media, share.clicked_on()),
+                )));
             }
         }
         if !choices.is_empty() {
             ui.separator();
         }
-        if let Some(name) = name_field(ui, &mut self.name_draft, "New label") {
-            asked = Some(Organised::Edit(Box::new(new_label(
-                library,
-                global,
-                name,
-                vec![media],
-            ))));
+        if ui.button("New label…").clicked() {
+            self.ask_label(media.to_vec());
+            ui.close();
         }
         if let Some(change) = everywhere_menu(ui, library, global) {
             asked = Some(Organised::Everywhere(change));
         }
-        if asked.is_some() {
-            self.name_draft.clear();
-        }
         asked
     }
 
-    /// The Lists menu's contents: every list to tick, and a field for a new one.
-    pub fn lists_menu(&mut self, ui: &mut egui::Ui, project: &Project, media: MediaId) -> Option<Organised> {
+    /// The Lists menu's contents: every list to tick (half-ticked when some
+    /// of the files are in it), and "New list…".
+    pub fn lists_menu(
+        &mut self,
+        ui: &mut egui::Ui,
+        project: &Project,
+        media: &[MediaId],
+    ) -> Option<Organised> {
         let library = &project.library;
         let mut asked = None;
         for list in &library.lists {
-            let mut member = list.media.contains(&media);
-            if ui.checkbox(&mut member, &list.name).changed() {
+            let share = Share::of(media, |m| list.media.contains(&m));
+            let mut member = share == Share::All;
+            let tick = egui::Checkbox::new(&mut member, &list.name).indeterminate(share == Share::Some);
+            if ui.add(tick).clicked() {
                 asked = Some(Organised::Edit(Box::new(Command::SetListMember {
                     list: list.id,
-                    media: vec![media],
-                    member,
+                    media: media.to_vec(),
+                    member: share.clicked_on(),
                 })));
             }
         }
         if !library.lists.is_empty() {
             ui.separator();
         }
-        if let Some(name) = name_field(ui, &mut self.name_draft, "New list") {
-            asked = Some(Organised::Edit(Box::new(Command::AddMediaList {
-                name,
-                media: vec![media],
-            })));
-            self.name_draft.clear();
+        if ui.button("New list…").clicked() {
+            self.ask_list(media.to_vec());
+            ui.close();
         }
         asked
+    }
+
+    /// Asks for a new label's name; it goes on `media` (none: an empty label).
+    pub fn ask_label(&mut self, media: Vec<MediaId>) {
+        let note = match media.len() {
+            0 => "A label on no file yet: give it to files from their right-click menu.".to_owned(),
+            1 => "It goes on this file.".to_owned(),
+            n => format!("It goes on these {n} files."),
+        };
+        self.naming = Some(Naming {
+            what: NewName::Label,
+            media,
+            ask: ui_kit::dialog::NameAsk::new("New label", "").note(note),
+        });
+    }
+
+    /// Asks for a new list's name; `media` go in it (none: an empty list).
+    pub fn ask_list(&mut self, media: Vec<MediaId>) {
+        let note = match media.len() {
+            0 => "A list of files picked by hand, in any order.".to_owned(),
+            1 => "This file goes in it.".to_owned(),
+            n => format!("These {n} files go in it."),
+        };
+        self.naming = Some(Naming {
+            what: NewName::List,
+            media,
+            ask: ui_kit::dialog::NameAsk::new("New list", "").note(note),
+        });
+    }
+
+    /// The name dialog, while one is asked for: call every frame. A name
+    /// given is the command that makes the label or list (one undo step).
+    pub fn dialog(
+        &mut self,
+        ctx: &egui::Context,
+        theme: &ui_kit::Theme,
+        project: &Project,
+        global: &GlobalLabels,
+    ) -> Option<Organised> {
+        let naming = self.naming.as_mut()?;
+        let answer = ui_kit::dialog::name_dialog(ctx, theme, "organise-name", &mut naming.ask)?;
+        let naming = self.naming.take()?;
+        let ui_kit::dialog::NameAnswer::Given(name) = answer else {
+            return None;
+        };
+        let command = match naming.what {
+            NewName::Label => new_label(&project.library, global, name, naming.media),
+            NewName::List => Command::AddMediaList {
+                name,
+                media: naming.media,
+            },
+        };
+        Some(Organised::Edit(Box::new(command)))
     }
 
     /// The Note menu's contents: the note to write, and "Keep note".
@@ -213,12 +313,12 @@ impl LabelChoice<'_> {
         }
     }
 
-    /// Ticking (`on`) or unticking it for `media`. A label offered
-    /// everywhere is copied into the project the first time it is used.
-    pub fn command(&self, media: MediaId, on: bool) -> Command {
+    /// Ticking (`on`) or unticking it for `media`, as one command. A label
+    /// offered everywhere is copied into the project the first time it is used.
+    pub fn command(&self, media: &[MediaId], on: bool) -> Command {
         match self {
             LabelChoice::Project { label, .. } => Command::SetMediaLabel {
-                media: vec![media],
+                media: media.to_vec(),
                 label: label.id,
                 on,
             },
@@ -228,7 +328,7 @@ impl LabelChoice<'_> {
                     name: g.name.clone(),
                     color: g.color,
                 },
-                media: vec![media],
+                media: media.to_vec(),
             },
         }
     }
@@ -295,24 +395,6 @@ fn everywhere_menu(ui: &mut egui::Ui, library: &Library, global: &GlobalLabels) 
     asked
 }
 
-/// A field for a new name and its button; the name when it was asked for
-/// (Enter or the button).
-pub fn name_field(ui: &mut egui::Ui, draft: &mut String, hint: &str) -> Option<String> {
-    let mut asked = false;
-    ui.horizontal(|ui| {
-        let field = ui.add(
-            egui::TextEdit::singleline(draft)
-                .hint_text(hint)
-                .desired_width(130.0),
-        );
-        asked = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-        asked |= ui
-            .add_enabled(!draft.trim().is_empty(), egui::Button::new("Add"))
-            .clicked();
-    });
-    (asked && !draft.trim().is_empty()).then(|| draft.trim().to_owned())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -361,7 +443,7 @@ mod tests {
         assert_eq!(interview.name, "Interview");
         // Ticking it copies it into the project, so the project file needs
         // nothing from outside.
-        let p = choices[1].command(MediaId(1), true).apply(&p).unwrap();
+        let p = choices[1].command(&[MediaId(1)], true).apply(&p).unwrap();
         let on = p.library.labels_of(MediaId(1));
         assert_eq!(on[0].name, "Interview");
         assert_eq!(on[0].color, LabelColor::Orange);
@@ -395,5 +477,66 @@ mod tests {
             panic!("a new label")
         };
         assert_eq!(label.color, p.library.next_color());
+    }
+
+    #[test]
+    fn a_tick_for_several_files_gives_it_to_all_unless_all_have_it() {
+        let has = [MediaId(1), MediaId(3)];
+        let share = |media: &[MediaId]| Share::of(media, |m| has.contains(&m));
+        assert_eq!(share(&[MediaId(1), MediaId(3)]), Share::All);
+        assert_eq!(share(&[MediaId(1), MediaId(2)]), Share::Some);
+        assert_eq!(share(&[MediaId(2)]), Share::None);
+        assert!(!Share::All.clicked_on(), "all have it: all lose it");
+        assert!(Share::Some.clicked_on(), "some have it: all get it");
+        assert!(Share::None.clicked_on());
+    }
+
+    #[test]
+    fn a_new_label_named_in_the_dialog_goes_on_every_file_as_one_step() {
+        let mut p = Project::new_automatic("T");
+        for id in 1..=3 {
+            p.media.insert(MediaId(id), media(id, &format!("/r/{id}.wav")));
+        }
+        let files = vec![MediaId(1), MediaId(2), MediaId(3)];
+        let mut organiser = Organiser::default();
+        organiser.ask_label(files.clone());
+        assert!(organiser.naming.is_some());
+        let ctx = egui::Context::default();
+        ui_kit::setup(&ctx, ui_kit::ThemeName::Ash);
+        let theme = ui_kit::ThemeName::Ash.theme();
+        let global = GlobalLabels::default();
+        let mut run = |events: Vec<egui::Event>| {
+            let mut got = None;
+            ctx.run_ui(
+                egui::RawInput {
+                    events,
+                    ..egui::RawInput::default()
+                },
+                |ui| got = organiser.dialog(ui.ctx(), &theme, &p, &global),
+            )
+            .drop_without_applying_deltas();
+            got
+        };
+        assert_eq!(run(Vec::new()), None);
+        assert_eq!(run(vec![egui::Event::Text("B-roll".into())]), None);
+        let enter = egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: Some(egui::Key::Enter),
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let Some(Organised::Edit(command)) = run(vec![enter]) else {
+            panic!("the label is made")
+        };
+        let after = command.apply(&p).unwrap();
+        for file in files {
+            assert_eq!(
+                after.library.labels_of(file)[0].name,
+                "B-roll",
+                "on every file at once"
+            );
+        }
+        assert!(organiser.naming.is_none());
     }
 }

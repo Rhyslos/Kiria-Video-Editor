@@ -24,15 +24,18 @@ const EXTENSIONS: &[&str] = library::watch::EXTENSIONS;
 
 #[derive(Default)]
 pub struct Importer {
-    dialog: Option<Receiver<Vec<PathBuf>>>,
+    /// The file dialog, and whether what it picks goes on the timeline too.
+    dialog: Option<(Receiver<Vec<PathBuf>>, bool)>,
     /// Files being read, in the order they were chosen, with their batch.
-    reading: VecDeque<(PathBuf, u64, JobHandle<Checked>)>,
+    reading: VecDeque<Reading>,
     /// Files picked or dropped together, while any is being read.
     batches: Vec<Batch>,
     next_batch: u64,
     /// Files whose end is missing, set aside until the person chooses.
     aside: std::collections::HashMap<u64, (Vec<PathBuf>, bool)>,
     next_aside: u64,
+    /// The timeline imports go on is automatic (`set_automatic`).
+    automatic: bool,
 }
 
 /// The start of the command a message's "Import what's there" runs; the
@@ -50,11 +53,26 @@ enum How {
 
 type Checked = Result<MediaRef, media::Refused>;
 
+/// One file being checked: its job, then what the check said (kept until
+/// its turn comes, or its batch is all checked when the batch waits).
+struct Reading {
+    path: PathBuf,
+    batch: u64,
+    handle: JobHandle<Checked>,
+    checked: Option<diag::Result<Checked>>,
+}
+
 /// A file that finished reading.
 pub enum Read {
     /// It passed its checks. `place`: put it on the timeline as well
     /// (imports do); otherwise it is only added to the project's media.
-    Ready { media: MediaRef, place: bool },
+    /// `settle`: the settings an automatic timeline takes, worked out from
+    /// every file of its batch (`SequenceSettings::most_common`).
+    Ready {
+        media: MediaRef,
+        place: bool,
+        settle: Option<SequenceSettings>,
+    },
     /// It failed its checks. `alone`: it was picked or dropped on its own,
     /// so its own explanation is shown; otherwise its batch's summary is.
     Failed {
@@ -72,10 +90,14 @@ pub struct Batch {
     id: u64,
     /// Its files go on the timeline too.
     pub place: bool,
+    /// It goes onto an automatic timeline: none is placed until all are
+    /// checked, so the settings come from them all, not the first.
+    waits: bool,
+    settle: Option<SequenceSettings>,
     pub files: usize,
     pub done: usize,
-    /// Each file refused: its name and why, in a few words.
-    pub refused: Vec<(String, media::Refusal)>,
+    /// Each file refused: where it is and why, in a few words.
+    pub refused: Vec<(PathBuf, media::Refusal)>,
     /// The refused files whose end is missing, which can be imported anyway.
     pub cut_short: Vec<PathBuf>,
 }
@@ -95,11 +117,12 @@ impl Batch {
             return None;
         }
         const NAMED: usize = 8;
+        let paths: Vec<&std::path::Path> = self.refused.iter().map(|(p, _)| p.as_path()).collect();
         let mut lines: Vec<String> = self
             .refused
             .iter()
             .take(NAMED)
-            .map(|(name, why)| format!("{name} ({})", why.words()))
+            .map(|(path, why)| format!("{} ({})", told_apart(path, &paths), why.words()))
             .collect();
         if self.refused.len() > NAMED {
             lines.push(format!("and {} more", self.refused.len() - NAMED));
@@ -108,7 +131,18 @@ impl Batch {
             1 => format!("1 of {} files wasn't imported", self.files),
             n => format!("{n} of {} files weren't imported", self.files),
         };
-        let error = diag::AppError::new(what).why(format!("They can't be played: {}.", lines.join(", ")));
+        // Every one with its whole path, for Details.
+        let every: Vec<String> = self
+            .refused
+            .iter()
+            .map(|(path, why)| format!("{} ({})", path.display(), why.words()))
+            .collect();
+        let error = diag::AppError::new(what)
+            .why(format!("They can't be played: {}.", lines.join(", ")))
+            .source(std::io::Error::other(format!(
+                "Files not imported:\n{}",
+                every.join("\n")
+            )));
         Some(match (whats_there, self.cut_short.len()) {
             (Some(id), n) if n > 0 => error
                 .fix(format!(
@@ -122,24 +156,28 @@ impl Batch {
 }
 
 impl Importer {
-    /// Opens the file dialog, unless one is already open.
-    pub fn choose_files(&mut self, ctx: &egui::Context) {
+    /// Opens the file dialog, unless one is already open. `place`: the
+    /// files picked go on the timeline as well (the Edit page's import);
+    /// otherwise into the project's media only (the Library page's).
+    pub fn choose_files(&mut self, ctx: &egui::Context, place: bool) {
         if self.dialog.is_some() {
             return;
         }
         let (tx, rx) = channel();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
-            let picked = rfd::FileDialog::new()
-                .set_title("Import media")
-                .add_filter("Video, sound and pictures", EXTENSIONS)
-                .add_filter("All files", &["*"])
-                .pick_files()
-                .unwrap_or_default();
+            let picked = ui_kit::file_dialog::run(&ctx, || {
+                rfd::FileDialog::new()
+                    .set_title("Import media")
+                    .add_filter("Video, sound and pictures", EXTENSIONS)
+                    .add_filter("All files", &["*"])
+                    .pick_files()
+            })
+            .unwrap_or_default();
             let _ = tx.send(picked);
             ctx.request_repaint();
         });
-        self.dialog = Some(rx);
+        self.dialog = Some((rx, place));
     }
 
     /// Starts checking these files on workers, as one batch, to add them
@@ -148,8 +186,16 @@ impl Importer {
         self.start(jobs, ctx, paths, How::Check, true);
     }
 
+    /// The timeline the next imports go on is automatic: batches placed
+    /// from now on wait until all their files are checked, so its
+    /// settings come from what most of them share.
+    pub fn set_automatic(&mut self, automatic: bool) {
+        self.automatic = automatic;
+    }
+
     /// Starts checking these files on workers, as one batch, to add them
-    /// to the project's media only (new files from the media folders).
+    /// to the project's media only (new files from the media folders, the
+    /// Library page's import and files dropped on it).
     pub fn add(&mut self, jobs: &JobSystem, ctx: &egui::Context, paths: Vec<PathBuf>) {
         self.start(jobs, ctx, paths, How::Check, false);
     }
@@ -189,6 +235,8 @@ impl Importer {
         self.batches.push(Batch {
             id: batch,
             place,
+            waits: place && self.automatic && paths.len() > 1,
+            settle: None,
             files: paths.len(),
             done: 0,
             refused: Vec::new(),
@@ -212,17 +260,23 @@ impl Importer {
                     Ok(result)
                 },
             );
-            self.reading.push_back((path, batch, handle));
+            self.reading.push_back(Reading {
+                path,
+                batch,
+                handle,
+                checked: None,
+            });
         }
     }
 
     /// Starts reading the files the dialog returned, if it has.
     pub fn poll_dialog(&mut self, jobs: &JobSystem, ctx: &egui::Context) {
-        if let Some(rx) = &self.dialog {
+        if let Some((rx, place)) = &self.dialog {
+            let place = *place;
             match rx.try_recv() {
                 Ok(paths) => {
                     self.dialog = None;
-                    self.read(jobs, ctx, paths);
+                    self.start(jobs, ctx, paths, How::Check, place);
                 }
                 Err(TryRecvError::Disconnected) => self.dialog = None,
                 Err(TryRecvError::Empty) => {}
@@ -236,13 +290,43 @@ impl Importer {
     /// milliseconds each frame, since adding one to the project writes the
     /// autosave journal.
     pub fn next_read(&mut self) -> Option<(Read, Option<Batch>)> {
+        for reading in self.reading.iter_mut().filter(|r| r.checked.is_none()) {
+            reading.checked = reading.handle.try_result();
+        }
         loop {
-            let (_, _, handle) = self.reading.front()?;
-            let result = handle.try_result()?;
-            let (path, batch_id, _) = self.reading.pop_front()?;
+            let front = self.reading.front()?;
+            front.checked.as_ref()?;
+            let batch_id = front.batch;
             let Some(at) = self.batches.iter().position(|b| b.id == batch_id) else {
+                self.reading.pop_front();
                 continue;
             };
+            if self.batches[at].waits {
+                let all_checked = self
+                    .reading
+                    .iter()
+                    .filter(|r| r.batch == batch_id)
+                    .all(|r| r.checked.is_some());
+                if !all_checked {
+                    return None;
+                }
+                let found: Vec<&MediaRef> = self
+                    .reading
+                    .iter()
+                    .filter(|r| r.batch == batch_id)
+                    .filter_map(|r| match &r.checked {
+                        Some(Ok(Ok(media))) => Some(media),
+                        _ => None,
+                    })
+                    .collect();
+                let settle = SequenceSettings::most_common(&found);
+                let batch = &mut self.batches[at];
+                batch.settle = settle;
+                batch.waits = false;
+            }
+            let reading = self.reading.pop_front()?;
+            let path = reading.path;
+            let result = reading.checked?;
             let batch = &mut self.batches[at];
             batch.done += 1;
             let checked = result.unwrap_or_else(|error| {
@@ -255,9 +339,10 @@ impl Importer {
                 Ok(media) => Read::Ready {
                     media,
                     place: batch.place,
+                    settle: batch.settle,
                 },
                 Err(refused) => {
-                    batch.refused.push((name_of(&path), refused.refusal));
+                    batch.refused.push((path.clone(), refused.refusal));
                     if refused.refusal == media::Refusal::CutShort {
                         batch.cut_short.push(path.clone());
                     }
@@ -276,7 +361,7 @@ impl Importer {
 
     /// Whether this file is being checked now.
     pub fn is_reading(&self, path: &std::path::Path) -> bool {
-        self.reading.iter().any(|(p, _, _)| p == path)
+        self.reading.iter().any(|r| r.path == path)
     }
 
     /// How many files are still being read.
@@ -301,6 +386,26 @@ pub fn whats_there_action(label: &str, id: u64) -> diag::FixAction {
 /// an "Import what's there".
 pub fn whats_there_id(command: &str) -> Option<u64> {
     command.strip_prefix(WHATS_THERE)?.parse().ok()
+}
+
+/// A refused file's name, with its folder's name when another refused
+/// file has the same name ("not-media.mkv in broken"), or its whole folder
+/// when those are the same too.
+fn told_apart(path: &std::path::Path, all: &[&std::path::Path]) -> String {
+    let name = name_of(path);
+    let twins: Vec<&&std::path::Path> = all.iter().filter(|p| name_of(p) == name).collect();
+    if twins.len() < 2 {
+        return name;
+    }
+    let folder_name = |p: &std::path::Path| p.parent().map(name_of).unwrap_or_default();
+    let mine = folder_name(path);
+    if twins.iter().filter(|p| folder_name(p) == mine).count() < 2 {
+        return format!("{name} in {mine}");
+    }
+    let folder = path
+        .parent()
+        .map_or_else(String::new, |p| p.display().to_string());
+    format!("{name} in {folder}")
 }
 
 fn name_of(path: &std::path::Path) -> String {
@@ -398,10 +503,12 @@ mod tests {
             done: 200,
             refused: Vec::new(),
             cut_short: Vec::new(),
+            waits: false,
+            settle: None,
         };
         assert!(batch.summary(None).is_none(), "nothing refused, nothing to say");
         batch.refused = (0..10)
-            .map(|i| (format!("clip{i}.mkv"), media::Refusal::Damaged))
+            .map(|i| (PathBuf::from(format!("/r/clip{i}.mkv")), media::Refusal::Damaged))
             .collect();
         batch.refused[0].1 = media::Refusal::CutShort;
         let summary = batch.summary(None).unwrap();
@@ -429,6 +536,41 @@ mod tests {
             offered.fix_text().contains("whose end is missing"),
             "{}",
             offered.fix_text()
+        );
+    }
+
+    #[test]
+    fn refused_files_of_the_same_name_are_told_apart() {
+        let batch = Batch {
+            id: 0,
+            place: false,
+            files: 4,
+            done: 4,
+            refused: vec![
+                ("/m/recordings/not-media.mkv".into(), media::Refusal::Unsupported),
+                (
+                    "/m/recordings/broken/not-media.mkv".into(),
+                    media::Refusal::Unsupported,
+                ),
+                ("/m/recordings/empty.mp3".into(), media::Refusal::Unsupported),
+            ],
+            cut_short: Vec::new(),
+            waits: false,
+            settle: None,
+        };
+        let summary = batch.summary(None).unwrap();
+        let why = summary.why_text().unwrap();
+        assert!(why.contains("not-media.mkv in recordings ("), "{why}");
+        assert!(why.contains("not-media.mkv in broken ("), "{why}");
+        assert!(why.contains("empty.mp3 ("), "a name alone stays short: {why}");
+        assert!(
+            summary.report().contains("/m/recordings/broken/not-media.mkv"),
+            "Details have every path"
+        );
+        let same_folder_name = ["/a/x/f.mkv", "/b/x/f.mkv"].map(std::path::Path::new);
+        assert_eq!(
+            told_apart(same_folder_name[1], &same_folder_name),
+            "f.mkv in /b/x"
         );
     }
 
