@@ -1243,3 +1243,53 @@ fn a_video_export_measures_first_then_writes_on_target() {
     let (exported, _) = measured(&path);
     assert!((exported + 16.0).abs() < 1.0, "{exported} read back");
 }
+
+/// The exported sound of a recording, mixed a frame at a time, is its
+/// sound streams each read straight through and added up, to the sample
+/// (to the 24-bit file's rounding): from the start and from the middle.
+/// The recording's Opus sound is timed in rounded milliseconds; that never
+/// makes the mix jump.
+#[test]
+fn exported_sound_is_the_recording_read_straight() {
+    let (project, seq) = recording();
+    let rate = project.active().unwrap().settings.sample_rate;
+    let media = project.media.values().next().unwrap().clone();
+    for from in [Time::ZERO, Time::from_ratio(7, 10).unwrap()] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sound.wav");
+        let settings = ExportSettings {
+            range: Some((from, from + Time::seconds(1))),
+            container: Container::Wav,
+            video: None,
+            audio: AudioCodec::Pcm24,
+            normalise: None,
+            limit: false,
+            ..ExportSettings::mp4(path.clone())
+        };
+        let export = Export::start(project.clone(), seq, settings, None, || {});
+        if let Outcome::Failed(err) = wait(&export) {
+            panic!("{}", err.report());
+        }
+        let mut written = media::AudioDecoder::open(&path, 0, rate).unwrap();
+        let mut heard = vec![0f32; rate as usize * 2];
+        assert_eq!(written.read(&mut heard), rate as usize);
+        let mut sum = vec![0f32; heard.len()];
+        for stream in &media.info.audio {
+            let mut straight = media::AudioDecoder::open(&media.path, stream.index, rate).unwrap();
+            if from != Time::ZERO {
+                straight.seek(from.as_secs_f64());
+            }
+            let mut read = vec![0f32; heard.len()];
+            assert_eq!(straight.read(&mut read), rate as usize);
+            for (s, r) in sum.iter_mut().zip(&read) {
+                *s += r;
+            }
+        }
+        let off = heard
+            .iter()
+            .zip(&sum)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0f32, f32::max);
+        assert!(off < 1e-6, "from {from:?}: off by {off}");
+    }
+}

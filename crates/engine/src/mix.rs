@@ -3,14 +3,19 @@
 //! Tracks that are muted, or not soloed while another track is, are silent.
 //! Each clip's own sound (volume, pan, fades) applies, then its track's
 //! volume, then the master's. Decoders stay open per file and stream and
-//! only seek when the next clip doesn't continue where they are.
+//! only seek on a real jump: when the next stretch isn't the same clip
+//! carrying on from where the last one stopped, nor a clip starting where
+//! the decoder is (to the sample). Rounding never makes it seek: the
+//! decoder counts samples exactly (`media::audio`), and a clip that carries
+//! on is known by itself, not by comparing times.
 
 use media::AudioDecoder;
 use media::audio::CHANNELS;
-use project::{Clip, ClipId, MediaId, MediaRef, Project, Sequence, SequenceId, Sound};
+use project::{Clip, ClipId, MediaId, MediaRef, Project, Sequence, SequenceId, Sound, Speed, Time};
 use std::f64::consts::FRAC_PI_2;
 
-/// How far a decoder may be from where it is needed before it seeks (seconds).
+/// How far ahead of a ramped clip's decoder its next sample may be and
+/// still be read on to rather than jumped to (seconds).
 const SEEK_SLACK: f64 = 0.005;
 /// How many files and streams keep an open decoder.
 const OPEN_DECODERS: usize = 16;
@@ -19,7 +24,7 @@ pub struct Mixer {
     rate: u32,
     /// Open decoders by file, stream and the rate they read at (a clip at
     /// another speed reads its file at another rate).
-    decoders: Vec<((MediaId, u32, u32), AudioDecoder)>,
+    decoders: Vec<Open>,
     scratch: Vec<f32>,
     /// Files that failed to open, so the log isn't flooded.
     failed: Vec<(MediaId, u32, u32)>,
@@ -34,6 +39,26 @@ pub struct Mixer {
     nested: Vec<((SequenceId, u32), Mixer)>,
     /// How many timelines deep this mixer is: 0 for the timeline played.
     depth: usize,
+}
+
+/// A decoder kept open, most recently used first.
+struct Open {
+    key: (MediaId, u32, u32),
+    decoder: AudioDecoder,
+    /// The clip it last read for, if it read for one without a ramp.
+    follows: Option<Follows>,
+}
+
+/// What a decoder last read for: a clip as it was then, and the sample on
+/// the timeline (at the mixer's rate) its next stretch starts at. The same
+/// clip, unchanged, asking for that sample carries on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Follows {
+    clip: ClipId,
+    start: Time,
+    source_in: Time,
+    speed: Speed,
+    next: i64,
 }
 
 /// Where a ramped clip's reading stopped: its decoder's next sample (in
@@ -145,15 +170,34 @@ impl Mixer {
             let source = clip.source_in.as_secs_f64() + (a - cs) * speed;
             let read_rate = ((rate / speed).round() as u32).max(1);
             let key = (media.id, clip.stream, read_rate);
-            match self.decoder(key, &media.path) {
-                Some(decoder) => {
-                    if (decoder.position() - source).abs() > SEEK_SLACK {
-                        decoder.seek(source);
-                    }
-                    decoder.read(out)
-                }
-                None => 0,
+            let wanted = (source.max(0.0) * f64::from(read_rate)).round() as i64;
+            let follows = Follows {
+                clip: clip.id,
+                start: clip.start,
+                source_in: clip.source_in,
+                speed: clip.speed,
+                next: (a * rate).round() as i64,
+            };
+            let Some(open) = self.open(key, &media.path) else {
+                return 0;
+            };
+            // The same clip carrying on, or one that starts where the
+            // decoder is (a clip cut in two): read on. Anything else is a
+            // jump. (At another speed the file's place, worked out from the
+            // timeline's time, and the samples read part by a fraction of
+            // a sample a stretch: carrying on is known by the clip.)
+            let carries_on =
+                open.follows == Some(follows) || (open.decoder.next_sample() - wanted).abs() <= 1;
+            if !carries_on {
+                open.decoder.seek_to_sample(wanted);
             }
+            let got = open.decoder.read(out);
+            // Past the file's end the clip carries on, silent.
+            open.follows = Some(Follows {
+                next: follows.next + (out.len() / CHANNELS) as i64,
+                ..follows
+            });
+            got
         } else {
             self.ramped(clip, &media.path, from, out)
         }
@@ -226,11 +270,13 @@ impl Mixer {
             .map(|i| self.carries.remove(i));
         let mut read = std::mem::take(&mut self.ramp_read);
         read.clear();
-        let Some(decoder) = self.decoder(key, path) else {
+        let Some(open) = self.open(key, path) else {
             self.ramp_read = read;
             return 0;
         };
-        let next = (decoder.position() * rate).round() as i64;
+        open.follows = None;
+        let decoder = &mut open.decoder;
+        let next = decoder.next_sample();
         // Carry on where the decoder is when that is this clip's last
         // sample read and close enough; seek otherwise.
         let base = match carried {
@@ -239,7 +285,7 @@ impl Mixer {
                 next - 1
             }
             _ => {
-                decoder.seek(low as f64 / rate);
+                decoder.seek_to_sample(low);
                 low
             }
         };
@@ -280,8 +326,8 @@ impl Mixer {
         count
     }
 
-    fn decoder(&mut self, key: (MediaId, u32, u32), path: &std::path::Path) -> Option<&mut AudioDecoder> {
-        if let Some(i) = self.decoders.iter().position(|(k, _)| *k == key) {
+    fn open(&mut self, key: (MediaId, u32, u32), path: &std::path::Path) -> Option<&mut Open> {
+        if let Some(i) = self.decoders.iter().position(|o| o.key == key) {
             let entry = self.decoders.remove(i);
             self.decoders.insert(0, entry);
         } else {
@@ -289,8 +335,15 @@ impl Mixer {
                 return None;
             }
             match AudioDecoder::open(path, key.1, key.2) {
-                Ok(d) => {
-                    self.decoders.insert(0, (key, d));
+                Ok(decoder) => {
+                    self.decoders.insert(
+                        0,
+                        Open {
+                            key,
+                            decoder,
+                            follows: None,
+                        },
+                    );
                     self.decoders.truncate(OPEN_DECODERS);
                 }
                 Err(err) => {
@@ -300,7 +353,7 @@ impl Mixer {
                 }
             }
         }
-        self.decoders.first_mut().map(|(_, d)| d)
+        self.decoders.first_mut()
     }
 }
 
@@ -774,5 +827,107 @@ mod tests {
         let mut slowed = vec![0.0f32; 4_800 * CHANNELS];
         Mixer::new(48_000).mix(&slow, slow.active().unwrap(), 1.0, &mut slowed);
         assert!(loudness(&slowed) > 0.001, "still heard");
+    }
+
+    fn imported(name: &str) -> Project {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../media/tests/fixtures")
+            .join(name);
+        let p = Project::new_automatic("T");
+        let seq = p.active_sequence;
+        let media = media::describe(&fixture).unwrap();
+        Command::Import { sequence: seq, media }.apply(&p).unwrap()
+    }
+
+    /// Each sound clip mixed a block at a time, as export (800 samples, a
+    /// frame at 60 per second) and playback (1 024) mix, is exactly its file
+    /// read straight through from where the clip starts in it: the mixer
+    /// never jumps while a clip carries on, whatever the file's timestamps
+    /// say. On the recording whose Opus sound is timed in rounded
+    /// milliseconds; on one whose sound starts before its picture and one
+    /// whose sound starts after it; from the file's start and from the
+    /// middle; with the clip at the timeline's start and later.
+    #[test]
+    fn mixed_a_block_at_a_time_a_clip_is_its_file_read_straight() {
+        let third = Time::from_ratio(1, 3).unwrap();
+        let quarter = Time::from_ratio(1, 4).unwrap();
+        for file in ["game-3-audio.mkv", "sound-offset.mkv"] {
+            let p = imported(file);
+            let tracks = p.active().unwrap().audio_tracks.len();
+            assert!(tracks >= 2, "{file}");
+            for track in 0..tracks {
+                for (source_in, start) in [(Time::ZERO, Time::ZERO), (third, Time::ZERO), (third, quarter)] {
+                    for block in [800usize, 1_024] {
+                        let mut q = p.clone();
+                        let seq = &mut q.sequences[0];
+                        seq.audio_tracks[track].solo = true;
+                        let clip = &mut seq.audio_tracks[track].clips[0];
+                        clip.source_in = source_in;
+                        clip.start = start;
+                        clip.duration = Time::from_ratio(1, 2).unwrap();
+                        let (media, stream) = (q.media[&clip.media].path.clone(), clip.stream);
+
+                        let mut mixer = Mixer::new(48_000);
+                        let mut mixed = vec![0f32; 48_000 * CHANNELS];
+                        for (n, chunk) in mixed.chunks_mut(block * CHANNELS).enumerate() {
+                            mixer.mix(&q, q.active().unwrap(), (n * block) as f64 / 48_000.0, chunk);
+                        }
+                        let jumps: u64 = mixer.decoders.iter().map(|o| o.decoder.seeks()).sum();
+                        let expected = u64::from(source_in != Time::ZERO);
+                        assert_eq!(
+                            jumps, expected,
+                            "{file} stream {stream}: jumps only to the clip's start"
+                        );
+                        let mut straight = AudioDecoder::open(&media, stream, 48_000).unwrap();
+                        if source_in != Time::ZERO {
+                            straight.seek(source_in.as_secs_f64());
+                        }
+                        let mut read = vec![0f32; 24_000 * CHANNELS];
+                        straight.read(&mut read);
+                        let first = (start.as_secs_f64() * 48_000.0).round() as usize * CHANNELS;
+                        let heard = &mixed[first..first + read.len()];
+                        let what = format!(
+                            "{file} stream {stream} from {source_in:?} at {start:?} in blocks of {block}"
+                        );
+                        assert!(loudness(heard) > 0.01, "{what}: it sounds");
+                        let off = heard
+                            .iter()
+                            .zip(&read)
+                            .map(|(a, b)| (a - b).abs())
+                            .fold(0f32, f32::max);
+                        assert!(off < 1e-6, "{what}: off by {off}");
+                        assert!(
+                            mixed[..first].iter().all(|s| *s == 0.0),
+                            "{what}: silent before the clip"
+                        );
+                        assert!(
+                            mixed[first + read.len()..].iter().all(|s| *s == 0.0),
+                            "{what}: silent after the clip"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// At a speed whose reading rate is rounded (seven tenths: 68 571 a
+    /// second for 68 571.4), the file's place worked out from the timeline
+    /// and the samples read part by a fraction of a sample a block; a clip
+    /// carrying on still never jumps, and sounds as mixed in one go.
+    #[test]
+    fn at_another_speed_a_clip_carries_on_without_jumping() {
+        let p = first_track_with(Sound::PLAIN, Some(project::Speed::new(7, 10).unwrap()));
+        let seq = p.active().unwrap();
+        let mut whole = vec![0f32; 96_000 * CHANNELS];
+        Mixer::new(48_000).mix(&p, seq, 0.0, &mut whole);
+        let mut mixer = Mixer::new(48_000);
+        let mut pieces = vec![0f32; 96_000 * CHANNELS];
+        for (n, chunk) in pieces.chunks_mut(800 * CHANNELS).enumerate() {
+            mixer.mix(&p, seq, (n * 800) as f64 / 48_000.0, chunk);
+        }
+        assert!(loudness(&whole) > 0.01);
+        assert!(pieces == whole, "the same samples");
+        let jumps: u64 = mixer.decoders.iter().map(|o| o.decoder.seeks()).sum();
+        assert_eq!(jumps, 0);
     }
 }
