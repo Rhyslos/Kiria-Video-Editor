@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds <name>-<version>-linux-x86_64.AppImage with the launcher, the editor,
-# the FFmpeg libraries and all licences.
+# the FFmpeg libraries, all licences and the user guide.
 #
 # Run from the repository root after `cargo build --release -p app -p launcher`.
 # Needs APP_NAME, APP_ID and APP_VERSION in the environment (`cargo xtask brand`).
@@ -11,7 +11,7 @@ OUT="${OUT:-target/dist}"
 APPDIR=target/AppDir
 WORK=target/appimage-work
 rm -rf "$APPDIR" "$WORK"
-mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/lib" "$APPDIR/usr/share/licenses" "$WORK" "$OUT"
+mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/lib" "$APPDIR/usr/share/licenses" "$APPDIR/usr/share/user-guide/images" "$WORK" "$OUT"
 
 cp target/release/launcher target/release/editor "$APPDIR/usr/bin/"
 install -m 755 packaging/linux/AppRun "$APPDIR/AppRun"
@@ -27,6 +27,10 @@ cp "$FF/LICENSE.txt" "$APPDIR/usr/share/licenses/FFmpeg-LICENSE.txt"
   LD_LIBRARY_PATH="$FF/lib" "$FF/bin/ffmpeg" -hide_banner -version | head -n 1 || echo "FFmpeg $FFMPEG_SERIES"
   echo "SHA-256 of the downloaded archive: $(sha256sum "$WORK/ffmpeg.tar.xz" | cut -d' ' -f1)"
 } > "$APPDIR/usr/share/licenses/FFMPEG-VERSION.txt"
+
+# The user guide, where the programs look for it (usr/bin/../share/user-guide).
+cp docs/user-guide/index.html "$APPDIR/usr/share/user-guide/"
+cp docs/user-guide/images/* "$APPDIR/usr/share/user-guide/images/"
 
 cp LICENSE "$APPDIR/usr/share/licenses/LICENSE.txt"
 cp crates/ui-kit/assets/fonts/*-OFL.txt "$APPDIR/usr/share/licenses/"

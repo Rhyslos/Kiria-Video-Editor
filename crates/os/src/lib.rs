@@ -2,8 +2,9 @@
 //! the windowing crate does not answer: which keyboard layout is in use,
 //! and lowering a worker thread's priority below the interface's. Also the
 //! processor setting the sound card's thread needs
-//! ([`float::denormals_as_zero`]) and, for tests, an allocator that counts
-//! ([`alloc_count`]).
+//! ([`float::denormals_as_zero`]), opening a file with the system's program
+//! for it ([`open_with_system`]: the user guide in the browser) and, for
+//! tests, an allocator that counts ([`alloc_count`]).
 //!
 //! This is the one crate besides the FFmpeg and GPU wrappers where `unsafe`
 //! may appear (working rule 6), and only for foreign calls into the system,
@@ -13,9 +14,11 @@
 
 pub mod alloc_count;
 pub mod float;
+mod open;
 mod thread_priority;
 mod xkb;
 
+pub use open::open_with_system;
 pub use thread_priority::lower_this_thread;
 #[cfg(target_os = "linux")]
 pub use thread_priority::this_thread_nice;

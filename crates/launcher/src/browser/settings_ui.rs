@@ -99,6 +99,11 @@ pub const CATEGORIES: &[Category] = &[
             ],
         }],
     },
+    Category {
+        id: "help",
+        label: "Help",
+        sections: &[ui_kit::user_guide::SETTINGS],
+    },
 ];
 
 impl Browser {
@@ -165,6 +170,11 @@ impl Browser {
                         }
                         row.note(logs);
                     }
+                    ui_kit::user_guide::ROW => {
+                        if let Some(err) = self.user_guide.settings_row(row) {
+                            problems.push(err);
+                        }
+                    }
                     _ => {
                         if let Some(err) = self.graphics.settings_row(row) {
                             problems.push(err);
@@ -190,7 +200,14 @@ mod tests {
     fn every_row_has_its_own_id_and_opens() {
         assert!(ui_kit::settings::repeated_ids(CATEGORIES).is_empty());
         let mut view = ui_kit::settings::SettingsView::default();
-        for id in [CHANNEL, NEW_PROJECTS, "graphics-system", LOG_FOLDER, "updates"] {
+        for id in [
+            CHANNEL,
+            NEW_PROJECTS,
+            "graphics-system",
+            LOG_FOLDER,
+            "updates",
+            "help",
+        ] {
             assert!(view.open_at(CATEGORIES, id), "{id}");
         }
         assert!(
@@ -198,5 +215,13 @@ mod tests {
                 .iter()
                 .any(|p| p.setting(CATEGORIES).is_some_and(|s| s.id == CHANNEL))
         );
+        for words in ["help", "guide", "manual", "docs"] {
+            assert!(
+                ui_kit::settings::search(CATEGORIES, words).iter().any(|p| p
+                    .setting(CATEGORIES)
+                    .is_some_and(|s| s.id == ui_kit::user_guide::ROW)),
+                "{words}"
+            );
+        }
     }
 }

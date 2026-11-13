@@ -237,6 +237,11 @@ pub const CATEGORIES: &[Category] = &[
             ],
         }],
     },
+    Category {
+        id: "help",
+        label: "Help",
+        sections: &[ui_kit::user_guide::SETTINGS],
+    },
 ];
 
 impl Editor {
@@ -368,6 +373,11 @@ impl Editor {
                         }
                         row.note(folder);
                     }
+                    ui_kit::user_guide::ROW => {
+                        if let Some(err) = self.user_guide.settings_row(row) {
+                            problems.push(err);
+                        }
+                    }
                     _ => {
                         if let Some(err) = self.graphics.settings_row(row) {
                             problems.push(err);
@@ -455,6 +465,9 @@ mod tests {
         assert!(finds("clear cache", CLEAR_ALL_ROW));
         assert!(finds("threads", WORKER_THREADS));
         assert!(finds("ripple", CUT_CLOSES_GAP));
+        for words in ["help", "guide", "manual", "docs"] {
+            assert!(finds(words, ui_kit::user_guide::ROW), "{words}");
+        }
         for section in crate::settings_sections::Section::ALL {
             let mut view = ui_kit::settings::SettingsView::default();
             assert!(view.open_at(CATEGORIES, section.id()), "{}", section.name());

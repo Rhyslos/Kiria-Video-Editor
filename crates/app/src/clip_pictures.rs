@@ -119,6 +119,17 @@ impl ClipPictures {
         }
     }
 
+    /// Every clip's pictures asked for are ready (or couldn't be read), or
+    /// readings are held on purpose (`--hold-reading`): what a screenshot
+    /// waits for.
+    pub fn settled(&self) -> bool {
+        self.hold_at.is_some()
+            || !self
+                .files
+                .values()
+                .any(|s| matches!(s, State::Reading { .. } | State::Uploading { .. }))
+    }
+
     /// Collects finished readings, looks at how far the others are, and
     /// uploads a few pictures.
     pub fn poll(&mut self, ctx: &egui::Context, now: Instant) {

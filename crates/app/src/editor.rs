@@ -180,6 +180,10 @@ pub struct Editor {
     /// for writing keys in menus and tips.
     system_keyboard: crate::system_keyboard::Follower,
     cheat_sheet: crate::cheat_sheet::CheatSheet,
+    /// The user guide in the web browser (F1, Settings › Help, search).
+    user_guide: ui_kit::user_guide::UserGuide,
+    /// The user guide was asked for; it opens on the next frame.
+    user_guide_requested: bool,
     /// Commands asked for on the command line, run on the first frames.
     startup_actions: Vec<Action>,
     /// Commands asked for on the command line, run once the scripted
@@ -237,6 +241,8 @@ pub struct Editor {
     pointer: Option<crate::fake_pointer::FakePointer>,
     frames: u64,
     probe: Probe,
+    /// The longest a screenshot waits for what it is of.
+    screenshot_wait: Duration,
     report: Arc<Mutex<RunReport>>,
 }
 
@@ -323,6 +329,10 @@ impl Editor {
         let select_first_clip = project.as_ref().is_some_and(|p| p.select_first_clip);
         let sync_when_ready = project.as_ref().is_some_and(|p| p.sync_by_sound);
         let hold_reading = project.as_ref().and_then(|p| p.hold_reading);
+        let screenshot_wait = project
+            .as_ref()
+            .and_then(|p| p.screenshot_wait)
+            .map_or(SCREENSHOT_WAIT, Duration::from_secs_f64);
         let hold_proxy = project.as_ref().and_then(|p| p.hold_proxy);
         let package_to = project.as_ref().and_then(|p| p.package_to.clone());
         let hold_package = project.as_ref().and_then(|p| p.hold_package);
@@ -486,6 +496,8 @@ impl Editor {
             shortcuts_page,
             system_keyboard,
             cheat_sheet: crate::cheat_sheet::CheatSheet::default(),
+            user_guide: ui_kit::user_guide::UserGuide::default(),
+            user_guide_requested: false,
             startup_actions,
             actions_after_pointer,
             copied_keyframes: None,
@@ -540,6 +552,7 @@ impl Editor {
             pointer,
             frames: 0,
             probe: Probe::default(),
+            screenshot_wait,
             report,
         }
     }
@@ -668,6 +681,10 @@ impl Editor {
                 .map(|()| self.templates.show(action == Action::SaveTemplate)),
             Action::KeyboardShortcuts => {
                 self.shortcuts_page.get_or_insert_with(Default::default);
+                Ok(())
+            }
+            Action::UserGuide => {
+                self.user_guide_requested = true;
                 Ok(())
             }
             Action::VolumeLines => {
@@ -1931,6 +1948,15 @@ impl Editor {
             }
             Some(crate::cheat_sheet::Saved::Failed(err)) => self.errors.push(&err),
             None => {}
+        }
+        if std::mem::take(&mut self.user_guide_requested) {
+            match self.user_guide.open(ctx) {
+                Ok(_) => self.status = "Opening the user guide in your web browser".into(),
+                Err(err) => self.errors.push(&err),
+            }
+        }
+        if let Some(err) = self.user_guide.poll() {
+            self.errors.push(&err);
         }
     }
 
@@ -3327,12 +3353,15 @@ impl Editor {
             }
             RunMode::Screenshot(path) => {
                 ctx.request_repaint();
-                // Wait for what the screenshot is of: the imports read and the
-                // viewer's picture back. Not for ever, so a file that can't
-                // be shown still gets its screenshot.
+                // Wait for what the screenshot is of: the imports read, the
+                // viewer's picture back and the timeline's waveforms and clip
+                // pictures read. Not for ever, so a file that can't be shown
+                // still gets its screenshot.
                 let since = *self.probe.started.get_or_insert(now);
                 let ready = (self.importer.busy() == 0
                     && self.viewer.settled()
+                    && self.waveforms.settled()
+                    && self.pictures.settled()
                     && self.display.settled()
                     && self.proxies.settled()
                     && (!self.drawer.open || self.library.is_current(crate::media_drawer::ASKER))
@@ -3349,7 +3378,7 @@ impl Editor {
                     && (self.page != Page::Audio
                         || self.document.is_none()
                         || (self.audio_start.tracks.is_none() && self.audio_page.clarity.settled())))
-                    || now.duration_since(since) > SCREENSHOT_WAIT;
+                    || now.duration_since(since) > self.screenshot_wait;
                 // A scripted pointer has done its part, and rested long
                 // enough for a tooltip to come up.
                 let pointed = self.pointer.is_none_or(|p| {
@@ -3822,6 +3851,8 @@ pub struct ProjectToOpen {
     pub cpu_colour: bool,
     /// Stop background reading at this share, for screenshots of it in progress.
     pub hold_reading: Option<f32>,
+    /// How long a screenshot waits at most, in seconds (`SCREENSHOT_WAIT` unless given).
+    pub screenshot_wait: Option<f64>,
     /// Stop proxy builds at this share, for screenshots of one in progress.
     pub hold_proxy: Option<f32>,
     /// Open Package project with this folder chosen, for screenshots.

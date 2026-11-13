@@ -39,6 +39,7 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
 Source: "{#Stage}\launcher.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Stage}\current"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Stage}\icon.ico"; DestDir: "{app}"; Flags: ignoreversion
+; Each version's folder: the programs, FFmpeg, licences and the user guide (user-guide\).
 Source: "{#Stage}\versions\*"; DestDir: "{app}\versions"; Flags: recursesubdirs createallsubdirs ignoreversion
 
 [Icons]

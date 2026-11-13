@@ -78,6 +78,9 @@ pub struct Options {
     /// Stop the background reading of waveforms and clip pictures at this
     /// share, 0 to 1 (`--hold-reading 0.4`, for screenshots of reading in progress).
     pub hold_reading: Option<f32>,
+    /// With `--screenshot`: wait at most this many seconds for what the
+    /// screenshot is of (`--screenshot-wait 60`, for slow machines).
+    pub screenshot_wait: Option<f64>,
     /// Stop proxy builds at this share, 0 to 1 (`--hold-proxy 0.43`, for
     /// screenshots of a proxy being built).
     pub hold_proxy: Option<f32>,
@@ -285,6 +288,14 @@ impl Options {
                         .ok_or("--hold-reading needs a share between 0 and 1")?;
                     options.hold_reading = Some(share);
                 }
+                "--screenshot-wait" => {
+                    let seconds = args
+                        .next()
+                        .and_then(|s| s.parse::<f64>().ok())
+                        .filter(|s| s.is_finite() && *s > 0.0)
+                        .ok_or("--screenshot-wait needs a number of seconds")?;
+                    options.screenshot_wait = Some(seconds);
+                }
                 "--hold-proxy" => {
                     let share = args
                         .next()
@@ -405,6 +416,13 @@ mod tests {
             Some(0.4)
         );
         assert!(parse(&["p.x", "--hold-reading", "soon"]).is_err());
+        assert_eq!(
+            parse(&["p.x", "--screenshot-wait", "60"])
+                .unwrap()
+                .screenshot_wait,
+            Some(60.0)
+        );
+        assert!(parse(&["p.x", "--screenshot-wait", "-1"]).is_err());
         assert_eq!(
             parse(&["p.x", "--hold-proxy", "0.43"]).unwrap().hold_proxy,
             Some(0.43)

@@ -92,6 +92,7 @@ jobs:
           if (-not (Test-Path "$dir/launcher.exe")) { throw "The launcher was not installed." }
           if (-not (Test-Path "$dir/versions/$env:APP_VERSION/launcher.exe")) { throw "The version folder has no launcher for updates." }
           if ((Get-Content "$dir/current") -ne $env:APP_VERSION) { throw "The current-version file is wrong." }
+          if (-not (Test-Path "$dir/versions/$env:APP_VERSION/user-guide/index.html")) { throw "The user guide was not installed." }
           $editor = "$dir/versions/$env:APP_VERSION/editor.exe"
           if ($env:BUILD_CRASH_TEST -ne "1") {
             $run = Start-Process -Wait -PassThru $editor -ArgumentList "--smoke-test"

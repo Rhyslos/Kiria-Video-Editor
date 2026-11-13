@@ -162,6 +162,7 @@ fn main() -> ExitCode {
         then_actions: options.then_actions.clone(),
         cpu_colour: options.cpu_colour,
         hold_reading: options.hold_reading,
+        screenshot_wait: options.screenshot_wait,
         hold_proxy: options.hold_proxy,
         package_to: options.package_to.clone(),
         hold_package: options.hold_package,

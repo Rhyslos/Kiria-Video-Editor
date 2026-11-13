@@ -28,6 +28,7 @@ pub mod timeline;
 pub mod timeline_tabs;
 pub mod top_bar;
 pub mod transport;
+pub mod user_guide;
 pub mod video_picture;
 pub mod viewer;
 pub mod waveform;
