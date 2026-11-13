@@ -146,6 +146,7 @@ actions! {
     NewTimeline, Timeline, "New timeline, the same size and rate as the open one";
     DuplicateTimeline, Timeline, "Duplicate the open timeline";
     NestSelection, Timeline, "Nest the selected clips: move them into a timeline of their own";
+    SyncBySound, Timeline, "Sync by sound: line up the selected clips by what they hear…";
     AddAdjustmentLayer, Timeline, "Add an adjustment layer at the playhead: its colour changes everything below it";
 }
 

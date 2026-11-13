@@ -442,7 +442,7 @@ Built (`crates/audio`, pure and tested without a device): every track effect (hi
 
 **8.3 Sync by sound**
 
-- [ ] Cross-correlate waveforms to line up a separately recorded mic or friend's recording with the game recording; show the offset found and a confidence; one undoable step.
+- [x] Cross-correlate waveforms to line up a separately recorded mic or friend's recording with the game recording; show the offset found and a confidence; one undoable step. (Done: select two or more clips, then "Sync by sound…" in the clip right-click menu or the search palette (no key unless one is given on the shortcuts page). On a worker with progress and Cancel, each clip's sound is compared with the reference's (the clip on the lowest video track, or one chosen): whitened cross-correlation in the voice band at 8 kHz over up to two minutes of the reference and the other clip up to three minutes either way of where it sits, then the exact fit at 48 kHz around it (`engine::sync`; compared with onset correlation in `docs/research/sync-by-sound.md`: 7 of 7 against 3 of 7 on made-up recordings). The window shows how far each clip moves in milliseconds and frames and how sure the match is (Sure, Likely, Unsure — check by ear); Move moves the sure and likely ones with their linked clips as one undo step (`LineUp`: pictures to the nearest frame, sound alone exactly, what would start before zero cut off; in the way of something, sound takes the first free audio track and a picture is refused, as when a clip is dragged to another track); unsure ones only with Move anyway. Later: correcting clock drift over long recordings.)
 
 **8.4 Page (as in the mockup)**
 
@@ -456,7 +456,7 @@ Built (`crates/audio`, pure and tested without a device): every track effect (hi
 
 - [ ] A noisy recording with game, mic and voice chat streams mixes to −14 LUFS integrated with no true peak over −1 dB.
 - [ ] 32 tracks with effects play without a single audio dropout on either machine.
-- [ ] Sync by sound lines up a separate mic recording to within one frame.
+- [ ] Sync by sound lines up a separate mic recording to within one frame. (Made-up recordings pass: a separately recorded mic with other filters, level and hiss, cut from a longer recording and read from files through the decoder, lines up 0 samples off at 48 kHz, `engine::sync` tests. Waiting for the owner's recordings.)
 
 ## Phase 9 · Effects library and background removal
 

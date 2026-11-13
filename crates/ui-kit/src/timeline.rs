@@ -346,6 +346,9 @@ pub enum TimelineEvent {
     AddAdjustment { at: f64, track: Option<u64> },
     /// "Nest the selected clips" from the right-click menu.
     NestSelected,
+    /// "Sync by sound" from the right-click menu (two or more clips are
+    /// selected): line them up by what they hear.
+    SyncBySound,
     /// A timeline dragged from the timeline tabs was dropped at `at`, its
     /// picture on the video track `track` (none over the audio area).
     DropTimeline {
@@ -884,6 +887,7 @@ fn clip_menu(r: &egui::Response, menu: Menu, events: &mut Vec<TimelineEvent>) {
         video_track,
         on_nested,
         selection,
+        several,
     } = menu;
     r.context_menu(|ui| {
         if let Some((clip, marks)) = marks {
@@ -938,6 +942,10 @@ fn clip_menu(r: &egui::Response, menu: Menu, events: &mut Vec<TimelineEvent>) {
             events.push(TimelineEvent::NestSelected);
             ui.close();
         }
+        if several && ui.button("Sync by sound…").clicked() {
+            events.push(TimelineEvent::SyncBySound);
+            ui.close();
+        }
         if has_region && ui.button("Clear the region").clicked() {
             events.push(TimelineEvent::SetRegion(None));
             ui.close();
@@ -960,6 +968,8 @@ struct Menu<'a> {
     on_nested: bool,
     /// Some clip is selected.
     selection: bool,
+    /// Two or more clips are selected.
+    several: bool,
 }
 
 /// The right-click menu of keyframe marks: go there, remove their
@@ -2503,6 +2513,14 @@ impl TimelineView {
                     .flat_map(|t| &t.clips)
                     .any(|c| c.id == id && c.shows == ClipShows::Timeline)
             });
+            let selected = data
+                .video
+                .iter()
+                .chain(data.audio)
+                .flat_map(|t| &t.clips)
+                .filter(|c| c.selected)
+                .take(2)
+                .count();
             let menu = Menu {
                 at: self.menu_at,
                 marks: menu_marks.as_ref().map(|(clip, marks)| (*clip, marks.as_slice())),
@@ -2510,12 +2528,8 @@ impl TimelineView {
                 has_region: data.region.is_some(),
                 video_track: self.menu_track.filter(|_| from_bottom),
                 on_nested,
-                selection: data
-                    .video
-                    .iter()
-                    .chain(data.audio)
-                    .flat_map(|t| &t.clips)
-                    .any(|c| c.selected),
+                selection: selected > 0,
+                several: selected > 1,
             };
             let Some(p) = r.interact_pointer_pos().or(r.hover_pos()).or(file_at) else {
                 // The pointer is elsewhere, perhaps on the menu itself: an
