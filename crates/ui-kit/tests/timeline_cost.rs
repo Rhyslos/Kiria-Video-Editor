@@ -119,3 +119,73 @@ fn timeline_frame_cost() {
         );
     }
 }
+
+/// Two tracks of a two-hour recording each, its waveform (100 peaks a
+/// second) all on screen: the frame's cost follows the width, not the hours.
+#[test]
+#[ignore = "a measurement, not a check; run by hand"]
+fn long_waveform_frame_cost() {
+    let theme = Theme::ASH;
+    let hours = 2.0 * 3600.0;
+    let peaks: std::sync::Arc<[f32]> = (0..(hours * 100.0) as usize)
+        .map(|i| ((i * 7_919) % 1_009) as f32 / 1_009.0)
+        .collect();
+    let mut audio = tracks(2, 1, hours);
+    for t in &mut audio {
+        for c in &mut t.clips {
+            c.duration = hours;
+            c.waveform = Some(ui_kit::ClipWaveform {
+                peaks: std::sync::Arc::clone(&peaks),
+                per_second: 100.0,
+                source_in: 0.0,
+                speed: 1.0,
+                map: None,
+            });
+        }
+    }
+    let ctx = egui::Context::default();
+    let mut view = TimelineView::default();
+    view.fit(hours, 1780.0);
+    let mut times = Vec::new();
+    for frame in 0..60 {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1920.0, 400.0),
+            )),
+            ..Default::default()
+        };
+        let started = Instant::now();
+        let output = ctx.run_ui(input, |ui| {
+            let data = TimelineData {
+                video: &[],
+                audio: &audio,
+                length: hours,
+                fps: 60.0,
+                playhead: frame as f64,
+                needle: None,
+                region: None,
+                highlights: &[],
+                spans: &[],
+                markers: &[],
+                follow: false,
+                cache: CacheBar {
+                    ranges: &[],
+                    about: "",
+                },
+                keyframe_eases: &["Linear", "Hold", "Smooth"],
+                roles: &[],
+            };
+            view.show(ui, &theme, &data, egui::vec2(1920.0, 400.0));
+        });
+        let _meshes = ctx.tessellate(output.shapes, output.pixels_per_point);
+        times.push(started.elapsed().as_secs_f64() * 1000.0);
+    }
+    let first = times[0];
+    times.sort_by(f64::total_cmp);
+    println!(
+        "two 2-hour waveforms: first frame {first:.2} ms, then median {:.2} ms, worst {:.2} ms",
+        times[times.len() / 2],
+        times[times.len() - 1]
+    );
+}

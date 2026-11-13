@@ -74,3 +74,6 @@ Priming the tracks on threads of their own when playback starts was tried and le
 ### The Library's loudness (item 7)
 
 Each sound stream of a file was measured in a pass of its own (a five-stream 1440p recording read five times) and again every session. Now every stream is measured in one pass (`media::AudioStreams`, the streams decoded side by side) and the readings are kept by the file's fingerprint in the cache folder's `loudness/`, so a file is read for its loudness once, ever. The readings are exactly those of measuring each stream alone (tested).
+### Drawing long waveforms (item 8)
+
+Each pixel column of a waveform took the loudest of every peak under it, so zoomed out over hours a frame went over every peak (100 a second, so 720 000 for two hours). Now each set of peaks gets levels (the loudest of each two, of each two of those, and so on), made once on a thread of their own and kept while it is drawn, and a column takes a few steps. Two 2-hour waveforms all on screen: 0.86 ms a frame before, 0.22 ms after (`timeline_cost`'s `long_waveform_frame_cost`, release build); the cost now follows the width, so five 3-hour streams cost what two do. The Library's rows, cards and detail panel draw through the same levels.
