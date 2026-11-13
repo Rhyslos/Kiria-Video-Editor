@@ -112,6 +112,11 @@ pub struct Editor {
     picture_handles: crate::picture_handles::PictureHandles,
     /// The Export page: what to export, and the export under way.
     export_page: crate::export_page::ExportPage,
+    /// The question before closing while exports are unfinished.
+    close_prompt: crate::close_prompt::ClosePrompt,
+    /// Ask it as soon as an export is unfinished (`--close-request`, for
+    /// screenshots of the question).
+    close_request: bool,
     /// The Audio page: its tool, track, filter, mixer and counting.
     audio_page: crate::audio_page::AudioPage,
     /// What the command line asked of the Audio page and is still to do
@@ -248,6 +253,7 @@ impl Editor {
             .map(|p| p.watch_folders.clone())
             .unwrap_or_default();
         let export_queue = project.as_ref().is_some_and(|p| p.export_queue);
+        let close_request = project.as_ref().is_some_and(|p| p.close_request);
         let start_page = match project.as_ref() {
             Some(p) if p.export_page || p.export_queue => Page::Export,
             Some(p) => p.page.unwrap_or_default(),
@@ -433,6 +439,8 @@ impl Editor {
             inspector: crate::inspector::Inspector::default(),
             picture_handles: crate::picture_handles::PictureHandles::default(),
             export_page,
+            close_prompt: Default::default(),
+            close_request,
             audio_page,
             audio_start,
             audio_held_master: None,
@@ -3253,6 +3261,7 @@ impl Editor {
             report.message = message;
         }
         drop(report);
+        self.close_prompt.allow();
         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
     }
 }
@@ -3408,6 +3417,12 @@ impl eframe::App for Editor {
         self.prune_window(&ctx);
         self.package_window(&ctx);
         self.shortcuts_window(&ctx);
+        let unfinished = self.export_page.unfinished();
+        if self.close_request && unfinished.is_some() {
+            self.close_request = false;
+            self.close_prompt.ask();
+        }
+        self.close_prompt.frame(&ctx, &self.theme, unfinished);
         if let Some(err) = self.graphics.show_warning(&ctx, &self.theme) {
             self.errors.push(&err);
         }
@@ -3593,6 +3608,9 @@ pub struct ProjectToOpen {
     pub export_page: bool,
     /// Start on the Export page with its queue filled (for screenshots).
     pub export_queue: bool,
+    /// Ask about closing once an export is unfinished, as if the window's
+    /// close button had been pressed (for screenshots).
+    pub close_request: bool,
     /// Start on this page.
     pub page: Option<Page>,
     /// Open this tab of the Library page (a type or a list's name).

@@ -30,6 +30,10 @@ pub struct Options {
     /// paused a third through, one waiting (`--export-queue`, for
     /// screenshots of the queue; the files go beside the project).
     pub export_queue: bool,
+    /// Ask about closing as if the window's close button had been pressed,
+    /// once an export is unfinished (`--close-request`, with
+    /// `--export-queue` for screenshots of the question).
+    pub close_request: bool,
     /// Start on this page (`--page library`, for screenshots and the
     /// responsiveness test of a page).
     pub page: Option<ui_kit::Page>,
@@ -141,6 +145,7 @@ impl Options {
                 }
                 "--export-page" => options.export_page = true,
                 "--export-queue" => options.export_queue = true,
+                "--close-request" => options.close_request = true,
                 "--page" => {
                     let name = args.next().unwrap_or_default();
                     let page = ui_kit::Page::ALL
@@ -364,6 +369,7 @@ mod tests {
         assert!(parse(&["p.x", "--cpu-colour"]).unwrap().cpu_colour);
         assert!(parse(&["p.x", "--export-page"]).unwrap().export_page);
         assert!(parse(&["p.x", "--export-queue"]).unwrap().export_queue);
+        assert!(parse(&["p.x", "--close-request"]).unwrap().close_request);
         assert_eq!(
             parse(&["p.x", "--page", "Library"]).unwrap().page,
             Some(ui_kit::Page::Library)
