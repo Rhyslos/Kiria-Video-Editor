@@ -60,6 +60,11 @@ pub struct Options {
     /// (`--then Copy`, repeatable, in order: for screenshots of what a
     /// command does to what a drag chose).
     pub then_actions: Vec<String>,
+    /// Open Settings at a tab or a setting, by its id, with words typed in
+    /// its search box when `settings_search` is set (`--settings proxies`,
+    /// `--settings-search proxy`, for screenshots).
+    pub settings: Option<String>,
+    pub settings_search: Option<String>,
     /// Open the keyboard shortcuts page in a state: `filter`, `rebinding` or
     /// `clash` (`--shortcuts-page clash`, for screenshots).
     pub shortcuts_page: Option<ui_kit::keyboard::Preview>,
@@ -217,6 +222,16 @@ impl Options {
                 "--cheat-sheet" => {
                     let path = args.next().ok_or("--cheat-sheet needs a file name")?;
                     options.cheat_sheet = Some(path.into());
+                }
+                "--settings" => {
+                    let id = args
+                        .next()
+                        .ok_or("--settings needs a tab's or a setting's id, such as proxies")?;
+                    options.settings = Some(id);
+                }
+                "--settings-search" => {
+                    let words = args.next().ok_or("--settings-search needs words to search for")?;
+                    options.settings_search = Some(words);
                 }
                 "--shortcuts-page" => {
                     let state = args

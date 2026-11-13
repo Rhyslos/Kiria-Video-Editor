@@ -46,7 +46,7 @@ pub use settings::{GraphicsChoice, GraphicsSettings};
 pub use start::{FailedTry, Opened, Startup, open_window, prepare};
 pub use video::VideoDecoding;
 pub use vulkan_device::plane_textures;
-pub use window::{DECODING_SWITCH, DecodingAnswer, DeviceDecoding, WarningAnswer, WindowGraphics};
+pub use window::{DECODING_SWITCH, DecodingAnswer, DeviceDecoding, SETTINGS, WarningAnswer, WindowGraphics};
 
 /// Frames drawn with Vulkan before the start counts as working.
 pub const FRAMES_BEFORE_TRUSTED: u64 = 3;

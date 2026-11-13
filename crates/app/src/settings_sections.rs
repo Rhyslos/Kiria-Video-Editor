@@ -41,6 +41,21 @@ impl Section {
         }
     }
 
+    /// Where Settings opens for it: a tab or row id of
+    /// `editor::settings_ui::CATEGORIES`.
+    pub fn id(self) -> &'static str {
+        match self {
+            Section::Look => "look",
+            Section::Editing => "editing",
+            Section::Audio => "audio",
+            Section::Resources => "resources",
+            Section::Proxies => "proxies",
+            Section::Library => "library",
+            Section::Cache => "cache",
+            Section::Graphics => "graphics",
+        }
+    }
+
     /// What is set there, in a few words: the line search shows.
     pub fn about(self) -> &'static str {
         match self {

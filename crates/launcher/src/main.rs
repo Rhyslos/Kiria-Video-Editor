@@ -246,11 +246,12 @@ fn browse(
             None => delete::Bin::System,
         },
         delete_preview: options.delete_dialog && options.demo.is_some(),
+        settings_at: options.settings.clone(),
     };
     let window = || eframe::NativeOptions {
         viewport: ui_kit::icon::with_window_icon(egui::ViewportBuilder::default())
             .with_title(brand::APP_NAME)
-            .with_inner_size([1180.0, 760.0])
+            .with_inner_size(options.window_size.unwrap_or([1180.0, 760.0]))
             .with_min_inner_size([900.0, 560.0]),
         ..Default::default()
     };

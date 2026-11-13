@@ -19,7 +19,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use ui_kit::{Action, ErrorCenter, ErrorResponse, ShortcutTable, Theme, TitleBar, layout};
-use updater::Channel;
+
+mod settings_ui;
 
 /// Height of the version panel at the bottom of the left panel.
 const VERSION_PANEL_HEIGHT: f32 = 128.0;
@@ -97,10 +98,14 @@ pub struct Start {
     pub bin: Bin,
     /// Opens the Delete project question for a sample project (screenshots).
     pub delete_preview: bool,
+    /// Opens Settings at this tab or setting (`--settings updates`, screenshots).
+    pub settings_at: Option<String>,
 }
 
 pub struct Browser {
     theme: Theme,
+    /// The theme's name, as Settings shows it (it follows the editor's).
+    theme_name: ui_kit::ThemeName,
     data_dir: PathBuf,
     prefs: LauncherPrefs,
     index_file: PathBuf,
@@ -109,6 +114,8 @@ pub struct Browser {
     shortcuts: ShortcutTable,
     show_diagnostics: bool,
     show_settings: bool,
+    /// Settings' tab, search and row to jump to.
+    settings_view: ui_kit::settings::SettingsView,
     /// What draws the window: the first-frames check, the question after a
     /// failed start with Vulkan, and the Graphics row in Settings.
     graphics: graphics::WindowGraphics,
@@ -177,8 +184,15 @@ impl Browser {
         if let Some(step) = start.update_preview {
             updates.preview(step);
         }
+        let mut settings_view = ui_kit::settings::SettingsView::default();
+        if let Some(id) = &start.settings_at
+            && !settings_view.open_at(settings_ui::CATEGORIES, id)
+        {
+            tracing::warn!("--settings: no tab or setting is called {id}");
+        }
         let mut browser = Browser {
             theme: start.theme.theme(),
+            theme_name: start.theme,
             prefs: LauncherPrefs::load(&start.data_dir),
             data_dir: start.data_dir,
             index_file,
@@ -186,7 +200,8 @@ impl Browser {
             errors,
             shortcuts: ShortcutTable::restored(&start.shortcuts),
             show_diagnostics: false,
-            show_settings: false,
+            show_settings: start.settings_at.is_some(),
+            settings_view,
             graphics,
             folders: Vec::new(),
             projects: Vec::new(),
@@ -1088,54 +1103,7 @@ impl Browser {
             }
         }
 
-        let mut open = self.show_settings;
-        let mut change_default = false;
-        egui::Window::new("Settings")
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(false)
-            .default_width(320.0)
-            .show(ctx, |ui| {
-                ui.heading("Updates");
-                if let Some(updates) = &mut self.updates {
-                    let mut channel = updates.channel();
-                    ui.radio_value(&mut channel, Channel::Stable, "Stable releases");
-                    ui.radio_value(&mut channel, Channel::Beta, "Betas too")
-                        .on_hover_text("Get test versions before they become stable releases.");
-                    updates.set_channel(ctx, channel);
-                }
-                ui.add_space(8.0);
-                ui.heading("New projects");
-                ui.label(RichText::new("Saved in").color(self.theme.text_secondary));
-                let shown = self
-                    .default_project_folder()
-                    .map_or_else(|| "No folder chosen".to_owned(), |f| f.display().to_string());
-                ui.label(RichText::new(shown).font(ui_kit::fonts::mono(11.0)));
-                if ui.button("Change…").clicked() {
-                    change_default = true;
-                }
-                ui.add_space(8.0);
-                ui.heading("Look");
-                ui.label(RichText::new("The theme follows the editor's Settings.").color(self.theme.muted));
-                ui.add_space(8.0);
-                ui.heading("Graphics");
-                if let Some(err) = self.graphics.settings_row(ui, &self.theme) {
-                    self.errors.push(&err);
-                }
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Diagnostics…").clicked() {
-                        self.show_diagnostics = true;
-                    }
-                    if ui.button("Copy log folder path").clicked() {
-                        ctx.copy_text(self.data_dir.join("logs").display().to_string());
-                    }
-                });
-            });
-        self.show_settings = open;
-        if change_default {
-            self.pick_any_folder(ctx, "Save new projects in", Picked::DefaultFolder);
-        }
+        self.settings_window(ctx);
 
         let mut diagnostics = self.show_diagnostics;
         self.errors.diagnostics_window(ctx, &mut diagnostics, &self.theme);

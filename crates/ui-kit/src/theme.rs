@@ -57,6 +57,13 @@ pub struct Theme {
     pub accent: Color32,
     /// Text on an accent-filled button.
     pub accent_ink: Color32,
+    /// A card: a group of rows lifted a step off the background (the
+    /// sections of Settings).
+    pub card: Color32,
+    /// The rounded edge around a card.
+    pub card_edge: Color32,
+    /// The thin line between rows inside a card.
+    pub divider: Color32,
 }
 
 /// Status colours mean the same thing in every theme.
@@ -123,6 +130,9 @@ impl Theme {
         faint: hex(0x6C6B69),
         accent: hex(0xEDE6D6),
         accent_ink: hex(0x161616),
+        card: hex(0x242527),
+        card_edge: hex(0x37383B),
+        divider: hex(0x2F3033),
     };
 
     pub const CARBON: Theme = Theme {
@@ -139,6 +149,9 @@ impl Theme {
         faint: hex(0x665F58),
         accent: hex(0xD98A4E),
         accent_ink: hex(0x1E1006),
+        card: hex(0x181715),
+        card_edge: hex(0x2E2B28),
+        divider: hex(0x252220),
     };
 
     /// Applies this theme to egui's widgets.
@@ -198,6 +211,19 @@ mod tests {
             let lum = |c: Color32| f32::from(c.r()) * 0.3 + f32::from(c.g()) * 0.59 + f32::from(c.b()) * 0.11;
             assert!(lum(t.text) - lum(t.panel) > 150.0, "{name:?}");
             assert!(lum(t.muted) - lum(t.panel) > 90.0, "{name:?}");
+            // Settings: text on cards, and cards, edges and dividers that
+            // can be told apart from what they sit on.
+            assert!(lum(t.text) - lum(t.card) > 150.0, "{name:?}");
+            assert!(lum(t.muted) - lum(t.card) > 85.0, "{name:?}");
+            assert!(
+                lum(t.card) - lum(t.bg) >= 8.0,
+                "{name:?}: a card stands off the background"
+            );
+            assert!(
+                lum(t.card_edge) - lum(t.card) >= 15.0,
+                "{name:?}: a card has an edge"
+            );
+            assert!(lum(t.divider) - lum(t.card) >= 8.0, "{name:?}: rows are divided");
         }
     }
 }

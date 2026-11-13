@@ -18,8 +18,6 @@ pub const MASTER_WIDTH: f32 = 80.0;
 pub const TOOLS_WIDTH: f32 = 610.0;
 /// The gap between a page's panels and what is between them.
 pub const PANEL_GAP: f32 = 12.0;
-/// Width of the Settings window.
-pub const SETTINGS_WIDTH: f32 = 440.0;
 
 /// Where a window floating over a page may be: below the top bar, a
 /// [`PANEL_GAP`] in from every edge, so it never covers the page tabs and
@@ -138,7 +136,10 @@ mod tests {
             assert_eq!(area.top(), TOP_BAR_HEIGHT + PANEL_GAP);
             assert_eq!(area.bottom(), h - PANEL_GAP);
             assert!(screen.contains_rect(area));
-            assert!(area.width() >= SETTINGS_WIDTH);
+            assert!(
+                area.width() >= crate::settings::MAX_SIZE.x,
+                "Settings gets its full width"
+            );
         }
         let tiny = window_area(egui::Rect::from_min_size(
             egui::Pos2::ZERO,

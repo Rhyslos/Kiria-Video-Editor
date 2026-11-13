@@ -88,6 +88,13 @@ struct Question {
     choice: Choice,
 }
 
+/// Settings' row that says how much the cache takes.
+pub const USED_ROW: &str = "cache-used";
+/// Settings' row that clears this project's proxies.
+pub const CLEAR_PROJECT_ROW: &str = "cache-clear-project";
+/// Settings' row that clears every proxy.
+pub const CLEAR_ALL_ROW: &str = "cache-clear-all";
+
 #[derive(Default)]
 pub struct CacheCleanup {
     measuring: Option<JobHandle<Measured>>,
@@ -157,54 +164,67 @@ impl CacheCleanup {
         self.measuring.is_some() || self.clearing.is_some()
     }
 
-    /// The Settings window's Cache rows: what there is, and the two
+    /// The control of one of Settings' Cache rows ([`USED_ROW`],
+    /// [`CLEAR_PROJECT_ROW`], [`CLEAR_ALL_ROW`]): what there is, and the two
     /// buttons, which ask first. `has_project`: a project is open.
-    pub fn rows(&mut self, ui: &mut egui::Ui, theme: &Theme, has_project: bool) {
-        let line = match (&self.measured, &self.clearing) {
-            (_, Some(_)) => "Clearing…".to_owned(),
-            (Some(m), None) if has_project => format!(
-                "This project: {} · All projects: {}",
-                usage_text(m.project),
-                usage_text(m.all)
-            ),
-            (Some(m), None) => format!("All projects: {}", usage_text(m.all)),
-            (None, None) => "Measuring…".to_owned(),
-        };
-        ui.label(line);
+    pub fn row(&mut self, row: &mut ui_kit::settings::Row<'_>, has_project: bool) {
         let idle = self.clearing.is_none();
         let (project, all) = self
             .measured
             .as_ref()
             .map_or((0, 0), |m| (m.project.files, m.all.files));
-        ui.horizontal(|ui| {
-            let clear_project = ui
-                .add_enabled(
-                    idle && has_project && project > 0,
-                    egui::Button::new("Clear cache for this project…"),
-                )
-                .on_hover_text("Deletes the proxies of this project's recordings. Asks first.")
-                .on_disabled_hover_text("This project has nothing in the cache.");
-            if clear_project.clicked() {
-                self.asking = Some(Question {
-                    scope: Scope::Project,
-                    choice: Choice::OnlyOwn,
-                });
+        match row.id() {
+            USED_ROW => {
+                let line = match (&self.measured, &self.clearing) {
+                    (_, Some(_)) => "Clearing…".to_owned(),
+                    (Some(m), None) if has_project => format!(
+                        "This project: {} · All: {}",
+                        usage_text(m.project),
+                        usage_text(m.all)
+                    ),
+                    (Some(m), None) => format!("All projects: {}", usage_text(m.all)),
+                    (None, None) => "Measuring…".to_owned(),
+                };
+                ui_kit::settings::value(row.ui, row.theme, &line);
+                if let Some(said) = &self.said {
+                    row.note(said.clone());
+                }
             }
-            let clear_all = ui
-                .add_enabled(idle && all > 0, egui::Button::new("Clear all caches…"))
-                .on_hover_text("Deletes every proxy, for every project. Asks first.")
-                .on_disabled_hover_text("The cache is empty.");
-            if clear_all.clicked() {
-                self.asking = Some(Question {
-                    scope: Scope::All,
-                    choice: Choice::AlsoShared,
-                });
+            CLEAR_PROJECT_ROW => {
+                if !has_project {
+                    row.disable("Open a project first.");
+                }
+                let clear = row
+                    .ui
+                    .add_enabled_ui(idle && project > 0, |ui| {
+                        ui_kit::settings::action(ui, "Clear…")
+                            .on_disabled_hover_text("This project has nothing in the cache.")
+                    })
+                    .inner;
+                if clear.clicked() {
+                    self.asking = Some(Question {
+                        scope: Scope::Project,
+                        choice: Choice::OnlyOwn,
+                    });
+                }
             }
-        });
-        let note = self.said.clone().unwrap_or_else(|| {
-            "Proxies are kept by recording and shared by the projects that use it. Recordings and project files are never touched.".to_owned()
-        });
-        ui.label(egui::RichText::new(note).color(theme.muted));
+            CLEAR_ALL_ROW => {
+                let clear = row
+                    .ui
+                    .add_enabled_ui(idle && all > 0, |ui| {
+                        ui_kit::settings::action(ui, "Clear all…")
+                            .on_disabled_hover_text("The cache is empty.")
+                    })
+                    .inner;
+                if clear.clicked() {
+                    self.asking = Some(Question {
+                        scope: Scope::All,
+                        choice: Choice::AlsoShared,
+                    });
+                }
+            }
+            _ => {}
+        }
     }
 
     /// The question before clearing, when one was asked for. Starts the

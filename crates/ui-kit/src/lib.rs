@@ -18,6 +18,7 @@ pub mod master;
 pub mod mixer;
 pub mod picture_handles;
 pub mod scrub;
+pub mod settings;
 pub mod shortcuts;
 pub mod splitter;
 pub mod tab_strip;
