@@ -637,6 +637,8 @@ struct Device {
     device: cpal::Device,
     config: cpal::SupportedStreamConfig,
     rate: u32,
+    /// The channels the stream is opened with: two (the mix is stereo)
+    /// whenever the device takes them, else the device's own number.
     channels: usize,
 }
 
@@ -649,13 +651,55 @@ fn output_device() -> Option<Device> {
         .map_err(|e| tracing::warn!("no sound output: {e}"))
         .ok()?;
     let rate = config.sample_rate();
-    let channels = usize::from(config.channels()).max(1);
+    let own = usize::from(config.channels()).max(1);
+    let channels = stream_channels(own, || takes_stereo(&device, &config));
+    if channels != own {
+        tracing::info!("the sound device mixes {own} channels; the sound goes to it as stereo");
+    }
     Some(Device {
         device,
         config,
         rate,
         channels,
     })
+}
+
+/// The channels to open a stream with on a device whose own mix has `own`:
+/// stereo when it has more and `takes_stereo` says a stereo stream opens.
+///
+/// Why: the mix is stereo. Handed to the system as a stream of the
+/// device's own channel count (eight when the system's spatial sound or a
+/// headset's surround is on), the left and right are two speakers of a
+/// surround layout, which the system's virtual surround places and turns
+/// down like any surround sound; handed as stereo, they are treated as
+/// stereo, as other programs' sound is (`docs/research/sound-quality.md`).
+fn stream_channels(own: usize, takes_stereo: impl FnOnce() -> bool) -> usize {
+    if own > 2 && takes_stereo() { 2 } else { own }
+}
+
+/// Whether a stereo stream opens on `device` at `config`'s rate and sample
+/// format (the system converts it to the device's own layout). It is opened
+/// and closed without being started.
+fn takes_stereo(device: &cpal::Device, config: &cpal::SupportedStreamConfig) -> bool {
+    let stereo = cpal::StreamConfig {
+        channels: 2,
+        ..config.config()
+    };
+    device
+        .build_output_stream_raw(
+            stereo,
+            config.sample_format(),
+            |data: &mut cpal::Data, _: &cpal::OutputCallbackInfo| {
+                // Never started; silence if it ever runs.
+                for byte in data.bytes_mut() {
+                    *byte = 0;
+                }
+            },
+            |e| tracing::info!("a stereo stream won't open: {e}"),
+            None,
+        )
+        .map_err(|e| tracing::info!("a stereo stream won't open: {e}"))
+        .is_ok()
 }
 
 impl Device {
@@ -668,7 +712,10 @@ impl Device {
     fn start(&self, output: Option<Output>) -> Started {
         let slot = Arc::new(Mutex::new(output));
         let channels = self.channels;
-        let config = self.config.config();
+        let config = cpal::StreamConfig {
+            channels: cpal::ChannelCount::try_from(channels).unwrap_or(2),
+            ..self.config.config()
+        };
         let take = Arc::clone(&slot);
         let stream = match self.config.sample_format() {
             cpal::SampleFormat::F32 => {
@@ -699,7 +746,15 @@ impl Device {
             tracing::warn!("sound output won't start: {e}");
             return refused(Some(stream));
         }
-        tracing::info!(rate = self.rate, channels, "sound output open");
+        // What the system's mixer takes from the app: when sound is quieter
+        // or narrower than elsewhere, the log says which device and format.
+        tracing::info!(
+            device = %self.device,
+            rate = self.rate,
+            channels,
+            format = ?self.config.sample_format(),
+            "sound output open"
+        );
         Started::Playing(stream)
     }
 

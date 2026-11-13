@@ -5,6 +5,7 @@ use project::track_sound::LinePoint;
 use project::{ClipId, Command, MasterSound, MediaId, TrackRole, TrackSound};
 use std::path::Path;
 
+mod level;
 mod nested;
 
 const RATE: u32 = 48_000;
