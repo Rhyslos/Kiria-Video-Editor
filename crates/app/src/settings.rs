@@ -67,6 +67,8 @@ pub struct Settings {
     /// Where the Library page keeps a file's in and out marks and the
     /// levels chosen for its sound streams.
     pub library_marks: LibraryMarks,
+    /// How the pictures inside video clips are taken from long recordings.
+    pub clip_pictures: ClipPictureWay,
     /// How fast exports went on this machine (measured by the newest of
     /// each kind), for the time the Export page says one will take.
     pub export_pace: crate::export_page::Pace,
@@ -114,6 +116,40 @@ impl LibraryMarks {
             }
             LibraryMarks::Project => {
                 "In and out marks and the levels chosen for a file's sound are saved in the project, each change an undo step. Marks made this session are saved when you switch."
+            }
+        }
+    }
+}
+
+/// How the small pictures inside video clips are taken (Settings › Editing).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum ClipPictureWay {
+    /// In long recordings, the key frame nearest each picture's moment:
+    /// one frame decoded per picture (the usual).
+    #[default]
+    Quick,
+    /// Always the exact frame, decoded from the key frame before it.
+    Exact,
+}
+
+impl ClipPictureWay {
+    pub const ALL: [ClipPictureWay; 2] = [ClipPictureWay::Quick, ClipPictureWay::Exact];
+
+    /// The words on Settings' segmented control.
+    pub fn short(self) -> &'static str {
+        match self {
+            ClipPictureWay::Quick => "Quick",
+            ClipPictureWay::Exact => "Exact",
+        }
+    }
+
+    pub fn explained(self) -> &'static str {
+        match self {
+            ClipPictureWay::Quick => {
+                "In long recordings each picture is the key frame nearest its moment, up to a second or two off: many times quicker to read."
+            }
+            ClipPictureWay::Exact => {
+                "Each picture is the exact frame at its moment. Long recordings with key frames far apart take much longer to read."
             }
         }
     }

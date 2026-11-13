@@ -530,7 +530,7 @@ footer { margin-top: 64px; padding-top: 18px; border-top: 1px solid var(--line);
 <section id="import-edit">
 <h3>Importing on the Edit page<a class="anchor" href="#import-edit" aria-label="Link to this section">#</a></h3>
 <p>Press <kbd>Ctrl</kbd>+<kbd>I</kbd>, click <strong>Import media…</strong>, or drop files on the window. Each file is checked (see <a href="#library-import">Bringing files in</a>), added to the project and placed at the end of the open timeline. A recording with several sound streams gets one audio track per stream, named after the stream (“Game”, “Mic”, “Voice chat”) when the file names them; other tracks are named V1, V2, A1, A2 and so on.</p>
-<p>While a file's waveform and clip pictures are being read, its clips say so with a small progress bar, and the track's name says “Reading 43 %”. You can keep working meanwhile.</p>
+<p>While a file's waveform and clip pictures are being read, its clips say so with a small progress bar, and the track's name says “Reading 43 %”. You can keep working meanwhile. Waveforms are kept by recording, so a file you have used before shows its waveform at once.</p>
 </section>
 
 <section id="playback">
@@ -999,12 +999,12 @@ footer { margin-top: 64px; padding-top: 18px; border-top: 1px solid var(--line);
 <thead><tr><th>Tab</th><th>What you set there</th></tr></thead>
 <tbody>
 <tr><td><strong>Look</strong></td><td><strong>Theme:</strong> Ash (soft graphite with a bone accent, the usual) or Carbon (warm near-black with a copper accent). The launcher follows it.</td></tr>
-<tr><td><strong>Editing</strong></td><td><strong>Edit at the playhead</strong>; <strong>Clicking the timeline moves</strong> the playhead or the edit needle; <strong>Cut closes the gap</strong>.</td></tr>
+<tr><td><strong>Editing</strong></td><td><strong>Edit at the playhead</strong>; <strong>Clicking the timeline moves</strong> the playhead or the edit needle; <strong>Cut closes the gap</strong>; <strong>Clip pictures</strong>: <em>Quick</em> (the usual: in long recordings each picture inside a clip is the nearest key frame, up to a second or two off, and many times quicker to read) or <em>Exact</em> (the exact frame, slower).</td></tr>
 <tr><td><strong>Playback &amp; proxies</strong></td><td><strong>Proxies:</strong> Off, On or Auto. <strong>Jumping in a file without a proxy:</strong> show the nearest key frame at once and then the exact frame (the usual), or wait for the exact frame.</td></tr>
 <tr><td><strong>Audio</strong></td><td><strong>Loudness to aim for:</strong> −14 LUFS (online video), −16, −23, −24, or none. Used by the meters, the Library's levels and export's Normalise.</td></tr>
 <tr><td><strong>Library</strong></td><td><strong>Keep in and out marks</strong> for this session only, or saved in the project.</td></tr>
 <tr><td><strong>Resources</strong></td><td><strong>Worker threads</strong>, <strong>Memory for frames</strong> (each Auto or a number, with what is in use now) and <strong>Background work</strong>: pause it while playing (the usual), always, or only when idle.</td></tr>
-<tr><td><strong>Cache</strong></td><td><strong>Disk space for proxies</strong>, how much is <strong>In use</strong> (this project and all), and clearing: <strong>This project's proxies</strong> (only those no other project uses, or the shared ones too) and <strong>Every proxy</strong>. Each asks first; recordings and project files are never touched.</td></tr>
+<tr><td><strong>Cache</strong></td><td><strong>Disk space for proxies</strong>, how much is <strong>In use</strong> (this project and all), and clearing: <strong>This project's proxies</strong> (only those no other project uses, or the shared ones too) and <strong>Every proxy</strong>. Each asks first; recordings and project files are never touched. <strong>Waveforms › Clear</strong> removes the waveforms Kiria keeps so recordings are not read again each time; they are read again when needed. Clearing proxies leaves them.</td></tr>
 <tr><td><strong>Graphics</strong></td><td><strong>Draw the windows with:</strong> Automatic (Vulkan, and Direct3D 12 if Vulkan doesn't start), Vulkan or Direct3D 12 (Windows); <strong>Decode video on the window's graphics device</strong> (fastest; turn it off if video shows wrong colours, stutters or stops the app). Shared with the launcher.</td></tr>
 <tr><td><strong>Keyboard</strong></td><td><strong>Keyboard shortcuts:</strong> opens the <a href="#shortcuts-page">shortcuts page</a>.</td></tr>
 <tr><td><strong>Diagnostics</strong></td><td><strong>Diagnostics</strong> (every problem of this session and what this computer is using) and the <strong>Log folder</strong> (<strong>Copy path</strong>).</td></tr>
