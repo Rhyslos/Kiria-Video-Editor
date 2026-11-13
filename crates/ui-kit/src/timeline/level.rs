@@ -1,16 +1,15 @@
 //! The level line: a horizontal line across each clip of an audio track
 //! whose level button is on, at the height of the clip's volume. Dragging
-//! it up or down changes that clip's volume; a double-click puts it back
-//! to 0 dB.
+//! it up or down changes that clip's volume (Shift or Alt held: a fifth as
+//! fast, for fine changes), its value written beside the pointer; a
+//! double-click puts it back to 0 dB.
 //!
 //! Where the line sits, from the bottom of the clip (0) to its top (1):
-//! 0 dB in the middle, straight decibels from there up to +12 dB at the
-//! top, and a curve below that leaves room for the useful cuts (−6 dB a
-//! quarter of the way from the middle to the bottom, −12 dB about 40 % of
-//! it, −24 dB about 60 %) and
-//! reaches −60 dB, silence ("Off"), at the bottom. The curve meets the
-//! straight part at the middle with the same slope, so the line moves
-//! evenly through 0 dB.
+//! 0 dB two thirds of the way up, straight decibels from there to +12 dB at
+//! the top, and below it a fader's law (decibels as 40·log10 of the share
+//! of the way up to 0 dB) that gives the useful cuts most of the room: −6
+//! dB a fifth of the clip's height under 0 dB, −12 dB a third, −24 dB half
+//! of it; silence ("Off") only in the bottom 2 %.
 //!
 //! Which tracks show the line is how the timeline is looked at (view state
 //! the page keeps), never an edit.
@@ -29,21 +28,22 @@ pub const FINE: f32 = 0.2;
 /// lines of the fades on every track colour.
 const LINE: Color32 = Color32::from_rgb(0xF2, 0xC9, 0x4C);
 
-/// Decibels the curve below the middle falls at its start (per unit of the
-/// way down), matching the straight part above.
-const SLOPE: f32 = LOUDEST_DB;
-/// What the curve adds on top of that, so the bottom is −60 dB.
-const BEND: f32 = -SILENT_DB - SLOPE;
+/// Where 0 dB sits, from the bottom (0) to the top (1).
+pub const UNITY: f32 = 2.0 / 3.0;
 
 /// The volume in decibels at `height` (0 at the bottom of the clip, 1 at
 /// its top). The bottom is [`SILENT_DB`].
 pub fn db_at(height: f32) -> f32 {
     let height = height.clamp(0.0, 1.0);
-    if height >= 0.5 {
-        (height - 0.5) * 2.0 * LOUDEST_DB
+    if height >= UNITY {
+        (height - UNITY) / (1.0 - UNITY) * LOUDEST_DB
     } else {
-        let down = (0.5 - height) * 2.0;
-        -(SLOPE * down + BEND * down * down)
+        let share = height / UNITY;
+        if share <= 0.0 {
+            SILENT_DB
+        } else {
+            (40.0 * share.log10()).max(SILENT_DB)
+        }
     }
 }
 
@@ -52,11 +52,9 @@ pub fn db_at(height: f32) -> f32 {
 pub fn height_of(db: f32) -> f32 {
     let db = db.clamp(SILENT_DB, LOUDEST_DB);
     if db >= 0.0 {
-        0.5 + db / LOUDEST_DB / 2.0
+        UNITY + db / LOUDEST_DB * (1.0 - UNITY)
     } else {
-        // Solves BEND·d² + SLOPE·d + db = 0 for the way down d.
-        let down = (-SLOPE + (SLOPE * SLOPE - 4.0 * BEND * db).sqrt()) / (2.0 * BEND);
-        0.5 - down.clamp(0.0, 1.0) / 2.0
+        UNITY * 10f32.powf(db / 40.0)
     }
 }
 
@@ -156,7 +154,8 @@ impl LevelDrag {
         }
     }
 
-    /// The pointer moved to `y`; `fine` (Alt held) moves the line more slowly.
+    /// The pointer moved to `y`; `fine` (Shift or Alt held) moves the line
+    /// more slowly.
     pub fn follow(&mut self, y: f32, fine: bool) {
         let scale = if fine { FINE } else { 1.0 };
         self.height = (self.height + (self.last_y - y) / self.travel.max(1.0) * scale).clamp(0.0, 1.0);
@@ -221,26 +220,34 @@ mod tests {
     }
 
     #[test]
-    fn the_middle_is_0_db_the_top_12_and_the_bottom_silent() {
-        assert_eq!(db_at(0.5), 0.0);
+    fn two_thirds_up_is_0_db_the_top_12_and_the_bottom_silent() {
+        assert_eq!(db_at(UNITY), 0.0);
         assert_eq!(db_at(1.0), LOUDEST_DB);
         assert_eq!(db_at(0.0), SILENT_DB);
-        assert_eq!(db_at(0.75), 6.0, "straight decibels above the middle");
+        assert!(
+            close(db_at(UNITY + (1.0 - UNITY) / 2.0), 6.0, 1e-4),
+            "straight decibels above"
+        );
         // Past the ends is the ends.
         assert_eq!(db_at(1.7), LOUDEST_DB);
         assert_eq!(db_at(-0.2), SILENT_DB);
     }
 
     #[test]
-    fn the_usual_cuts_have_room_below_the_middle() {
-        // -6 dB a quarter of the way down, -12 and -24 dB further on.
-        assert!(close(height_of(-6.0), 0.375, 1e-4), "{}", height_of(-6.0));
-        assert!(close(height_of(-12.0), 0.3048, 1e-3), "{}", height_of(-12.0));
-        assert!(close(height_of(-24.0), 0.2034, 1e-3), "{}", height_of(-24.0));
-        // Each is well apart from the next: easy to hit with a mouse.
+    fn the_usual_cuts_have_most_of_the_room() {
+        // Under 0 dB: -6 dB a fifth of the height down, -12 a third, -24 a half.
+        assert!(close(UNITY - height_of(-6.0), 0.195, 2e-3), "{}", height_of(-6.0));
+        assert!(
+            close(UNITY - height_of(-12.0), 0.333, 2e-3),
+            "{}",
+            height_of(-12.0)
+        );
+        assert!(close(UNITY - height_of(-24.0), 0.5, 2e-3), "{}", height_of(-24.0));
+        // Silence only at the very bottom.
+        assert!(height_of(SILENT_DB + 0.1) < 0.025);
         let gaps = [0.0, -6.0, -12.0, -24.0, -60.0].map(height_of);
         for pair in gaps.windows(2) {
-            assert!(pair[0] - pair[1] > 0.06, "{gaps:?}");
+            assert!(pair[0] - pair[1] > 0.1, "{gaps:?}");
         }
     }
 
@@ -249,23 +256,24 @@ mod tests {
         for db in [-60.0, -40.0, -24.0, -12.0, -6.0, -3.0, -0.5, 0.0, 0.5, 3.0, 12.0] {
             assert!(close(db_at(height_of(db)), db, 1e-3), "{db}");
         }
-        for i in 0..=100 {
+        // Above the bottom few hundredths, which are all silence.
+        for i in 3..=100 {
             let h = i as f32 / 100.0;
             assert!(close(height_of(db_at(h)), h, 1e-4), "{h}");
         }
-        // Always higher for louder, and no jump at the middle.
+        // Always higher for louder (silence is the bottom few hundredths).
         let mut last = SILENT_DB - 1.0;
         for i in 0..=1000 {
             let db = db_at(i as f32 / 1000.0);
-            assert!(db > last, "rises everywhere");
-            assert!(db - last < 0.5 || i == 0, "no jump at {i}");
+            assert!(db > last || db == SILENT_DB, "rises everywhere");
+            assert!(db - last < 0.5 || i < 40, "no jump at {i}");
             last = db;
         }
     }
 
     #[test]
     fn a_drag_stops_on_tenths_finds_0_db_and_reaches_off() {
-        assert_eq!(settled_db(0.5 + 0.01), 0.0, "0 dB is easy to find");
+        assert_eq!(settled_db(UNITY + 0.01), 0.0, "0 dB is easy to find");
         assert_eq!(settled_db(height_of(-3.04)), -3.0);
         assert_eq!(settled_db(0.0), SILENT_DB);
         assert_eq!(settled_db(1.0), LOUDEST_DB);
@@ -289,11 +297,13 @@ mod tests {
     }
 
     #[test]
-    fn the_line_sits_in_the_middle_at_0_db_and_is_grabbed_near_it() {
-        let clip = Rect::from_min_max(pos2(0.0, 100.0), pos2(200.0, 150.0));
-        assert_eq!(y_of(clip, 0.0), 125.0);
+    fn the_line_sits_two_thirds_up_at_0_db_and_is_grabbed_near_it() {
+        // 54 tall: the line travels 46 points, from 104 to 150.
+        let clip = Rect::from_min_max(pos2(0.0, 100.0), pos2(200.0, 154.0));
+        let y = y_of(clip, 0.0);
+        assert!(close(y, 150.0 - 46.0 * UNITY, 1e-3), "{y}");
         assert!(y_of(clip, LOUDEST_DB) > clip.top() && y_of(clip, SILENT_DB) < clip.bottom());
-        assert!(grabs(clip, 0.0, 128.0) && !grabs(clip, 0.0, 131.0));
+        assert!(grabs(clip, 0.0, y + 3.0) && !grabs(clip, 0.0, y + 6.0));
     }
 
     #[test]
@@ -302,12 +312,13 @@ mod tests {
         let clip = Rect::from_min_max(pos2(0.0, 246.0), pos2(200.0, 354.0));
         let mut drag = LevelDrag::new(7, clip, 0.0, 300.0);
         assert_eq!(drag.travel, 100.0);
-        drag.follow(275.0, false);
-        assert_eq!(drag.db, 6.0, "a quarter of the way up");
+        // Half of the third above 0 dB.
+        drag.follow(300.0 - 100.0 / 6.0, false);
+        assert!(close(drag.db, 6.0, 0.05), "{}", drag.db);
         drag.follow(300.0, false);
         assert_eq!(drag.db, 0.0);
         // Fine: the same move goes a fifth as far.
-        drag.follow(275.0, true);
+        drag.follow(300.0 - 100.0 / 6.0, true);
         assert!(close(drag.db, 1.2, 0.05), "{}", drag.db);
         // Far past the bottom is silence.
         drag.follow(2000.0, false);

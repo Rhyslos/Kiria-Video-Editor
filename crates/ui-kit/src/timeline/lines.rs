@@ -20,7 +20,9 @@
 //! so the page can be heard following them.
 //!
 //! The volume line sits on the same scale as the level line ([`super::level`]:
-//! 0 dB in the middle, +12 dB at the top, silence at the bottom); the pan
+//! 0 dB two thirds of the way up, +12 dB at the top, a fader's law below
+//! with silence at the very bottom); a point dragged with Shift or Alt
+//! held moves a fifth as fast, for fine changes. The pan
 //! line has the centre in the middle, all left at the top and all right
 //! at the bottom.
 
@@ -121,7 +123,20 @@ pub fn y_of(kind: LineKind, rect: Rect, value: f32) -> f32 {
 /// of a pan (the centre within 0.03).
 pub fn value_at(kind: LineKind, rect: Rect, y: f32) -> f32 {
     let t = travel(rect);
-    let height = ((t.bottom() - y) / t.height().max(1.0)).clamp(0.0, 1.0);
+    value_at_height(kind, ((t.bottom() - y) / t.height().max(1.0)).clamp(0.0, 1.0))
+}
+
+/// Where `value` sits in a row or clip, from its bottom (0) to its top (1).
+pub fn height_of(kind: LineKind, value: f32) -> f32 {
+    match kind {
+        LineKind::Volume => level::height_of(value),
+        LineKind::Pan => 0.5 - value.clamp(-1.0, 1.0) / 2.0,
+    }
+}
+
+/// The value at `height` (0 the bottom, 1 the top), settled as a drag
+/// stops on it.
+pub fn value_at_height(kind: LineKind, height: f32) -> f32 {
     match kind {
         LineKind::Volume => level::settled_db(height),
         LineKind::Pan => {
@@ -236,6 +251,23 @@ pub(super) struct LineDrag {
     pub bounds: (f64, f64),
     /// The row or clip the line is drawn in when the drag began.
     pub rect: Rect,
+    /// Where the point is (0 bottom, 1 top), unrounded, so slow and fine
+    /// moves add up.
+    pub height: f32,
+    /// The pointer's y on the last frame.
+    pub last_y: f32,
+}
+
+impl LineDrag {
+    /// The pointer moved to `y`; `fine` (Shift or Alt held) moves the point
+    /// a fifth as fast. Returns the value it is at now.
+    pub fn follow(&mut self, y: f32, fine: bool) -> f32 {
+        let scale = if fine { level::FINE } else { 1.0 };
+        let travel = travel(self.rect).height().max(1.0);
+        self.height = (self.height + (self.last_y - y) / travel * scale).clamp(0.0, 1.0);
+        self.last_y = y;
+        value_at_height(self.kind, self.height)
+    }
 }
 
 /// How a line is drawn.

@@ -58,14 +58,19 @@
 //! (seconds as `f64`, for drawing only) and gets back [`TimelineEvent`]s.
 
 pub mod cache_bar;
+mod empty_end;
 mod fades;
+mod gaps;
 mod headers;
 mod keyframes;
 pub mod level;
 pub mod lines;
 mod loading;
 mod rows;
+mod slip;
 mod speed;
+pub use gaps::Gap;
+pub use slip::SlipRoom;
 mod track_views;
 
 pub use cache_bar::{CacheBar, CacheRange, CacheState};
@@ -117,6 +122,12 @@ pub struct TimelineClip {
     /// Its own line of the kind shown ([`TimelineView::lines`]), in
     /// seconds on the timeline: drawn inside it ([`lines`]).
     pub line: Option<LinePoints>,
+    /// How far its picture can slip (the Slip tool), held to while dragging.
+    pub slip_room: Option<SlipRoom>,
+    /// Where what it plays ends, in seconds on the timeline, when that is
+    /// before the clip ends (a nested timeline that got shorter): the rest
+    /// is hatched.
+    pub plays_until: Option<f64>,
 }
 
 /// What a clip plays, as the timeline draws it.
@@ -308,6 +319,9 @@ pub enum TimelineEvent {
     Select { clip: u64, add: bool },
     /// Empty space was clicked.
     ClearSelection,
+    /// "Close the gap" from the right-click menu of a gap: move everything
+    /// after it back by its length, on every track.
+    CloseGap { start: f64, end: f64 },
     /// A clip (with its linked clips) was dragged by `by` seconds and, when
     /// `track` is given, onto that track of its kind. With `new_track` it
     /// was let go past the last track of its kind (above the top video
@@ -342,6 +356,9 @@ pub enum TimelineEvent {
     },
     /// The region was drawn or adjusted (`None`: cleared).
     SetRegion(Option<(f64, f64)>),
+    /// One of the region's cuts from its right-click menu (in the ruler or
+    /// on the tracks): the page makes it one undo step.
+    RegionCut(RegionCut),
     /// A dragged file was dropped at `at`: over what is there, or (Ctrl
     /// held) inserted, pushing the rest later. `track` is the video track
     /// under the pointer (none over the audio area).
@@ -371,6 +388,9 @@ pub enum TimelineEvent {
     /// A clip playing another timeline was double-clicked (or "Open its
     /// timeline" chosen on it): open that timeline.
     OpenNested { clip: u64 },
+    /// "Fit to the nested timeline" on a nested clip whose timeline ends
+    /// before it does: shorten it to end there.
+    FitNested { clip: u64 },
     /// "Add an adjustment layer here" from the right-click menu, at `at`
     /// on the video track under the pointer.
     AddAdjustment { at: f64, track: Option<u64> },
@@ -517,11 +537,14 @@ struct ClipDrag {
     end: f64,
     /// Current offset in seconds, after snapping.
     delta: f64,
+    /// A move of one of several selected clips: all the selected clips
+    /// (and those linked to them) move along their own tracks together.
+    together: bool,
 }
 
 impl ClipDrag {
     fn moves(&self, c: &TimelineClip) -> bool {
-        c.id == self.clip || (self.link.is_some() && c.link == self.link)
+        c.id == self.clip || (self.link.is_some() && c.link == self.link) || (self.together && c.selected)
     }
 
     /// Where the dragged clip is drawn instead of on its own track, when
@@ -614,6 +637,10 @@ pub struct TimelineView {
     /// The view (rough cut or not) and the tracks drawn last time, to
     /// notice a track that was added.
     known_tracks: Option<(bool, Vec<u64>)>,
+    /// A track was added by hand: the next new audio track is scrolled
+    /// into view. Audio tracks that come with an import are not, so the
+    /// audio area never scrolls away by itself.
+    reveal_audio: bool,
     /// A track's edge being dragged to change its height.
     height_drag: Option<HeightDrag>,
     /// The area the pointer is over, for commands that act on one area.
@@ -634,6 +661,10 @@ pub struct TimelineView {
     menu_at: Option<MenuSpot>,
     /// The video track the right-click menu was opened on.
     menu_track: Option<u64>,
+    /// The gap the right-click menu was opened on.
+    menu_gap: Option<Gap>,
+    /// The gap selected by a click on it (the page closes it).
+    gap: Option<Gap>,
     /// The keyframe marks the right-click menu was opened on, with their
     /// clip (the menu is then theirs).
     mark_menu: Option<(u64, Vec<f64>)>,
@@ -703,6 +734,7 @@ impl Default for TimelineView {
             fit_video: true,
             heights: TrackHeights::default(),
             known_tracks: None,
+            reveal_audio: false,
             height_drag: None,
             hover_half: None,
             needle_drag: None,
@@ -714,6 +746,8 @@ impl Default for TimelineView {
             region_drag: None,
             menu_at: None,
             menu_track: None,
+            menu_gap: None,
+            gap: None,
             mark_menu: None,
             chosen_marks: Default::default(),
             mark_drag: None,
@@ -938,6 +972,8 @@ fn clip_menu(r: &egui::Response, menu: Menu, events: &mut Vec<TimelineEvent>) {
         has_region,
         video_track,
         on_nested,
+        ends_empty,
+        gap,
         selection,
         several,
     } = menu;
@@ -947,6 +983,18 @@ fn clip_menu(r: &egui::Response, menu: Menu, events: &mut Vec<TimelineEvent>) {
             return;
         }
         let Some((at, clip)) = menu_at else { return };
+        if let Some(gap) = gap.filter(|_| clip.is_none())
+            && ui
+                .button("Close the gap")
+                .on_hover_text("Move everything after it back by its length, on every track")
+                .clicked()
+        {
+            events.push(TimelineEvent::CloseGap {
+                start: gap.start,
+                end: gap.end,
+            });
+            ui.close();
+        }
         if ui.button("Add a label here").clicked() {
             events.push(TimelineEvent::AddLabel(at));
             ui.close();
@@ -954,6 +1002,15 @@ fn clip_menu(r: &egui::Response, menu: Menu, events: &mut Vec<TimelineEvent>) {
         if let Some((id, start, end)) = clip {
             if on_nested && ui.button("Open its timeline").clicked() {
                 events.push(TimelineEvent::OpenNested { clip: id });
+                ui.close();
+            }
+            if ends_empty
+                && ui
+                    .button("Fit to the nested timeline")
+                    .on_hover_text("Its timeline is shorter now: shorten the clip to end where it does.")
+                    .clicked()
+            {
+                events.push(TimelineEvent::FitNested { clip: id });
                 ui.close();
             }
             if ui.button("Split this clip here").clicked() {
@@ -998,11 +1055,53 @@ fn clip_menu(r: &egui::Response, menu: Menu, events: &mut Vec<TimelineEvent>) {
             events.push(TimelineEvent::SyncBySound);
             ui.close();
         }
-        if has_region && ui.button("Clear the region").clicked() {
-            events.push(TimelineEvent::SetRegion(None));
-            ui.close();
+        if has_region {
+            ui.separator();
+            region_menu(ui, events);
+            if ui.button("Clear the region").clicked() {
+                events.push(TimelineEvent::SetRegion(None));
+                ui.close();
+            }
         }
     });
+}
+
+/// What can be done with the region's stretch of every track.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegionCut {
+    /// Take it out and close the gap (everything after moves back).
+    Remove,
+    /// Take it out and leave the gap.
+    Lift,
+    /// Keep only it: everything before and after goes.
+    Keep,
+}
+
+/// The region's cuts as menu lines, each with the command it is in the
+/// shortcut table (so search finds them too).
+fn region_menu(ui: &mut Ui, events: &mut Vec<TimelineEvent>) {
+    for (cut, text, tip) in [
+        (
+            RegionCut::Remove,
+            "Remove the region",
+            "Cut it out of every track and close the gap",
+        ),
+        (
+            RegionCut::Lift,
+            "Remove the region, leave a gap",
+            "Empty it on every track; nothing moves",
+        ),
+        (
+            RegionCut::Keep,
+            "Keep only the region",
+            "Remove everything before and after it",
+        ),
+    ] {
+        if ui.button(text).on_hover_text(tip).clicked() {
+            events.push(TimelineEvent::RegionCut(cut));
+            ui.close();
+        }
+    }
 }
 
 /// What the right-click menu of a timeline area is about.
@@ -1018,6 +1117,10 @@ struct Menu<'a> {
     video_track: Option<u64>,
     /// The clip it was opened on plays another timeline.
     on_nested: bool,
+    /// That nested clip is longer than what its timeline has left to play.
+    ends_empty: bool,
+    /// The gap it was opened on.
+    gap: Option<Gap>,
     /// Some clip is selected.
     selection: bool,
     /// Two or more clips are selected.
@@ -1080,6 +1183,32 @@ fn marks_menu(
 }
 
 impl TimelineView {
+    /// A track is being added by hand: when it is an audio track, it is
+    /// scrolled into view once it shows.
+    pub fn reveal_added_track(&mut self) {
+        self.reveal_audio = true;
+    }
+
+    /// The gap selected by a click on it, if any: its start and end in
+    /// seconds.
+    pub fn selected_gap(&self) -> Option<(f64, f64)> {
+        self.gap.map(|g| (g.start, g.end))
+    }
+
+    /// Forgets the selected gap (it was closed, or something else chosen).
+    pub fn clear_gap(&mut self) {
+        self.gap = None;
+    }
+
+    /// A clip being slipped (the Slip tool): the clip and how far its file
+    /// would move under it if let go now, in seconds of the timeline (the
+    /// `by` of [`TimelineEvent::Slip`]), for the page to show the picture.
+    pub fn slipping(&self) -> Option<(u64, f64)> {
+        self.clip_drag
+            .filter(|d| d.kind == DragKind::Slip && d.delta != 0.0)
+            .map(|d| (d.clip, -d.delta))
+    }
+
     /// Keyframe marks being dragged: their clip, the marks (seconds on the
     /// timeline) and how far they have moved so far, for the page to show
     /// the picture as it would be.
@@ -1315,8 +1444,9 @@ impl TimelineView {
     }
 
     /// Notices tracks that were not there the last time the timeline was
-    /// drawn: the video area fits its tracks again, and the newest track of
-    /// each area is scrolled into view. Not when the view has just changed
+    /// drawn: the video area fits its tracks again, and the newest video
+    /// track (and audio track, when one was added by hand,
+    /// [`TimelineView::reveal_added_track`]) is scrolled into view. Not when the view has just changed
     /// between rough cut and full, which shows other audio tracks.
     fn notice_new_tracks(&mut self, rect: Rect, data: &TimelineData) {
         let now: Vec<u64> = data.video.iter().chain(data.audio).map(|t| t.id).collect();
@@ -1331,7 +1461,8 @@ impl TimelineView {
             self.fit_video = true;
         }
         let layout = self.layout(rect, data);
-        for (half, new) in [(Half::Video, new_video), (Half::Audio, newest(data.audio))] {
+        let new_audio = newest(data.audio).filter(|_| std::mem::take(&mut self.reveal_audio));
+        for (half, new) in [(Half::Video, new_video), (Half::Audio, new_audio)] {
             let area = match half {
                 _ if !self.divider => TimelineView::body(&layout),
                 Half::Video => layout.video,
@@ -1611,6 +1742,12 @@ impl TimelineView {
                         Some(d) if d.moves(clip) => d.shown(clip),
                         _ => (clip.start, clip.duration),
                     };
+                    // Being slipped: its pictures, waveform and marks move under it.
+                    let slipping = self
+                        .clip_drag
+                        .filter(|d| d.kind == DragKind::Slip && d.moves(clip));
+                    let slipped = slipping.map(|d| slip::shifted(clip, d.delta));
+                    let clip = slipped.as_ref().unwrap_or(clip);
                     if start + duration < visible.0 || start > visible.1 {
                         continue;
                     }
@@ -1693,7 +1830,13 @@ impl TimelineView {
                             |t| self.x_of(left, t + shift),
                         );
                     }
+                    if let Some(until) = clip.plays_until.filter(|u| *u < start + duration) {
+                        empty_end::draw(&clip_painter, theme, r, self.x_of(left, until));
+                    }
                     draw_clip_marks(&clip_painter, theme, r, clip, pictures.is_some());
+                    if let (Some(d), Some(room)) = (slipping.filter(|d| d.clip == clip.id), clip.slip_room) {
+                        slip::draw_room(&clip_painter, theme, r, room, d.delta);
+                    }
                     if let Some(loading) = &clip.loading {
                         loading::draw_on_clip(&clip_painter, theme, r, loading);
                     }
@@ -1721,6 +1864,10 @@ impl TimelineView {
                 }
                 if let Some(m) = merged {
                     clip_painter.rect_filled(m, 1.0, tiny_fill(theme, colour, audio));
+                }
+                if let Some(gap) = self.gap.filter(|g| g.track == track.id) {
+                    let (x0, x1) = (self.x_of(left, gap.start), self.x_of(left, gap.end));
+                    gaps::draw(&clip_painter, *row, x0, x1, theme.accent);
                 }
                 if audio && full {
                     let row_band = Rect::from_min_max(
@@ -2015,7 +2162,8 @@ impl TimelineView {
                 && let Some(t) = pointer_t
             {
                 let t = (t / frame).round() * frame;
-                let value = lines::value_at(kind, drag.rect, p.y);
+                let fine = ui.input(|i| i.modifiers.shift || i.modifiers.alt);
+                let value = drag.follow(p.y, fine);
                 drag.points = lines::moved(&drag.points, drag.index, (t, value), frame, drag.bounds);
             }
             if r.drag_stopped() || !ui.input(|i| i.pointer.primary_down()) {
@@ -2093,6 +2241,9 @@ impl TimelineView {
                     Some(i) => (points.clone(), i),
                     None => lines::added(points, t, lines::value_at(kind, *rect, p.y)),
                 };
+                let height = points
+                    .get(index)
+                    .map_or(0.5, |(_, value)| lines::height_of(kind, *value));
                 self.line_drag = Some(lines::LineDrag {
                     owner: *owner,
                     kind,
@@ -2100,6 +2251,8 @@ impl TimelineView {
                     points,
                     bounds: *bounds,
                     rect: *rect,
+                    height,
+                    last_y: p.y,
                 });
             } else if r.double_clicked() {
                 if let Some(i) = hit {
@@ -2637,6 +2790,16 @@ impl TimelineView {
             id.with("ruler"),
             Sense::click_and_drag(),
         );
+        // A right-click in the ruler offers what can be done with the region.
+        if data.region.is_some() {
+            ruler.context_menu(|ui| {
+                region_menu(ui, events);
+                if ui.button("Clear the region").clicked() {
+                    events.push(TimelineEvent::SetRegion(None));
+                    ui.close();
+                }
+            });
+        }
 
         // The playhead's handle at the top of the ruler: dragging it moves
         // the playhead whatever a click in the ruler moves. Not with Shift
@@ -2894,12 +3057,12 @@ impl TimelineView {
                 || r.dnd_hover_payload::<DraggedTimeline>().is_some();
             let file_at = ui.input(|i| i.pointer.interact_pos()).filter(|_| file_over);
             let menu_marks = self.menu_marks(tracks, data.fps);
-            let on_nested = self.menu_at.and_then(|(_, clip)| clip).is_some_and(|(id, ..)| {
-                tracks
-                    .iter()
-                    .flat_map(|t| &t.clips)
-                    .any(|c| c.id == id && c.shows == ClipShows::Timeline)
-            });
+            let menu_clip = self
+                .menu_at
+                .and_then(|(_, clip)| clip)
+                .and_then(|(id, ..)| tracks.iter().flat_map(|t| &t.clips).find(|c| c.id == id));
+            let on_nested = menu_clip.is_some_and(|c| c.shows == ClipShows::Timeline);
+            let ends_empty = menu_clip.is_some_and(|c| c.plays_until.is_some());
             let selected = data
                 .video
                 .iter()
@@ -2915,6 +3078,8 @@ impl TimelineView {
                 has_region: data.region.is_some(),
                 video_track: self.menu_track.filter(|_| from_bottom),
                 on_nested,
+                ends_empty,
+                gap: self.menu_gap,
                 selection: selected > 0,
                 several: selected > 1,
             };
@@ -3137,6 +3302,15 @@ impl TimelineView {
                 && let (Some(c), Some(zone), Some(track)) = (hit, zone, hit_track)
                 && let Some((c, kind)) = drag_for(self.tool, zone, c, tracks, row_rects, p.y)
             {
+                // One of several selected clips: they all move together.
+                let together = kind == DragKind::Move
+                    && c.selected
+                    && data
+                        .video
+                        .iter()
+                        .chain(data.audio)
+                        .flat_map(|t| &t.clips)
+                        .any(|o| o.selected && o.id != c.id && (c.link.is_none() || o.link != c.link));
                 self.clip_drag = Some(ClipDrag {
                     clip: c.id,
                     link: c.link,
@@ -3148,6 +3322,7 @@ impl TimelineView {
                     start: c.start,
                     end: c.start + c.duration,
                     delta: 0.0,
+                    together,
                 });
                 if !c.selected {
                     events.push(TimelineEvent::Select {
@@ -3169,11 +3344,15 @@ impl TimelineView {
                     DragKind::Move | DragKind::Slide | DragKind::Trim(ClipEdge::Start) => {
                         delta.max(-drag.start)
                     }
+                    // Held to the file there is, as it goes.
+                    DragKind::Slip => slip::held(delta, slip::room_of(data, |c| drag.moves(c)), data.fps),
                     _ => delta,
                 };
                 // A move also follows the pointer to another track of this
                 // area, and past the last one to a track of its own.
                 let over = match drag.kind {
+                    // Several clips move along their own tracks only.
+                    DragKind::Move if drag.together => Landing::Track(drag.track),
                     DragKind::Move
                         if self.asks_for_new_track(&drag, tracks, rows, time_area, from_bottom, p.y) =>
                     {
@@ -3244,7 +3423,7 @@ impl TimelineView {
                 if r.dragged()
                     && let Some(now) = r.interact_pointer_pos()
                 {
-                    drag.follow(now.y, ui.input(|i| i.modifiers.alt));
+                    drag.follow(now.y, ui.input(|i| i.modifiers.alt || i.modifiers.shift));
                     ui.ctx().set_cursor_icon(CursorIcon::ResizeVertical);
                 }
                 if r.drag_stopped() {
@@ -3323,6 +3502,10 @@ impl TimelineView {
             if r.secondary_clicked() {
                 self.menu_at = Some((t, hit.map(|c| (c.id, c.start, c.start + c.duration))));
                 self.menu_track = hit_track.map(|track| track.id).filter(|_| from_bottom);
+                self.menu_gap = match hit {
+                    Some(_) => None,
+                    None => hit_track.and_then(|track| gaps::gap_at(track, t)),
+                };
                 // On a mark, the menu is the chosen marks' when it is one of
                 // them, and that mark's alone otherwise.
                 self.mark_menu = on_mark.map(|(c, mark)| {
@@ -3358,6 +3541,11 @@ impl TimelineView {
                 }
             } else if r.clicked() {
                 self.chosen_marks = keyframes::Chosen::default();
+                // A click between two clips selects the gap there.
+                self.gap = match hit {
+                    Some(_) => None,
+                    None => hit_track.and_then(|track| gaps::gap_at(track, t)),
+                };
                 events.push(match (self.tool, hit) {
                     (Tool::Blade, Some(c)) => TimelineEvent::Blade { clip: c.id, at: t },
                     (_, Some(c)) => TimelineEvent::Select { clip: c.id, add },
@@ -4086,6 +4274,8 @@ mod tests {
             speed_curve: None,
             shows: ClipShows::File,
             line: None,
+            slip_room: None,
+            plays_until: None,
         }
     }
 
@@ -4643,16 +4833,19 @@ mod tests {
             on_clips: false,
         });
         // The audio row runs from y 218 for 58 points; 60 points a second.
+        // 0 dB sits two thirds of the way up the line's travel.
+        let row = Rect::from_min_max(pos2(0.0, 218.0), pos2(1.0, 276.0));
+        let unity = level::y_of(row, 0.0);
         let middle = 218.0 + 29.0;
         let x_at = |t: f32| HEADER_WIDTH + t * 60.0;
-        let events = click(&mut rig, pos2(x_at(2.0), middle), egui::PointerButton::Primary);
+        let events = click(&mut rig, pos2(x_at(2.0), unity), egui::PointerButton::Primary);
         let Some(TimelineEvent::Line { owner, kind, points }) = events.first() else {
             panic!("a point is added: {events:?}");
         };
         assert_eq!((*owner, *kind), (LineOwner::Track(100), LineKind::Volume));
         assert_eq!(points.len(), 1);
         assert!(
-            (points[0].0 - 2.0).abs() < 1e-9 && points[0].1 == 0.0,
+            (points[0].0 - 2.0).abs() < 1e-9 && points[0].1.abs() < 1.0,
             "{points:?}"
         );
         assert!(
@@ -4661,7 +4854,7 @@ mod tests {
         );
         // The page hands the line back; dragging its point moves it.
         rig.audio[0].line = Some(vec![(2.0, 0.0)].into());
-        let events = drag(&mut rig, pos2(x_at(2.0), middle), pos2(x_at(3.0), 225.0));
+        let events = drag(&mut rig, pos2(x_at(2.0), unity), pos2(x_at(3.0), 225.0));
         let Some(TimelineEvent::Line { points, .. }) = events.first() else {
             panic!("the drag makes one step: {events:?}");
         };
@@ -5049,6 +5242,21 @@ mod tests {
         rig.frame(Vec::new());
         assert!(!rig.view.heights.is_changed(101));
         assert!(rig.view.heights.is_changed(0));
+    }
+
+    #[test]
+    fn audio_tracks_that_come_with_an_import_never_scroll_the_area() {
+        // Three audio tracks fill an area 168 tall; a fourth comes in.
+        let mut rig = Rig::new(1, 3);
+        rig.frame(Vec::new());
+        rig.audio.push(track(103, Vec::new()));
+        rig.frame(Vec::new());
+        assert_eq!(rig.view.audio_scroll, 0.0, "an import's track waits below");
+        // Added by hand, it is brought into view.
+        rig.view.reveal_added_track();
+        rig.audio.push(track(104, Vec::new()));
+        rig.frame(Vec::new());
+        assert!(rig.view.audio_scroll > 0.0);
     }
 
     #[test]
@@ -5492,6 +5700,8 @@ mod tests {
         let mut rig = Rig::new(1, 3);
         rig.frame(Vec::new());
         assert_eq!(rig.view.audio_scroll, 0.0);
+        // Added by hand (an import's tracks are not scrolled to).
+        rig.view.reveal_added_track();
         rig.audio.push(track(103, Vec::new()));
         rig.frame(Vec::new());
         assert!(
@@ -5854,8 +6064,11 @@ mod tests {
         let mut rig = Rig::new(1, 1);
         let primary = egui::PointerButton::Primary;
         // The audio clip: x 200 to 440, drawn y 221 to 273; its line moves
-        // from y 269 (Off) to 225 (+12 dB), 0 dB at 247.
-        let on_line = pos2(300.0, 247.0);
+        // from y 269 (Off) to 225 (+12 dB), 0 dB two thirds up, at 239.7.
+        let on_line = pos2(300.0, 240.0);
+        // Eleven points down, a quarter of the way.
+        let lowered = level::settled_db(level::UNITY - 11.0 / 44.0);
+        assert!((-9.0..-7.0).contains(&lowered), "{lowered}");
         // Without the line, a drag there moves the clip.
         let events = drag(&mut rig, on_line, on_line + vec2(60.0, 0.0));
         assert!(
@@ -5868,7 +6081,7 @@ mod tests {
         assert!(rig.view.level_line(100));
         assert_eq!(rig.view.level_lines(), [100]);
 
-        // Dragging the line a quarter of the way down: -18 dB, shown while dragging.
+        // Dragging the line a quarter of the way down, shown while dragging.
         rig.move_to(on_line);
         rig.button(on_line, primary, true);
         let mut started = rig.move_to(on_line + vec2(0.0, 6.0));
@@ -5881,19 +6094,19 @@ mod tests {
             }],
             "it is selected"
         );
-        assert_eq!(rig.view.level_being_set(), Some((100, -18.0)));
+        assert_eq!(rig.view.level_being_set(), Some((100, lowered)));
         let events = rig.button(on_line + vec2(30.0, 11.0), primary, false);
         assert_eq!(
             events,
             [TimelineEvent::ClipVolume {
                 clip: 100,
-                gain_db: -18.0
+                gain_db: lowered
             }],
             "one change, on letting go; the clip did not move"
         );
         assert_eq!(rig.view.level_being_set(), None);
 
-        // The project now says -18 dB: the line is drawn lower.
+        // The project now says -18 dB: the line is drawn lower, at 258.6.
         rig.audio[0].clips[0].sound.gain = level::gain_of_db(-18.0);
 
         // Away from the line the clip still moves, and its edges still trim.

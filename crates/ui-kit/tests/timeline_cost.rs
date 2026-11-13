@@ -31,6 +31,8 @@ fn tracks(count: usize, clips_each: usize, clip_len: f64) -> Vec<TimelineTrack> 
                     speed_curve: None,
                     shows: Default::default(),
                     line: None,
+                    slip_room: None,
+                    plays_until: None,
                 })
                 .collect(),
             muted: false,
