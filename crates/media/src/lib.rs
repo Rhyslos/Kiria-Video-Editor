@@ -42,7 +42,7 @@ pub mod timing;
 pub mod vulkan;
 pub mod yuv;
 
-pub use audio::AudioDecoder;
+pub use audio::{AudioDecoder, AudioStreams};
 pub use check::{Refusal, Refused, check, end_missing_words, salvage};
 pub use decode::{DecodeCost, Decoded, Decoding, Frame, Level, Newer, Reached, VideoDecoder, Work};
 pub use fingerprint::fingerprint;

@@ -150,8 +150,15 @@ pub fn fill(audio: &mut [ui_kit::TimelineTrack], seq: &Sequence, kind: LineKind)
     for (drawn, track) in audio.iter_mut().zip(&seq.audio_tracks) {
         drawn.line = Some(track_points(&track.sound, kind));
         drawn.role = Some(super::roles::index(track.sound.role));
+        // The drawn clips are the track's, in its order: matched in one
+        // walk (a search per clip was quadratic in the clips of a track).
+        let mut clips = track.clips.iter();
         for clip in drawn.clips.iter_mut() {
-            if let Some(c) = track.clips.iter().find(|c| c.id.0 == clip.id) {
+            let found = match clips.next() {
+                Some(c) if c.id.0 == clip.id => Some(c),
+                _ => track.clips.iter().find(|c| c.id.0 == clip.id),
+            };
+            if let Some(c) = found {
                 clip.line = Some(clip_points(c, kind));
             }
         }

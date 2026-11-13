@@ -349,6 +349,21 @@ fn kept_on_the_way_to(d: &mut VideoDecoder, seconds: f64) -> (Vec<(f64, f64)>, f
 }
 
 #[test]
+fn only_frames_close_before_the_moment_are_handed_over_when_asked() {
+    let mut d = open("counted-b-frames.mkv", 0);
+    d.keep_every_kind(true);
+    d.keep_within(0.1);
+    // From the key frame to 1.5 s: only the frames of the last 0.1 s.
+    let (kept, shown) = kept_on_the_way_to(&mut d, 1.5);
+    assert!(!kept.is_empty() && kept.len() <= 13, "{} kept", kept.len());
+    assert!(kept.iter().all(|(starts, _)| *starts >= 1.4 - 1e-9), "{kept:?}");
+    assert_eq!(kept[kept.len() - 1].0, shown, "the one shown is kept too");
+    for pair in kept.windows(2) {
+        assert_eq!(pair[0].1, pair[1].0, "unbroken up to it");
+    }
+}
+
+#[test]
 fn every_frame_passed_is_handed_over_with_how_long_it_is_on_screen() {
     let mut d = open("game-3-audio.mkv", 0);
     d.keep_every_kind(true);
@@ -386,4 +401,40 @@ fn nothing_is_handed_over_unless_the_decoder_keeps_frames() {
     let mut d = open("game-3-audio.mkv", 0);
     assert!(!d.keeps_frames(), "a decoder on the CPU doesn't, by itself");
     assert!(kept_on_the_way_to(&mut d, 0.5).0.is_empty());
+}
+
+/// The frame number `counted-b-frames.mkv` shows in its bars (see the
+/// README), read from a picture asked for at its own size.
+fn counted(frame: &media::Frame) -> u32 {
+    let width = frame.width as usize;
+    (0..8).fold(0, |n, bar| {
+        let red = frame.rgba[(width * 16 + bar * 16 + 8) * 4];
+        if red > 127 { n | 1 << bar } else { n }
+    })
+}
+
+#[test]
+fn a_jump_past_frames_others_are_not_made_from_still_lands_on_the_exact_frame() {
+    // One stretch of 240 frames from a single key frame, three of every four
+    // made from the others and from nothing else (B-frames).
+    let mut d = open("counted-b-frames.mkv", 0);
+    for (moment, number) in [(1.5, 180), (0.2, 24), (1.99, 238), (1.0, 120), (0.75, 90)] {
+        let f = d.frame_at(moment, 128, 32).unwrap();
+        assert_eq!(counted(&f), number, "the frame at {moment} s");
+    }
+    // From the key frame to frame 230: the frames before the last half
+    // second that no other frame is made from were left out.
+    let mut far = open("counted-b-frames.mkv", 0);
+    let f = far.frame_at(230.0 / 120.0, 128, 32).unwrap();
+    assert_eq!(counted(&f), 230);
+    assert!(
+        far.last_work().frames < 200,
+        "{} frames decoded",
+        far.last_work().frames
+    );
+    // Playing on from there: every frame, none left out.
+    for n in 231..236 {
+        let f = far.frame_at(f64::from(n) / 120.0 + 0.001, 128, 32).unwrap();
+        assert_eq!(counted(&f), n);
+    }
 }

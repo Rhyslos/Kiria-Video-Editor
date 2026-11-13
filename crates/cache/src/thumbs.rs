@@ -23,9 +23,18 @@ pub fn spacing(duration: f64) -> f64 {
     (duration / MOST).max(CLOSEST)
 }
 
-/// Reads the pictures of a file's video stream. Slow (one seek per picture):
-/// run it on a worker. `cancelled` is asked between pictures, and `progress`
-/// is told the share read (0 to 1) after each one.
+/// Reads the pictures of a file's video stream, on a worker. `cancelled` is
+/// asked between pictures, and `progress` is told the share read (0 to 1)
+/// after each one.
+///
+/// Where the file's key frames are much closer together than the pictures
+/// (a long recording: one picture every 10 s or more, a key frame every
+/// few seconds), each picture is the key frame nearest its moment: one
+/// frame decoded per picture, instead of everything from the key frame
+/// before up to the exact moment (a hundred frames or more each, in a
+/// recording with key frames far apart). The picture is then up to half a
+/// key frame distance off its place, a small part of the space it is drawn
+/// in. Otherwise each picture is the exact frame.
 pub fn strip(
     path: &Path,
     stream: u32,
@@ -36,10 +45,26 @@ pub fn strip(
 ) -> diag::Result<Strip> {
     let every = spacing(duration);
     let mut decoder = VideoDecoder::open(path, stream, rotation, Decoding::Software)?;
+    let keys = decoder.key_frames().clone();
+    let glances = by_key_frames(&keys, duration, every);
+    if glances {
+        // One frame at a time, each as soon as its packet is in.
+        decoder = VideoDecoder::open_for_glances(path, stream, rotation, Decoding::Software)?;
+    }
     let mut frames = Vec::new();
     let mut t = 0.0;
     while t < duration.max(0.001) && !cancelled() {
-        match decoder.frame_at(t, WIDTH, HEIGHT) {
+        let picture =
+            match keys.nearest(t).filter(|_| glances) {
+                Some(key) => decoder
+                    .key_frame_picture(key, WIDTH, HEIGHT, true)
+                    .and_then(|picture| match picture {
+                        media::Decoded::Rgba(frame) => Ok(frame),
+                        _ => decoder.frame_at(t, WIDTH, HEIGHT),
+                    }),
+                None => decoder.frame_at(t, WIDTH, HEIGHT),
+            };
+        match picture {
             Ok(f) => frames.push(f),
             // Past the last decodable picture: what was read is enough.
             Err(_) if !frames.is_empty() => break,
@@ -51,9 +76,32 @@ pub fn strip(
     Ok(Strip { every, frames })
 }
 
+/// Whether a strip with a picture every `every` seconds is taken from key
+/// frames: listed ones, at most half that apart, so the pictures are each
+/// a different key frame and at most a quarter of their spacing off.
+fn by_key_frames(keys: &media::jump::KeyFrames, duration: f64, every: f64) -> bool {
+    !keys.is_empty() && keys.longest_gap(duration) * 2.0 <= every
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn long_files_with_close_key_frames_are_read_from_key_frames() {
+        let keys = media::jump::KeyFrames::new((0..900).map(|k| f64::from(k) * 4.0).collect(), 0.0);
+        assert!(by_key_frames(&keys, 3_600.0, spacing(3_600.0)));
+        assert!(
+            !by_key_frames(&keys, 60.0, spacing(60.0)),
+            "a short file: exact frames"
+        );
+        assert!(
+            !by_key_frames(&media::jump::KeyFrames::default(), 3_600.0, 12.0),
+            "none listed"
+        );
+        assert_eq!(keys.nearest(9.0), Some(8.0));
+        assert_eq!(keys.nearest(11.0), Some(12.0));
+    }
 
     #[test]
     fn spacing_grows_for_long_files() {

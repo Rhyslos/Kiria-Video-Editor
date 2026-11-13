@@ -422,6 +422,12 @@ impl Editor {
                 .as_ref()
                 .map(|state| (state.device.clone(), state.queue.clone())),
         );
+        // Waveforms are kept beside the proxies, in the app's cache folder.
+        let waveforms = crate::waveforms::Waveforms::new(
+            proxy_dir.parent().map(|cache| cache.join("waveforms")),
+            hold_reading,
+        );
+        waveforms.trim(&jobs);
         let proxies = crate::proxies::ProxyBuilds::new(
             proxy_dir,
             settings.proxies,
@@ -477,7 +483,7 @@ impl Editor {
             shown_sequence: None,
             playheads: Default::default(),
             fitted: false,
-            waveforms: crate::waveforms::Waveforms::holding_at(hold_reading),
+            waveforms,
             pictures: crate::clip_pictures::ClipPictures::holding_at(hold_reading),
             proxies,
             track_paces: timeline_panel::TrackPaces::default(),

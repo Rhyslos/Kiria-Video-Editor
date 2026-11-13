@@ -153,6 +153,10 @@ pub enum Reached<T> {
     Dropped,
 }
 
+/// Frames left out on the way to a moment stop this long (seconds) before
+/// the first frame that counts: room for frames stored out of order.
+const SKIP_MARGIN: f64 = 0.5;
+
 pub struct VideoDecoder {
     input: Input,
     codec: *mut ff::AVCodecContext,
@@ -183,6 +187,14 @@ pub struct VideoDecoder {
     /// Frames passed are handed over whatever the decoder runs on
     /// ([`VideoDecoder::keep_every_kind`]).
     keep_any: bool,
+    /// Frames passed on the way to a moment are only made pictures for
+    /// keeping this close before it (seconds; [`VideoDecoder::keep_within`]).
+    keep_within: f64,
+    /// Frames due before this (seconds) are on the way to a moment far
+    /// ahead: the decoder may leave out those no other frame needs.
+    skip_before: f64,
+    /// Whether the decoder is leaving those out now.
+    skipping: bool,
     scratch: *mut ff::AVFrame,
     copy: *mut ff::AVFrame,
     packet: *mut ff::AVPacket,
@@ -557,6 +569,9 @@ impl VideoDecoder {
                 work: Work::default(),
                 held_picture: None,
                 keep_any: false,
+                keep_within: f64::INFINITY,
+                skip_before: f64::NEG_INFINITY,
+                skipping: false,
                 scratch: ff::av_frame_alloc(),
                 copy: ff::av_frame_alloc(),
                 packet: ff::av_packet_alloc(),
@@ -825,6 +840,15 @@ impl VideoDecoder {
         self.on_device.is_some() || self.keep_any
     }
 
+    /// Only the frames passed in the last `seconds` before the moment asked
+    /// for are handed over for keeping. Making a picture to keep costs a
+    /// copy on the graphics card for each frame; a jump to the end of a
+    /// long stretch between key frames passes a hundred frames or more,
+    /// and only the last few are ever looked at again. Every one by default.
+    pub fn keep_within(&mut self, seconds: f64) {
+        self.keep_within = seconds.max(0.0);
+    }
+
     /// Makes any decoder hand over the frames it passes, as planes in
     /// memory. That is a copy of every frame on the CPU (and for a GPU
     /// decoder a trip back from the card), so nothing does it yet but the
@@ -1026,6 +1050,13 @@ impl VideoDecoder {
             self.work.jumped = true;
             self.work.jump = started.elapsed();
         }
+        // Frames this far before the moment are only passed through: the
+        // decoder may leave out those no other frame is made from (with
+        // frames reordered, half of them or more). Kept frames are never
+        // left out, nor anything near the moment.
+        let within = if keep.is_some() { self.keep_within } else { 0.0 };
+        let kept_from = |target: f64| target - within;
+        self.skip_before = kept_from(target) - SKIP_MARGIN;
         let reached = loop {
             if let Some(t) = self.ahead_time {
                 // The frame on screen at `target` is the last one due by
@@ -1041,7 +1072,8 @@ impl VideoDecoder {
                     // is handed over once the next frame says how long it
                     // is on screen.
                     self.held_picture = None;
-                    if keep.is_some() {
+                    let near = self.held_time.is_some_and(|t| t >= kept_from(target));
+                    if keep.is_some() && near {
                         self.held_picture = Some(self.held_as_picture(size.0, size.1)?);
                     }
                     continue;
@@ -1058,6 +1090,7 @@ impl VideoDecoder {
                         // Reachable by decoding on. Earlier than the target:
                         // stop there. Later: the target is on the way.
                         target = target.min(moment);
+                        self.skip_before = self.skip_before.min(kept_from(target) - SKIP_MARGIN);
                     } else if give_up {
                         break None;
                     }
@@ -1087,6 +1120,8 @@ impl VideoDecoder {
             }
         };
         self.work.decoding = started.elapsed();
+        // Reading on from here (playing, a frame stepped) needs every frame.
+        self.skip_before = f64::NEG_INFINITY;
         if reached.is_some() && self.held_time.is_none() {
             return Err(AppError::new("The video can't be shown")
                 .why("No picture could be decoded at this point of the file.")
@@ -1149,6 +1184,17 @@ impl VideoDecoder {
                         break;
                     }
                     if (*self.packet).stream_index == self.stream {
+                        let pts = (*self.packet).pts;
+                        let passing = pts != ff::AV_NOPTS_VALUE
+                            && (pts as f64 * self.time_base - self.start) < self.skip_before;
+                        if passing != self.skipping {
+                            self.skipping = passing;
+                            (*self.codec).skip_frame = if passing {
+                                ff::AVDiscard::AVDISCARD_NONREF
+                            } else {
+                                ff::AVDiscard::AVDISCARD_DEFAULT
+                            };
+                        }
                         let r = ff::avcodec_send_packet(self.codec, self.packet);
                         ff::av_packet_unref(self.packet);
                         if r < 0 && r != ff::AVERROR(ff::EAGAIN) && r != ff::AVERROR_EOF {

@@ -1404,8 +1404,11 @@ impl Worker {
                 }
             };
             match opened {
-                Ok(decoder) => {
+                Ok(mut decoder) => {
                     tracing::info!(file = %file.path.display(), method = %decoder.method, "opened video");
+                    // Only what can be kept behind the playhead is worth a
+                    // picture: a jump passes the rest without copying it.
+                    decoder.keep_within(KEPT_BEHIND);
                     return Ok(decoder);
                 }
                 Err(err) => last = Some(err),

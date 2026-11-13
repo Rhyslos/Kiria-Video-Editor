@@ -87,6 +87,18 @@ impl KeyFrames {
             .copied()
     }
 
+    /// The listed key frame nearest to `target` (seconds), before or after
+    /// it, if any.
+    pub fn nearest(&self, target: f64) -> Option<f64> {
+        let after = self.times.partition_point(|key| *key < target);
+        let later = self.times.get(after).copied();
+        let earlier = after.checked_sub(1).and_then(|i| self.times.get(i)).copied();
+        match (earlier, later) {
+            (Some(e), Some(l)) => Some(if target - e <= l - target { e } else { l }),
+            (one, None) | (None, one) => one,
+        }
+    }
+
     /// The longest stretch between two key frames, counting from the last
     /// one to the end of a stream `length` seconds long: what the slowest
     /// jump has to decode. A stream with no key frames listed counts as one

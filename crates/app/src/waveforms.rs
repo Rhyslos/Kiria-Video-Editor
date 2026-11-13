@@ -1,5 +1,11 @@
-//! The waveforms the timeline draws: read once per file and sound stream on
-//! a worker, then kept for the session.
+//! The waveforms the timeline draws: read on a worker, then kept for the
+//! session, and on disk by the recording's fingerprint
+//! (`cache::waveform::Store`), so a recording is read once, not once per
+//! session.
+//!
+//! Every sound stream of a file is read in one pass over it (a long
+//! recording with five streams is read once, not five times): asking for
+//! one stream's waveform starts the reading of all of them.
 //!
 //! While a stream is being read the timeline already gets the peaks read so
 //! far (the waveform fills in from the left) and how far the reading is.
@@ -9,6 +15,7 @@
 
 use crate::reading::{self, Pace};
 use cache::Peaks;
+use cache::waveform::Store;
 use jobs::{JobHandle, JobSystem, PoolKind, Priority};
 use project::{MediaId, MediaRef};
 use std::collections::HashMap;
@@ -20,10 +27,11 @@ use ui_kit::timeline::LoadState;
 const COPY_EVERY: Duration = Duration::from_millis(200);
 /// How often the timeline is redrawn while something is being read.
 const REDRAW_EVERY: Duration = Duration::from_millis(100);
+/// The disk kept waveforms may take; the ones used longest ago go first.
+const STORE_BUDGET: u64 = 512 * 1024 * 1024;
 
 struct Reading {
-    handle: JobHandle<Peaks>,
-    /// The peaks read so far; the worker adds a few seconds of sound at a time.
+    /// The peaks read so far; the worker adds a second of sound or so at a time.
     so_far: Arc<Mutex<Vec<f32>>>,
     /// A copy of them for drawing.
     copy: Option<Peaks>,
@@ -37,6 +45,13 @@ enum State {
     Ready(Peaks),
     /// Couldn't be read (missing file, broken sound): drawn without a waveform.
     Failed,
+}
+
+/// The reading of one file's streams: one job for all of them.
+struct FileReading {
+    handle: JobHandle<Vec<Peaks>>,
+    /// The streams it reads, in the order of its result.
+    streams: Vec<u32>,
 }
 
 /// What the timeline can show of a stream's waveform right now.
@@ -54,59 +69,57 @@ pub struct Look {
 #[derive(Default)]
 pub struct Waveforms {
     streams: HashMap<(MediaId, u32), State>,
+    /// Readings under way, each of one file's streams.
+    files: Vec<(MediaId, FileReading)>,
+    /// Where waveforms are kept on disk (`None`: only in memory, in tests).
+    store: Option<Store>,
     /// `--hold-reading`: workers stop at this share, for screenshots of reading in progress.
     hold_at: Option<f32>,
 }
 
 impl Waveforms {
+    /// Waveforms kept on disk in `folder` too (`None`: in memory only).
     /// With `--hold-reading`: workers stop where the share read reaches `hold_at`.
-    pub fn holding_at(hold_at: Option<f32>) -> Waveforms {
+    pub fn new(folder: Option<std::path::PathBuf>, hold_at: Option<f32>) -> Waveforms {
         Waveforms {
+            store: folder.map(Store::new),
             hold_at,
             ..Default::default()
         }
     }
 
-    /// What is known of this stream's waveform; starts reading it if nobody has yet.
-    pub fn get(&mut self, jobs: &JobSystem, ctx: &egui::Context, media: &MediaRef, stream: u32) -> Look {
-        let key = (media.id, stream);
-        let hold_at = self.hold_at;
-        let state = self.streams.entry(key).or_insert_with(|| {
-            let (path, ctx) = (media.path.clone(), ctx.clone());
-            let so_far = Arc::new(Mutex::new(Vec::new()));
-            let shared = Arc::clone(&so_far);
-            let length = media.duration.as_secs_f64().max(0.001);
-            let handle = jobs.submit(PoolKind::Analysis, Priority::Background, "waveform", move |job| {
-                let mut read = 0usize;
-                let result = cache::waveform::peaks_as_read(&path, stream, |more| {
-                    read += more.len();
-                    if let Ok(mut all) = shared.lock() {
-                        all.extend_from_slice(more);
+    /// Trims the waveforms kept on disk to their budget, on a worker.
+    pub fn trim(&self, jobs: &JobSystem) {
+        if let Some(store) = self.store.clone() {
+            // Nobody waits for it: the handle is let go.
+            drop(jobs.submit(
+                PoolKind::Analysis,
+                Priority::Background,
+                "waveform trim",
+                move |_| {
+                    let removed = store.trim(STORE_BUDGET);
+                    if removed > 0 {
+                        tracing::info!("{removed} kept waveforms used longest ago removed");
                     }
-                    let done = share_read(read, length);
-                    job.set_progress(done);
-                    reading::hold(hold_at, done, job);
-                    !job.is_cancelled()
-                });
-                ctx.request_repaint();
-                result
-            });
-            State::Reading(Reading {
-                handle,
-                so_far,
-                copy: None,
-                copied_at: None,
-                pace: Pace::default(),
-                state: LoadState::Waiting,
-            })
-        });
-        match state {
-            State::Ready(peaks) => Look {
+                    Ok(())
+                },
+            ));
+        }
+    }
+
+    /// What is known of this stream's waveform; starts reading it (with the
+    /// file's other streams) if nobody has yet.
+    pub fn get(&mut self, jobs: &JobSystem, ctx: &egui::Context, media: &MediaRef, stream: u32) -> Look {
+        if !self.streams.contains_key(&(media.id, stream)) {
+            self.read(jobs, ctx, media, stream);
+        }
+        match self.streams.get(&(media.id, stream)) {
+            Some(State::Ready(peaks)) => Look {
                 peaks: Some(peaks.clone()),
                 read_secs: f64::INFINITY,
                 state: None,
             },
-            State::Reading(reading) => Look {
+            Some(State::Reading(reading)) => Look {
                 read_secs: reading
                     .copy
                     .as_ref()
@@ -114,12 +127,78 @@ impl Waveforms {
                 peaks: reading.copy.clone(),
                 state: Some(reading.state),
             },
-            State::Failed => Look {
+            Some(State::Failed) | None => Look {
                 peaks: None,
                 read_secs: 0.0,
                 state: Some(LoadState::Failed),
             },
         }
+    }
+
+    /// Starts one reading of every sound stream of `media` not read or
+    /// being read yet (`stream` among them), from disk where kept.
+    fn read(&mut self, jobs: &JobSystem, ctx: &egui::Context, media: &MediaRef, stream: u32) {
+        let mut streams: Vec<u32> = media.info.audio.iter().map(|a| a.index).collect();
+        if !streams.contains(&stream) {
+            streams.push(stream);
+        }
+        streams.retain(|s| !self.streams.contains_key(&(media.id, *s)));
+        if streams.is_empty() {
+            return;
+        }
+        let shared: Vec<Arc<Mutex<Vec<f32>>>> = streams.iter().map(|_| Arc::default()).collect();
+        for (s, so_far) in streams.iter().zip(&shared) {
+            self.streams.insert(
+                (media.id, *s),
+                State::Reading(Reading {
+                    so_far: Arc::clone(so_far),
+                    copy: None,
+                    copied_at: None,
+                    pace: Pace::default(),
+                    state: LoadState::Waiting,
+                }),
+            );
+        }
+        let (path, ctx, hold_at) = (media.path.clone(), ctx.clone(), self.hold_at);
+        let (store, fingerprint) = (self.store.clone(), media.fingerprint.clone());
+        let length = media.duration.as_secs_f64().max(0.001);
+        let which = streams.clone();
+        let handle = jobs.submit(PoolKind::Analysis, Priority::Background, "waveform", move |job| {
+            let mut found: Vec<Option<Peaks>> = which
+                .iter()
+                .map(|s| store.as_ref().and_then(|store| store.load(&fingerprint, *s)))
+                .collect();
+            for (peaks, so_far) in found.iter().zip(&shared) {
+                if let (Some(peaks), Ok(mut all)) = (peaks, so_far.lock()) {
+                    all.extend_from_slice(&peaks.values);
+                }
+            }
+            let left: Vec<usize> = (0..which.len()).filter(|i| found[*i].is_none()).collect();
+            if !left.is_empty() {
+                let wanted: Vec<u32> = left.iter().map(|i| which[*i]).collect();
+                let mut read = vec![0usize; wanted.len()];
+                let result = cache::waveform::peaks_of_streams(&path, &wanted, |i, more| {
+                    read[i] += more.len();
+                    if let Ok(mut all) = shared[left[i]].lock() {
+                        all.extend_from_slice(more);
+                    }
+                    let done = read.iter().map(|r| share_read(*r, length)).fold(1.0f32, f32::min);
+                    job.set_progress(done);
+                    reading::hold(hold_at, done, job);
+                    !job.is_cancelled()
+                });
+                ctx.request_repaint();
+                for (i, peaks) in left.iter().zip(result?) {
+                    if let Some(store) = &store {
+                        store.save(&fingerprint, which[*i], &peaks);
+                    }
+                    found[*i] = Some(peaks);
+                }
+            }
+            ctx.request_repaint();
+            Ok(found.into_iter().flatten().collect())
+        });
+        self.files.push((media.id, FileReading { handle, streams }));
     }
 
     /// All of this stream's peaks, once every one of them is read: for work
@@ -138,22 +217,19 @@ impl Waveforms {
 
     /// Reads this file's streams again next time (it was found somewhere else).
     pub fn forget(&mut self, media: MediaId) {
-        self.streams.retain(|(id, _), state| {
-            if *id == media
-                && let State::Reading(reading) = state
-            {
+        self.files.retain(|(id, reading)| {
+            if *id == media {
                 reading.handle.cancel();
             }
             *id != media
         });
+        self.streams.retain(|(id, _), _| *id != media);
     }
 
     /// Asks every reading still under way to stop (the app is closing).
     pub fn stop(&self) {
-        for state in self.streams.values() {
-            if let State::Reading(reading) = state {
-                reading.handle.cancel();
-            }
+        for (_, reading) in &self.files {
+            reading.handle.cancel();
         }
     }
 
@@ -165,23 +241,37 @@ impl Waveforms {
 
     /// Collects finished readings and looks at how far the others are.
     pub fn poll(&mut self, ctx: &egui::Context, now: Instant) {
+        let mut still = Vec::with_capacity(self.files.len());
+        for (media, reading) in std::mem::take(&mut self.files) {
+            let Some(result) = reading.handle.try_result() else {
+                still.push((media, reading));
+                continue;
+            };
+            if let Err(err) = &result {
+                tracing::info!("no waveform: {}", err.report());
+            }
+            for (i, stream) in reading.streams.iter().enumerate() {
+                let state = match &result {
+                    Ok(all) => all.get(i).cloned().map_or(State::Failed, State::Ready),
+                    Err(_) => State::Failed,
+                };
+                self.streams.insert((media, *stream), state);
+            }
+        }
+        self.files = still;
         let mut reading_any = false;
-        for state in self.streams.values_mut() {
+        for ((media, stream), state) in self.streams.iter_mut() {
             let State::Reading(reading) = state else {
                 continue;
             };
-            if let Some(result) = reading.handle.try_result() {
-                *state = match result {
-                    Ok(p) => State::Ready(p),
-                    Err(err) => {
-                        tracing::info!("no waveform: {}", err.report());
-                        State::Failed
-                    }
-                };
-                continue;
-            }
             reading_any = true;
-            reading.state = reading.pace.of_job(reading.handle.progress(), now);
+            if let Some((_, file)) = self
+                .files
+                .iter()
+                .find(|(id, f)| id == media && f.streams.contains(stream))
+            {
+                reading.state = reading.pace.of_job(file.handle.progress(), now);
+            }
             let due = reading
                 .copied_at
                 .is_none_or(|at| now.duration_since(at) >= COPY_EVERY);
@@ -277,7 +367,7 @@ mod tests {
     fn peaks_read_so_far_can_be_drawn_while_the_rest_is_read() {
         let (jobs, ctx) = (jobs(), egui::Context::default());
         // Held at the first run of peaks, as if the file were very long.
-        let mut waveforms = Waveforms::holding_at(Some(0.0));
+        let mut waveforms = Waveforms::new(None, Some(0.0));
         let voice = media(1, &fixture(), 60);
         waveforms.get(&jobs, &ctx, &voice, 0);
         wait(&mut waveforms, &ctx, |w| {
@@ -298,6 +388,39 @@ mod tests {
         // Forgetting the file stops the held worker.
         waveforms.forget(MediaId(1));
         assert!(waveforms.streams.is_empty());
+    }
+
+    #[test]
+    fn every_stream_of_a_file_comes_from_one_reading_and_then_from_disk() {
+        let (jobs, ctx) = (jobs(), egui::Context::default());
+        let dir = tempfile::tempdir().unwrap();
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../media/tests/fixtures/game-3-audio.mkv");
+        let mut game = media(3, &path, 2);
+        game.info = media::probe(&path).unwrap().info;
+        let mut waveforms = Waveforms::new(Some(dir.path().join("waveforms")), None);
+        waveforms.get(&jobs, &ctx, &game, 1);
+        assert_eq!(waveforms.files.len(), 1, "one reading");
+        assert_eq!(waveforms.streams.len(), 3, "of all three streams");
+        wait(&mut waveforms, &ctx, |w| w.files.is_empty());
+        let peaks: Vec<Peaks> = [1, 2, 3]
+            .into_iter()
+            .map(|s| waveforms.get(&jobs, &ctx, &game, s).peaks.unwrap())
+            .collect();
+        assert!(waveforms.files.is_empty(), "nothing read again");
+        // Another session: from disk, the same within 16-bit steps.
+        let mut again = Waveforms::new(Some(dir.path().join("waveforms")), None);
+        again.get(&jobs, &ctx, &game, 2);
+        wait(&mut again, &ctx, |w| w.files.is_empty());
+        for (s, before) in [1, 2, 3].into_iter().zip(&peaks) {
+            let kept = again.get(&jobs, &ctx, &game, s).peaks.unwrap();
+            assert_eq!(kept.values.len(), before.values.len());
+            assert!(
+                kept.values
+                    .iter()
+                    .zip(before.values.iter())
+                    .all(|(a, b)| (a - b).abs() < 1e-4)
+            );
+        }
     }
 
     #[test]

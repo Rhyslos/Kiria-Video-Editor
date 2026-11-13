@@ -222,26 +222,18 @@ impl TrackPaces {
 /// stream's own name is never read as a track's; a sound clip says which
 /// of its file's streams it plays.
 fn with_sound_place(
+    summary: &str,
     media: &project::MediaRef,
-    seq: &Sequence,
+    sound_tracks: &HashMap<project::LinkId, Vec<&str>>,
     track: &project::Track,
     c: &project::Clip,
 ) -> String {
-    let summary = import::summary(media);
     match track.kind {
-        project::TrackKind::Video => {
-            let on: Vec<&str> = seq
-                .audio_tracks
-                .iter()
-                .filter(|t| t.clips.iter().any(|s| s.link.is_some() && s.link == c.link))
-                .map(|t| t.name.as_str())
-                .collect();
-            match on.as_slice() {
-                [] => summary,
-                [one] => format!("{summary} · its sound on the track {one}"),
-                many => format!("{summary} · its sound on the tracks {}", many.join(", ")),
-            }
-        }
+        project::TrackKind::Video => match c.link.and_then(|l| sound_tracks.get(&l)).map(Vec::as_slice) {
+            None | Some([]) => summary.to_owned(),
+            Some([one]) => format!("{summary} · its sound on the track {one}"),
+            Some(many) => format!("{summary} · its sound on the tracks {}", many.join(", ")),
+        },
         project::TrackKind::Audio => match media.info.audio.iter().find(|a| a.index == c.stream) {
             Some(stream) if media.info.audio.len() > 1 => {
                 format!(
@@ -249,9 +241,24 @@ fn with_sound_place(
                     stream.name
                 )
             }
-            _ => summary,
+            _ => summary.to_owned(),
         },
     }
+}
+
+/// The names of the audio tracks each link's sound is on, in track order
+/// and once each: worked out once a frame instead of once a clip.
+fn sound_tracks(seq: &Sequence) -> HashMap<project::LinkId, Vec<&str>> {
+    let mut on: HashMap<project::LinkId, Vec<&str>> = HashMap::new();
+    for t in &seq.audio_tracks {
+        for link in t.clips.iter().filter_map(|c| c.link) {
+            let names = on.entry(link).or_default();
+            if names.last() != Some(&t.name.as_str()) {
+                names.push(t.name.as_str());
+            }
+        }
+    }
+    on
 }
 
 /// Builds the widget's data. Clips in `selected`, and clips linked to them,
@@ -274,6 +281,9 @@ pub fn drawn(
         .collect();
     let mut cache = Vec::new();
     let rate = seq.settings.frame_rate;
+    let sound_tracks = sound_tracks(seq);
+    // A file's summary is the same for each of its clips.
+    let mut summaries: HashMap<project::MediaId, String> = HashMap::new();
     let mut track = |t: &project::Track| {
         let what = match t.kind {
             project::TrackKind::Audio => LoadKind::Sound,
@@ -351,7 +361,10 @@ pub fn drawn(
                             seq.name,
                             import::settings_text(&seq.settings)
                         ),
-                        _ => media.map_or_else(String::new, |m| with_sound_place(m, seq, t, c)),
+                        _ => media.map_or_else(String::new, |m| {
+                            let summary = summaries.entry(m.id).or_insert_with(|| import::summary(m));
+                            with_sound_place(summary, m, &sound_tracks, t, c)
+                        }),
                     },
                     name,
                     selected: selected.contains(&c.id) || c.link.is_some_and(|l| links.contains(&l)),
