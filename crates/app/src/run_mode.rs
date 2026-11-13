@@ -95,6 +95,9 @@ pub struct Options {
     /// stacked`, `--audio-track 3`, `--audio-tracks 30`; for screenshots
     /// and the responsiveness test of the Audio page).
     pub audio: crate::audio_page::Start,
+    /// The window's size in points (`--window-size 1280x800`, for
+    /// screenshots of a smaller screen); 1440 × 900 when not given.
+    pub window_size: Option<[f32; 2]>,
     pub mode: RunMode,
 }
 
@@ -145,6 +148,17 @@ impl Options {
                         .find(|p| p.label().eq_ignore_ascii_case(&name))
                         .ok_or("--page needs library, edit, color, audio or export")?;
                     options.page = Some(page);
+                }
+                "--window-size" => {
+                    let size = args.next().unwrap_or_default();
+                    let (w, h) = size
+                        .split_once('x')
+                        .ok_or("--window-size needs WIDTHxHEIGHT, such as 1280x800")?;
+                    let (w, h): (f32, f32) = (
+                        w.parse().map_err(|_| "--window-size needs a whole width")?,
+                        h.parse().map_err(|_| "--window-size needs a whole height")?,
+                    );
+                    options.window_size = Some([w.max(960.0), h.max(600.0)]);
                 }
                 "--audio-tool" => {
                     let name = args.next().unwrap_or_default();

@@ -117,6 +117,9 @@ pub struct Editor {
     /// What the command line asked of the Audio page and is still to do
     /// (its track, the demo tracks once imports are in).
     audio_start: crate::audio_page::Start,
+    /// The frame the `--audio-tracks` demo was made on: the responsiveness
+    /// test starts counting a few frames after it, not during its set-up.
+    audio_demo_made: Option<u64>,
     /// The master's meter as last read while playing, shown after.
     audio_held_master: Option<audio::dsp::loudness::Measured>,
     /// Volume and pan lines are drawn with their points and worked by the
@@ -433,6 +436,7 @@ impl Editor {
             audio_page,
             audio_start,
             audio_held_master: None,
+            audio_demo_made: None,
             lines_on: false,
             lines: ui_kit::LinesShown::default(),
             play_when_ready,
@@ -3195,7 +3199,14 @@ impl Editor {
             }
             RunMode::ResponsivenessTest => {
                 ctx.request_repaint();
+                // A project being made for the test (`--audio-tracks`) is
+                // set-up, not use: counting starts a few frames after it.
+                let setting_up = self.audio_start.tracks.is_some()
+                    || self.audio_demo_made.is_some_and(|made| self.frames < made + 5);
                 let probe = &mut self.probe;
+                if probe.job.is_none() && setting_up {
+                    return;
+                }
                 if probe.job.is_none() {
                     probe.started = Some(now);
                     // On the export pool, which nothing else uses here, so the

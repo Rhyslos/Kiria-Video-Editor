@@ -1497,7 +1497,13 @@ impl TimelineView {
                 let text_painter =
                     header_painter.with_clip_rect(header_painter.clip_rect().intersect(text_room));
                 if let Some(loading) = &track.loading
-                    && let Some(line) = loading::draw_in_header(&text_painter, theme, header, loading)
+                    && let Some(line) = loading::draw_in_header(
+                        &text_painter,
+                        theme,
+                        header,
+                        text_room.right() - header.left() - 12.0,
+                        loading,
+                    )
                 {
                     ui.interact(
                         line.expand(3.0).intersect(header),
@@ -3480,13 +3486,21 @@ pub enum ToolbarClick {
     RoughCut,
 }
 
+/// How wide [`toolbar`] is (at most): nine buttons, a gap, and the
+/// spacing between them.
+pub const TOOLBAR_WIDTH: f32 = 9.0 * TOOL_BUTTON + 10.0 + 9.0 * TOOLBAR_SPACING;
+const TOOL_BUTTON: f32 = 30.0;
+/// The toolbar's own spacing between buttons (it sets it, so the width holds).
+const TOOLBAR_SPACING: f32 = 4.0;
+
 /// The row of tools above the timeline: Select, Blade, Ripple, Roll, Slip,
 /// Slide, then Snapping, Fit and the rough cut view. `tips` gives each
 /// button's tooltip (with its shortcut), in that order.
 pub fn toolbar(ui: &mut Ui, theme: &Theme, view: &TimelineView, tips: [&str; 9]) -> Option<ToolbarClick> {
     let mut clicked = None;
     ui.horizontal(|ui| {
-        let size = vec2(30.0, 26.0);
+        ui.spacing_mut().item_spacing.x = TOOLBAR_SPACING;
+        let size = vec2(TOOL_BUTTON, 26.0);
         let items = [
             (ToolbarClick::Tool(Tool::Select), view.tool == Tool::Select, 0),
             (ToolbarClick::Tool(Tool::Blade), view.tool == Tool::Blade, 1),

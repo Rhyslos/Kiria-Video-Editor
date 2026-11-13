@@ -12,6 +12,7 @@
 //! would be, which playback follows, so it is heard as it moves) and
 //! becomes one undo step when the hand is off it, as the inspector does.
 
+pub mod bar;
 mod cleanup;
 pub mod counting;
 mod ducking;

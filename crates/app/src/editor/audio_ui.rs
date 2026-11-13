@@ -381,42 +381,6 @@ impl Editor {
                 }
             });
         ui.add_space(10.0);
-        // The timeline's tools, the same as on the Edit page.
-        let tip = |a: Action| self.shortcuts.tip(a);
-        let tips = [
-            tip(Action::SelectTool),
-            tip(Action::BladeTool),
-            tip(Action::RippleTool),
-            tip(Action::RollTool),
-            tip(Action::SlipTool),
-            tip(Action::SlideTool),
-            tip(Action::ToggleSnapping),
-            tip(Action::ZoomToFit),
-            tip(Action::RoughCut),
-        ];
-        let click = ui_kit::timeline::toolbar(
-            ui,
-            &self.theme,
-            &self.audio_page.timeline,
-            [
-                &tips[0], &tips[1], &tips[2], &tips[3], &tips[4], &tips[5], &tips[6], &tips[7], &tips[8],
-            ],
-        );
-        if let Some(click) = click {
-            use ui_kit::timeline::ToolbarClick as C;
-            self.run_action(match click {
-                C::Tool(ui_kit::Tool::Select) => Action::SelectTool,
-                C::Tool(ui_kit::Tool::Blade) => Action::BladeTool,
-                C::Tool(ui_kit::Tool::Ripple) => Action::RippleTool,
-                C::Tool(ui_kit::Tool::Roll) => Action::RollTool,
-                C::Tool(ui_kit::Tool::Slip) => Action::SlipTool,
-                C::Tool(ui_kit::Tool::Slide) => Action::SlideTool,
-                C::Snapping => Action::ToggleSnapping,
-                C::Fit => Action::ZoomToFit,
-                C::RoughCut => Action::RoughCut,
-            });
-        }
-        ui.add_space(10.0);
         // The lines tool, the same on every page (its key in the shortcut table).
         let lines_tip = self.shortcuts.tip(Action::VolumeLines);
         if ui
@@ -448,39 +412,106 @@ impl Editor {
             })
             .response
             .on_hover_text("A track's line runs across the whole track; a clip's own line stays with the clip when it moves.");
-        // Right: where the playhead and the needle are, and the mix, when
-        // there is room for them (the viewer shows the times too).
-        let wanted = if self.settings.edit_at_playhead {
-            230.0
-        } else {
-            370.0
+
+        // What is left: the timeline's tools, then the right-hand items, by
+        // their real widths (see `audio_page::bar`).
+        const GAP: f32 = 10.0;
+        let spacing = ui.spacing().item_spacing.x;
+        let padding = ui.spacing().button_padding.x;
+        let text_w = |ui: &egui::Ui, text: egui::RichText| {
+            egui::WidgetText::from(text)
+                .into_galley(
+                    ui,
+                    Some(egui::TextWrapMode::Extend),
+                    f32::INFINITY,
+                    egui::TextStyle::Body,
+                )
+                .size()
+                .x
         };
-        if ui.available_width() < wanted {
-            return changed;
-        }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let integrated = live.master.map_or(f32::NEG_INFINITY, |m| m.integrated);
-            ui.label(
-                egui::RichText::new(format!("{} LUFS", ui_kit::master::db_text(integrated)))
-                    .monospace()
-                    .color(crate::audio_page::overview_colour(
-                        &self.theme,
-                        integrated,
-                        self.settings.loudness_target,
-                    )),
-            );
-            ui.label(egui::RichText::new("Master").color(self.theme.muted));
-            ui.add_space(10.0);
-            let rate = seq.settings.frame_rate;
-            if !self.settings.edit_at_playhead {
-                ui.label(
-                    egui::RichText::new(format!("Edit {}", seq.edit_needle.timecode(rate)))
-                        .monospace()
-                        .color(ui_kit::status::EDIT_NEEDLE),
-                );
-            }
-            ui.label(egui::RichText::new(self.viewer.playhead.timecode(rate)).monospace());
+        let rate = seq.settings.frame_rate;
+        let integrated = live.master.map_or(f32::NEG_INFINITY, |m| m.integrated);
+        let master = egui::RichText::new(format!("{} LUFS", ui_kit::master::db_text(integrated)))
+            .monospace()
+            .color(crate::audio_page::overview_colour(
+                &self.theme,
+                integrated,
+                self.settings.loudness_target,
+            ));
+        let master_name = egui::RichText::new("Master").color(self.theme.muted);
+        let playhead = egui::RichText::new(self.viewer.playhead.timecode(rate)).monospace();
+        let needle = (!self.settings.edit_at_playhead).then(|| {
+            egui::RichText::new(format!("Edit {}", seq.edit_needle.timecode(rate)))
+                .monospace()
+                .color(ui_kit::status::EDIT_NEEDLE)
         });
+        // Most important first: the mix, the playhead, the needle.
+        let mut right = vec![
+            text_w(ui, master.clone()) + text_w(ui, master_name.clone()) + 2.0 * spacing + GAP,
+            text_w(ui, playhead.clone()) + spacing,
+        ];
+        if let Some(needle) = &needle {
+            right.push(text_w(ui, needle.clone()) + spacing);
+        }
+        let row = ui_kit::timeline::TOOLBAR_WIDTH + spacing;
+        let tool = self.audio_page.timeline.tool;
+        let folded_text = format!("{} ▾", tool_name(tool));
+        let folded = text_w(ui, egui::RichText::new(folded_text.as_str())) + 2.0 * padding + spacing;
+        let plan = audio_page::bar::plan(ui.available_width() - GAP, row, folded, &right, GAP);
+        ui.add_space(GAP);
+        let click = if plan.tools_in_a_row {
+            // The timeline's tools, the same as on the Edit page.
+            let tip = |a: Action| self.shortcuts.tip(a);
+            let tips = [
+                tip(Action::SelectTool),
+                tip(Action::BladeTool),
+                tip(Action::RippleTool),
+                tip(Action::RollTool),
+                tip(Action::SlipTool),
+                tip(Action::SlideTool),
+                tip(Action::ToggleSnapping),
+                tip(Action::ZoomToFit),
+                tip(Action::RoughCut),
+            ];
+            ui_kit::timeline::toolbar(
+                ui,
+                &self.theme,
+                &self.audio_page.timeline,
+                [
+                    &tips[0], &tips[1], &tips[2], &tips[3], &tips[4], &tips[5], &tips[6], &tips[7], &tips[8],
+                ],
+            )
+        } else {
+            folded_tools(ui, &folded_text, &self.audio_page.timeline)
+        };
+        if let Some(click) = click {
+            use ui_kit::timeline::ToolbarClick as C;
+            self.run_action(match click {
+                C::Tool(ui_kit::Tool::Select) => Action::SelectTool,
+                C::Tool(ui_kit::Tool::Blade) => Action::BladeTool,
+                C::Tool(ui_kit::Tool::Ripple) => Action::RippleTool,
+                C::Tool(ui_kit::Tool::Roll) => Action::RollTool,
+                C::Tool(ui_kit::Tool::Slip) => Action::SlipTool,
+                C::Tool(ui_kit::Tool::Slide) => Action::SlideTool,
+                C::Snapping => Action::ToggleSnapping,
+                C::Fit => Action::ZoomToFit,
+                C::RoughCut => Action::RoughCut,
+            });
+        }
+        // Right: as many as fit whole (the viewer shows the times too).
+        if plan.right > 0 {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(master);
+                ui.label(master_name);
+                if plan.right > 1 {
+                    ui.add_space(GAP);
+                    if let (Some(needle), true) = (needle, plan.right > 2) {
+                        ui.label(needle);
+                    }
+                    ui.label(playhead);
+                }
+            });
+        }
         changed
     }
 
@@ -632,6 +663,55 @@ impl Editor {
     }
 }
 
+/// A timeline tool's name, for the folded tools.
+fn tool_name(tool: ui_kit::Tool) -> &'static str {
+    match tool {
+        ui_kit::Tool::Select => "Select",
+        ui_kit::Tool::Blade => "Blade",
+        ui_kit::Tool::Ripple => "Ripple",
+        ui_kit::Tool::Roll => "Roll",
+        ui_kit::Tool::Slip => "Slip",
+        ui_kit::Tool::Slide => "Slide",
+    }
+}
+
+/// The timeline's tools folded into one dropdown, for a narrow bar.
+fn folded_tools(
+    ui: &mut egui::Ui,
+    text: &str,
+    view: &ui_kit::TimelineView,
+) -> Option<ui_kit::timeline::ToolbarClick> {
+    use ui_kit::timeline::ToolbarClick as C;
+    let mut clicked = None;
+    ui.menu_button(text, |ui| {
+        for tool in [
+            ui_kit::Tool::Select,
+            ui_kit::Tool::Blade,
+            ui_kit::Tool::Ripple,
+            ui_kit::Tool::Roll,
+            ui_kit::Tool::Slip,
+            ui_kit::Tool::Slide,
+        ] {
+            if ui.selectable_label(view.tool == tool, tool_name(tool)).clicked() {
+                clicked = Some(C::Tool(tool));
+                ui.close();
+            }
+        }
+        ui.separator();
+        if ui.selectable_label(view.snapping, "Snapping").clicked() {
+            clicked = Some(C::Snapping);
+            ui.close();
+        }
+        if ui.button("Show the whole timeline").clicked() {
+            clicked = Some(C::Fit);
+            ui.close();
+        }
+    })
+    .response
+    .on_hover_text("The timeline's tools (the bar is too narrow for them in a row)");
+    clicked
+}
+
 /// A Show choice with how many tracks it shows: "All tracks (30)".
 fn shown_count(seq: &project::Sequence, show: roles::Show) -> String {
     let n = seq
@@ -726,6 +806,7 @@ impl Editor {
                 return; // Its imports are not in yet.
             }
             self.audio_start.tracks = None;
+            self.audio_demo_made = Some(self.frames);
             if let Some(project) = audio_page::start::many_tracks(p, n) {
                 if let Err(err) = self.with_document(|d| {
                     d.apply(Command::Restore {

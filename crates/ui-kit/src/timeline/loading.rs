@@ -7,7 +7,7 @@
 
 use crate::Theme;
 use crate::time_text::time_left;
-use egui::{Align2, Color32, FontId, Painter, Rect, pos2, vec2};
+use egui::{Color32, FontId, Painter, Rect, pos2, vec2};
 
 /// What is being read for a clip.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,9 +94,16 @@ impl Loading {
 
     /// The short line by a track's name.
     pub fn header_text(&self) -> Option<String> {
+        self.header_texts().map(|[long, _]| long)
+    }
+
+    /// The line by a track's name, and a shorter one for a narrow header
+    /// ("Reading 43 %" or "43 %", "Waiting to read" or "Waiting…"): the
+    /// header shows the first that fits whole, never a word cut off.
+    pub fn header_texts(&self) -> Option<[String; 2]> {
         match self.state {
-            LoadState::Reading { done, .. } => Some(format!("Reading {}", percent(done))),
-            LoadState::Waiting => Some("Waiting to read".to_owned()),
+            LoadState::Reading { done, .. } => Some([format!("Reading {}", percent(done)), percent(done)]),
+            LoadState::Waiting => Some(["Waiting to read".to_owned(), "Waiting…".to_owned()]),
             LoadState::Failed => None,
         }
     }
@@ -168,18 +175,27 @@ pub(super) fn draw_on_clip(p: &Painter, theme: &Theme, clip: Rect, loading: &Loa
 /// Draws the short line of a track's loading in its header, in the band
 /// beside the track's buttons, and returns the rectangle it took (for a
 /// tooltip). Nothing when the header is too short for it.
-pub(super) fn draw_in_header(p: &Painter, theme: &Theme, header: Rect, loading: &Loading) -> Option<Rect> {
-    let text = loading.header_text()?;
+/// Draws the line by a track's name in `header`, within `room` points
+/// from its left: the longest wording that fits whole, or nothing.
+pub(super) fn draw_in_header(
+    p: &Painter,
+    theme: &Theme,
+    header: Rect,
+    room: f32,
+    loading: &Loading,
+) -> Option<Rect> {
     if header.height() < 44.0 {
         return None;
     }
-    Some(p.text(
-        pos2(header.left() + 12.0, header.top() + 11.0),
-        Align2::LEFT_CENTER,
-        text,
-        FontId::proportional(9.5),
-        theme.muted,
-    ))
+    let galley = loading
+        .header_texts()?
+        .into_iter()
+        .map(|text| p.layout_no_wrap(text, FontId::proportional(9.5), theme.muted))
+        .find(|g| g.size().x <= room)?;
+    let at = pos2(header.left() + 12.0, header.top() + 11.0 - galley.size().y / 2.0);
+    let rect = Rect::from_min_size(at, galley.size());
+    p.galley(at, galley, theme.muted);
+    Some(rect)
 }
 
 #[cfg(test)]
@@ -191,6 +207,32 @@ mod tests {
             what: LoadKind::Sound,
             state: LoadState::Reading { done, seconds_left },
         }
+    }
+
+    #[test]
+    fn a_header_has_a_shorter_line_for_narrow_room() {
+        let [long, short] = reading(0.43, None).header_texts().unwrap();
+        assert_eq!((long.as_str(), short.as_str()), ("Reading 43 %", "43 %"));
+        let waiting = Loading {
+            what: LoadKind::Sound,
+            state: LoadState::Waiting,
+        };
+        assert_eq!(waiting.header_texts().unwrap()[1], "Waiting…");
+        let ctx = egui::Context::default();
+        let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let p = ui.painter();
+            let header = Rect::from_min_size(pos2(0.0, 0.0), vec2(140.0, 58.0));
+            let wide = draw_in_header(p, &Theme::ASH, header, 400.0, &waiting).unwrap();
+            // Just too narrow for the whole line: the short one, whole.
+            let room = wide.width() - 1.0;
+            let narrow = draw_in_header(p, &Theme::ASH, header, room, &waiting).unwrap();
+            assert!(
+                narrow.width() < wide.width() && narrow.width() <= room,
+                "never cut mid-word"
+            );
+            assert!(draw_in_header(p, &Theme::ASH, header, 4.0, &waiting).is_none());
+        });
+        output.drop_without_applying_deltas();
     }
 
     #[test]
