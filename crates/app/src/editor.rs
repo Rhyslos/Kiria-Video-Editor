@@ -763,30 +763,6 @@ impl Editor {
         }
     }
 
-    /// The few shortcuts worth knowing first, as they are now: "M adds a
-    /// label, Ctrl+Z undoes, …". Commands without a shortcut are left out.
-    fn key_hints(&self) -> String {
-        let hints: Vec<String> = [
-            (Action::AddLabel, "adds a label"),
-            (Action::Undo, "undoes"),
-            (Action::Redo, "redoes"),
-            (Action::Save, "saves"),
-        ]
-        .iter()
-        .filter_map(|(action, does)| {
-            Some(format!(
-                "{} {does}",
-                self.shortcuts.written(self.shortcuts.shortcut_for(*action)?)
-            ))
-        })
-        .collect();
-        if hints.is_empty() {
-            String::new()
-        } else {
-            format!("{}.", hints.join(", "))
-        }
-    }
-
     /// The timeline the page shown has: the Audio page's own, or the Edit page's.
     fn shown_view(&mut self) -> &mut ui_kit::TimelineView {
         match self.page {
@@ -2402,13 +2378,7 @@ impl Editor {
             }
             return;
         }
-        let (title, coming) = match self.page {
-            Page::Library => ("Library", "Media, labels and custom lists arrive in Phase 5."),
-            Page::Edit => ("Edit", "The viewer and timeline arrive in Phase 4."),
-            Page::Color => ("Color", "Grading arrives in Phase 7."),
-            Page::Audio => ("Audio", "Mixing arrives in Phase 8."),
-            Page::Export => ("Export", "Exporting arrives in Phase 6."),
-        };
+        let (title, line) = placeholder(self.page, self.document.is_some());
         ui.add_space(24.0);
         ui.vertical_centered(|ui| {
             ui.label(
@@ -2416,20 +2386,9 @@ impl Editor {
                     .family(ui_kit::fonts::semibold())
                     .size(22.0),
             );
-            ui.label(egui::RichText::new(coming).color(self.theme.muted));
+            ui.label(egui::RichText::new(line).color(self.theme.muted));
         });
         ui.add_space(24.0);
-        if let Some(document) = &self.document {
-            let p = document.project();
-            if let Some(seq) = p.active() {
-                ui.label(format!(
-                    "{} timeline labels · edit needle at {}",
-                    seq.labels.len(),
-                    seq.edit_needle.timecode(seq.settings.frame_rate)
-                ));
-            }
-            ui.label(egui::RichText::new(self.key_hints()).color(self.theme.muted));
-        }
         if !self.status.is_empty() {
             ui.add_space(8.0);
             ui.label(egui::RichText::new(&self.status).color(self.theme.text_secondary));
@@ -3561,6 +3520,23 @@ fn click_moves_row(ui: &mut egui::Ui, moves: &mut ui_kit::ClickMoves, edit_at_pl
     });
 }
 
+/// What a page shows when it has nothing to show: its name and one line.
+/// Without a project every page waits for one; with one, only the Color
+/// page, whose tools are still to come.
+fn placeholder(page: Page, has_project: bool) -> (&'static str, &'static str) {
+    if !has_project {
+        return (
+            page.label(),
+            "Open a project, or start a new one, in the launcher; then import your recordings here.",
+        );
+    }
+    match page {
+        Page::Color => ("Color", "Colour tools arrive in a later update."),
+        // The other pages always draw themselves when a project is open.
+        _ => (page.label(), ""),
+    }
+}
+
 /// What the status line says when the choice of what a click moves changes.
 fn click_moves_says(moves: ui_kit::ClickMoves, edit_at_playhead: bool) -> &'static str {
     match (moves, edit_at_playhead) {
@@ -3670,6 +3646,19 @@ fn save_png(image: &egui::ColorImage, path: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_pages_say_what_to_do_and_never_name_plan_phases() {
+        for page in Page::ALL {
+            for has_project in [false, true] {
+                let (title, line) = placeholder(page, has_project);
+                assert!(!title.is_empty());
+                assert!(!line.contains("Phase"), "{page:?}: {line}");
+            }
+            assert!(placeholder(page, false).1.contains("Open a project"));
+        }
+        assert!(placeholder(Page::Color, true).1.contains("later update"));
+    }
 
     #[test]
     fn the_status_line_says_what_a_click_moves_now() {
