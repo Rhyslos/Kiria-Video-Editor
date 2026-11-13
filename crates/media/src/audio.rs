@@ -47,6 +47,10 @@ use std::ptr;
 /// Samples come out as interleaved stereo.
 pub const CHANNELS: usize = 2;
 
+/// Asked for as the rate: the stream's own, so nothing is resampled
+/// ([`AudioDecoder::rate`] says which it is).
+pub const OWN_RATE: u32 = 0;
+
 /// How far before the target a seek asks the file to go (seconds). Sound
 /// and picture for the same moment sit close together in a file but not in
 /// a fixed order; this covers the difference, and gives a decoder that
@@ -57,6 +61,27 @@ const SEEK_MARGIN: f64 = 0.5;
 /// it before the timestamp is believed instead (seconds). More than any
 /// container's rounding, less than a picture frame at 60 per second.
 const RESYNC: f64 = 0.010;
+
+/// Makes the demuxer skip every stream of `raw` but those in `wanted`: the
+/// file's other streams (the picture above all, many times the sound's
+/// size) are passed over instead of being read into packets that are then
+/// dropped. Searching by the picture's index still works.
+///
+/// # Safety
+/// `raw` is an opened format context.
+unsafe fn read_only(raw: *mut ff::AVFormatContext, wanted: &[u32]) {
+    // SAFETY: the caller's contract; `streams` has `nb_streams` entries.
+    unsafe {
+        for i in 0..(*raw).nb_streams {
+            let discard = if wanted.contains(&i) {
+                ff::AVDiscard::AVDISCARD_DEFAULT
+            } else {
+                ff::AVDiscard::AVDISCARD_ALL
+            };
+            (**(*raw).streams.add(i as usize)).discard = discard;
+        }
+    }
+}
 
 pub struct AudioDecoder {
     input: Input,
@@ -137,16 +162,23 @@ impl AudioDecoder {
     /// Opens sound stream `stream` of the file, to be read at `rate`
     /// samples per second from time 0 (the picture's start).
     pub fn open(path: &Path, stream: u32, rate: u32) -> diag::Result<AudioDecoder> {
+        let mut this = AudioDecoder::open_unread(path, stream, rate)?;
+        this.learn_grid();
+        Ok(this)
+    }
+
+    /// Opened, with nothing decoded yet: to be handed packets by someone
+    /// else ([`AudioStreams`]), who reads the file from its start.
+    fn open_unread(path: &Path, stream: u32, rate: u32) -> diag::Result<AudioDecoder> {
         let input = Input::open(path).map_err(|e| {
             AppError::new("The sound can't be played")
                 .why(format!("{}: {}.", path.display(), e.text))
                 .fix("Check that the file still exists and that the drive is connected.")
         })?;
         let raw = input.raw();
-        let rate = rate.max(8_000);
         // SAFETY: `raw` is an opened context owned by `input`; pointers from
         // FFmpeg are checked before use; contexts are freed in Drop.
-        let mut this = unsafe {
+        let this = unsafe {
             if stream >= (*raw).nb_streams {
                 return Err(AppError::new("The sound can't be played")
                     .why(format!("{} has no stream {stream}.", path.display()))
@@ -154,6 +186,11 @@ impl AudioDecoder {
             }
             let st = *(*raw).streams.add(stream as usize);
             let par = (*st).codecpar;
+            let rate = match rate {
+                OWN_RATE => u32::try_from((*par).sample_rate).unwrap_or(0),
+                rate => rate,
+            }
+            .max(8_000);
             let decoder = ff::avcodec_find_decoder((*par).codec_id);
             if decoder.is_null() {
                 return Err(AppError::new("The sound can't be played")
@@ -217,13 +254,13 @@ impl AudioDecoder {
             // Opus or AAC encoder's priming), so the first sound heard is
             // timed where it belongs.
             (*codec).pkt_timebase = (*st).time_base;
+            read_only(raw, &[stream]);
             let r = ff::avcodec_open2(codec, decoder, ptr::null_mut());
             if r < 0 {
                 return Err(failed(path, "Opening the decoder", r));
             }
             this
         };
-        this.learn_grid();
         Ok(this)
     }
 
@@ -239,6 +276,11 @@ impl AudioDecoder {
         if matches!(self.grid, Grid::Learning(_)) {
             self.grid = Grid::Unknown;
         }
+    }
+
+    /// The rate samples come out at.
+    pub fn rate(&self) -> u32 {
+        self.rate
     }
 
     /// Time (seconds from time 0) of the next sample `read` returns.
@@ -300,6 +342,8 @@ impl AudioDecoder {
     fn rewind(&mut self) -> bool {
         match Input::open(&self.path) {
             Ok(input) => {
+                // SAFETY: the context was just opened and is owned by `input`.
+                unsafe { read_only(input.raw(), &[self.stream as u32]) };
                 self.input = input;
                 true
             }
@@ -404,6 +448,47 @@ impl AudioDecoder {
                 }
             }
         }
+    }
+
+    /// Decodes `packet` (a packet of this decoder's stream; null: the file
+    /// has ended) and converts what comes out into `pending`.
+    ///
+    /// # Safety
+    /// `packet` is null or a packet of this decoder's stream.
+    unsafe fn feed(&mut self, packet: *const ff::AVPacket) -> diag::Result<()> {
+        // SAFETY: send/receive contract followed; each frame is
+        // unreferenced after converting.
+        unsafe {
+            loop {
+                let sent = ff::avcodec_send_packet(self.codec, packet);
+                loop {
+                    let r = ff::avcodec_receive_frame(self.codec, self.frame);
+                    if r != 0 {
+                        if r == ff::AVERROR_EOF {
+                            self.ended = true;
+                        }
+                        break;
+                    }
+                    let result = self.convert();
+                    ff::av_frame_unref(self.frame);
+                    result?;
+                }
+                // Full: what was decoded is out now, so it takes the packet.
+                if sent != ff::AVERROR(ff::EAGAIN) {
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    /// Moves the samples decoded so far (silence first, where the sound
+    /// starts later) onto the end of `out`.
+    fn take(&mut self, out: &mut Vec<f32>) {
+        out.extend(std::iter::repeat_n(0.0, self.silence * CHANNELS));
+        let frames = self.silence + self.pending.len() / CHANNELS;
+        out.extend(self.pending.drain(..));
+        self.silence = 0;
+        self.next += frames as i64;
     }
 
     unsafe fn convert(&mut self) -> diag::Result<()> {
@@ -557,6 +642,110 @@ unsafe fn picture_stream(raw: *mut ff::AVFormatContext) -> Option<u32> {
             (*(*st).codecpar).codec_type == ff::AVMediaType::AVMEDIA_TYPE_VIDEO
                 && (*st).disposition & ff::AV_DISPOSITION_ATTACHED_PIC == 0
         })
+    }
+}
+
+/// Several sound streams of one file read start to end together, the file
+/// read once: for work that needs all of a long recording's streams (its
+/// waveforms), which would otherwise read the whole file, picture and all,
+/// once per stream. Each stream comes out as [`AudioDecoder::read`] gives
+/// it from time 0: stereo, timed from the picture's start.
+pub struct AudioStreams {
+    input: Input,
+    packet: *mut ff::AVPacket,
+    /// One per stream asked for, in that order; each is handed its packets.
+    decoders: Vec<AudioDecoder>,
+    ended: bool,
+}
+
+// One thread at a time uses it; FFmpeg contexts may move between threads.
+unsafe impl Send for AudioStreams {}
+
+impl std::fmt::Debug for AudioStreams {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "AudioStreams({} streams)", self.decoders.len())
+    }
+}
+
+impl AudioStreams {
+    /// Opens `streams` of the file, each read at `rate` (or [`OWN_RATE`]).
+    pub fn open(path: &Path, streams: &[u32], rate: u32) -> diag::Result<AudioStreams> {
+        let mut decoders = Vec::with_capacity(streams.len());
+        for stream in streams {
+            let mut decoder = AudioDecoder::open_unread(path, *stream, rate)?;
+            decoder.untouched = false;
+            decoders.push(decoder);
+        }
+        let input = Input::open(path).map_err(|e| {
+            AppError::new("The sound can't be read")
+                .why(format!("{}: {}.", path.display(), e.text))
+                .fix("Check that the file still exists and that the drive is connected.")
+        })?;
+        // SAFETY: just opened; owned by `input`. The packet is freed in Drop.
+        let packet = unsafe {
+            read_only(input.raw(), streams);
+            ff::av_packet_alloc()
+        };
+        if packet.is_null() {
+            return Err(failed(path, "Setting up the reading", ff::AVERROR(ff::ENOMEM)));
+        }
+        Ok(AudioStreams {
+            input,
+            packet,
+            decoders,
+            ended: streams.is_empty(),
+        })
+    }
+
+    /// The rate each stream comes out at, in the order asked for.
+    pub fn rates(&self) -> Vec<u32> {
+        self.decoders.iter().map(AudioDecoder::rate).collect()
+    }
+
+    /// Reads on until about `frames` sample frames of some stream are
+    /// decoded, then moves every stream's new samples (interleaved stereo)
+    /// onto the end of its buffer in `out` (one per stream). Returns false
+    /// once the whole file has been read and handed over.
+    pub fn read(&mut self, frames: usize, out: &mut [Vec<f32>]) -> bool {
+        if self.ended {
+            return false;
+        }
+        let wanted = frames * CHANNELS;
+        while !self.ended && self.decoders.iter().all(|d| d.pending.len() < wanted) {
+            // SAFETY: the context is owned by self; the packet is
+            // unreferenced after use; a packet goes to the decoder of its
+            // own stream only.
+            unsafe {
+                if ff::av_read_frame(self.input.raw(), self.packet) < 0 {
+                    for decoder in &mut self.decoders {
+                        if let Err(err) = decoder.feed(ptr::null()) {
+                            tracing::warn!("{}", err.report());
+                        }
+                    }
+                    self.ended = true;
+                    break;
+                }
+                let stream = (*self.packet).stream_index;
+                if let Some(decoder) = self.decoders.iter_mut().find(|d| d.stream == stream)
+                    && let Err(err) = decoder.feed(self.packet)
+                {
+                    // A broken packet: left out, as a straight read leaves it.
+                    tracing::debug!("{}", err.report());
+                }
+                ff::av_packet_unref(self.packet);
+            }
+        }
+        for (decoder, out) in self.decoders.iter_mut().zip(out.iter_mut()) {
+            decoder.take(out);
+        }
+        true
+    }
+}
+
+impl Drop for AudioStreams {
+    fn drop(&mut self) {
+        // SAFETY: allocated by FFmpeg, freed once.
+        unsafe { ff::av_packet_free(&mut self.packet) }
     }
 }
 

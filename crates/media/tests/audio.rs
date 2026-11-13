@@ -150,3 +150,41 @@ fn reading_counts_samples_not_timestamps() {
         assert_eq!(d.seeks(), 0);
     }
 }
+
+/// Every sample of `stream`, read straight from time 0.
+fn straight(name: &str, stream: u32, rate: u32) -> Vec<f32> {
+    let mut d = AudioDecoder::open(&fixture(name), stream, rate).unwrap();
+    let mut all = Vec::new();
+    let mut buf = vec![0f32; 4_096 * 2];
+    loop {
+        let n = d.read(&mut buf);
+        if n == 0 {
+            break;
+        }
+        all.extend_from_slice(&buf[..n * 2]);
+    }
+    all
+}
+
+#[test]
+fn several_streams_read_together_are_each_the_stream_read_straight() {
+    for (name, streams, rate) in [
+        ("five-streams.mkv", vec![1, 2, 3, 4, 5], media::audio::OWN_RATE),
+        ("game-3-audio.mkv", vec![3, 1], 44_100),
+        // Sound before and after the picture: timed from the picture.
+        ("sound-offset.mkv", vec![1, 2], media::audio::OWN_RATE),
+    ] {
+        let mut together = media::AudioStreams::open(&fixture(name), &streams, rate).unwrap();
+        let mut out = vec![Vec::new(); streams.len()];
+        let mut reads = 0;
+        while together.read(1_000, &mut out) {
+            reads += 1;
+        }
+        assert!(reads > 1, "{name}: handed over a little at a time");
+        for (stream, got) in streams.iter().zip(&out) {
+            let want = straight(name, *stream, rate);
+            assert_eq!(got.len(), want.len(), "{name} stream {stream}: as long");
+            assert!(got == &want, "{name} stream {stream}: the same samples");
+        }
+    }
+}
