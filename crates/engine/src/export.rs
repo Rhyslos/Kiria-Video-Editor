@@ -796,9 +796,9 @@ fn run(
         sample_rate,
         bit_rate: settings.quality.audio_bit_rate(settings.audio).unwrap_or(0),
     };
-    let mut writer = Writer::create(&parts.file.0, settings.container, video.as_ref(), Some(&audio))?;
+    let writer = Writer::create(&parts.file.0, settings.container, video.as_ref(), Some(&audio))?;
     // The sound beside it: the same samples, as 24-bit WAV.
-    let mut beside = match &parts.beside {
+    let beside = match &parts.beside {
         Some((part, _)) => Some(Writer::create(
             part,
             Container::Wav,
@@ -846,15 +846,12 @@ fn run(
         );
         preview.set_key_frame_first(false);
         let black = render::reader::black(frame_size);
-        let picture = Vec::with_capacity(reader.bytes());
         Picturing {
             preview,
             reader,
             device,
             queue,
             black,
-            picture,
-            boxed: Vec::new(),
         }
     });
     let start = rate.frame_start(first);
@@ -897,67 +894,116 @@ fn run(
     let mut loudness = crate::loudness::Loudness::new(sample_rate);
     let mut sound = Vec::new();
     let mut samples_written: u64 = 0;
-    let result: diag::Result<bool> = (|| {
-        for index in 0..count {
-            if !shared.carry_on() {
-                return Ok(false);
+    // Three steps overlap: while the encoder writes frame n (a thread of
+    // its own, a few frames' room ahead of it), frame n + 1 is read back
+    // from the graphics card here, and frame n + 2 is being decoded and
+    // put together by the preview worker.
+    let (to_writer, writes) = std::sync::mpsc::sync_channel::<Out>(FRAMES_AHEAD);
+    let (spare, spares) = channel::<Vec<u8>>();
+    let black = picturing.as_ref().map(|p| p.black.clone()).unwrap_or_default();
+    let (result, written) = std::thread::scope(|scope| {
+        let writing = scope.spawn(move || -> diag::Result<(Writer, Option<Writer>)> {
+            let (mut writer, mut beside) = (writer, beside);
+            for out in writes {
+                match out {
+                    Out::Picture(picture) => {
+                        writer.write_picture(&picture)?;
+                        // Back for another frame; gone if reading has ended.
+                        let _ = spare.send(picture);
+                    }
+                    Out::Black => writer.write_picture(&black)?,
+                    Out::Sound(samples) => {
+                        writer.write_sound(&samples)?;
+                        if let Some(beside) = &mut beside {
+                            beside.write_sound(&samples)?;
+                        }
+                    }
+                }
             }
-            if let Some(p) = &mut picturing {
+            Ok((writer, beside))
+        });
+        let result: diag::Result<bool> = (|| {
+            let ask = |p: &mut Picturing, index: u64| {
                 let at = rate.frame_start(first + index as i64);
                 p.preview
                     .show(project, sequence, at, picture_size.0, picture_size.1);
-                let shown = wait_for(&p.preview, at)?;
-                if let Some(err) = shown.error {
-                    return Err(err);
+            };
+            if let Some(p) = &mut picturing {
+                ask(p, 0);
+            }
+            for index in 0..count {
+                if !shared.carry_on() {
+                    return Ok(false);
                 }
-                if shown.refused {
-                    return Err(cannot(
-                        "A picture decoded on the graphics card could not be drawn from when the frame was put together.",
-                    )
-                    .fix("Turn off \"Decode video on the window's graphics device\" in Settings, under Graphics, and export again."));
-                }
-                match shown.composed {
-                    Some(frame) => {
-                        p.reader
-                            .read(&p.device, &p.queue, frame.view(), frame.working(), &mut p.picture)
-                            .map_err(|err| {
-                                cannot(format!(
-                                    "A finished frame could not be read back from the graphics card ({err:?})."
-                                ))
-                                .fix("Export again. If it keeps happening, update the graphics driver.")
-                            })?;
-                        if picture_size == frame_size {
-                            writer.write_picture(&p.picture)?;
-                        } else {
-                            letterbox(&p.picture, picture_size, frame_size, &mut p.boxed);
-                            writer.write_picture(&p.boxed)?;
-                        }
+                if let Some(p) = &mut picturing {
+                    let at = rate.frame_start(first + index as i64);
+                    let shown = wait_for(&p.preview, at)?;
+                    // The next frame is decoded meanwhile.
+                    if index + 1 < count {
+                        ask(p, index + 1);
                     }
-                    // Nothing on the timeline here.
-                    None => writer.write_picture(&p.black)?,
+                    if let Some(err) = shown.error {
+                        return Err(err);
+                    }
+                    if shown.refused {
+                        return Err(cannot(
+                            "A picture decoded on the graphics card could not be drawn from when the frame was put together.",
+                        )
+                        .fix("Turn off \"Decode video on the window's graphics device\" in Settings, under Graphics, and export again."));
+                    }
+                    let out = match shown.composed {
+                        Some(frame) => {
+                            let mut picture = spares.try_recv().unwrap_or_default();
+                            p.reader
+                                .read(&p.device, &p.queue, frame.view(), frame.working(), &mut picture)
+                                .map_err(|err| {
+                                    cannot(format!(
+                                        "A finished frame could not be read back from the graphics card ({err:?})."
+                                    ))
+                                    .fix("Export again. If it keeps happening, update the graphics driver.")
+                                })?;
+                            if picture_size != frame_size {
+                                let mut boxed = spares.try_recv().unwrap_or_default();
+                                letterbox(&picture, picture_size, frame_size, &mut boxed);
+                                picture = boxed;
+                            }
+                            Out::Picture(picture)
+                        }
+                        // Nothing on the timeline here.
+                        None => Out::Black,
+                    };
+                    if to_writer.send(out).is_err() {
+                        // The encoder stopped: its error is what is told.
+                        return Ok(true);
+                    }
+                }
+                // The sound up to the end of this frame, to the exact sample.
+                let until = samples_until(index + 1, sample_rate, rate);
+                master.take((until - samples_written) as usize, &mut sound);
+                loudness.feed(&sound);
+                if to_writer.send(Out::Sound(std::mem::take(&mut sound))).is_err() {
+                    return Ok(true);
+                }
+                samples_written = until;
+
+                shared.frames_done.store(index + 1, Ordering::Relaxed);
+                if index % 15 == 0 {
+                    notify();
                 }
             }
-            // The sound up to the end of this frame, to the exact sample.
-            let until = samples_until(index + 1, sample_rate, rate);
-            master.take((until - samples_written) as usize, &mut sound);
-            loudness.feed(&sound);
-            writer.write_sound(&sound)?;
-            if let Some(beside) = &mut beside {
-                beside.write_sound(&sound)?;
-            }
-            samples_written = until;
-
-            shared.frames_done.store(index + 1, Ordering::Relaxed);
-            if index % 15 == 0 {
-                notify();
-            }
-        }
-        Ok(true)
-    })();
+            Ok(true)
+        })();
+        drop(to_writer);
+        let written = writing
+            .join()
+            .unwrap_or_else(|_| Err(cannot("The encoder stopped unexpectedly.")));
+        (result, written)
+    });
     // The preview's decoders are closed before the file is completed or dropped.
     if let Some(p) = &mut picturing {
         p.preview.close(Duration::from_secs(5));
     }
+    let (writer, beside) = written?;
     if !result? {
         return Ok(None);
     }
@@ -1106,10 +1152,18 @@ struct Picturing {
     device: wgpu::Device,
     queue: wgpu::Queue,
     black: Vec<u8>,
-    picture: Vec<u8>,
-    /// The picture with bars, when the file's shape is not the timeline's.
-    boxed: Vec<u8>,
 }
+
+/// What the export hands its encoder's thread, in the file's order.
+enum Out {
+    Picture(Vec<u8>),
+    /// A frame with nothing on the timeline.
+    Black,
+    Sound(Vec<f32>),
+}
+
+/// How many frames (and their sound) may wait for the encoder.
+const FRAMES_AHEAD: usize = 6;
 
 /// The picture for the moment `at`, which was just asked for: the exact
 /// one, never a picture standing in for it.

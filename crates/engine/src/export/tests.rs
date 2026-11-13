@@ -620,7 +620,15 @@ fn export_never_reads_proxies() {
         pause: &|| {},
     };
     shelf
-        .build(&other, 0, 1.0, &recording.fingerprint, Decoding::Software, &steps)
+        .build(
+            &other,
+            0,
+            1.0,
+            &recording.fingerprint,
+            Decoding::Software,
+            1,
+            &steps,
+        )
         .unwrap();
     // The viewer's worker, handed the shelf, shows it.
     let mut preview = crate::Preview::start(

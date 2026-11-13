@@ -2030,6 +2030,7 @@ mod tests {
                 media.duration.as_secs_f64(),
                 &media.fingerprint,
                 Decoding::Software,
+                1,
                 &steps,
             )
             .unwrap();

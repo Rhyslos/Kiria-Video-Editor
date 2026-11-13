@@ -153,6 +153,10 @@ pub enum Reached<T> {
     Dropped,
 }
 
+/// A listed key frame time and the time the frame is shown may differ by
+/// rounding: this much (seconds) earlier still counts as reaching it.
+const KEY_SLACK: f64 = 0.001;
+
 /// Frames left out on the way to a moment stop this long (seconds) before
 /// the first frame that counts: room for frames stored out of order.
 const SKIP_MARGIN: f64 = 0.5;
@@ -306,6 +310,9 @@ struct Purpose {
     /// threads holds back a frame per thread, which a fetch of a single
     /// frame (a key frame, a proxy frame) would wait for.
     one_thread: bool,
+    /// At most this many threads (0: as many as the decoder finds useful),
+    /// for several decoders working side by side on one file.
+    threads: i32,
     /// A proxy: frame times count from the file's zero, not from its first
     /// frame (they are the original's times), and any key frame on the way
     /// is jumped to.
@@ -449,8 +456,25 @@ impl VideoDecoder {
         let purpose = Purpose {
             one_thread: true,
             proxy: false,
+            threads: 0,
         };
         VideoDecoder::open_as(path, stream, rotation, Way::from(decoding), purpose)
+    }
+
+    /// Opens stream `stream` for a pass through part of it
+    /// ([`VideoDecoder::each_frame_in`]) beside other decoders of the same
+    /// file, with at most `threads` threads of its own.
+    pub(crate) fn open_for_pass(
+        path: &Path,
+        stream: u32,
+        decoding: Decoding,
+        threads: i32,
+    ) -> diag::Result<VideoDecoder> {
+        let purpose = Purpose {
+            threads: threads.max(1),
+            ..Purpose::default()
+        };
+        VideoDecoder::open_as(path, stream, 0, Way::from(decoding), purpose)
     }
 
     /// Opens a proxy (see `cache::proxy`): its picture stream, on the CPU
@@ -461,6 +485,7 @@ impl VideoDecoder {
         let purpose = Purpose {
             one_thread: true,
             proxy: true,
+            threads: 0,
         };
         VideoDecoder::open_as(path, 0, rotation, Way::Software, purpose)
     }
@@ -590,7 +615,11 @@ impl VideoDecoder {
             if r < 0 {
                 return Err(explain(path, "Reading the video settings", r));
             }
-            (*codec).thread_count = if purpose.one_thread { 1 } else { 0 };
+            (*codec).thread_count = if purpose.one_thread {
+                1
+            } else {
+                purpose.threads.max(0)
+            };
             (*codec).thread_type = ff::FF_THREAD_FRAME | ff::FF_THREAD_SLICE;
             match (way, hardware) {
                 (Way::Device(device), Some((_, format))) => this.use_device(device, format)?,
@@ -796,6 +825,69 @@ impl VideoDecoder {
             }
         }
         Ok(())
+    }
+
+    /// Like [`VideoDecoder::each_frame`], for one stretch of the stream
+    /// between two listed key frames (seconds, as [`KeyFrames`] lists
+    /// them), so several decoders can each take a stretch:
+    ///
+    /// - From `from` (`None`: the start): it jumps to that key frame and
+    ///   hands over frames from the first key frame shown on, leaving out
+    ///   any frame shown before it (in a stream whose groups of pictures
+    ///   are open, those are made from the stretch before and can't be
+    ///   decoded from here; the stretch before hands them over).
+    /// - Until `until` (`None`: the end): it stops at the first key frame
+    ///   shown at or after that listed time, without handing it over. A
+    ///   list may give a key frame's decode time, which is never after the
+    ///   time it is shown, so that is the key frame the next stretch
+    ///   starts with: every frame is handed over by exactly one stretch.
+    pub(crate) fn each_frame_in(
+        &mut self,
+        from: Option<f64>,
+        until: Option<f64>,
+        each: &mut dyn FnMut(&PassedFrame) -> diag::Result<bool>,
+    ) -> diag::Result<()> {
+        self.seek(from.unwrap_or(0.0))?;
+        let mut before_first_key = from.is_some();
+        let mut handed = false;
+        while let Some(time) = self.decode_next()? {
+            // SAFETY: `ahead` holds the frame just decoded.
+            let (timestamp, key) = unsafe {
+                (
+                    (*self.ahead).best_effort_timestamp,
+                    (*self.ahead).flags & ff::AV_FRAME_FLAG_KEY != 0,
+                )
+            };
+            if before_first_key {
+                if !key {
+                    continue;
+                }
+                before_first_key = false;
+            }
+            if handed && key && until.is_some_and(|until| time >= until - KEY_SLACK) {
+                break;
+            }
+            // SAFETY: both frames are owned by self; `held` is cleared first.
+            unsafe {
+                ff::av_frame_unref(self.held);
+                ff::av_frame_move_ref(self.held, self.ahead);
+            }
+            self.held_time = Some(time);
+            if timestamp == ff::AV_NOPTS_VALUE {
+                continue;
+            }
+            let frame = self.in_memory()?;
+            handed = true;
+            if !each(&PassedFrame { frame, timestamp })? {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    /// The key frames the container lists, in seconds from the start.
+    pub(crate) fn listed_key_times(&self) -> Vec<f64> {
+        self.keys.times().to_vec()
     }
 
     /// The stream's time base, as FFmpeg gives it.

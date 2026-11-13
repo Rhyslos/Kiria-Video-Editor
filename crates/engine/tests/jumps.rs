@@ -125,6 +125,7 @@ fn jump_to_first_picture() {
             length,
             &fingerprint,
             Decoding::Best,
+            1,
             &steps,
         )
         .expect("a proxy");

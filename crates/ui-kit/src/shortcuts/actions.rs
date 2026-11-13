@@ -95,6 +95,7 @@ actions! {
     Templates, Anywhere, "Templates: drop in an intro or outro…";
     Prune, Anywhere, "Prune unused media: take the files no timeline uses out of the project…";
     BuildProxies, Anywhere, "Build proxies: a proxy for every video file of the project that has none, also those cleared from the cache";
+    BuildProxiesFullSpeed, Anywhere, "Build proxies at full speed: every video file that has none, with as much of this machine as it takes, also while playing";
     PackageProject, Anywhere, "Package project: copy it and the media it uses into one folder, to open on another machine…";
     SaveTemplate, Anywhere, "Save as a template: the region, or the whole timeline…";
     Copy, Anywhere, "Copy: the selected clips, or the chosen keyframe marks";
@@ -190,6 +191,7 @@ impl Action {
             Action::SplitView => &["source", "program", "two up"],
             Action::Undo => &["back", "revert"],
             Action::Search => &["find", "command palette"],
+            Action::BuildProxiesFullSpeed => &["fast", "faster", "quick", "proxy", "proxies", "now"],
             Action::UserGuide => &["help", "manual", "docs", "documentation", "how to", "tutorial"],
             _ => &[],
         }

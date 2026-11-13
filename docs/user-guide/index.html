@@ -799,7 +799,7 @@ footer { margin-top: 64px; padding-top: 18px; border-top: 1px solid var(--line);
 <p>A proxy is a light copy of a recording that is quick to jump around in. Kiria shows the proxy's frame while you scrub or jump, then the exact frame from the original when the playhead rests (the viewer's corner says “proxy frame” meanwhile). Export always uses the originals.</p>
 <ul>
 <li><strong>Settings › Playback &amp; proxies › Proxies:</strong> <strong>Auto</strong> (the usual) builds a proxy only for files that are slow to jump in; <strong>On</strong> builds one for every video; <strong>Off</strong> builds none.</li>
-<li>Proxies are built one at a time in the background, the newest file first, and wait while the timeline plays. The media drawer and the Library say “Needs proxy”, “Proxy 43 % · 2 min left” or “Proxy”.</li>
+<li>Proxies are built in the background, the newest file first, and wait while the timeline plays. On a processor with many cores a few are built at once, and a long recording is built in several pieces side by side. To build every missing proxy as fast as the machine can, also while you play, search for <strong>Build proxies at full speed</strong> (the editor may feel slower until they are done). The media drawer and the Library say “Needs proxy”, “Proxy 43 % · 2 min left” or “Proxy”.</li>
 <li>Right-click a file › <strong>Build proxy now</strong> or <strong>Delete proxy</strong>. Search for “build proxies” to build every missing one.</li>
 <li>Proxies belong to recordings, not projects: one proxy serves every project that uses the file. They are kept in the app's cache folder within the disk space set in Settings › Cache, the ones used longest ago going first.</li>
 </ul>
@@ -1204,6 +1204,7 @@ footer { margin-top: 64px; padding-top: 18px; border-top: 1px solid var(--line);
 <tr><td>Templates: drop in an intro or outro…</td><td><kbd>Ctrl</kbd>+<kbd>T</kbd></td></tr>
 <tr><td>Prune unused media: take the files no timeline uses out of the project…</td><td><span class="none">none (give it one on the shortcuts page)</span></td></tr>
 <tr><td>Build proxies: a proxy for every video file of the project that has none, also those cleared from the cache</td><td><span class="none">none (give it one on the shortcuts page)</span></td></tr>
+<tr><td>Build proxies at full speed: every video file that has none, with as much of this machine as it takes, also while playing</td><td><span class="none">none (give it one on the shortcuts page)</span></td></tr>
 <tr><td>Package project: copy it and the media it uses into one folder, to open on another machine…</td><td><span class="none">none (give it one on the shortcuts page)</span></td></tr>
 <tr><td>Save as a template: the region, or the whole timeline…</td><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd></td></tr>
 <tr><td>Copy: the selected clips, or the chosen keyframe marks</td><td><kbd>Ctrl</kbd>+<kbd>C</kbd></td></tr>
