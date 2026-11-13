@@ -1,6 +1,6 @@
 [package]
 name = "os"
-description = "Small questions to the operating system (the keyboard layout in use, worker thread priority)."
+description = "Small questions to the operating system (the keyboard layout in use, worker thread priority, opening a file with its program)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,7 +13,7 @@ tracing = "0.1"
 # Asks Windows for the active keyboard layout (the same bindings the
 # windowing crate already brings).
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_UI_Input_KeyboardAndMouse", "Win32_System_Threading"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading"] }
 
 # Asks the X server's keyboard extension which layout is active, in plain
 # Rust over the X protocol (already in the tree through the windowing crate).

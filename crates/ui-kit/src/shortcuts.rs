@@ -227,6 +227,7 @@ const USUAL: &[(Action, Shortcut)] = &[
     (Action::RoughCut, Shortcut::ctrl_shift(Key::T)),
     (Action::VolumeLines, Shortcut::key(Key::A)),
     (Action::KeyboardShortcuts, Shortcut::ctrl(Key::Slash)),
+    (Action::UserGuide, Shortcut::key(Key::F1)),
 ];
 
 /// Every binding, in one place.

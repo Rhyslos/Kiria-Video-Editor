@@ -69,7 +69,7 @@ New projects go to one chosen folder, shown with a quiet "new projects" badge in
 
 A folder picked this way is added to the Projects group (unless a listed folder already contains it), so its projects show up in the grid. While a project folder is open in the grid, New project suggests that folder instead.
 
-Preferences are read from `<data folder>/updates.ron` (defaults: automatic, Stable channel) and `<data folder>/launcher.ron` (the folder for new projects). The theme and any changed shortcuts (Search and Settings are the two the launcher uses) follow the editor's `settings.ron`, read at start; the Graphics choice is in `<data folder>/graphics.ron`, shared with the editor.
+Preferences are read from `<data folder>/updates.ron` (defaults: automatic, Stable channel) and `<data folder>/launcher.ron` (the folder for new projects). The theme and any changed shortcuts (Search, Settings and the user guide are the three the launcher uses) follow the editor's `settings.ron`, read at start; the Graphics choice is in `<data folder>/graphics.ron`, shared with the editor.
 
 ## Files
 
@@ -79,7 +79,7 @@ Preferences are read from `<data folder>/updates.ron` (defaults: automatic, Stab
 | `src/browser.rs` | The window: panels, folder tree, header, dialogs, keyboard, automated runs |
 | `src/cards.rs` | The project grid and its cards; search filtering |
 | `src/new_project.rs` | The New project dialog: Automatic settings by default (the first video imported decides), or one of the templates |
-| `src/browser/settings_ui.rs` | Settings, drawn by `ui_kit::settings` like the editor's: tabs Updates (version and where updating stands, Stable releases / Betas too, Automatic updates), Projects (where new projects are saved, Change…), Look (the theme, which follows the editor's), Graphics (`graphics::SETTINGS`) and Diagnostics (Diagnostics…, the log folder with Copy path). `--settings <id>` opens it at a tab or setting and `--window-size 1280x800` sizes the window, for screenshots |
+| `src/browser/settings_ui.rs` | Settings, drawn by `ui_kit::settings` like the editor's: tabs Updates (version and where updating stands, Stable releases / Betas too, Automatic updates), Projects (where new projects are saved, Change…), Look (the theme, which follows the editor's), Graphics (`graphics::SETTINGS`), Diagnostics (Diagnostics…, the log folder with Copy path) and Help (the user guide, `ui_kit::user_guide::SETTINGS`: Open shows it in the web browser; F1 does too, from anywhere in the launcher). Installed, the launcher sits above the versions, so it also looks for the guide in the current version's folder. `--settings <id>` opens it at a tab or setting and `--window-size 1280x800` sizes the window, for screenshots |
 | `src/updates.rs` | The version panel, the update window (Update available → download bar → Update ready), and the background check and download |
 | `src/files.rs` | Creating, renaming and moving project files; the files that belong to a project move along. Moving a packaged project's file alone (its media stays behind) first makes its relative media paths full ones, in the project and its saved versions, so they are still found |
 | `src/delete.rs` | Deleting a project: `plan` lists what would go, `run` moves it to the `Bin` (the system's recycle bin, or a folder for sample projects and tests) |

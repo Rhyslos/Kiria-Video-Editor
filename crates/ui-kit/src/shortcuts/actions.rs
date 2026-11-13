@@ -89,6 +89,7 @@ actions! {
     Search, Anywhere, "Search";
     OpenSettings, Anywhere, "Settings";
     KeyboardShortcuts, Anywhere, "Keyboard shortcuts";
+    UserGuide, Anywhere, "User guide: every feature explained, in your web browser";
     Import, Anywhere, "Import media";
     Versions, Anywhere, "Saved versions: keep this version, or go back to one…";
     Templates, Anywhere, "Templates: drop in an intro or outro…";
@@ -189,6 +190,7 @@ impl Action {
             Action::SplitView => &["source", "program", "two up"],
             Action::Undo => &["back", "revert"],
             Action::Search => &["find", "command palette"],
+            Action::UserGuide => &["help", "manual", "docs", "documentation", "how to", "tutorial"],
             _ => &[],
         }
     }

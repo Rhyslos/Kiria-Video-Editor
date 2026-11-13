@@ -4921,8 +4921,10 @@ dependencies = [
  "egui",
  "egui-wgpu",
  "image",
+ "os",
  "render",
  "serde",
+ "tempfile",
  "tracing",
 ]
 

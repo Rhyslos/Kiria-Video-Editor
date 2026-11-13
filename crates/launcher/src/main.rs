@@ -176,7 +176,7 @@ pub(crate) fn version_in_use() -> String {
 }
 
 /// The folder the launcher is installed in.
-fn install_root() -> std::path::PathBuf {
+pub(crate) fn install_root() -> std::path::PathBuf {
     std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent().map(Path::to_path_buf))

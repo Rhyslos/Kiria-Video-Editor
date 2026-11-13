@@ -157,6 +157,12 @@ impl Waveforms {
         }
     }
 
+    /// Every waveform asked for is read (or couldn't be), or readings are
+    /// held on purpose (`--hold-reading`): what a screenshot waits for.
+    pub fn settled(&self) -> bool {
+        self.hold_at.is_some() || !self.streams.values().any(|s| matches!(s, State::Reading(_)))
+    }
+
     /// Collects finished readings and looks at how far the others are.
     pub fn poll(&mut self, ctx: &egui::Context, now: Instant) {
         let mut reading_any = false;

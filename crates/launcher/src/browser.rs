@@ -119,6 +119,8 @@ pub struct Browser {
     /// What draws the window: the first-frames check, the question after a
     /// failed start with Vulkan, and the Graphics row in Settings.
     graphics: graphics::WindowGraphics,
+    /// The user guide in the web browser (F1, Settings › Help).
+    user_guide: ui_kit::user_guide::UserGuide,
     folders: Vec<Folder>,
     projects: Vec<ProjectEntry>,
     view: View,
@@ -190,6 +192,11 @@ impl Browser {
         {
             tracing::warn!("--settings: no tab or setting is called {id}");
         }
+        // Installed, the launcher sits above the versions: the guide is in
+        // the current version's folder (`ui_kit::user_guide`).
+        let layout = updater::install::Layout::at(crate::install_root());
+        let user_guide =
+            ui_kit::user_guide::UserGuide::also_in(layout.current_version().map(|v| layout.version_dir(&v)));
         let mut browser = Browser {
             theme: start.theme.theme(),
             theme_name: start.theme,
@@ -203,6 +210,7 @@ impl Browser {
             show_settings: start.settings_at.is_some(),
             settings_view,
             graphics,
+            user_guide,
             folders: Vec::new(),
             projects: Vec::new(),
             view: View::All,
@@ -1104,10 +1112,21 @@ impl Browser {
         }
 
         self.settings_window(ctx);
+        if let Some(err) = self.user_guide.poll() {
+            self.errors.push(&err);
+        }
 
         let mut diagnostics = self.show_diagnostics;
         self.errors.diagnostics_window(ctx, &mut diagnostics, &self.theme);
         self.show_diagnostics = diagnostics;
+    }
+
+    /// Opens the user guide in the web browser (F1).
+    fn open_user_guide(&mut self, ctx: &egui::Context) {
+        match self.user_guide.open(ctx) {
+            Ok(_) => self.status = "Opening the user guide in your web browser.".into(),
+            Err(err) => self.errors.push(&err),
+        }
     }
 
     fn keyboard(&mut self, ctx: &egui::Context) {
@@ -1121,6 +1140,7 @@ impl Browser {
             match action {
                 Action::OpenSettings => self.show_settings = true,
                 Action::Search if !dialog_open => self.focus_search = true,
+                Action::UserGuide => self.open_user_guide(ctx),
                 _ => {}
             }
         }

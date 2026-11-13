@@ -575,6 +575,7 @@ Phase 10 adds no big features: it polishes, settles the two open decisions, and 
 **Release checklist**
 
 - [ ] `README.md` with screenshots, install steps and system requirements; `CONTRIBUTING.md`; every folder README current; `CLAUDE.md` current.
+- [ ] **User guide** for everything in the app, in plain words with real screenshots, shipped with every installer and opened from both programs. (Done so far, pulled ahead in November 2026 as the most wanted addition: `docs/user-guide/index.html` covers getting started, the editor's layout and search, the Library, Edit, Audio and Export pages, Settings, the shortcuts page, saving and recovery, diagnostics and troubleshooting, with every shortcut in tables made from the shortcut table (a test keeps them so) and 40-odd screenshots taken by `docs/user-guide/tools/shots.sh`; contents that follow the scroll, a search that hides what doesn't match, light and dark. Settings › Help › User guide in the editor and the launcher, F1 (`Action::UserGuide`) and "help" in search open it in the system's browser (`os::open_with_system`). Still to do: the Color page and effects, when they are built.)
 - [ ] Code-signing certificate in place for Windows; AppImage tested on two Linux distributions.
 - [ ] Changelog from 0.1 to 1.0; tag `v1.0.0` on the Stable channel.
 - [ ] Manual smoke test on both machines: install, launcher, import, cut, grade, key, mix, export, update to a 1.0.1 test build.

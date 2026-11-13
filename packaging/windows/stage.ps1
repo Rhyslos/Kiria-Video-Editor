@@ -1,5 +1,5 @@
 # Builds the Windows install layout in $Stage:
-#   launcher.exe, current, versions/<version>/{editor.exe, launcher.exe, FFmpeg DLLs, licenses/}
+#   launcher.exe, current, versions/<version>/{editor.exe, launcher.exe, FFmpeg DLLs, licenses/, user-guide/}
 # and the update package <name>-<version>-windows-x64.zip (the versions/<version> folder).
 #
 # Run from the repository root after `cargo build --release -p app -p launcher`.
@@ -45,6 +45,14 @@ Copy-Item (Join-Path $root.FullName "LICENSE.txt") (Join-Path $licenses "FFmpeg-
     Set-Content (Join-Path $licenses "FFMPEG-VERSION.txt")
 "SHA-256 of the downloaded archive: " + (Get-FileHash $download -Algorithm SHA256).Hash.ToLower() |
     Add-Content (Join-Path $licenses "FFMPEG-VERSION.txt")
+
+# The user guide (opened from Settings › Help and with F1): the page and its
+# pictures only, not the tools that make them. Each version brings its own,
+# so it always describes the version installed.
+$guide = Join-Path $versionDir "user-guide"
+New-Item -ItemType Directory -Force (Join-Path $guide "images") | Out-Null
+Copy-Item docs/user-guide/index.html $guide
+Copy-Item docs/user-guide/images/* (Join-Path $guide "images")
 
 # Our licence and the bundled fonts' licences.
 Copy-Item LICENSE (Join-Path $licenses "LICENSE.txt")
