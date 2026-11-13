@@ -3238,7 +3238,7 @@ fn click_moves_row(ui: &mut egui::Ui, moves: &mut ui_kit::ClickMoves, edit_at_pl
 fn click_moves_says(moves: ui_kit::ClickMoves, edit_at_playhead: bool) -> &'static str {
     match (moves, edit_at_playhead) {
         (ui_kit::ClickMoves::EditNeedle, false) => {
-            "A click in the timeline's ruler now moves the edit needle; drag the playhead by its handle at the top of the ruler"
+            "A click in the timeline's ruler now moves the edit needle; drag the playhead by its handle at the top of the ruler, or Alt+click where it should go"
         }
         (ui_kit::ClickMoves::EditNeedle, true) => {
             "A click will move the edit needle once Edit at the playhead is off; until then it moves the playhead"
