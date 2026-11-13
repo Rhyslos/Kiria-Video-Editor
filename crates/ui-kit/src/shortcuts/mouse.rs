@@ -31,6 +31,26 @@ pub const MOUSE: &[MouseAction] = &[
         "Share the height between them; double-click for the usual split",
     ),
     on(
+        Context::Anywhere,
+        "Click a file in the Library",
+        "Show it in the panel on the right, with its player; double-click adds it (its marked part) at the end of the timeline",
+    ),
+    on(
+        Context::Anywhere,
+        "Move the pointer across a thumbnail in the Library",
+        "Skim through the file",
+    ),
+    on(
+        Context::Anywhere,
+        "Click or drag on the Library's scrub bar or waveform",
+        "Move its player there",
+    ),
+    on(
+        Context::Anywhere,
+        "Click a label or smart filter in the Library's sidebar",
+        "Show only the files with it (several labels: files with all of them); click again to show every file",
+    ),
+    on(
         Context::Viewer,
         "Click the buttons over the picture",
         "Play or pause, step one frame back or forward, stop",

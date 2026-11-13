@@ -7,7 +7,7 @@
 use crate::animate::{KeyframeChange, KeyframesChange};
 use crate::ids::{ClipId, LabelId, LinkId, MediaId, MediaLabelId, MediaListId, SequenceId, TrackId};
 use crate::keyframes::LookField;
-use crate::library::MediaLabel;
+use crate::library::{MediaLabel, MediaUse};
 use crate::look::Look;
 use crate::model::{
     Clip, FrameBlend, LabelColor, MediaKind, MediaRef, Project, Region, Sequence, SequenceSettings,
@@ -476,6 +476,12 @@ pub enum Command {
         media: Vec<MediaId>,
         member: bool,
     },
+    /// Sets how files are to be added from the Library (format 15): the
+    /// part marked and the level of each sound stream, all as one step. An
+    /// empty use removes what was kept.
+    SetMediaUses {
+        uses: Vec<(MediaId, MediaUse)>,
+    },
 }
 
 impl Command {
@@ -584,6 +590,7 @@ impl Command {
             Command::AddMediaList { name, media } => crate::library::add_list(&mut p, name, media)?,
             Command::RenameMediaList { list, name } => crate::library::rename_list(&mut p, *list, name)?,
             Command::RemoveMediaList { list } => crate::library::remove_list(&mut p, *list)?,
+            Command::SetMediaUses { uses } => crate::library::set_uses(&mut p, uses)?,
             Command::SetListMember { list, media, member } => {
                 crate::library::set_member(&mut p, *list, media, *member)?
             }

@@ -292,6 +292,9 @@ pub fn zoom_menu(ui: &mut Ui, zoom: &Zoom, readout: &str, shortcuts: &ShortcutTa
 /// a dark pill so it reads over any picture: which picture a split
 /// viewer's half shows ("Source · match.mkv", "Program").
 pub fn caption(ui: &Ui, theme: &Theme, frame: Rect, text: &str) {
+    if text.is_empty() {
+        return;
+    }
     let painter = ui.painter_at(frame);
     let galley = painter.layout_no_wrap(text.to_owned(), FontId::proportional(11.0), theme.text_secondary);
     let pill = Rect::from_min_size(frame.min + vec2(6.0, 6.0), galley.size() + vec2(12.0, 6.0));

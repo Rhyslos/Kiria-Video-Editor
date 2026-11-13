@@ -242,12 +242,26 @@ fn rich_project() -> Project {
     }
     .apply(&p)
     .expect("a list");
-    project::Command::SetMediaNote {
+    let p = project::Command::SetMediaNote {
         media: video,
         note: "Clutch round at 4:10".into(),
     }
     .apply(&p)
-    .expect("a note")
+    .expect("a note");
+    // Its marked part and a stream's level are kept (format 15).
+    let stream = p.media[&video].info.audio[0].index;
+    project::Command::SetMediaUses {
+        uses: vec![(
+            video,
+            project::MediaUse {
+                mark_in: Some(Time::seconds(250)),
+                mark_out: Some(Time::seconds(262)),
+                levels: [(stream, -3_000)].into_iter().collect(),
+            },
+        )],
+    }
+    .apply(&p)
+    .expect("marks")
 }
 
 #[test]
@@ -387,6 +401,25 @@ fn the_current_sample_has_labels_a_list_and_a_note() {
     assert_eq!(library.labels_of(media)[0].name, "Gameplay");
     assert_eq!(library.lists_of(media)[0].name, "Opening sequence");
     assert_eq!(library.note(media), "Clutch round at 4:10");
+}
+
+#[test]
+fn version_14_sample_opens_with_no_marks() {
+    let project = file::load(&sample_path(14)).expect("the version 14 sample opens");
+    assert!(project.library.uses.is_empty(), "format 14 kept no marks");
+    assert!(!project.library.labels.is_empty(), "and keeps its labels");
+}
+
+#[test]
+fn the_current_sample_keeps_a_marked_part_and_a_level() {
+    let project = file::load(&sample_path(FORMAT_VERSION)).expect("the sample opens");
+    let media = *project.media.keys().next().expect("a file");
+    let used = project.library.use_of(media);
+    assert_eq!(
+        (used.mark_in, used.mark_out),
+        (Some(Time::seconds(250)), Some(Time::seconds(262)))
+    );
+    assert_eq!(used.levels.values().copied().collect::<Vec<_>>(), [-3_000]);
 }
 
 #[test]

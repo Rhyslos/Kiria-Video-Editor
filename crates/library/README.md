@@ -4,7 +4,7 @@ The media index and search: one project's media in SQLite, answering searches, f
 
 ## Status
 
-Phase 5.1 done: the index (types, labels, custom lists, notes, use on timelines, full-text search) and its worker; the Edit page's media drawer ("Find a file") and the search palette ask it. Media folders are watched for new recordings. The Library page itself is Phase 5.2.
+Phase 5.1 done: the index (types, labels, custom lists, notes, use on timelines, full-text search) and its worker; the Edit page's media drawer ("Find a file"), the search palette and the Library page (5.2, `crates/app/src/library_page/`) ask it. Media folders are watched for new recordings.
 
 ## Where things live
 

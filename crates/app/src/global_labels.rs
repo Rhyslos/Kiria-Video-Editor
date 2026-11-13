@@ -4,7 +4,7 @@
 //! Not project edits, so they make no undo step; see
 //! `project::global_labels` for the file and the rules.
 
-use crate::media_drawer::Everywhere as Change;
+use crate::organise::Everywhere as Change;
 use jobs::{JobHandle, JobSystem, PoolKind, Priority};
 use project::GlobalLabels;
 use std::path::Path;

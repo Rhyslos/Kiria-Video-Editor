@@ -205,6 +205,8 @@ const USUAL: &[(Action, Shortcut)] = &[
     (Action::SlipTool, Shortcut::key(Key::Y)),
     (Action::SlideTool, Shortcut::key(Key::U)),
     (Action::ToggleLoop, Shortcut::key(Key::L)),
+    (Action::MarkIn, Shortcut::key(Key::I)),
+    (Action::MarkOut, Shortcut::key(Key::O)),
     (Action::SaveFrame, Shortcut::ctrl_shift(Key::E)),
     (Action::RemoveSilence, Shortcut::ctrl_shift(Key::R)),
     (Action::FullScreenViewer, Shortcut::key(Key::F)),
