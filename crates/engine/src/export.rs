@@ -17,6 +17,13 @@
 //! The file is written beside its final place under another name and only
 //! takes its name when it is complete, so a cancelled or failed export
 //! leaves nothing that looks like a video.
+//!
+//! The file's pictures can be of another size than the timeline's (the
+//! timeline's picture is fitted inside, with black bars where the shapes
+//! differ: [`picture_size`], [`letterbox`]) and at another frame rate (each
+//! of the file's frames shows the timeline at that frame's start). The
+//! sound can also be written beside the file as 24-bit WAV, the same
+//! samples. An export can be paused between frames ([`Export::pause`]).
 
 use crate::compose::Composing;
 use crate::limiter::Limiter;
@@ -29,7 +36,7 @@ use media::encode::{AudioSettings, Place, Probed, VideoSettings, Writer};
 use project::{Project, Rate, Sequence, SequenceId, Time};
 use render::Reader;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -134,11 +141,24 @@ pub struct ExportSettings {
     /// limiter on the master (wanted with `normalise`, which can push peaks
     /// over). Off, the mix is exported sample for sample as it plays.
     pub limit: bool,
+    /// The size of the file's pictures (made even); `None` for the
+    /// timeline's own. The timeline's picture is fitted inside, with black
+    /// bars where the shapes differ, enlarged when the size is larger.
+    pub size: Option<(u32, u32)>,
+    /// The file's frame rate; `None` for the timeline's. Each frame shows
+    /// the timeline at its own start.
+    pub rate: Option<Rate>,
+    /// Also write the sound beside the file as 24-bit WAV, the same samples
+    /// (nothing more for a WAV file): [`ExportSettings::sound_beside_path`].
+    pub sound_beside: bool,
 }
 
 /// The highest true peak a limited export lets through, dBTP: safe for
 /// files played or encoded again.
 pub const TRUE_PEAK_CEILING: f32 = -1.0;
+/// The smallest and largest side of an exported picture, pixels.
+pub const MIN_SIDE: u32 = 16;
+pub const MAX_SIDE: u32 = 8192;
 /// The most normalising turns the sound up, dB: more would mostly raise
 /// noise and hum in something nearly silent.
 pub const MOST_GAIN_DB: f32 = 20.0;
@@ -156,12 +176,38 @@ impl ExportSettings {
             software: false,
             normalise: None,
             limit: false,
+            size: None,
+            rate: None,
+            sound_beside: false,
         }
+    }
+
+    /// Where the sound is written beside the file, when it is: the same
+    /// name ending in `.wav`.
+    pub fn sound_beside_path(&self) -> Option<PathBuf> {
+        (self.sound_beside && self.container != Container::Wav).then(|| self.path.with_extension("wav"))
+    }
+
+    /// The size of the file's pictures for a timeline of `timeline`: the
+    /// size asked for, or the timeline's own, even on both sides.
+    pub fn frame_size(&self, timeline: (u32, u32)) -> (u32, u32) {
+        even(self.size.unwrap_or(timeline))
     }
 
     /// Whether the container holds this picture and sound, with the reason
     /// when it doesn't.
     pub fn check(&self) -> diag::Result<()> {
+        if let Some((width, height)) = self.size
+            && ![width, height]
+                .iter()
+                .all(|side| (MIN_SIDE..=MAX_SIDE).contains(side))
+        {
+            return Err(AppError::new("The file can't be exported at that size")
+                .why(format!(
+                    "Its pictures would be {width}×{height}; each side must be {MIN_SIDE} to {MAX_SIDE} pixels."
+                ))
+                .fix("Choose another size, or the timeline's own."));
+        }
         if self.container.allows(self.video, self.audio) {
             return Ok(());
         }
@@ -184,7 +230,9 @@ impl ExportSettings {
     }
 
     /// About how many bytes `length` of the timeline (pictures of `size` at
-    /// `rate`, sound at `sample_rate`) comes to.
+    /// `rate`, sound at `sample_rate`) comes to, in the file alone. `size`
+    /// and `rate` are the file's: [`ExportSettings::frame_size`], and the
+    /// rate asked for or the timeline's.
     pub fn estimated_bytes(&self, size: (u32, u32), rate: Rate, sample_rate: u32, length: Duration) -> u64 {
         let picture = self
             .video
@@ -200,6 +248,16 @@ impl ExportSettings {
             }
         });
         ((picture + sound) as f64 * length.as_secs_f64() / 8.0).round() as u64
+    }
+
+    /// About how many bytes the WAV written beside the file comes to (none
+    /// when it isn't).
+    pub fn estimated_beside_bytes(&self, sample_rate: u32, length: Duration) -> u64 {
+        if self.sound_beside_path().is_none() {
+            return 0;
+        }
+        let rate = self.audio.sample_rate_for(sample_rate);
+        (f64::from(rate) * 6.0 * length.as_secs_f64()).round() as u64
     }
 }
 
@@ -307,6 +365,8 @@ pub struct Progress {
     /// The sound is being measured for normalising, before anything is
     /// written: `frames_done` counts that pass.
     pub measuring: bool,
+    /// Paused between frames ([`Export::pause`]); `elapsed` stands still.
+    pub paused: bool,
 }
 
 impl Progress {
@@ -321,7 +381,7 @@ impl Progress {
     /// How long the rest should take at the pace so far. `None` until
     /// there is a pace to go by.
     pub fn time_left(&self) -> Option<Duration> {
-        if self.measuring || self.frames_done < 10 || self.frames_done >= self.frames {
+        if self.measuring || self.paused || self.frames_done < 10 || self.frames_done >= self.frames {
             return None;
         }
         let each = self.elapsed.as_secs_f64() / self.frames_done as f64;
@@ -339,6 +399,10 @@ pub struct Exported {
     pub took: Duration,
     /// The length of what was exported.
     pub length: Duration,
+    /// The size of its pictures (none for sound alone).
+    pub size: Option<(u32, u32)>,
+    /// The sound written beside it as WAV, when asked for.
+    pub sound_beside: Option<PathBuf>,
     /// The picture's encoder (FFmpeg's name), or the sound's for a
     /// sound-only file.
     pub encoder: String,
@@ -406,7 +470,43 @@ struct Shared {
     frames: AtomicU64,
     measuring: AtomicBool,
     cancel: AtomicBool,
+    paused: AtomicBool,
+    /// Time spent paused: what is behind, and since when it is paused now.
+    pauses: Mutex<(Duration, Option<Instant>)>,
     encoder: Mutex<Option<String>>,
+}
+
+impl Shared {
+    fn pause(&self, on: bool) {
+        if let Ok(mut pauses) = self.pauses.lock() {
+            let (behind, since) = &mut *pauses;
+            match (on, *since) {
+                (true, None) => *since = Some(Instant::now()),
+                (false, Some(from)) => {
+                    *behind += from.elapsed();
+                    *since = None;
+                }
+                _ => {}
+            }
+        }
+        self.paused.store(on, Ordering::Relaxed);
+    }
+
+    /// The time since `started` not spent paused.
+    fn working(&self, started: Instant) -> Duration {
+        let paused = self.pauses.lock().map_or(Duration::ZERO, |pauses| {
+            pauses.0 + pauses.1.map_or(Duration::ZERO, |since| since.elapsed())
+        });
+        started.elapsed().saturating_sub(paused)
+    }
+
+    /// Waits while paused. False when cancelled.
+    fn carry_on(&self) -> bool {
+        while self.paused.load(Ordering::Relaxed) && !self.cancel.load(Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_millis(40));
+        }
+        !self.cancel.load(Ordering::Relaxed)
+    }
 }
 
 /// An export under way.
@@ -435,26 +535,18 @@ impl Export {
         let path = settings.path.clone();
         let worker = shared.clone();
         let spawned = std::thread::Builder::new().name("export".into()).spawn(move || {
-            let part = part_path(&settings.path);
-            let outcome = match run(&project, sequence, &settings, &part, devices, &worker, &notify) {
-                Ok(Some(done)) => match std::fs::rename(&part, &settings.path).or_explain(|| {
-                    AppError::new("The exported video could not be given its name")
-                        .why(format!(
-                            "It is complete, as {}, but could not be renamed to {}.",
-                            part.display(),
-                            settings.path.display()
-                        ))
-                        .fix("Close anything that has the old file open, then rename the new one yourself.")
-                }) {
+            let parts = Parts::of(&settings);
+            let outcome = match run(&project, sequence, &settings, &parts, devices, &worker, &notify) {
+                Ok(Some(done)) => match parts.name() {
                     Ok(()) => Outcome::Done(done),
                     Err(err) => Outcome::Failed(err),
                 },
                 Ok(None) => {
-                    let _ = std::fs::remove_file(&part);
+                    parts.remove();
                     Outcome::Cancelled
                 }
                 Err(err) => {
-                    let _ = std::fs::remove_file(&part);
+                    parts.remove();
                     Outcome::Failed(err)
                 }
             };
@@ -480,15 +572,32 @@ impl Export {
         Progress {
             frames_done: self.shared.frames_done.load(Ordering::Relaxed),
             frames: self.shared.frames.load(Ordering::Relaxed),
-            elapsed: self.started.elapsed(),
+            elapsed: self.shared.working(self.started),
             encoder: self.shared.encoder.lock().ok().and_then(|name| name.clone()),
             measuring: self.shared.measuring.load(Ordering::Relaxed),
+            paused: self.is_paused(),
         }
     }
 
-    /// Asks the worker to stop; it does so before the next frame.
+    /// Asks the worker to stop; it does so before the next frame (also
+    /// when paused).
     pub fn cancel(&self) {
         self.shared.cancel.store(true, Ordering::Relaxed);
+    }
+
+    /// Holds the worker before its next frame until [`Export::resume`]; its
+    /// decoders and the file stay open. Time paused doesn't count in
+    /// `elapsed` or `took`.
+    pub fn pause(&self) {
+        self.shared.pause(true);
+    }
+
+    pub fn resume(&self) {
+        self.shared.pause(false);
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.shared.paused.load(Ordering::Relaxed)
     }
 
     /// How it ended, once it has. Asked again after that, nothing.
@@ -511,6 +620,93 @@ fn part_path(path: &Path) -> PathBuf {
     let ending = path.extension().and_then(|e| e.to_str()).unwrap_or("part");
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("export");
     path.with_file_name(format!("{stem}.exporting.{ending}"))
+}
+
+/// The files an export writes under other names until all are complete:
+/// the file, and the sound beside it when asked for.
+struct Parts {
+    file: (PathBuf, PathBuf),
+    beside: Option<(PathBuf, PathBuf)>,
+}
+
+impl Parts {
+    fn of(settings: &ExportSettings) -> Parts {
+        let pair = |path: PathBuf| (part_path(&path), path);
+        Parts {
+            file: pair(settings.path.clone()),
+            beside: settings.sound_beside_path().map(pair),
+        }
+    }
+
+    /// Gives each its name.
+    fn name(&self) -> diag::Result<()> {
+        for (part, path) in std::iter::once(&self.file).chain(&self.beside) {
+            std::fs::rename(part, path).or_explain(|| {
+                AppError::new("The exported file could not be given its name")
+                    .why(format!(
+                        "It is complete, as {}, but could not be renamed to {}.",
+                        part.display(),
+                        path.display()
+                    ))
+                    .fix("Close anything that has the old file open, then rename the new one yourself.")
+            })?;
+        }
+        Ok(())
+    }
+
+    fn remove(&self) {
+        for (part, _) in std::iter::once(&self.file).chain(&self.beside) {
+            let _ = std::fs::remove_file(part);
+        }
+    }
+}
+
+/// `size` made even on both sides (encoders take even sizes), at least 2.
+fn even(size: (u32, u32)) -> (u32, u32) {
+    ((size.0 & !1).max(2), (size.1 & !1).max(2))
+}
+
+/// The size the timeline's picture takes in a file of `frame`: the largest
+/// of its shape that fits, even on both sides (an even margin each side
+/// when centred, so the colour planes line up too).
+pub fn picture_size(timeline: (u32, u32), frame: (u32, u32)) -> (u32, u32) {
+    let frame = even(frame);
+    let (w, h) = render::Area::fitted(timeline, frame).size();
+    let fit = |side: f32, room: u32| {
+        // The margin on each side even: the picture's side has the frame's
+        // evenness (frame is even, so the picture is too, in steps of 4
+        // when the margin is to be split into two even halves).
+        let side = (side.round() as u32).min(room);
+        let margin = ((room - side) / 2) & !1;
+        room - 2 * margin
+    };
+    (fit(w, frame.0).max(2), fit(h, frame.1).max(2))
+}
+
+/// Puts `picture` (NV12, `size`) in the middle of a black NV12 frame of
+/// `frame` (both even on both sides, the picture no larger than the frame)
+/// into `out`.
+pub fn letterbox(picture: &[u8], size: (u32, u32), frame: (u32, u32), out: &mut Vec<u8>) {
+    let (pw, ph) = (size.0 as usize, size.1 as usize);
+    let (fw, fh) = (frame.0 as usize, frame.1 as usize);
+    out.clear();
+    out.resize(fw * fh, 16);
+    out.resize(fw * fh * 3 / 2, 128);
+    if pw > fw || ph > fh || picture.len() < pw * ph * 3 / 2 {
+        return;
+    }
+    let (x, y) = (((fw - pw) / 2) & !1, ((fh - ph) / 2) & !1);
+    let (luma, chroma) = picture.split_at(pw * ph);
+    let (out_luma, out_chroma) = out.split_at_mut(fw * fh);
+    for row in 0..ph {
+        let to = (y + row) * fw + x;
+        out_luma[to..to + pw].copy_from_slice(&luma[row * pw..(row + 1) * pw]);
+    }
+    // Colour: half the rows, each a pair of bytes for every two pixels.
+    for row in 0..ph / 2 {
+        let to = (y / 2 + row) * fw + x;
+        out_chroma[to..to + pw].copy_from_slice(&chroma[row * pw..(row + 1) * pw]);
+    }
 }
 
 /// The frames `[first, end)` of the timeline to export.
@@ -543,7 +739,7 @@ fn run(
     project: &Project,
     sequence: SequenceId,
     settings: &ExportSettings,
-    part: &Path,
+    parts: &Parts,
     devices: Option<Devices>,
     shared: &Shared,
     notify: &dyn Fn(),
@@ -555,7 +751,8 @@ fn run(
         .iter()
         .find(|s| s.id == sequence)
         .ok_or_else(|| cannot("The timeline is not in the project any more."))?;
-    let rate = seq.settings.frame_rate;
+    // The file's frames: each shows the timeline at its own start.
+    let rate = settings.rate.unwrap_or(seq.settings.frame_rate);
     let (first, end) = frames(seq.length(), settings.range, rate);
     let count = (end - first).max(0) as u64;
     if count == 0 {
@@ -565,28 +762,32 @@ fn run(
     shared.frames.store(count, Ordering::Relaxed);
 
     let timeline_size = (seq.settings.width, seq.settings.height);
+    // The file's picture size, and the timeline's picture fitted inside.
+    let frame_size = settings.frame_size(timeline_size);
+    let picture_size = picture_size(timeline_size, frame_size);
     let sample_rate = settings
         .audio
         .sample_rate_for(seq.settings.sample_rate.max(8_000));
     // Pictures, when the file has them: read back on the device they are
-    // put together on, at the timeline's full size.
+    // put together on, at the size they take in the file (put together at
+    // that size, or at the timeline's and enlarged as they are read back).
     let pictures = match settings.video {
         Some(codec) => {
             let devices = devices.ok_or_else(|| {
                 cannot("This window isn't drawn on a graphics card, so pictures can't be put together for a video here.")
                     .fix("Export sound only (WAV, MP3 or OGG), or start the app on a machine with a working graphics driver.")
             })?;
-            let reader = Reader::new(&devices.composing.device, timeline_size);
+            let reader = Reader::new(&devices.composing.device, picture_size);
             Some((codec, devices, reader))
         }
         None => None,
     };
-    let video = pictures.as_ref().map(|(codec, _, reader)| VideoSettings {
+    let video = pictures.as_ref().map(|(codec, _, _)| VideoSettings {
         codec: *codec,
-        width: reader.size().0,
-        height: reader.size().1,
+        width: frame_size.0,
+        height: frame_size.1,
         rate: (rate.num(), rate.den()),
-        bit_rate: settings.quality.video_bit_rate(*codec, reader.size(), rate),
+        bit_rate: settings.quality.video_bit_rate(*codec, frame_size, rate),
         software: settings.software,
     });
     let audio = AudioSettings {
@@ -594,7 +795,21 @@ fn run(
         sample_rate,
         bit_rate: settings.quality.audio_bit_rate(settings.audio).unwrap_or(0),
     };
-    let mut writer = Writer::create(part, settings.container, video.as_ref(), Some(&audio))?;
+    let mut writer = Writer::create(&parts.file.0, settings.container, video.as_ref(), Some(&audio))?;
+    // The sound beside it: the same samples, as 24-bit WAV.
+    let mut beside = match &parts.beside {
+        Some((part, _)) => Some(Writer::create(
+            part,
+            Container::Wav,
+            None,
+            Some(&AudioSettings {
+                codec: AudioCodec::Pcm24,
+                sample_rate,
+                bit_rate: 0,
+            }),
+        )?),
+        None => None,
+    };
     let audio_encoder = writer.audio_encoder().unwrap_or_default().to_owned();
     let encoder = writer
         .video_encoder()
@@ -629,7 +844,7 @@ fn run(
             || {},
         );
         preview.set_key_frame_first(false);
-        let black = render::reader::black(reader.size());
+        let black = render::reader::black(frame_size);
         let picture = Vec::with_capacity(reader.bytes());
         Picturing {
             preview,
@@ -638,6 +853,7 @@ fn run(
             queue,
             black,
             picture,
+            boxed: Vec::new(),
         }
     });
     let start = rate.frame_start(first).as_secs_f64();
@@ -670,13 +886,13 @@ fn run(
     let mut samples_written: u64 = 0;
     let result: diag::Result<bool> = (|| {
         for index in 0..count {
-            if shared.cancel.load(Ordering::Relaxed) {
+            if !shared.carry_on() {
                 return Ok(false);
             }
             if let Some(p) = &mut picturing {
                 let at = rate.frame_start(first + index as i64);
                 p.preview
-                    .show(project, sequence, at, timeline_size.0, timeline_size.1);
+                    .show(project, sequence, at, picture_size.0, picture_size.1);
                 let shown = wait_for(&p.preview, at)?;
                 if let Some(err) = shown.error {
                     return Err(err);
@@ -697,7 +913,12 @@ fn run(
                                 ))
                                 .fix("Export again. If it keeps happening, update the graphics driver.")
                             })?;
-                        writer.write_picture(&p.picture)?;
+                        if picture_size == frame_size {
+                            writer.write_picture(&p.picture)?;
+                        } else {
+                            letterbox(&p.picture, picture_size, frame_size, &mut p.boxed);
+                            writer.write_picture(&p.boxed)?;
+                        }
                     }
                     // Nothing on the timeline here.
                     None => writer.write_picture(&p.black)?,
@@ -708,6 +929,9 @@ fn run(
             master.take(project, seq, (until - samples_written) as usize, &mut sound);
             loudness.feed(&sound);
             writer.write_sound(&sound)?;
+            if let Some(beside) = &mut beside {
+                beside.write_sound(&sound)?;
+            }
             samples_written = until;
 
             shared.frames_done.store(index + 1, Ordering::Relaxed);
@@ -725,11 +949,16 @@ fn run(
         return Ok(None);
     }
     writer.finish()?;
+    if let Some(beside) = beside {
+        beside.finish()?;
+    }
     Ok(Some(Exported {
         path: settings.path.clone(),
         frames: count,
-        took: started.elapsed(),
+        took: shared.working(started),
         length: Duration::from_secs_f64(count as f64 / rate.as_f64()),
+        size: video.map(|v| (v.width, v.height)),
+        sound_beside: parts.beside.as_ref().map(|(_, path)| path.clone()),
         encoder,
         audio_encoder,
         on_graphics_card,
@@ -760,7 +989,7 @@ fn measure(
     let mut sound = Vec::new();
     let mut done = 0;
     for index in 0..count {
-        if shared.cancel.load(Ordering::Relaxed) {
+        if !shared.carry_on() {
             return None;
         }
         let until = samples_until(index + 1, sample_rate, rate);
@@ -773,6 +1002,55 @@ fn measure(
         }
     }
     Some(loudness.measured().integrated)
+}
+
+/// What [`measure_mix`] found: the mix's integrated loudness (LUFS) and
+/// highest true peak (dBTP), `-inf` for silence.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MixMeasured {
+    pub integrated: f32,
+    pub true_peak: f32,
+}
+
+/// Measures the sound of `sequence` (or a stretch of it) as an export
+/// would mix it, without normalising or limiting: for saying before an
+/// export how loud it is. Takes as long as mixing it does, so call it on a
+/// worker. `done` is set to how far it is, in thousandths. `None` when
+/// `cancel` was set or the timeline isn't there.
+pub fn measure_mix(
+    project: &Project,
+    sequence: SequenceId,
+    range: Option<(Time, Time)>,
+    cancel: &AtomicBool,
+    done: &AtomicU32,
+) -> Option<MixMeasured> {
+    let seq = project.sequences.iter().find(|s| s.id == sequence)?;
+    let rate = seq.settings.frame_rate;
+    let sample_rate = seq.settings.sample_rate.max(8_000);
+    let (first, end) = frames(seq.length(), range, rate);
+    let start = rate.frame_start(first).as_secs_f64();
+    let total = samples_until((end - first).max(0) as u64, sample_rate, rate);
+    let mut master = Master::new(sample_rate, start, 1.0, false);
+    let mut loudness = crate::loudness::Loudness::new(sample_rate);
+    let mut sound = Vec::new();
+    // A tenth of a second at a time.
+    let step = u64::from(sample_rate / 10).max(1);
+    let mut mixed = 0;
+    while mixed < total {
+        if cancel.load(Ordering::Relaxed) {
+            return None;
+        }
+        let take = step.min(total - mixed);
+        master.take(project, seq, take as usize, &mut sound);
+        loudness.feed(&sound);
+        mixed += take;
+        done.store((mixed * 1000 / total.max(1)) as u32, Ordering::Relaxed);
+    }
+    let measured = loudness.measured();
+    Some(MixMeasured {
+        integrated: measured.integrated,
+        true_peak: measured.true_peak_max,
+    })
 }
 
 /// The export's sound, piece by piece: the playback mixer's, turned up or
@@ -839,6 +1117,8 @@ struct Picturing {
     queue: wgpu::Queue,
     black: Vec<u8>,
     picture: Vec<u8>,
+    /// The picture with bars, when the file's shape is not the timeline's.
+    boxed: Vec<u8>,
 }
 
 /// The picture for the moment `at`, which was just asked for: the exact

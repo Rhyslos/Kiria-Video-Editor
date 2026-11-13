@@ -46,7 +46,7 @@ pub use placing::{AddAt, Adding};
 pub const ASKER: library::Asker = "library page";
 
 /// Room between the sidebar, the middle and the detail panel.
-const GAP: f32 = 12.0;
+const GAP: f32 = layout::PANEL_GAP;
 
 /// Counts and groups are worked out again at least this often, so proxy
 /// states that change on their own show.
@@ -494,7 +494,7 @@ impl LibraryPage {
         );
         let facts = self.facts(about);
         let mut picked = Vec::new();
-        panel(ui, theme, left, |ui| {
+        layout::panel(ui, theme, left, |ui| {
             picked.extend(sidebar::ui(self, ui, theme, about, &facts));
         });
         let mut column = ui.new_child(
@@ -505,7 +505,7 @@ impl LibraryPage {
         picked.extend(top_rows::ui(self, &mut column, theme, about, &facts));
         column.add_space(8.0);
         picked.extend(self.files(&mut column, theme, about, &facts, readers));
-        panel(ui, theme, right, |ui| {
+        layout::panel(ui, theme, right, |ui| {
             picked.extend(detail::ui(self, ui, theme, about, &facts, readers));
         });
         ui.allocate_rect(page, egui::Sense::hover());
@@ -741,25 +741,6 @@ impl LibraryPage {
         });
         picked
     }
-}
-
-/// A panel of the page (the sidebar, the detail panel) in `rect`, framed as
-/// the Edit page's inspector is.
-fn panel(ui: &mut egui::Ui, theme: &Theme, rect: egui::Rect, add: impl FnOnce(&mut egui::Ui)) {
-    let mut child = ui.new_child(
-        egui::UiBuilder::new()
-            .max_rect(rect)
-            .layout(egui::Layout::top_down(egui::Align::Min)),
-    );
-    egui::Frame::new()
-        .fill(theme.panel)
-        .corner_radius(6)
-        .inner_margin(egui::Margin::symmetric(12, 10))
-        .show(&mut child, |ui| {
-            ui.set_min_size(rect.size() - egui::vec2(24.0, 20.0));
-            ui.set_max_size(rect.size() - egui::vec2(24.0, 20.0));
-            add(ui);
-        });
 }
 
 /// A group's heading: its colour, name and how many files are in it.

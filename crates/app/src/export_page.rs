@@ -1,104 +1,205 @@
-//! The Export page, in its first form: the timeline (or its region) written
-//! as one file, with a file to choose, a format (MP4 or MKV video, or sound
-//! alone as WAV, MP3 or OGG, with the codecs this machine can encode), a
-//! quality, and progress with Cancel. Presets and the queue come with the
-//! full page.
+//! The Export page, as in the mockup: presets on the left, the settings in
+//! the middle with the checks under them, a summary in plain words on the
+//! right with Export and Add to queue, and the queue along the bottom.
 //!
-//! The work is the engine's (`engine::export`), on a worker; editing goes on
-//! meanwhile, and what is exported is the timeline as it was when Export
-//! was pressed.
+//! The work is the engine's (`engine::export`), on workers, one export at a
+//! time; editing goes on meanwhile and the queue keeps running when another
+//! page is shown. What is exported is the timeline as it was when Export
+//! (or Add to queue) was pressed. Nothing here touches the disk or the
+//! mixer on the interface thread: the checks' facts come from workers
+//! (`checks`), own presets are saved on a thread.
+//!
+//! Parts: `choice` (what the settings say), `presets` (built-in and own),
+//! `checks`, `queue`, `words` (how things are said, and the time an export
+//! should take on this machine).
 
+mod checks;
+mod choice;
+mod presets;
+mod queue;
+mod words;
+
+use checks::{DiskWatch, Fix, Level, LoudnessWatch};
+use choice::{Choice, FrameSize, LOWER_RATES};
 use diag::AppError;
-use engine::export::{
-    AudioCodec, Container, Devices, Encoders, Export, ExportSettings, Exported, Outcome, Progress, Quality,
-    VideoCodec,
-};
-use media::encode::Place;
-use project::{Project, Time};
+use engine::export::{AudioCodec, Container, Devices, Encoders, Quality, VideoCodec};
+use presets::{OwnPresets, Preset};
+use project::{MediaId, Project, Rate, SequenceId, Time};
+use queue::{Job, Queue, State};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::mpsc::{Receiver, channel};
 use std::time::Duration;
-use ui_kit::Theme;
+use ui_kit::{Theme, layout};
+pub use words::Pace;
 
-/// How the last export ended, to say so until the next one starts.
-#[derive(Debug)]
-enum Ended {
-    Done(Exported),
-    Cancelled,
+/// The queue's height along the bottom of the page.
+const QUEUE_HEIGHT: f32 = 172.0;
+/// The label column of the Video and Audio sections.
+const LABEL_WIDTH: f32 = 92.0;
+
+/// What the page asks of the window.
+#[derive(Debug, Default)]
+pub struct Asked {
+    pub problem: Option<AppError>,
+    /// Look for the missing files (the window's "Find them…").
+    pub find_missing: bool,
 }
 
 #[derive(Debug)]
 pub struct ExportPage {
-    /// The file chosen; until one is, the project's name beside the project.
-    chosen: Option<PathBuf>,
+    choice: Choice,
+    /// The file's name without its ending, as typed.
+    name: String,
+    /// The folder to save to, as typed or chosen.
+    folder: String,
+    /// The project the name and folder were set up for.
+    for_project: Option<PathBuf>,
     /// Export the region only (when there is one).
     region_only: bool,
-    container: Container,
-    video: VideoCodec,
-    audio: AudioCodec,
-    quality: Quality,
-    software: bool,
-    /// Normalise the sound to the loudness aimed for (with the limiter).
-    normalise: bool,
     /// The loudness aimed for, from Settings › Audio (none: no target).
     target: Option<f32>,
     /// What this machine can encode, once a worker has found out.
     encoders: Option<Encoders>,
-    /// The worker finding out, from when the page is first drawn.
     finding: Option<Receiver<Encoders>>,
-    /// The save dialog, while it is open.
-    dialog: Option<Receiver<Option<PathBuf>>>,
-    running: Option<Export>,
-    ended: Option<Ended>,
+    /// The folder picker, while it is open.
+    folder_dialog: Option<Receiver<Option<PathBuf>>>,
+    /// A folder being made ("Make it").
+    making: Option<Receiver<diag::Result<()>>>,
+    own: OwnPresets,
+    /// The presets file couldn't be read: it is never written over.
+    own_read_only: bool,
+    /// The name being typed for a new preset.
+    saving_as: Option<String>,
+    /// Own presets being saved.
+    saving: Option<Receiver<diag::Result<()>>>,
+    data_dir: PathBuf,
+    queue: Queue,
+    loudness: LoudnessWatch,
+    disk: DiskWatch,
+    pace: Pace,
+    /// The pace changed: the window saves it with the settings.
+    learned: bool,
+    /// How many of the files the timeline plays can't be found, kept until
+    /// the timeline or the missing files change.
+    media_counts: Option<(Project, SequenceId, usize, (usize, usize))>,
+    /// A line said under the presets (a preset saved, removed).
+    said: Option<String>,
+    /// `--export-queue`: fill the queue once, for screenshots.
+    demo: Demo,
 }
 
-impl Default for ExportPage {
-    fn default() -> ExportPage {
-        ExportPage {
-            chosen: None,
-            region_only: false,
-            container: Container::Mp4,
-            video: VideoCodec::H264,
-            audio: AudioCodec::Aac,
-            quality: Quality::default(),
-            software: false,
-            normalise: false,
-            target: Some(-14.0),
-            encoders: None,
-            finding: None,
-            dialog: None,
-            running: None,
-            ended: None,
-        }
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Demo {
+    Off,
+    Wanted,
+    /// Filled: the second job is paused once it is under way.
+    Filled,
 }
 
 impl ExportPage {
+    /// The page, with the person's own presets read from `data_dir` (an
+    /// unreadable file is explained once and left alone) and the export
+    /// pace measured before.
+    pub fn new(data_dir: &Path, pace: Pace, errors: &mut ui_kit::ErrorCenter) -> ExportPage {
+        let (own, own_read_only) = match OwnPresets::load(data_dir) {
+            Ok(own) => (own, false),
+            Err(err) => {
+                errors.push(&err);
+                (OwnPresets::default(), true)
+            }
+        };
+        ExportPage {
+            choice: Choice::default(),
+            name: String::new(),
+            folder: String::new(),
+            for_project: None,
+            region_only: false,
+            target: Some(-14.0),
+            encoders: None,
+            finding: None,
+            folder_dialog: None,
+            making: None,
+            own,
+            own_read_only,
+            saving_as: None,
+            saving: None,
+            data_dir: data_dir.to_path_buf(),
+            queue: Queue::default(),
+            loudness: LoudnessWatch::default(),
+            disk: DiskWatch::default(),
+            pace,
+            learned: false,
+            media_counts: None,
+            said: None,
+            demo: Demo::Off,
+        }
+    }
+
     /// The loudness aimed for, as Settings has it now (`None`: no target).
     pub fn aim_at(&mut self, target: Option<f32>) {
         self.target = target;
     }
 
-    /// Stops the export under way, if any, and waits briefly for it to let
-    /// go of its file: for closing the app.
-    pub fn stop(&mut self) {
-        if let Some(export) = self.running.take() {
-            export.cancel();
-            let give_up = std::time::Instant::now() + Duration::from_secs(5);
-            while export.finished().is_none() && std::time::Instant::now() < give_up {
-                std::thread::sleep(Duration::from_millis(20));
-            }
-        }
+    /// Fills the queue once the page is drawn (`--export-queue`, for screenshots).
+    pub fn demo_queue(&mut self) {
+        self.demo = Demo::Wanted;
     }
 
-    /// Takes in what happened since the last frame. Returns an error to show.
-    pub fn poll(&mut self) -> Option<AppError> {
-        if let Some(dialog) = &self.dialog
+    /// A newly measured export pace, to be saved with the settings.
+    pub fn take_pace(&mut self) -> Option<Pace> {
+        std::mem::take(&mut self.learned).then_some(self.pace)
+    }
+
+    /// Stops the export under way, if any: for closing the app.
+    pub fn stop(&mut self) {
+        self.queue.stop();
+    }
+
+    /// Whether what the page shows is complete (for screenshots): the
+    /// encoders, the loudness, the disk, and a filled demo queue.
+    pub fn settled(&self) -> bool {
+        let demo = match self.demo {
+            Demo::Off => true,
+            Demo::Wanted => false,
+            Demo::Filled => {
+                let jobs = self.queue.jobs();
+                jobs.first().is_some_and(|j| j.state.is_over())
+                    && jobs
+                        .get(1)
+                        .is_some_and(|j| j.progress().is_some_and(|p| p.paused) || j.state.is_over())
+            }
+        };
+        self.encoders.is_some() && self.loudness.settled() && self.disk.settled() && demo
+    }
+
+    /// Takes in what the workers did since the last frame: every frame,
+    /// whichever page is shown. Returns errors to show.
+    pub fn poll(&mut self) -> Vec<AppError> {
+        let mut errors = Vec::new();
+        if let Some(dialog) = &self.folder_dialog
             && let Ok(picked) = dialog.try_recv()
         {
-            self.dialog = None;
-            if let Some(path) = picked {
-                self.chosen = Some(with_ending(path, self.container));
+            self.folder_dialog = None;
+            if let Some(folder) = picked {
+                self.folder = folder.display().to_string();
+            }
+        }
+        if let Some(making) = &self.making
+            && let Ok(made) = making.try_recv()
+        {
+            self.making = None;
+            self.disk.again();
+            if let Err(err) = made {
+                errors.push(err);
+            }
+        }
+        if let Some(saving) = &self.saving
+            && let Ok(saved) = saving.try_recv()
+        {
+            self.saving = None;
+            if let Err(err) = saved {
+                errors.push(err);
             }
         }
         if let Some(finding) = &self.finding
@@ -106,468 +207,1240 @@ impl ExportPage {
         {
             self.finding = None;
             self.encoders = Some(found);
-            self.settle();
+            self.choice.settle(self.encoders.as_ref());
         }
-        let outcome = self.running.as_ref()?.finished()?;
-        self.running = None;
-        match outcome {
-            Outcome::Done(done) => {
-                tracing::info!(
-                    "exported {} frames to {} in {:.1} s with {}",
-                    done.frames,
-                    done.path.display(),
-                    done.took.as_secs_f64(),
-                    done.encoder
-                );
-                self.ended = Some(Ended::Done(done));
-                None
-            }
-            Outcome::Cancelled => {
-                self.ended = Some(Ended::Cancelled);
-                None
-            }
-            Outcome::Failed(err) => {
-                self.ended = None;
-                Some(err)
-            }
+        let polled = self.queue.poll();
+        for done in &polled.finished {
+            self.pace.learn(done);
+            self.learned = true;
         }
+        errors.extend(polled.failed);
+        errors
     }
 
-    /// Draws the page. `devices` gives what the worker needs when Export is
-    /// pressed; `None` from it means this window can't put pictures together.
+    /// Draws the page. `missing` are the project's files that can't be
+    /// found; `devices` gives what a worker needs to put pictures together
+    /// (`None`: this window can't).
     pub fn ui(
         &mut self,
         ui: &mut egui::Ui,
         theme: &Theme,
         project: &Project,
         project_file: &Path,
+        missing: &[MediaId],
         devices: impl FnOnce() -> Option<Devices>,
-    ) -> Option<AppError> {
-        let mut problem = None;
-        let seq = project.active()?;
+    ) -> Asked {
+        let mut asked = Asked::default();
+        let Some(seq) = project.active() else { return asked };
+        let ctx = ui.ctx().clone();
+        if self.encoders.is_none() && self.finding.is_none() {
+            let ctx = ctx.clone();
+            self.finding = Some(Encoders::detect_in_background(move || ctx.request_repaint()));
+        }
+        {
+            let ctx = ctx.clone();
+            self.queue.notify_with(Arc::new(move || ctx.request_repaint()));
+        }
+        if self.for_project.as_deref() != Some(project_file) {
+            self.for_project = Some(project_file.to_path_buf());
+            self.name = checks::clean_name(&project.name);
+            if self.name.is_empty() {
+                self.name = "Video".to_owned();
+            }
+            self.folder = project_file
+                .parent()
+                .unwrap_or(Path::new("."))
+                .display()
+                .to_string();
+        }
+        let devices = devices();
+        let plan = self.plan(project, seq, missing, devices.is_some(), &ctx);
+        if self.demo == Demo::Wanted && self.encoders.is_some() {
+            self.fill_demo(project, &plan, devices.clone());
+        }
+        if self.demo == Demo::Filled
+            && let Some(job) = self.queue.jobs().get(1)
+            && job.progress().is_some_and(|p| p.share() >= 0.3 && !p.paused)
+        {
+            let id = job.id;
+            self.queue.pause(id, true);
+        }
+
+        let page = ui.available_rect_before_wrap();
+        let gap = layout::PANEL_GAP;
+        let top_bottom = page.bottom() - QUEUE_HEIGHT - gap;
+        let left = egui::Rect::from_min_max(
+            page.min,
+            egui::pos2(page.left() + layout::LEFT_PANEL_WIDTH, top_bottom),
+        );
+        let right = egui::Rect::from_min_max(
+            egui::pos2(page.right() - layout::RIGHT_PANEL_WIDTH, page.top()),
+            egui::pos2(page.right(), top_bottom),
+        );
+        let middle = egui::Rect::from_min_max(
+            egui::pos2(left.right() + gap, page.top()),
+            egui::pos2(right.left() - gap, top_bottom),
+        );
+        let bottom =
+            egui::Rect::from_min_max(egui::pos2(page.left(), page.bottom() - QUEUE_HEIGHT), page.max);
+
+        layout::panel(ui, theme, left, |ui| self.presets_ui(ui, theme, &mut asked));
+        let mut column = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(middle)
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+        egui::ScrollArea::vertical()
+            .id_salt("export settings")
+            .auto_shrink([false, false])
+            .show(&mut column, |ui| {
+                ui.add_space(4.0);
+                self.file_row(ui, theme, seq, &plan);
+                ui.add_space(14.0);
+                ui.columns(2, |columns| {
+                    self.video_section(&mut columns[0], theme, seq, &plan);
+                    self.audio_section(&mut columns[1], theme, seq);
+                });
+                ui.add_space(14.0);
+                self.checks_ui(ui, theme, &plan, &mut asked);
+            });
+        layout::panel(ui, theme, right, |ui| {
+            self.summary_ui(ui, theme, project, &plan, devices, &mut asked);
+        });
+        layout::panel(ui, theme, bottom, |ui| self.queue_ui(ui, theme, &mut asked));
+        ui.allocate_rect(page, egui::Sense::hover());
+
+        if plan.checks.iter().any(|c| c.level == Level::Waiting) || self.queue.busy() {
+            ctx.request_repaint_after(Duration::from_millis(250));
+        }
+        asked
+    }
+}
+
+/// What the page works out once a frame from the settings and the timeline.
+struct Plan {
+    sequence: SequenceId,
+    rate: Rate,
+    /// The file's frame rate.
+    out_rate: Rate,
+    timeline_size: (u32, u32),
+    /// The file's picture size (none for sound alone).
+    frame_size: Option<(u32, u32)>,
+    region: Option<(Time, Time)>,
+    range: Option<(Time, Time)>,
+    folder: PathBuf,
+    path: PathBuf,
+    settings: engine::export::ExportSettings,
+    bytes: u64,
+    beside_bytes: u64,
+    estimate: words::Estimate,
+    checks: Vec<checks::Check>,
+    /// A check stops the export.
+    blocked: bool,
+    disk: Option<checks::Disk>,
+}
+
+impl ExportPage {
+    fn plan(
+        &mut self,
+        project: &Project,
+        seq: &project::Sequence,
+        missing: &[MediaId],
+        can_picture: bool,
+        ctx: &egui::Context,
+    ) -> Plan {
         let rate = seq.settings.frame_rate;
-        let length = seq.length();
+        let end = seq.length();
         let region = seq
             .region
-            .map(|r| (r.start, r.end.min(length)))
+            .map(|r| (r.start, r.end.min(end)))
             .filter(|(from, to)| to > from);
         if region.is_none() {
             self.region_only = false;
         }
         let range = if self.region_only { region } else { None };
-        let stretch = range.map_or(length, |(from, to)| to - from);
-        let size = (seq.settings.width & !1, seq.settings.height & !1);
-        if self.encoders.is_none() && self.finding.is_none() {
-            let ctx = ui.ctx().clone();
-            self.finding = Some(Encoders::detect_in_background(move || ctx.request_repaint()));
-        }
-        let path = with_ending(
-            self.chosen
-                .clone()
-                .unwrap_or_else(|| default_path(project_file, &project.name)),
-            self.container,
-        );
+        let stretch = range.map_or(end, |(from, to)| to - from);
+        let length = Duration::from_secs_f64(stretch.as_secs_f64().max(0.0));
+        let timeline_size = (seq.settings.width, seq.settings.height);
+        let folder = PathBuf::from(self.folder.trim());
+        let file_name = format!("{}.{}", self.name.trim(), self.choice.container.extension());
+        let path = folder.join(&file_name);
+        let settings = self
+            .choice
+            .settings(path.clone(), range, timeline_size, self.target);
+        let frame_size = settings.size;
+        let out_rate = self.choice.rate.unwrap_or(rate);
+        let sample_rate = seq.settings.sample_rate;
+        let bytes = settings.estimated_bytes(frame_size.unwrap_or((2, 2)), out_rate, sample_rate, length);
+        let beside_bytes = settings.estimated_beside_bytes(sample_rate, length);
+        let frames = (length.as_secs_f64() * out_rate.as_f64()).round() as u64;
+        let on_card = !self.choice.software
+            && self
+                .encoders
+                .as_ref()
+                .is_some_and(|e| e.video(self.choice.video).graphics_card.is_some());
+        let estimate = self.pace.estimate(words::Work {
+            pictures: frame_size.map(|size| (size, frames)),
+            on_card,
+            length,
+            normalise: settings.normalise.is_some(),
+        });
 
-        ui.vertical_centered(|ui| {
-            ui.set_max_width(560.0);
-            ui.add_space(24.0);
-            ui.label(
-                egui::RichText::new("Export")
-                    .family(ui_kit::fonts::semibold())
-                    .size(22.0),
-            );
-            ui.label(
-                egui::RichText::new(if self.container.has_video() {
-                    format!(
-                        "{}×{} · {} frames a second · {} with {} sound, in an {}",
-                        size.0,
-                        size.1,
-                        short(rate.as_f64()),
-                        self.video.label(),
-                        self.audio.label(),
-                        self.container.label()
-                    )
-                } else {
-                    format!(
-                        "Sound only · {} in a {} file",
-                        self.audio.label(),
-                        self.container.label()
-                    )
-                })
-                .color(theme.muted),
-            );
-            ui.add_space(18.0);
+        // What the checks need, from the workers and the timeline.
+        let notify = {
+            let ctx = ctx.clone();
+            move || ctx.request_repaint()
+        };
+        let loudness = self.loudness.look(project, seq.id, range, notify.clone());
+        let disk = self.disk.look(&folder, &path, notify);
+        let media = self.media_counts(project, seq.id, missing);
+        let video = settings.video;
+        let encodable = self
+            .encoders
+            .as_ref()
+            .map(|e| e.can(settings.container, video, settings.audio, settings.software));
+        let other_codec = self.encoders.as_ref().and_then(|e| {
+            VideoCodec::ALL.into_iter().find(|&c| {
+                Some(c) != video && e.can(settings.container, Some(c), settings.audio, settings.software)
+            })
         });
-        let width = 560.0_f32.min(ui.available_width());
-        let side = ((ui.available_width() - width) / 2.0).max(0.0);
-        ui.horizontal_top(|ui| {
-            ui.add_space(side);
-            ui.vertical(|ui| {
-                ui.set_width(width);
-                self.form(
-                    ui,
-                    theme,
-                    project,
-                    &path,
-                    (region, range, stretch),
-                    devices,
-                    &mut problem,
-                );
-            });
-        });
-        problem
+        let facts = checks::Facts {
+            media,
+            empty: stretch <= Time::ZERO,
+            no_pictures_here: video.is_some() && !can_picture,
+            encodable,
+            video,
+            other_codec,
+            loudness,
+            normalise: self.choice.normalise,
+            target: self.target,
+            disk: disk.clone(),
+            name: file_name,
+            bad_name: checks::clean_name(&self.name) != self.name.trim(),
+            needed: bytes + beside_bytes,
+            sizes: frame_size.map(|f| (timeline_size, f)),
+        };
+        let checks = checks::list(&facts);
+        let blocked = checks.iter().any(|c| matches!(c.level, Level::Bad))
+            || facts.encodable != Some(true)
+            || facts.disk.is_none()
+            || self.name.trim().is_empty();
+        Plan {
+            sequence: seq.id,
+            rate,
+            out_rate,
+            timeline_size,
+            frame_size,
+            region,
+            range,
+            folder,
+            path,
+            settings,
+            bytes,
+            beside_bytes,
+            estimate,
+            checks,
+            blocked,
+            disk,
+        }
     }
 
-    /// The form, the Export button and how it is going, in the page's column.
-    #[allow(clippy::too_many_arguments)]
-    fn form(
+    fn media_counts(
+        &mut self,
+        project: &Project,
+        sequence: SequenceId,
+        missing: &[MediaId],
+    ) -> (usize, usize) {
+        if let Some((p, s, n, counts)) = &self.media_counts
+            && *s == sequence
+            && *n == missing.len()
+            && p.sequences.ptr_eq(&project.sequences)
+        {
+            return *counts;
+        }
+        let counts = checks::media_counts(project, sequence, missing);
+        self.media_counts = Some((project.clone(), sequence, missing.len(), counts));
+        counts
+    }
+
+    /// The presets on the left: built-in, then the person's own, then
+    /// saving the settings as a preset.
+    fn presets_ui(&mut self, ui: &mut egui::Ui, theme: &Theme, asked: &mut Asked) {
+        heading(ui, theme, "PRESETS");
+        let built_in = presets::built_in(self.encoders.as_ref());
+        let mut picked = None;
+        egui::ScrollArea::vertical()
+            .id_salt("export presets")
+            .auto_shrink([false, true])
+            .max_height(ui.available_height() - 44.0)
+            .show(ui, |ui| {
+                for preset in &built_in {
+                    if preset_button(ui, theme, preset, &self.choice, self.target).clicked() {
+                        picked = Some(preset.clone());
+                    }
+                }
+                if !self.own.presets.is_empty() {
+                    ui.add_space(10.0);
+                    heading(ui, theme, "YOUR PRESETS");
+                }
+                let mut remove = None;
+                for preset in &self.own.presets {
+                    let response = preset_button(ui, theme, preset, &self.choice, self.target);
+                    if response.clicked() {
+                        picked = Some(preset.clone());
+                    }
+                    response.context_menu(|ui| {
+                        if ui.button("Remove this preset").clicked() {
+                            remove = Some(preset.name.clone());
+                            ui.close();
+                        }
+                    });
+                }
+                if let Some(name) = remove {
+                    self.own.remove(&name);
+                    self.said = Some(format!("Removed \"{name}\"."));
+                    self.save_own(asked);
+                }
+            });
+        if let Some(preset) = picked {
+            self.choice = preset.choice;
+            self.choice.settle(self.encoders.as_ref());
+        }
+        ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+            match &mut self.saving_as {
+                None => {
+                    if ui
+                        .add_enabled(!self.own_read_only, egui::Button::new("+ Save as a preset"))
+                        .on_hover_text(
+                            "Keep the current settings under a name of yours, offered in every project",
+                        )
+                        .clicked()
+                    {
+                        self.saving_as = Some(String::new());
+                        self.said = None;
+                    }
+                    if let Some(said) = &self.said {
+                        ui.label(egui::RichText::new(said).color(theme.muted).small());
+                    }
+                }
+                Some(name) => {
+                    let mut done = None;
+                    ui.horizontal(|ui| {
+                        if ui.button("Save").clicked() {
+                            done = Some(true);
+                        }
+                        if ui.button("Cancel").clicked() {
+                            done = Some(false);
+                        }
+                    });
+                    let field = ui.add(
+                        egui::TextEdit::singleline(name)
+                            .hint_text("Name of the preset")
+                            .desired_width(f32::INFINITY),
+                    );
+                    if field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        done = Some(true);
+                    }
+                    if !field.has_focus() && name.is_empty() && done.is_none() {
+                        field.request_focus();
+                    }
+                    match done {
+                        Some(true) => {
+                            let name = name.clone();
+                            match self.own.add(&name, self.choice.clone()) {
+                                Ok(replaced) => {
+                                    self.said = Some(if replaced {
+                                        format!("Replaced \"{}\".", name.trim())
+                                    } else {
+                                        format!("Saved \"{}\": it is offered in every project.", name.trim())
+                                    });
+                                    self.saving_as = None;
+                                    self.save_own(asked);
+                                }
+                                Err(err) => asked.problem = Some(err),
+                            }
+                        }
+                        Some(false) => self.saving_as = None,
+                        None => {}
+                    }
+                }
+            }
+        });
+    }
+
+    /// Saves the own presets on a thread.
+    fn save_own(&mut self, asked: &mut Asked) {
+        if self.own_read_only {
+            asked.problem = Some(
+                AppError::new("Your export presets can't be changed")
+                    .why("Their file couldn't be read when the app started, so it is left as it is.")
+                    .fix("See the message about it in Diagnostics; the built-in presets still work."),
+            );
+            return;
+        }
+        let (own, dir) = (self.own.clone(), self.data_dir.clone());
+        let (tell, saved) = channel();
+        let spawned = std::thread::Builder::new()
+            .name("export presets".into())
+            .spawn(move || {
+                let _ = tell.send(own.save(&dir));
+            });
+        match spawned {
+            Ok(_) => self.saving = Some(saved),
+            Err(err) => tracing::error!("saving the export presets could not start: {err}"),
+        }
+    }
+
+    /// File name, folder and range, in one row.
+    fn file_row(&mut self, ui: &mut egui::Ui, theme: &Theme, seq: &project::Sequence, plan: &Plan) {
+        let rate = plan.rate;
+        // The three share the column: the name and the range a quarter
+        // each, the folder the rest.
+        let room = ui.available_width() - 2.0 * 16.0;
+        let (name_width, range_width) = (room * 0.26 - 40.0, room * 0.27);
+        // What else the row holds: the ending, Browse…, the spacing.
+        let folder_width = room - room * 0.26 - range_width - 150.0;
+        ui.horizontal_top(|ui| {
+            ui.vertical(|ui| {
+                small_label(ui, theme, "File name");
+                ui.horizontal(|ui| {
+                    ui.add(egui::TextEdit::singleline(&mut self.name).desired_width(name_width));
+                    ui.label(
+                        egui::RichText::new(format!(".{}", self.choice.container.extension()))
+                            .color(theme.muted),
+                    );
+                });
+            });
+            ui.add_space(16.0);
+            ui.vertical(|ui| {
+                small_label(ui, theme, "Save to");
+                ui.horizontal(|ui| {
+                    ui.add(egui::TextEdit::singleline(&mut self.folder).desired_width(folder_width));
+                    if ui.button("Browse…").clicked() && self.folder_dialog.is_none() {
+                        self.folder_dialog = Some(ask_folder(ui.ctx(), &plan.folder));
+                    }
+                });
+            });
+            ui.add_space(16.0);
+            ui.vertical(|ui| {
+                small_label(ui, theme, "Range");
+                let whole = format!(
+                    "Whole timeline ({})",
+                    ui_kit::time_text::duration(seq.length().as_secs_f64() as u64)
+                );
+                let region_text = match plan.region {
+                    Some((from, to)) => format!(
+                        "Region, in to out ({} – {})",
+                        from.timecode(rate),
+                        to.timecode(rate)
+                    ),
+                    None => "Region, in to out (none marked)".to_owned(),
+                };
+                egui::ComboBox::from_id_salt("export range")
+                    .width(range_width)
+                    .selected_text(if self.region_only { &region_text } else { &whole })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut self.region_only, false, &whole);
+                        ui.add_enabled_ui(plan.region.is_some(), |ui| {
+                            ui.selectable_value(&mut self.region_only, true, &region_text)
+                                .on_disabled_hover_text(
+                                    "Mark in and out (or Shift-drag in the timeline's ruler) first",
+                                );
+                        });
+                    });
+            });
+        });
+    }
+
+    fn video_section(&mut self, ui: &mut egui::Ui, theme: &Theme, seq: &project::Sequence, plan: &Plan) {
+        let encoders = self.encoders.clone();
+        section(ui, theme, "Video", |ui| {
+            row(ui, theme, "Container", |ui| {
+                egui::ComboBox::from_id_salt("export container")
+                    .width(200.0)
+                    .selected_text(container_words(self.choice.container))
+                    .show_ui(ui, |ui| {
+                        for container in Container::ALL {
+                            if ui
+                                .selectable_value(
+                                    &mut self.choice.container,
+                                    container,
+                                    container_words(container),
+                                )
+                                .clicked()
+                            {
+                                self.choice.settle(encoders.as_ref());
+                            }
+                        }
+                    });
+            });
+            if !self.choice.container.has_video() {
+                ui.label(egui::RichText::new("Sound only: no picture is written.").color(theme.muted));
+                return;
+            }
+            row(ui, theme, "Codec", |ui| {
+                egui::ComboBox::from_id_salt("export video codec")
+                    .width(200.0)
+                    .selected_text(codec_words(self.choice.video))
+                    .show_ui(ui, |ui| {
+                        for &codec in self.choice.container.video_codecs() {
+                            let usable = encoders.as_ref().is_none_or(|e| e.video(codec).any());
+                            ui.add_enabled_ui(usable, |ui| {
+                                ui.selectable_value(&mut self.choice.video, codec, codec_words(codec))
+                                    .on_disabled_hover_text("This machine has no encoder for it");
+                            });
+                        }
+                    });
+            });
+            row(ui, theme, "Size", |ui| {
+                let timeline = plan.timeline_size;
+                egui::ComboBox::from_id_salt("export size")
+                    .width(200.0)
+                    .selected_text(self.choice.size.label(timeline))
+                    .show_ui(ui, |ui| {
+                        for size in std::iter::once(FrameSize::Timeline).chain(FrameSize::OFFERED) {
+                            ui.selectable_value(&mut self.choice.size, size, size.label(timeline));
+                        }
+                        if let FrameSize::Exact(..) | FrameSize::Lines(..) = self.choice.size
+                            && !FrameSize::OFFERED.contains(&self.choice.size)
+                        {
+                            let size = self.choice.size;
+                            ui.selectable_value(&mut self.choice.size, size, size.label(timeline));
+                        }
+                    });
+            });
+            row(ui, theme, "Frame rate", |ui| {
+                let own = seq.settings.frame_rate;
+                let own_text = format!("{} fps (the timeline's)", words::short(own.as_f64()));
+                egui::ComboBox::from_id_salt("export rate")
+                    .width(200.0)
+                    .selected_text(match self.choice.rate {
+                        Some(r) => format!("{} fps", words::short(r.as_f64())),
+                        None => own_text.clone(),
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut self.choice.rate, None, &own_text);
+                        for rate in LOWER_RATES
+                            .into_iter()
+                            .filter(|r| r.as_f64() < own.as_f64() - 0.01)
+                        {
+                            ui.selectable_value(
+                                &mut self.choice.rate,
+                                Some(rate),
+                                format!("{} fps", words::short(rate.as_f64())),
+                            );
+                        }
+                    });
+            });
+            row(ui, theme, "Quality", |ui| {
+                let size = plan.frame_size.unwrap_or(plan.timeline_size);
+                let words = |q: Quality| {
+                    let bits = q.video_bit_rate(self.choice.video, size, plan.out_rate);
+                    let megabits = bits as f64 / 1_000_000.0;
+                    if megabits < 10.0 {
+                        format!("{} · {megabits:.1} Mb/s", q.label())
+                    } else {
+                        format!("{} · {megabits:.0} Mb/s", q.label())
+                    }
+                };
+                egui::ComboBox::from_id_salt("export quality")
+                    .width(200.0)
+                    .selected_text(words(self.choice.quality))
+                    .show_ui(ui, |ui| {
+                        for quality in Quality::ALL {
+                            ui.selectable_value(&mut self.choice.quality, quality, words(quality))
+                                .on_hover_text(quality_about(quality));
+                        }
+                    });
+            });
+            let probed = encoders.as_ref().map(|e| e.video(self.choice.video));
+            let card = probed.and_then(|p| p.graphics_card);
+            // Ticked when the card will encode (or may: not known yet).
+            let mut use_card = !self.choice.software && (probed.is_none() || card.is_some());
+            let tip = match (probed, card) {
+                (None, _) => "Finding out what this machine can encode…".to_owned(),
+                (Some(_), Some(name)) => format!(
+                    "This graphics card encodes {} ({name})",
+                    self.choice.video.label()
+                ),
+                (Some(_), None) => format!(
+                    "This graphics card has no encoder for {}: the processor encodes it",
+                    self.choice.video.label()
+                ),
+            };
+            ui.add_space(2.0);
+            let enabled = probed.is_none() || card.is_some();
+            if ui
+                .add_enabled(
+                    enabled,
+                    egui::Checkbox::new(&mut use_card, "Use the graphics card to encode"),
+                )
+                .on_hover_text(&tip)
+                .on_disabled_hover_text(&tip)
+                .changed()
+            {
+                self.choice.software = !use_card;
+            }
+        });
+    }
+
+    fn audio_section(&mut self, ui: &mut egui::Ui, theme: &Theme, seq: &project::Sequence) {
+        let encoders = self.encoders.clone();
+        let target = self.target;
+        section(ui, theme, "Audio", |ui| {
+            row(ui, theme, "Codec", |ui| {
+                egui::ComboBox::from_id_salt("export audio codec")
+                    .width(200.0)
+                    .selected_text(audio_words(self.choice.audio))
+                    .show_ui(ui, |ui| {
+                        for &codec in self.choice.container.audio_codecs() {
+                            let usable = encoders.as_ref().is_none_or(|e| e.audio(codec).is_some());
+                            ui.add_enabled_ui(usable, |ui| {
+                                ui.selectable_value(&mut self.choice.audio, codec, audio_words(codec))
+                                    .on_disabled_hover_text("This machine has no encoder for it");
+                            });
+                        }
+                    });
+            });
+            row(ui, theme, "Bit rate", |ui| {
+                let text = match self.choice.quality.audio_bit_rate(self.choice.audio) {
+                    Some(bits) => format!("{} kb/s (from the quality)", bits / 1000),
+                    None => "Lossless: every sample as mixed".to_owned(),
+                };
+                ui.label(egui::RichText::new(text).color(theme.text_secondary));
+            });
+            row(ui, theme, "Sample rate", |ui| {
+                let own = seq.settings.sample_rate;
+                let rate = self.choice.audio.sample_rate_for(own);
+                let text = if rate == own {
+                    format!("{} kHz (the timeline's)", words::short(f64::from(rate) / 1000.0))
+                } else {
+                    format!(
+                        "{} kHz (what {} takes)",
+                        words::short(f64::from(rate) / 1000.0),
+                        self.choice.audio.label()
+                    )
+                };
+                ui.label(egui::RichText::new(text).color(theme.text_secondary));
+            });
+            ui.add_space(2.0);
+            let label = match target {
+                Some(t) => format!(
+                    "Normalise loudness to {} LUFS, peaks under {:.0} dBTP",
+                    words::target_text(t),
+                    engine::export::TRUE_PEAK_CEILING
+                ),
+                None => "Normalise loudness (choose a loudness in Settings, under Audio)".to_owned(),
+            };
+            ui.add_enabled(target.is_some(), egui::Checkbox::new(&mut self.choice.normalise, label))
+                .on_hover_text("The whole stretch is measured first, then exported turned up or down to the loudness aimed for, with a limiter keeping the peaks safe");
+            let wav = self.choice.container != Container::Wav;
+            ui.add_enabled(
+                wav,
+                egui::Checkbox::new(
+                    &mut self.choice.sound_beside,
+                    "Also save the sound as a separate WAV",
+                ),
+            )
+            .on_hover_text("The same sound, 24-bit, beside the file with the same name")
+            .on_disabled_hover_text("The file is a WAV already");
+        });
+    }
+
+    fn checks_ui(&mut self, ui: &mut egui::Ui, theme: &Theme, plan: &Plan, asked: &mut Asked) {
+        let mut fix = None;
+        section(ui, theme, "Checks", |ui| {
+            for check in &plan.checks {
+                ui.horizontal(|ui| {
+                    let colour = match check.level {
+                        Level::Good => ui_kit::status::GOOD,
+                        Level::Warn => ui_kit::status::WARNING,
+                        Level::Bad => ui_kit::status::ERROR,
+                        Level::Note | Level::Waiting => theme.muted,
+                    };
+                    if check.level == Level::Waiting {
+                        ui.add(egui::Spinner::new().size(10.0));
+                    } else {
+                        ui_kit::status_dot(ui, colour);
+                    }
+                    ui.add_space(4.0);
+                    let width = ui.available_width() - if check.fix.is_some() { 170.0 } else { 0.0 };
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(width, 20.0),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            ui.set_width(width);
+                            ui.add(
+                                egui::Label::new(egui::RichText::new(&check.text).color(theme.text)).wrap(),
+                            );
+                        },
+                    );
+                    if let Some((what, label)) = check.fix {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button(label).clicked() {
+                                fix = Some(what);
+                            }
+                        });
+                    }
+                });
+            }
+        });
+        if let Some(what) = fix {
+            self.apply_fix(ui.ctx(), what, plan, asked);
+        }
+    }
+
+    fn apply_fix(&mut self, ctx: &egui::Context, fix: Fix, plan: &Plan, asked: &mut Asked) {
+        match fix {
+            Fix::FindMissing => asked.find_missing = true,
+            Fix::Normalise => self.choice.normalise = true,
+            Fix::TimelineSize => self.choice.size = FrameSize::Timeline,
+            Fix::UseCodec(codec) => self.choice.video = codec,
+            Fix::CleanName => self.name = checks::clean_name(&self.name),
+            Fix::ChooseFolder => {
+                if self.folder_dialog.is_none() {
+                    self.folder_dialog = Some(ask_folder(ctx, &plan.folder));
+                }
+            }
+            Fix::NewName => {
+                let ending = self.choice.container.extension();
+                let folder = plan.folder.clone();
+                // A few looks at the disk, at a click.
+                self.name = checks::free_name(&self.name, |n| folder.join(format!("{n}.{ending}")).exists());
+            }
+            Fix::MakeFolder => {
+                let (tell, made) = channel();
+                let folder = plan.folder.clone();
+                let ctx = ctx.clone();
+                let spawned = std::thread::Builder::new()
+                    .name("export folder".into())
+                    .spawn(move || {
+                        let made = std::fs::create_dir_all(&folder).map_err(|err| {
+                            AppError::new("The folder can't be made")
+                                .why(format!("Making {} failed.", folder.display()))
+                                .fix("Check the path, or choose another folder with Browse….")
+                                .source(err)
+                        });
+                        let _ = tell.send(made);
+                        ctx.request_repaint();
+                    });
+                match spawned {
+                    Ok(_) => self.making = Some(made),
+                    Err(err) => tracing::error!("making the folder could not start: {err}"),
+                }
+            }
+        }
+    }
+
+    /// The summary on the right: the file in a sentence, what it plays on,
+    /// the free space, then Export and Add to queue.
+    fn summary_ui(
         &mut self,
         ui: &mut egui::Ui,
         theme: &Theme,
         project: &Project,
-        path: &Path,
-        (region, range, stretch): (Stretch, Stretch, Time),
-        devices: impl FnOnce() -> Option<Devices>,
-        problem: &mut Option<AppError>,
+        plan: &Plan,
+        devices: Option<Devices>,
+        asked: &mut Asked,
     ) {
-        let Some(seq) = project.active() else { return };
-        let rate = seq.settings.frame_rate;
-        let length = seq.length();
-        let size = (seq.settings.width & !1, seq.settings.height & !1);
-        let running = self.running.is_some();
-        ui.add_enabled_ui(!running, |ui| {
-            row(ui, theme, "File", |ui| {
-                if ui
-                    .button("Choose…")
-                    .on_hover_text("Pick where the video is saved and what it is called")
-                    .clicked()
-                    && self.dialog.is_none()
+        let name = plan
+            .path
+            .file_name()
+            .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(&name)
+                    .family(ui_kit::fonts::semibold())
+                    .size(16.0),
+            )
+            .truncate(),
+        );
+        ui.add_space(6.0);
+        ui.label(egui::RichText::new(self.sentence(plan)).color(theme.text_secondary));
+        ui.add_space(12.0);
+        egui::Grid::new("export summary")
+            .num_columns(2)
+            .spacing([12.0, 8.0])
+            .show(ui, |ui| {
+                let dt = |ui: &mut egui::Ui, text: &str| {
+                    ui.label(egui::RichText::new(text).color(theme.muted));
+                };
+                let dd = |ui: &mut egui::Ui, text: String| {
+                    ui.add(egui::Label::new(egui::RichText::new(text).color(theme.text)).wrap());
+                };
+                dt(ui, "Plays on");
+                dd(ui, self.choice.plays_on().to_owned());
+                ui.end_row();
+                dt(ui, "Free space");
+                dd(
+                    ui,
+                    match &plan.disk {
+                        Some(checks::Disk { free: Some(free), .. }) => {
+                            format!("{} there", words::bytes_text(*free))
+                        }
+                        Some(_) => "Can't be told".to_owned(),
+                        None => "Looking…".to_owned(),
+                    },
+                );
+                ui.end_row();
+                dt(ui, "While exporting");
+                dd(ui, "You can keep editing".to_owned());
+                ui.end_row();
+            });
+        ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+            let width = ui.available_width();
+            let mut add = None;
+            if ui
+                .add_enabled(
+                    !plan.blocked,
+                    egui::Button::new("Add to queue for later").min_size(egui::vec2(width, 30.0)),
+                )
+                .on_hover_text("Waits in the queue until you press its Start")
+                .clicked()
+            {
+                add = Some(false);
+            }
+            let export = ui.add_enabled(!plan.blocked, |ui: &mut egui::Ui| {
+                ui.add(
+                    egui::Button::new(
+                        egui::RichText::new("Export")
+                            .color(theme.accent_ink)
+                            .family(ui_kit::fonts::semibold()),
+                    )
+                    .fill(theme.accent)
+                    .min_size(egui::vec2(width, 34.0)),
+                )
+            });
+            if export.clicked() {
+                add = Some(true);
+            }
+            if plan.blocked {
+                ui.label(egui::RichText::new("Fix what the checks mark in red first.").color(theme.muted));
+            } else if self.queue.busy() {
+                ui.label(
+                    egui::RichText::new("Export starts once the export under way is done.")
+                        .color(theme.muted),
+                );
+            }
+            if let Some(now) = add {
+                self.add_job(project, plan, devices, now, asked);
+            }
+        });
+    }
+
+    /// "1920 × 1080, H.264, 60 fps, AAC sound. About 240 MB, roughly 1 min
+    /// 40 s on this machine."
+    fn sentence(&self, plan: &Plan) -> String {
+        let what = match plan.frame_size {
+            Some((w, h)) => format!(
+                "{w} × {h}, {}, {} fps, {} sound",
+                self.choice.video.label(),
+                words::short(plan.out_rate.as_f64()),
+                self.choice.audio.label()
+            ),
+            None => format!("Sound only, {}", self.choice.format_words()),
+        };
+        let beside = if plan.beside_bytes > 0 {
+            format!(
+                ", and a WAV of {} beside it",
+                words::bytes_text(plan.beside_bytes)
+            )
+        } else {
+            String::new()
+        };
+        let guess = if plan.estimate.measured {
+            ""
+        } else {
+            " (a first guess: the first export measures this machine)"
+        };
+        format!(
+            "{what}. About {}{beside}, {} on this machine{guess}.",
+            words::bytes_text(plan.bytes),
+            words::about_time(plan.estimate.time),
+        )
+    }
+
+    fn add_job(
+        &mut self,
+        project: &Project,
+        plan: &Plan,
+        devices: Option<Devices>,
+        now: bool,
+        asked: &mut Asked,
+    ) {
+        if let Err(err) = plan.settings.check() {
+            asked.problem = Some(err);
+            return;
+        }
+        let preset = self.preset_name().unwrap_or_else(|| "Your settings".to_owned());
+        let job = Job::new(
+            preset,
+            plan.settings.clone(),
+            self.choice.clone(),
+            plan.bytes,
+            (project.clone(), plan.sequence),
+            devices,
+        );
+        self.queue.add(job, now);
+    }
+
+    /// The name of the preset the settings are, if they are one.
+    fn preset_name(&self) -> Option<String> {
+        presets::built_in(self.encoders.as_ref())
+            .iter()
+            .chain(&self.own.presets)
+            .find(|p| p.choice == self.choice)
+            .map(|p| p.name.clone())
+    }
+
+    fn queue_ui(&mut self, ui: &mut egui::Ui, theme: &Theme, asked: &mut Asked) {
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Queue").family(ui_kit::fonts::semibold()));
+            ui.label(
+                egui::RichText::new("Runs in the background, one at a time; you can keep editing.")
+                    .color(theme.muted),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("Open export folder").clicked()
+                    && let Err(err) = show_folder(Path::new(self.folder.trim()))
                 {
-                    self.dialog = Some(ask_where(ui.ctx(), path, self.container));
+                    asked.problem = Some(err);
                 }
+            });
+        });
+        ui.add_space(4.0);
+        if self.queue.is_empty() {
+            ui_kit::inspector::note(
+                ui,
+                theme,
+                "Nothing in the queue yet. Export, or Add to queue for later, and it shows here.",
+            );
+            return;
+        }
+        let mut act = None;
+        egui::ScrollArea::vertical()
+            .id_salt("export queue")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                for job in self.queue.jobs() {
+                    if let Some(what) = job_row(ui, theme, job) {
+                        act = Some((job.id, what));
+                    }
+                }
+            });
+        if let Some((id, what)) = act {
+            match what {
+                JobAct::Start => self.queue.start(id),
+                JobAct::Pause(on) => self.queue.pause(id, on),
+                JobAct::Cancel => self.queue.cancel(id),
+                JobAct::Remove => {
+                    self.queue.remove(id);
+                }
+                JobAct::Edit => {
+                    if let Some(job) = self.queue.remove(id) {
+                        self.choice = job.choice;
+                        if let Some(stem) = job.settings.path.file_stem() {
+                            self.name = stem.to_string_lossy().into_owned();
+                        }
+                        if let Some(folder) = job.settings.path.parent() {
+                            self.folder = folder.display().to_string();
+                        }
+                        self.region_only = job.settings.range.is_some();
+                    }
+                }
+                JobAct::Show(path) => {
+                    if let Err(err) = show_folder(path.parent().unwrap_or(&path)) {
+                        asked.problem = Some(err);
+                    }
+                }
+            }
+        }
+    }
+
+    /// `--export-queue`: one export done, one under way (paused once it is
+    /// a third through), one waiting, for screenshots of the queue.
+    fn fill_demo(&mut self, project: &Project, plan: &Plan, devices: Option<Devices>) {
+        self.demo = Demo::Filled;
+        let all = presets::built_in(self.encoders.as_ref());
+        let mut add = |preset: &Preset, suffix: &str, now: bool| {
+            let path = plan.folder.join(format!(
+                "{}{suffix}.{}",
+                self.name,
+                preset.choice.container.extension()
+            ));
+            let settings = preset
+                .choice
+                .settings(path, plan.range, plan.timeline_size, self.target);
+            let job = Job::new(
+                preset.name.clone(),
+                settings,
+                preset.choice.clone(),
+                plan.bytes,
+                (project.clone(), plan.sequence),
+                devices.clone(),
+            );
+            self.queue.add(job, now);
+        };
+        add(&all[4], " preview", true);
+        add(&all[2], " vertical", true);
+        add(&all[5], "", false);
+    }
+}
+
+enum JobAct {
+    Start,
+    Pause(bool),
+    Cancel,
+    Remove,
+    Edit,
+    Show(PathBuf),
+}
+
+/// One job in the queue: its name and preset, a progress bar, where it is,
+/// and what can be done with it.
+fn job_row(ui: &mut egui::Ui, theme: &Theme, job: &Job) -> Option<JobAct> {
+    let mut act = None;
+    ui.horizontal(|ui| {
+        let name_width = 340.0_f32.min(ui.available_width() * 0.3);
+        ui.allocate_ui_with_layout(
+            egui::vec2(name_width, 22.0),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.set_width(name_width);
                 ui.add(
                     egui::Label::new(
-                        egui::RichText::new(path.display().to_string()).color(theme.text_secondary),
+                        egui::RichText::new(job.name())
+                            .family(ui_kit::fonts::semibold())
+                            .color(theme.text),
                     )
                     .truncate(),
                 )
-                .on_hover_text(path.display().to_string());
-            });
-            row(ui, theme, "What", |ui| {
-                ui.vertical(|ui| {
-                    ui.radio_value(
-                        &mut self.region_only,
-                        false,
-                        format!("The whole timeline ({})", length.timecode(rate)),
-                    );
-                    let label = match region {
-                        Some((from, to)) => {
-                            format!("The region ({} to {})", from.timecode(rate), to.timecode(rate))
-                        }
-                        None => "The region (none is marked: Shift-drag in the timeline's ruler)".to_owned(),
-                    };
-                    ui.add_enabled(region.is_some(), egui::RadioButton::new(self.region_only, label))
-                        .clicked()
-                        .then(|| self.region_only = true);
-                });
-            });
-            self.format_rows(ui, theme);
-            row(ui, theme, "Quality", |ui| {
-                ui.vertical(|ui| {
-                    for quality in Quality::ALL {
-                        let settings = ExportSettings {
-                            quality,
-                            ..self.settings(path, range)
-                        };
-                        let bytes = settings.estimated_bytes(
-                            size,
-                            rate,
-                            seq.settings.sample_rate,
-                            Duration::from_secs_f64(stretch.as_secs_f64().max(0.0)),
-                        );
-                        let about = match quality {
-                            Quality::High => "for keeping, or for a site that encodes it again",
-                            Quality::Medium => "a good picture at a sensible size",
-                            Quality::Small => "for sending",
-                        };
-                        ui.radio_value(
-                            &mut self.quality,
-                            quality,
-                            format!(
-                                "{} · about {} · {about}",
-                                quality.label(),
-                                megabytes_text(bytes as f64 / 1_000_000.0)
-                            ),
-                        );
-                    }
-                });
-            });
-            if self.container.has_video() {
-                row(ui, theme, "Encoder", |ui| {
-                    ui.vertical(|ui| {
-                        ui.radio_value(
-                            &mut self.software,
-                            false,
-                            "Automatic: the graphics card when it can, else the processor",
-                        );
-                        ui.radio_value(
-                            &mut self.software,
-                            true,
-                            "Processor only: slower, and works everywhere",
-                        );
-                    });
-                });
-            }
-        });
-        ui.add_space(14.0);
-
-        match &self.running {
-            Some(export) => {
+                .on_hover_text(job.settings.path.display().to_string());
+                ui.label(egui::RichText::new(format!("· {}", job.preset)).color(theme.muted));
+            },
+        );
+        let (share, colour, state, tip) = match &job.state {
+            State::Held => (0.0, theme.faint, "Waiting for Start".to_owned(), None),
+            State::Next => (
+                0.0,
+                theme.faint,
+                "Waiting for the export before it".to_owned(),
+                None,
+            ),
+            State::Running(export) => {
                 let progress = export.progress();
-                ui.add(egui::ProgressBar::new(progress.share()).desired_height(10.0));
-                ui.add_space(4.0);
-                ui.label(
-                    egui::RichText::new(progress_text(&progress, rate.as_f64())).color(theme.text_secondary),
-                );
-                ui.add_space(8.0);
-                if ui
-                    .button("Cancel")
-                    .on_hover_text("Stop; nothing is left behind")
-                    .clicked()
-                {
-                    export.cancel();
-                }
-                // Keep the numbers moving.
-                ui.ctx().request_repaint_after(Duration::from_millis(100));
-            }
-            None => {
-                let empty = stretch <= Time::ZERO;
-                let devices = if empty { None } else { devices() };
-                let encodable = self.encoders.as_ref().map(|e| {
-                    let video = self.container.has_video().then_some(self.video);
-                    e.can(self.container, video, self.audio, self.software)
-                });
-                let why_not = if empty {
-                    Some("There is nothing on the timeline to export yet.")
-                } else if devices.is_none() && self.container.has_video() {
-                    Some(
-                        "This window isn't drawn on a graphics card, so pictures can't be put together for a file here. Sound alone can be exported.",
-                    )
-                } else if encodable.is_none() {
-                    Some("Finding out which formats this machine can encode…")
-                } else if encodable == Some(false) {
-                    Some("This machine has no encoder for that format.")
+                let colour = if progress.paused {
+                    ui_kit::status::WARNING
                 } else {
-                    None
+                    theme.accent
                 };
-                ui.horizontal(|ui| {
-                    let button = ui.add_enabled(why_not.is_none(), |ui: &mut egui::Ui| {
-                        ui_kit::accent_button(ui, theme, "Export")
-                    });
-                    if button.clicked() && why_not.is_none() {
-                        match prepare(path) {
-                            Ok(()) => {
-                                let settings = self.settings(path, range);
-                                let ctx = ui.ctx().clone();
-                                self.ended = None;
-                                self.running = Some(Export::start(
-                                    project.clone(),
-                                    project.active_sequence,
-                                    settings,
-                                    devices,
-                                    move || ctx.request_repaint(),
-                                ));
-                            }
-                            Err(err) => *problem = Some(err),
-                        }
-                    }
-                    if let Some(why) = why_not {
-                        ui.label(egui::RichText::new(why).color(theme.muted));
-                    }
-                });
-                ui.add_space(10.0);
-                match &self.ended {
-                    Some(Ended::Done(done)) => {
-                        ui.label(egui::RichText::new(done_text(done)).color(ui_kit::status::GOOD));
-                        ui.label(
-                            egui::RichText::new(done.path.display().to_string()).color(theme.text_secondary),
-                        );
-                        if ui.button("Show in folder").clicked()
-                            && let Err(err) = show_in_folder(&done.path)
-                        {
-                            *problem = Some(err);
-                        }
-                    }
-                    Some(Ended::Cancelled) => {
-                        ui.label(egui::RichText::new("Cancelled. Nothing was saved.").color(theme.muted));
-                    }
-                    None => {}
+                (
+                    progress.share(),
+                    colour,
+                    words::progress_text(&progress),
+                    progress.encoder.as_deref().map(words::encoder_text),
+                )
+            }
+            State::Done(done) => (
+                1.0,
+                ui_kit::status::GOOD,
+                words::done_line(done, Some(job.estimated_bytes)),
+                Some(words::done_text(done)),
+            ),
+            State::Failed { what, why } => (
+                0.0,
+                ui_kit::status::ERROR,
+                format!("Failed: {what}"),
+                Some(why.clone()),
+            ),
+            State::Cancelled => (0.0, theme.faint, "Cancelled; nothing was saved".to_owned(), None),
+        };
+        let bar_width = (ui.available_width() - 420.0).max(80.0);
+        ui.add(
+            egui::ProgressBar::new(share)
+                .desired_width(bar_width)
+                .desired_height(8.0)
+                .fill(colour),
+        );
+        ui.add_space(8.0);
+        let label = ui.add_sized(
+            [210.0, 20.0],
+            egui::Label::new(egui::RichText::new(state).color(theme.text_secondary)).truncate(),
+        );
+        if let Some(tip) = tip {
+            label.on_hover_text(tip);
+        }
+        let mut button = |ui: &mut egui::Ui, text: &str, what: JobAct| {
+            if ui.button(text).clicked() {
+                act = Some(what);
+            }
+        };
+        match &job.state {
+            State::Held => {
+                button(ui, "Start", JobAct::Start);
+                button(ui, "Edit", JobAct::Edit);
+                button(ui, "Remove", JobAct::Remove);
+            }
+            State::Next => {
+                button(ui, "Edit", JobAct::Edit);
+                button(ui, "Remove", JobAct::Remove);
+            }
+            State::Running(export) => {
+                if export.is_paused() {
+                    button(ui, "Resume", JobAct::Pause(false));
+                } else {
+                    button(ui, "Pause", JobAct::Pause(true));
                 }
+                button(ui, "Cancel", JobAct::Cancel);
+            }
+            State::Done(done) => {
+                button(ui, "Show", JobAct::Show(done.path.clone()));
+                button(ui, "Remove", JobAct::Remove);
+            }
+            State::Failed { .. } | State::Cancelled => {
+                button(ui, "Try again", JobAct::Start);
+                button(ui, "Remove", JobAct::Remove);
             }
         }
-    }
-}
-
-impl ExportPage {
-    /// What the form says, as the engine takes it.
-    fn settings(&self, path: &Path, range: Stretch) -> ExportSettings {
-        ExportSettings {
-            path: path.to_path_buf(),
-            range,
-            container: self.container,
-            video: self.container.has_video().then_some(self.video),
-            audio: self.audio,
-            quality: self.quality,
-            software: self.software,
-            normalise: self.target.filter(|_| self.normalise),
-            limit: self.normalise && self.target.is_some(),
-        }
-    }
-
-    /// Keeps the codecs to ones the container holds (and this machine
-    /// encodes, once that is known), after the container changed.
-    fn settle(&mut self) {
-        let video = self.container.video_codecs();
-        if !video.is_empty() && !video.contains(&self.video) {
-            self.video = video[0];
-        }
-        let encodes = |codec: AudioCodec| self.encoders.as_ref().is_none_or(|e| e.audio(codec).is_some());
-        let audio = self.container.audio_codecs();
-        if !audio.contains(&self.audio) || !encodes(self.audio) {
-            self.audio = audio.iter().copied().find(|&c| encodes(c)).unwrap_or(audio[0]);
-        }
-    }
-
-    /// The format: the kind of file, then its picture and sound codecs.
-    /// What this machine can't encode is shown but can't be picked.
-    fn format_rows(&mut self, ui: &mut egui::Ui, theme: &Theme) {
-        let encoders = self.encoders.clone();
-        row(ui, theme, "Format", |ui| {
-            ui.horizontal_wrapped(|ui| {
-                for container in Container::ALL {
-                    let about = if container.has_video() {
-                        "video"
-                    } else {
-                        "sound only"
-                    };
-                    let response = ui
-                        .radio_value(&mut self.container, container, container.label())
-                        .on_hover_text(format!("A {} file: {about}", container.label()));
-                    if response.clicked() {
-                        self.settle();
-                    }
-                }
-            });
-        });
-        if self.container.has_video() {
-            row(ui, theme, "Picture", |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    for &codec in self.container.video_codecs() {
-                        let probed = encoders.as_ref().map(|e| e.video(codec));
-                        let usable = probed.is_none_or(|p| p.any());
-                        let tip = match probed {
-                            Some(p) => match (p.graphics_card, p.processor) {
-                                (Some(card), _) => format!("Encoded on the graphics card ({card})"),
-                                (None, Some(_)) => {
-                                    "Encoded on the processor: this graphics card has no encoder for it"
-                                        .to_owned()
-                                }
-                                (None, None) => "This build has no encoder for it".to_owned(),
-                            },
-                            None => "Finding out what this machine can encode…".to_owned(),
-                        };
-                        ui.add_enabled_ui(usable, |ui| {
-                            ui.radio_value(&mut self.video, codec, codec.label())
-                                .on_hover_text(tip);
-                        });
-                    }
-                });
-            });
-        }
-        row(ui, theme, "Sound", |ui| {
-            ui.horizontal_wrapped(|ui| {
-                for &codec in self.container.audio_codecs() {
-                    let usable = encoders.as_ref().is_none_or(|e| e.audio(codec).is_some());
-                    let tip = if codec.lossless() {
-                        "Lossless: every sample exactly as mixed"
-                    } else {
-                        "Compressed at the quality chosen below"
-                    };
-                    ui.add_enabled_ui(usable, |ui| {
-                        ui.radio_value(&mut self.audio, codec, codec.label())
-                            .on_hover_text(tip);
-                    });
-                }
-            });
-        });
-        row(ui, theme, "Loudness", |ui| {
-            ui.vertical(|ui| {
-                ui.radio_value(&mut self.normalise, false, "As mixed: the sound exactly as it plays");
-                let label = match self.target {
-                    Some(target) => format!(
-                        "Normalise to {} LUFS, peaks under {} dBTP",
-                        ui_kit::master::db_text(target),
-                        ui_kit::master::db_text(engine::export::TRUE_PEAK_CEILING)
-                    ),
-                    None => "Normalise (choose a loudness to aim for in Settings, under Audio)".to_owned(),
-                };
-                ui.add_enabled_ui(self.target.is_some(), |ui| {
-                    ui.radio_value(&mut self.normalise, true, label).on_hover_text(
-                        "The whole stretch is measured first, then exported turned up or down to the loudness aimed for, with a limiter keeping the peaks safe",
-                    );
-                });
-            });
-        });
-    }
-}
-
-/// A stretch of the timeline, from and to; none for all of it (or no region).
-type Stretch = Option<(Time, Time)>;
-
-/// A row: a name on the left, what it is about on the right.
-fn row(ui: &mut egui::Ui, theme: &Theme, label: &str, values: impl FnOnce(&mut egui::Ui)) {
-    ui.horizontal_top(|ui| {
-        ui_kit::inspector::label_cell(ui, theme, label, 84.0);
-        values(ui);
     });
-    ui.add_space(8.0);
+    act
 }
 
-/// Opens the save dialog on its own thread; the choice arrives later.
-fn ask_where(ctx: &egui::Context, now: &Path, container: Container) -> Receiver<Option<PathBuf>> {
+/// A preset in the list: its name, and the format under it; marked when
+/// the settings are this preset's.
+fn preset_button(
+    ui: &mut egui::Ui,
+    theme: &Theme,
+    preset: &Preset,
+    choice: &Choice,
+    target: Option<f32>,
+) -> egui::Response {
+    let on = preset.choice == *choice;
+    let font = |size: f32, semibold: bool| {
+        if semibold {
+            egui::FontId::new(size, ui_kit::fonts::semibold())
+        } else {
+            egui::FontId::proportional(size)
+        }
+    };
+    let width = ui.available_width();
+    let about = ui
+        .painter()
+        .layout(preset.about(target), font(11.5, false), theme.muted, width - 20.0);
+    let height = 30.0 + about.size().y;
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::click());
+    let painter = ui.painter();
+    if on || response.hovered() {
+        painter.rect_filled(rect, 6.0, theme.active);
+    }
+    if on {
+        painter.rect_stroke(
+            rect.shrink(0.5),
+            6.0,
+            egui::Stroke::new(1.0, theme.accent),
+            egui::StrokeKind::Inside,
+        );
+    }
+    painter.text(
+        rect.left_top() + egui::vec2(10.0, 7.0),
+        egui::Align2::LEFT_TOP,
+        &preset.name,
+        font(13.5, on),
+        theme.text,
+    );
+    painter.galley(rect.left_top() + egui::vec2(10.0, 25.0), about, theme.muted);
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+fn heading(ui: &mut egui::Ui, theme: &Theme, text: &str) {
+    ui.label(
+        egui::RichText::new(text)
+            .small()
+            .color(theme.muted)
+            .family(ui_kit::fonts::semibold()),
+    );
+    ui.add_space(4.0);
+}
+
+fn small_label(ui: &mut egui::Ui, theme: &Theme, text: &str) {
+    ui.label(egui::RichText::new(text).small().color(theme.text_secondary));
+}
+
+/// A section of the middle column: a framed box with its title.
+fn section(ui: &mut egui::Ui, theme: &Theme, title: &str, add: impl FnOnce(&mut egui::Ui)) {
+    egui::Frame::new()
+        .fill(theme.panel)
+        .stroke(egui::Stroke::new(1.0, theme.line))
+        .corner_radius(8)
+        .inner_margin(egui::Margin::symmetric(14, 12))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(egui::RichText::new(title).family(ui_kit::fonts::semibold()));
+            ui.add_space(6.0);
+            add(ui);
+        });
+}
+
+/// A row: a name on the left, its value on the right.
+fn row(ui: &mut egui::Ui, theme: &Theme, label: &str, value: impl FnOnce(&mut egui::Ui)) {
+    ui.horizontal(|ui| {
+        ui_kit::inspector::label_cell(ui, theme, label, LABEL_WIDTH);
+        value(ui);
+    });
+    ui.add_space(4.0);
+}
+
+fn container_words(container: Container) -> String {
+    match container {
+        Container::Mp4 => "MP4".to_owned(),
+        Container::Mkv => "MKV (for keeping)".to_owned(),
+        Container::Wav => "WAV (sound only)".to_owned(),
+        Container::Mp3 => "MP3 (sound only)".to_owned(),
+        Container::Ogg => "OGG (sound only)".to_owned(),
+    }
+}
+
+fn codec_words(codec: VideoCodec) -> String {
+    match codec {
+        VideoCodec::H264 => "H.264 (plays everywhere)".to_owned(),
+        VideoCodec::H265 => "H.265 (smaller files)".to_owned(),
+        VideoCodec::Av1 => "AV1 (smallest, newest)".to_owned(),
+    }
+}
+
+fn audio_words(codec: AudioCodec) -> String {
+    match codec {
+        AudioCodec::Pcm24 => "24-bit, uncompressed".to_owned(),
+        AudioCodec::Flac => "FLAC (lossless)".to_owned(),
+        other => other.label().to_owned(),
+    }
+}
+
+fn quality_about(quality: Quality) -> &'static str {
+    match quality {
+        Quality::High => "For keeping, or for a site that encodes it again",
+        Quality::Medium => "A good picture at a sensible size",
+        Quality::Small => "For sending",
+    }
+}
+
+/// Opens the folder picker on its own thread; the choice arrives later.
+fn ask_folder(ctx: &egui::Context, now: &Path) -> Receiver<Option<PathBuf>> {
     let (tell, chosen) = channel();
     let ctx = ctx.clone();
-    let folder = now.parent().map(Path::to_path_buf);
-    let name = now.file_name().map(|n| n.to_string_lossy().into_owned());
+    let now = now.to_path_buf();
     std::thread::spawn(move || {
-        let mut dialog = rfd::FileDialog::new()
-            .set_title("Export as")
-            .add_filter(format!("{} file", container.label()), &[container.extension()]);
-        if let Some(folder) = folder {
-            dialog = dialog.set_directory(folder);
+        let mut dialog = rfd::FileDialog::new().set_title("Save the export in");
+        if now.is_dir() {
+            dialog = dialog.set_directory(now);
         }
-        if let Some(name) = name {
-            dialog = dialog.set_file_name(name);
-        }
-        let _ = tell.send(dialog.save_file());
+        let _ = tell.send(dialog.pick_folder());
         ctx.request_repaint();
     });
     chosen
 }
 
-/// Checks the file can be written where it is to go, before the work starts.
-fn prepare(path: &Path) -> diag::Result<()> {
-    let folder = path.parent().unwrap_or(Path::new("."));
-    if !folder.is_dir() {
-        return Err(AppError::new("The video can't be exported there")
-            .why(format!("The folder {} does not exist.", folder.display()))
-            .fix("Choose another place with Choose…."));
-    }
-    Ok(())
-}
-
-fn show_in_folder(path: &Path) -> diag::Result<()> {
-    let folder = path.parent().unwrap_or(path);
+fn show_folder(folder: &Path) -> diag::Result<()> {
     let program = if cfg!(windows) { "explorer" } else { "xdg-open" };
     std::process::Command::new(program)
         .arg(folder)
@@ -578,268 +1451,8 @@ fn show_in_folder(path: &Path) -> diag::Result<()> {
                     "Starting the file manager for {} failed.",
                     folder.display()
                 ))
-                .fix("Open the folder yourself; its path is shown above.")
+                .fix("Open the folder yourself; its path is on the Export page.")
                 .source(err)
         })?;
     Ok(())
-}
-
-/// "<project name>.mp4" beside the project file.
-fn default_path(project_file: &Path, name: &str) -> PathBuf {
-    let safe: String = name
-        .chars()
-        .map(|c| {
-            if r#"\/:*?"<>|"#.contains(c) || c.is_control() {
-                '-'
-            } else {
-                c
-            }
-        })
-        .collect();
-    let safe = safe.trim().trim_matches('.');
-    let file = format!("{}.mp4", if safe.is_empty() { "Video" } else { safe });
-    project_file.parent().unwrap_or(Path::new(".")).join(file)
-}
-
-/// The chosen file name, ending as the container's files do: another
-/// container's ending is replaced, any other ending is kept and added to.
-fn with_ending(path: PathBuf, container: Container) -> PathBuf {
-    let ending = path.extension().and_then(|e| e.to_str()).map(str::to_owned);
-    match ending {
-        Some(e) if Container::from_extension(&e) == Some(container) => path,
-        Some(e) if Container::from_extension(&e).is_some() => path.with_extension(container.extension()),
-        _ => {
-            let mut name = path.into_os_string();
-            name.push(".");
-            name.push(container.extension());
-            PathBuf::from(name)
-        }
-    }
-}
-
-fn megabytes_text(megabytes: f64) -> String {
-    if megabytes >= 1000.0 {
-        format!("{:.1} GB", megabytes / 1000.0)
-    } else if megabytes >= 10.0 {
-        format!("{megabytes:.0} MB")
-    } else {
-        format!("{megabytes:.1} MB")
-    }
-}
-
-/// A number without a needless ".00" ("60", "59.94").
-fn short(value: f64) -> String {
-    let text = format!("{value:.2}");
-    text.trim_end_matches('0').trim_end_matches('.').to_owned()
-}
-
-fn seconds_text(time: Duration) -> String {
-    let seconds = time.as_secs();
-    if seconds >= 60 {
-        format!("{} min {} s", seconds / 60, seconds % 60)
-    } else {
-        format!("{seconds} s")
-    }
-}
-
-/// How an encoder is named for people.
-fn encoder_text(name: &str) -> String {
-    match engine::export::encoder_place(name) {
-        Place::Processor => "encoded on the processor".to_owned(),
-        Place::GraphicsCard | Place::System => format!("encoded on the graphics card ({name})"),
-    }
-}
-
-fn progress_text(progress: &Progress, frames_a_second: f64) -> String {
-    if progress.measuring {
-        return format!(
-            "Measuring the loudness first · frame {} of {}",
-            progress.frames_done, progress.frames
-        );
-    }
-    let mut parts = vec![format!("Frame {} of {}", progress.frames_done, progress.frames)];
-    let elapsed = progress.elapsed.as_secs_f64();
-    if progress.frames_done >= 10 && elapsed > 0.0 {
-        let pace = progress.frames_done as f64 / elapsed / frames_a_second.max(1.0);
-        parts.push(format!("{pace:.1}× as fast as it plays"));
-    }
-    if let Some(left) = progress.time_left() {
-        parts.push(format!("about {} left", seconds_text(left)));
-    }
-    if let Some(encoder) = &progress.encoder {
-        parts.push(encoder_text(encoder));
-    }
-    parts.join(" · ")
-}
-
-fn done_text(done: &Exported) -> String {
-    let took = done.took.as_secs_f64().max(0.001);
-    format!(
-        "Saved {} of video in {}, {:.1}× as fast as it plays, {}. {}",
-        seconds_text(done.length),
-        seconds_text(done.took),
-        done.length.as_secs_f64() / took,
-        encoder_text(&done.encoder),
-        sound_text(done)
-    )
-}
-
-/// What the exported sound measured: its integrated loudness and highest
-/// true peak, with a word when the peak is over the usual ceiling.
-fn sound_text(done: &Exported) -> String {
-    let (loudness, true_peak) = (done.loudness, done.true_peak);
-    if !loudness.is_finite() {
-        return "The sound is silent.".to_owned();
-    }
-    let normalised = match done.normalised {
-        Some(n) => format!(
-            " (it measured {} LUFS and was turned {} by {} dB{})",
-            ui_kit::master::db_text(n.measured),
-            if n.gain_db >= 0.0 { "up" } else { "down" },
-            ui_kit::master::db_text(n.gain_db.abs()),
-            match done.limited_db {
-                Some(db) if db < -0.05 =>
-                    format!(", its peaks by up to {} dB more", ui_kit::master::db_text(-db)),
-                _ => String::new(),
-            }
-        ),
-        None => String::new(),
-    };
-    let over = if true_peak > ui_kit::master::TRUE_PEAK_CEILING {
-        format!(
-            " (over {:.0} dBTP: it may distort when played or encoded again)",
-            ui_kit::master::TRUE_PEAK_CEILING
-        )
-    } else {
-        String::new()
-    };
-    format!(
-        "Loudness {} LUFS integrated{normalised}, true peak {} dBTP{over}.",
-        ui_kit::master::db_text(loudness),
-        ui_kit::master::db_text(true_peak)
-    )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_file_is_named_after_the_project_and_ends_in_mp4() {
-        let project = Path::new("/videos/projects/Weekly highlights.project");
-        assert_eq!(
-            default_path(project, "Weekly highlights"),
-            PathBuf::from("/videos/projects/Weekly highlights.mp4")
-        );
-        // Characters a file name can't have are replaced; an empty name gets one.
-        assert_eq!(
-            default_path(project, "Cut 2: the \"best\" bits?"),
-            PathBuf::from("/videos/projects/Cut 2- the -best- bits-.mp4")
-        );
-        assert_eq!(
-            default_path(project, "  "),
-            PathBuf::from("/videos/projects/Video.mp4")
-        );
-        let mp4 = |p: &str| with_ending(PathBuf::from(p), Container::Mp4);
-        assert_eq!(mp4("/a/clip"), PathBuf::from("/a/clip.mp4"));
-        assert_eq!(mp4("/a/clip.MP4"), PathBuf::from("/a/clip.MP4"));
-        assert_eq!(mp4("/a/clip.v2"), PathBuf::from("/a/clip.v2.mp4"));
-        // Choosing another kind of file changes the ending.
-        assert_eq!(mp4("/a/clip.wav"), PathBuf::from("/a/clip.mp4"));
-        assert_eq!(
-            with_ending(PathBuf::from("/a/clip.mp4"), Container::Ogg),
-            PathBuf::from("/a/clip.ogg")
-        );
-    }
-
-    #[test]
-    fn sizes_and_times_are_said_plainly() {
-        assert_eq!(megabytes_text(914.4), "914 MB");
-        assert_eq!(megabytes_text(2500.0), "2.5 GB");
-        assert_eq!(megabytes_text(3.21), "3.2 MB");
-        assert_eq!(short(60.0), "60");
-        assert_eq!(short(59.94006), "59.94");
-        assert_eq!(seconds_text(Duration::from_secs(42)), "42 s");
-        assert_eq!(seconds_text(Duration::from_secs(135)), "2 min 15 s");
-    }
-
-    #[test]
-    fn progress_reads_as_a_sentence() {
-        let progress = Progress {
-            frames_done: 600,
-            frames: 3600,
-            elapsed: Duration::from_secs(5),
-            encoder: Some("h264_amf".to_owned()),
-            measuring: false,
-        };
-        assert_eq!(
-            progress_text(&progress, 60.0),
-            "Frame 600 of 3600 · 2.0× as fast as it plays · about 25 s left · encoded on the graphics card (h264_amf)"
-        );
-        let starting = Progress {
-            frames_done: 0,
-            frames: 3600,
-            elapsed: Duration::ZERO,
-            encoder: None,
-            measuring: false,
-        };
-        assert_eq!(progress_text(&starting, 60.0), "Frame 0 of 3600");
-        let done = Exported {
-            path: PathBuf::from("/a/b.mp4"),
-            frames: 3600,
-            took: Duration::from_secs(20),
-            length: Duration::from_secs(60),
-            encoder: "libx264".to_owned(),
-            audio_encoder: "aac".to_owned(),
-            on_graphics_card: false,
-            loudness: -14.04,
-            true_peak: -1.52,
-            normalised: None,
-            limited_db: None,
-        };
-        assert_eq!(
-            done_text(&done),
-            "Saved 1 min 0 s of video in 20 s, 3.0× as fast as it plays, encoded on the processor. Loudness -14.0 LUFS integrated, true peak -1.5 dBTP."
-        );
-        let silent = Exported {
-            loudness: f32::NEG_INFINITY,
-            true_peak: f32::NEG_INFINITY,
-            ..done.clone()
-        };
-        assert_eq!(sound_text(&silent), "The sound is silent.");
-        let hot = Exported {
-            loudness: -9.0,
-            true_peak: 0.4,
-            ..done.clone()
-        };
-        assert!(sound_text(&hot).contains("over -1 dBTP"));
-        let normalised = Exported {
-            normalised: Some(engine::export::Normalised {
-                measured: -20.0,
-                gain_db: 6.0,
-            }),
-            limited_db: Some(-2.3),
-            ..done.clone()
-        };
-        assert_eq!(
-            sound_text(&normalised),
-            "Loudness -14.0 LUFS integrated (it measured -20.0 LUFS and was turned up by 6.0 dB, its peaks by up to 2.3 dB more), true peak -1.5 dBTP."
-        );
-        let measuring = Progress {
-            measuring: true,
-            ..starting
-        };
-        assert_eq!(
-            progress_text(&measuring, 60.0),
-            "Measuring the loudness first · frame 0 of 3600"
-        );
-    }
-
-    #[test]
-    fn a_folder_that_is_not_there_is_said_before_the_work_starts() {
-        let dir = tempfile::tempdir().unwrap();
-        assert!(prepare(&dir.path().join("out.mp4")).is_ok());
-        let err = prepare(&dir.path().join("missing").join("out.mp4")).unwrap_err();
-        assert!(err.report().contains("does not exist"));
-    }
 }

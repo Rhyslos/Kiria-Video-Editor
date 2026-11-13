@@ -14,6 +14,27 @@ pub const DRAWER_WIDTH: f32 = 264.0;
 pub const EDGE_TAB_WIDTH: f32 = 22.0;
 /// Width of the master column next to the timeline.
 pub const MASTER_WIDTH: f32 = 80.0;
+/// The gap between a page's panels and what is between them.
+pub const PANEL_GAP: f32 = 12.0;
+
+/// A page's side panel (the Library's sidebar and detail, the Export page's
+/// presets and summary): the panel colour, rounded, padded, filling `rect`.
+pub fn panel(ui: &mut egui::Ui, theme: &crate::Theme, rect: egui::Rect, add: impl FnOnce(&mut egui::Ui)) {
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    egui::Frame::new()
+        .fill(theme.panel)
+        .corner_radius(6)
+        .inner_margin(egui::Margin::symmetric(12, 10))
+        .show(&mut child, |ui| {
+            ui.set_min_size(rect.size() - egui::vec2(24.0, 20.0));
+            ui.set_max_size(rect.size() - egui::vec2(24.0, 20.0));
+            add(ui);
+        });
+}
 
 /// The x position the page tabs are centred on: the middle of the viewport,
 /// which is the window minus the right-hand panel. The play button sits on

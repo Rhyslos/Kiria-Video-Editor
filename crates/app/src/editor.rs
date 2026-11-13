@@ -227,8 +227,9 @@ impl Editor {
             .as_ref()
             .map(|p| p.watch_folders.clone())
             .unwrap_or_default();
+        let export_queue = project.as_ref().is_some_and(|p| p.export_queue);
         let start_page = match project.as_ref() {
-            Some(p) if p.export_page => Page::Export,
+            Some(p) if p.export_page || p.export_queue => Page::Export,
             Some(p) => p.page.unwrap_or_default(),
             None => Page::default(),
         };
@@ -329,6 +330,11 @@ impl Editor {
         viewer.set_key_frame_first(settings.jump_picture.key_frame_first());
         let display = crate::display::ViewerDisplay::new(settings.split_view, &viewer);
         let global_labels = crate::global_labels::Everywhere::load(&data_dir, &mut errors);
+        let mut export_page =
+            crate::export_page::ExportPage::new(&data_dir, settings.export_pace, &mut errors);
+        if export_queue {
+            export_page.demo_queue();
+        }
         Editor {
             theme: settings.theme.theme(),
             settings,
@@ -393,7 +399,7 @@ impl Editor {
             shown_page: start_page,
             inspector: crate::inspector::Inspector::default(),
             picture_handles: crate::picture_handles::PictureHandles::default(),
-            export_page: crate::export_page::ExportPage::default(),
+            export_page,
             play_when_ready,
             show_timeline_settings: false,
             show_settings: false,
@@ -1553,8 +1559,14 @@ impl Editor {
                     .start(ctx, &self.shortcuts, self.shortcuts.layout());
             }
         }
-        if let Some(err) = self.export_page.poll() {
+        for err in self.export_page.poll() {
             self.errors.push(&err);
+        }
+        if let Some(pace) = self.export_page.take_pace() {
+            self.settings.export_pace = pace;
+            if let Err(err) = self.settings.save(&self.data_dir) {
+                self.errors.push(&err);
+            }
         }
         match self.cheat_sheet.poll(&self.jobs, ctx) {
             Some(crate::cheat_sheet::Saved::Done(path)) => {
@@ -2211,13 +2223,19 @@ impl Editor {
         {
             let viewer = &self.viewer;
             self.export_page.aim_at(self.settings.loudness_target.lufs());
-            let problem = self
-                .export_page
-                .ui(ui, &self.theme, document.project(), document.path(), || {
-                    viewer.export_devices()
-                });
-            if let Some(err) = problem {
+            let asked = self.export_page.ui(
+                ui,
+                &self.theme,
+                document.project(),
+                document.path(),
+                &self.relink.missing,
+                || viewer.export_devices(),
+            );
+            if let Some(err) = asked.problem {
                 self.errors.push(&err);
+            }
+            if asked.find_missing {
+                self.relink.choose_folder(ui.ctx());
             }
             return;
         }
@@ -2986,7 +3004,8 @@ impl Editor {
                             && self.library_page.settled()))
                     && self.media_folders.settled()
                     && self.relink.settled()
-                    && self.package.settled())
+                    && self.package.settled()
+                    && (self.page != Page::Export || self.document.is_none() || self.export_page.settled()))
                     || now.duration_since(since) > SCREENSHOT_WAIT;
                 // A scripted pointer has done its part, and rested long
                 // enough for a tooltip to come up.
@@ -3389,6 +3408,8 @@ pub struct ProjectToOpen {
     pub watch_folders: Vec<PathBuf>,
     /// Start on the Export page.
     pub export_page: bool,
+    /// Start on the Export page with its queue filled (for screenshots).
+    pub export_queue: bool,
     /// Start on this page.
     pub page: Option<Page>,
     /// Open this tab of the Library page (a type or a list's name).
