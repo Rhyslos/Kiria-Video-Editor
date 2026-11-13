@@ -555,10 +555,99 @@ fn open_video(settings: &VideoSettings, global_header: bool) -> diag::Result<(Tr
         let Some(codec) = find_encoder(encoder.name) else {
             continue;
         };
-        match open_video_with(codec, encoder, settings, global_header) {
+        match open_video_asking(codec, encoder, settings, global_header) {
             Ok(track) => return Ok((track, *encoder)),
             Err(err) => {
                 tracing::info!("the encoder {} did not open: {}", encoder.name, err.report());
+                last = Some(err);
+            }
+        }
+    }
+    Err(last.unwrap_or_else(|| no_encoder(settings.codec.label())))
+}
+
+/// What an encoder is asked for beyond the size, rate and bit rate: what
+/// video sites ask for, which a graphics card's encoder may refuse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Asks {
+    /// H.264 in its High profile.
+    high_profile: bool,
+    /// Every key frame starts a closed group.
+    closed_groups: bool,
+}
+
+impl Asks {
+    /// What to ask `encoder` for, in the order to try: everything first.
+    /// A graphics card's (or the system's) encoder that refuses is asked
+    /// again without the High profile, then without closed groups too,
+    /// before the next encoder is tried; the processor's take everything.
+    fn in_order(encoder: &Encoder, codec: VideoCodec) -> Vec<Asks> {
+        let h264 = codec == VideoCodec::H264;
+        let all = Asks {
+            high_profile: h264,
+            closed_groups: true,
+        };
+        if encoder.place == Place::Processor {
+            return vec![all];
+        }
+        let mut tries = vec![all];
+        if h264 {
+            tries.push(Asks {
+                high_profile: false,
+                closed_groups: true,
+            });
+        }
+        tries.push(Asks {
+            high_profile: false,
+            closed_groups: false,
+        });
+        tries
+    }
+
+    /// What was left out of `wanted`, in plain words (empty when nothing).
+    fn dropped(self, wanted: Asks) -> Vec<&'static str> {
+        let mut dropped = Vec::new();
+        if wanted.high_profile && !self.high_profile {
+            dropped.push("the High profile (its own profile is used)");
+        }
+        if wanted.closed_groups && !self.closed_groups {
+            dropped.push("closed groups at key frames (video sites may encode the file again)");
+        }
+        dropped
+    }
+}
+
+/// Opens `encoder`, asking for less each time it refuses ([`Asks::in_order`]),
+/// and says in the log what it was opened without.
+fn open_video_asking(
+    codec: *const ff::AVCodec,
+    encoder: &Encoder,
+    settings: &VideoSettings,
+    global_header: bool,
+) -> diag::Result<Track> {
+    let tries = Asks::in_order(encoder, settings.codec);
+    let wanted = tries[0];
+    let mut last = None;
+    for asks in tries {
+        match open_video_with(codec, encoder, settings, global_header, asks) {
+            Ok(track) => {
+                let dropped = asks.dropped(wanted);
+                if !dropped.is_empty() {
+                    tracing::warn!(
+                        "the encoder {} opened only without {}",
+                        encoder.name,
+                        dropped.join(" and without ")
+                    );
+                }
+                return Ok(track);
+            }
+            Err(err) => {
+                tracing::info!(
+                    "the encoder {} refused {:?}: {}",
+                    encoder.name,
+                    asks,
+                    err.report()
+                );
                 last = Some(err);
             }
         }
@@ -571,6 +660,7 @@ fn open_video_with(
     encoder: &Encoder,
     settings: &VideoSettings,
     global_header: bool,
+    asks: Asks,
 ) -> diag::Result<Track> {
     let name = encoder.name;
     // Interleaved colour (NV12) as read back when the encoder takes it, else
@@ -618,11 +708,13 @@ fn open_video_with(
         // started at any key frame, as sites and players expect.
         let frames_a_second = (f64::from(settings.rate.0) / f64::from(settings.rate.1)).round() as i32;
         c.gop_size = (frames_a_second * 2).max(1);
-        c.flags |= ff::AV_CODEC_FLAG_CLOSED_GOP as i32;
+        if asks.closed_groups {
+            c.flags |= ff::AV_CODEC_FLAG_CLOSED_GOP as i32;
+        }
         // H.264 in its High profile on every encoder (some graphics cards'
         // start at Main): smaller for the same picture, and what video
         // sites ask for. The level follows the size and rate by itself.
-        if settings.codec == VideoCodec::H264 {
+        if asks.high_profile {
             c.profile = ff::AV_PROFILE_H264_HIGH;
         }
         // What the compositor hands over: BT.709 in the limited range.
@@ -1022,7 +1114,7 @@ pub fn probe_video(codec: VideoCodec) -> Probed {
         if encoder.place == Place::Processor {
             probed.processor = Some(encoder.name);
         } else if probed.graphics_card.is_none() {
-            match open_video_with(found, encoder, &trial, true) {
+            match open_video_asking(found, encoder, &trial, true) {
                 // Dropped at once: only whether it opens counts.
                 Ok(_) => probed.graphics_card = Some(encoder.name),
                 Err(err) => tracing::debug!("{} is not usable here: {}", encoder.name, err.report()),

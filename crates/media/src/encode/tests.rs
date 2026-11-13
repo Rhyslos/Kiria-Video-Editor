@@ -184,3 +184,62 @@ fn key_frames_come_every_two_seconds_and_start_closed_groups() {
         std::fs::remove_file(&path).unwrap();
     }
 }
+
+fn encoder_at(place: Place) -> Encoder {
+    Encoder {
+        name: "test",
+        place,
+        needs_upload: false,
+    }
+}
+
+const fn asks(high_profile: bool, closed_groups: bool) -> Asks {
+    Asks {
+        high_profile,
+        closed_groups,
+    }
+}
+
+#[test]
+fn a_graphics_cards_encoder_is_asked_again_for_less_before_the_next_is_tried() {
+    for place in [Place::GraphicsCard, Place::System] {
+        // H.264: everything, then without the High profile but with closed
+        // groups, then without either.
+        assert_eq!(
+            Asks::in_order(&encoder_at(place), VideoCodec::H264),
+            [asks(true, true), asks(false, true), asks(false, false)],
+            "{place:?}"
+        );
+        // No profile is asked of the others: closed groups, then without.
+        for codec in [VideoCodec::H265, VideoCodec::Av1] {
+            assert_eq!(
+                Asks::in_order(&encoder_at(place), codec),
+                [asks(false, true), asks(false, false)],
+                "{place:?} {codec:?}"
+            );
+        }
+    }
+    // The processor's encoders take everything: asked once.
+    assert_eq!(
+        Asks::in_order(&encoder_at(Place::Processor), VideoCodec::H264),
+        [asks(true, true)]
+    );
+    assert_eq!(
+        Asks::in_order(&encoder_at(Place::Processor), VideoCodec::H265),
+        [asks(false, true)]
+    );
+}
+
+#[test]
+fn what_was_left_out_is_said_in_plain_words() {
+    let all = asks(true, true);
+    assert!(all.dropped(all).is_empty());
+    assert_eq!(
+        asks(false, true).dropped(all),
+        ["the High profile (its own profile is used)"]
+    );
+    assert_eq!(asks(false, false).dropped(all).len(), 2);
+    assert!(asks(false, false).dropped(all)[1].starts_with("closed groups"));
+    // Nothing is said of a profile that wasn't asked for.
+    assert_eq!(asks(false, false).dropped(asks(false, true)).len(), 1);
+}
