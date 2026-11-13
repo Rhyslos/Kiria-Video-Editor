@@ -2597,6 +2597,7 @@ impl TimelineView {
         } else {
             Color32::from_white_alpha(170)
         };
+        let levels = crate::waveform::levels_for(p.ctx(), &w.peaks);
         let mut mesh = egui::Mesh::default();
         let (mid, half) = (clip_area.center().y, clip_area.height() / 2.0);
         let mut x = clip_area.left().floor();
@@ -2610,7 +2611,7 @@ impl TimelineView {
             if a >= w.peaks.len() {
                 break;
             }
-            let peak = (w.peaks[a..b].iter().fold(0f32, |m, v| m.max(*v)) * gain).min(1.0);
+            let peak = (crate::waveform::loudest(&w.peaks, levels.as_deref(), a, b) * gain).min(1.0);
             let h = (peak.sqrt() * half).max(0.5);
             mesh.add_colored_rect(
                 Rect::from_min_max(pos2(x, mid - h), pos2(x + 1.0, mid + h)),
