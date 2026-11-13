@@ -37,11 +37,25 @@ fn good_files_pass() {
         "phone-rotated.mp4",
         "voice.mp3",
         "still.png",
+        "photo.jpg",
         "vfr-60.mkv",
     ] {
         let media = check(&fixture(name)).unwrap_or_else(|r| panic!("{name}: {}", r.error.report()));
         assert_eq!(media.path, fixture(name));
     }
+}
+
+#[test]
+fn a_photo_opened_by_its_file_name_shows_its_picture() {
+    // Larger JPEGs are opened by the reader that goes by the file name,
+    // which once lost the picture when the decoder jumped to the start.
+    let photo = fixture("photo.jpg");
+    assert_eq!(media::probe(&photo).unwrap().info.container, "image2");
+    let media = check(&photo).unwrap_or_else(|r| panic!("{}", r.error.report()));
+    assert_eq!(media.kind, project::MediaKind::Image);
+    let mut decoder = media::VideoDecoder::open(&photo, 0, 0, media::Decoding::Software).unwrap();
+    let frame = decoder.frame_at(0.0, 320, 180).unwrap();
+    assert_eq!((frame.width, frame.height), (320, 180));
 }
 
 #[test]

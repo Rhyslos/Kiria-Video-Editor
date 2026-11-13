@@ -87,7 +87,7 @@ pub(crate) fn file_name(path: &Path) -> String {
 }
 
 /// Single pictures are opened through FFmpeg's image readers.
-fn is_still_image(container: &str) -> bool {
+pub(crate) fn is_still_image(container: &str) -> bool {
     container == "image2" || container.ends_with("_pipe")
 }
 
