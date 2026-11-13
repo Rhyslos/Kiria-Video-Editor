@@ -47,6 +47,8 @@ pub struct Mixer {
     master_readout: Arc<MasterReadout>,
     /// Frames of silence played for dry rings, summed over tracks, since made.
     dry: u64,
+    /// Meters measure (off for a mix nobody watches: [`Mixer::without_meters`]).
+    metering: bool,
 }
 
 /// Makes a mixer with room for `slots` tracks at `rate`, the controller
@@ -71,6 +73,7 @@ pub fn mixer(rate: u32, slots: usize, master: MasterSettings) -> (Mixer, Control
         master: Master::new(rate, master),
         master_readout,
         dry: 0,
+        metering: true,
     };
     (mixer, controller, analyser)
 }
@@ -113,6 +116,13 @@ impl Mixer {
         self.master.limited_db()
     }
 
+    /// Leaves out the meters of every track and of the master, for a mix
+    /// nobody watches (measuring before an export): the same sound, less
+    /// work. Readouts then stay as they were.
+    pub fn without_meters(&mut self) {
+        self.metering = false;
+    }
+
     /// Takes waiting swaps and commands without making a block: while the
     /// sound card is given silence (before the feeder has the first sound
     /// ready, or during a jump), so a jump is taken and nothing is owed.
@@ -150,9 +160,15 @@ impl Mixer {
                 let s = track.strip.settings();
                 let audible = !s.mute && (!any_solo || s.solo);
                 let tap = (self.analysed == Some(slot as u16)).then_some(&mut self.tap);
-                track
-                    .strip
-                    .process(self.pos, &self.key_db, audible, tap, l, r, &track.readout);
+                track.strip.process(
+                    self.pos,
+                    &self.key_db,
+                    audible,
+                    tap,
+                    l,
+                    r,
+                    self.metering.then_some(&*track.readout),
+                );
                 for (sum, part) in self.sum.iter_mut().zip(&self.work) {
                     for (s, p) in sum.iter_mut().zip(part) {
                         *s += p;
@@ -168,7 +184,8 @@ impl Mixer {
             }
         }
         let [l, r] = &mut self.sum;
-        self.master.process(l, r, out, &self.master_readout);
+        let readout = self.metering.then_some(&*self.master_readout);
+        self.master.process(l, r, out, readout);
         self.pos += BLOCK as u64;
     }
 

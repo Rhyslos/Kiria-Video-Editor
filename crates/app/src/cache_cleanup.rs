@@ -291,7 +291,7 @@ impl CacheCleanup {
         let shelf = Arc::clone(shelf);
         self.clearing = Some((
             question.scope,
-            jobs.submit(
+            jobs.submit_write(
                 PoolKind::Analysis,
                 Priority::Interactive,
                 "clear the cache",

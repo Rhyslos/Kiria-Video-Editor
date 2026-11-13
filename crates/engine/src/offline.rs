@@ -54,6 +54,21 @@ impl OfflineMix {
         OfflineMix::build(project, sequence, rate, (at, start.as_secs_f64()), master, 0)
     }
 
+    /// As [`OfflineMix::new`], for measuring: the same sound, without the
+    /// meters of its tracks and master (nobody watches them, and the
+    /// measuring has a meter of its own).
+    pub fn measuring(
+        project: &Project,
+        sequence: SequenceId,
+        rate: u32,
+        start: Time,
+        master: MasterSettings,
+    ) -> diag::Result<OfflineMix> {
+        let mut mix = OfflineMix::new(project, sequence, rate, start, master)?;
+        mix.mixer.without_meters();
+        Ok(mix)
+    }
+
     /// A nested timeline's sound, `depth` timelines deep, from its sample
     /// `at` at `rate` (the rate that plays it at its clip's speed): the
     /// timeline as it sounds opened, its own master included.

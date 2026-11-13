@@ -13,6 +13,9 @@ type Work = Box<dyn FnOnce() + Send + 'static>;
 
 struct Task {
     priority: Priority,
+    /// Writes something that must be on disk when the app ends (a save):
+    /// it runs even when the pool closes before it started.
+    writes: bool,
     order: u64,
     work: Work,
 }
@@ -98,7 +101,7 @@ impl Pool {
         self.workers.len()
     }
 
-    pub(crate) fn submit<T, F>(&self, priority: Priority, name: &str, job: F) -> JobHandle<T>
+    pub(crate) fn submit<T, F>(&self, priority: Priority, writes: bool, name: &str, job: F) -> JobHandle<T>
     where
         T: Send + 'static,
         F: FnOnce(&JobContext) -> diag::Result<T> + Send + 'static,
@@ -129,6 +132,7 @@ impl Pool {
         state.next_order += 1;
         state.queue.push(Task {
             priority,
+            writes,
             order,
             work,
         });
@@ -153,9 +157,18 @@ impl Pool {
 }
 
 impl Drop for Pool {
-    /// Finishes queued work, then stops the threads.
+    /// Finishes the jobs running and the queued ones that write (see
+    /// [`Task::writes`]), then stops the threads. Other queued jobs never
+    /// start: nobody is left to want what they work out, and closing would
+    /// wait for them (their handles say the work was given up).
     fn drop(&mut self) {
         let mut state = self.shared.lock();
+        let dropped = state.queue.len();
+        state.queue.retain(|t| t.writes);
+        let dropped = dropped - state.queue.len();
+        if dropped > 0 {
+            tracing::debug!(dropped, "queued jobs given up on closing");
+        }
         state.shutting_down = true;
         state.background_paused = false;
         self.shared.held_back.store(false, AtomicOrdering::Relaxed);

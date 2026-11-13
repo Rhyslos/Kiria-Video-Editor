@@ -53,7 +53,7 @@ impl CheatSheet {
         {
             let path = with_html(path);
             let (out, ctx) = (path.clone(), ctx.clone());
-            let handle = jobs.submit(
+            let handle = jobs.submit_write(
                 PoolKind::Export,
                 Priority::Interactive,
                 "cheat sheet",

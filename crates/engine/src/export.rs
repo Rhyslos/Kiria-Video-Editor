@@ -531,13 +531,37 @@ impl Export {
         devices: Option<Devices>,
         notify: impl Fn() + Send + 'static,
     ) -> Export {
+        Export::start_knowing(project, sequence, settings, devices, None, notify)
+    }
+
+    /// As [`Export::start`], with the mix's integrated loudness `measured`
+    /// already, as [`measure_mix`] gave it for this snapshot and stretch
+    /// (the Export page's check): normalising then takes it instead of
+    /// mixing the whole stretch once more first. It is used only when the
+    /// file's frame and sample rates are the timeline's, as measured.
+    pub fn start_knowing(
+        project: Project,
+        sequence: SequenceId,
+        settings: ExportSettings,
+        devices: Option<Devices>,
+        measured: Option<f32>,
+        notify: impl Fn() + Send + 'static,
+    ) -> Export {
         let shared = Arc::new(Shared::default());
         let (tell, outcome) = channel();
         let path = settings.path.clone();
         let worker = shared.clone();
         let spawned = std::thread::Builder::new().name("export".into()).spawn(move || {
             let parts = Parts::of(&settings);
-            let outcome = match run(&project, sequence, &settings, &parts, devices, &worker, &notify) {
+            let outcome = match run(
+                &project,
+                sequence,
+                (&settings, measured),
+                &parts,
+                devices,
+                &worker,
+                &notify,
+            ) {
                 Ok(Some(done)) => match parts.name() {
                     Ok(()) => Outcome::Done(done),
                     Err(err) => Outcome::Failed(err),
@@ -739,7 +763,7 @@ fn cannot(why: impl Into<String>) -> AppError {
 fn run(
     project: &Project,
     sequence: SequenceId,
-    settings: &ExportSettings,
+    (settings, known): (&ExportSettings, Option<f32>),
     parts: &Parts,
     devices: Option<Devices>,
     shared: &Shared,
@@ -856,10 +880,15 @@ fn run(
     });
     let start = rate.frame_start(first);
     // Normalising: the whole stretch is mixed and measured first.
+    // Measured already for this stretch at these rates (the Export page's
+    // check), or mixed and measured now.
+    let as_measured = rate == seq.settings.frame_rate && sample_rate == seq.settings.sample_rate.max(8_000);
+    let known = known.filter(|_| as_measured);
     let normalised = match settings.normalise {
         Some(target) => {
             shared.measuring.store(true, Ordering::Relaxed);
-            let measured = match measure(project, seq, (start, rate, sample_rate, count), shared, notify) {
+            let measuring = || measure(project, seq, (start, rate, sample_rate, count), shared, notify);
+            let measured = match known.map_or_else(measuring, |k| Ok(Some(k))) {
                 Ok(Some(measured)) => measured,
                 // Cancelled, or the mixer couldn't be made.
                 other => {
@@ -1043,7 +1072,7 @@ fn measure(
     shared: &Shared,
     notify: &dyn Fn(),
 ) -> diag::Result<Option<f32>> {
-    let mut master = OfflineMix::new(project, seq.id, sample_rate, start, measured_master(seq))?;
+    let mut master = OfflineMix::measuring(project, seq.id, sample_rate, start, measured_master(seq))?;
     let mut loudness = crate::loudness::Loudness::new(sample_rate);
     let mut sound = Vec::new();
     let mut done = 0;
@@ -1115,7 +1144,8 @@ pub fn measure_mix(
     let (first, end) = frames(seq.length(), range, rate);
     let start = rate.frame_start(first);
     let total = samples_until((end - first).max(0) as u64, sample_rate, rate);
-    let mut master = match OfflineMix::new(project, sequence, sample_rate, start, measured_master(seq)) {
+    let mut master = match OfflineMix::measuring(project, sequence, sample_rate, start, measured_master(seq))
+    {
         Ok(master) => master,
         Err(err) => {
             tracing::warn!("{}", err.report());

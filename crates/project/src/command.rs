@@ -20,6 +20,7 @@ use crate::time::{Speed, Time};
 use crate::track_sound::{MasterSound, TrackSound};
 use diag::AppError;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 /// One change to a project.
@@ -816,7 +817,7 @@ impl Command {
                         AppError::new("There is no gap there").why("The stretch ends before it starts.")
                     );
                 }
-                close_stretches(&mut p, *sequence, &[(*start, *end)], &[])?
+                close_stretches(&mut p, *sequence, &[(*start, *end)], &HashSet::new())?
             }
             Command::LiftRange { sequence, range } => {
                 if range.end <= range.start || range.start.is_negative() {
@@ -1379,11 +1380,13 @@ pub(crate) fn split(
         None => None,
     };
     // Clips under `at` to cut, with a new link per original link so the right halves stay linked together.
+    // A track's clips are in start order and apart, so at most one
+    // crosses `at`, found by a search.
     let mut cuts: Vec<(ClipId, Option<LinkId>)> = Vec::new();
     for track in sequence_ref(p, sequence)?.tracks() {
-        for clip in &track.clips {
+        if let Some(clip) = crossing(&track.clips, at).and_then(|i| track.clips.get(i)) {
             let chosen = targets.as_ref().is_none_or(|t| t.contains(&clip.id));
-            if chosen && clip.start < at && at < clip.end() {
+            if chosen {
                 cuts.push((clip.id, clip.link));
             }
         }
@@ -1393,9 +1396,34 @@ pub(crate) fn split(
             .why("No clip crosses the edit needle at this point.")
             .fix("Move the edit needle over a clip, then split."));
     }
+    let right_ids = right_ids(p, &cuts);
+    let seq = sequence_mut(p, sequence)?;
+    for track in tracks_mut(seq) {
+        let Some(i) = crossing(&track.clips, at) else {
+            continue;
+        };
+        for (left_id, right_id, right_link) in &right_ids {
+            if track.clips.get(i).is_some_and(|c| c.id == *left_id) {
+                let (left, right) = halves(&track.clips[i], at, *right_id, *right_link);
+                track.clips[i] = left;
+                track.clips.insert(i + 1, right);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The ids of the parts after the cuts of one split, `cuts` being the clips
+/// cut, in track order, with their links: each a new id, and a new link per
+/// link cut, so the parts after stay linked together. Given out in this
+/// order, which journals replayed rely on.
+pub(crate) fn right_ids(
+    p: &mut Project,
+    cuts: &[(ClipId, Option<LinkId>)],
+) -> Vec<(ClipId, ClipId, Option<LinkId>)> {
     let mut new_links: Vec<(LinkId, LinkId)> = Vec::new();
-    let mut right_ids: Vec<(ClipId, ClipId, Option<LinkId>)> = Vec::new();
-    for (id, link) in cuts {
+    let mut right_ids = Vec::with_capacity(cuts.len());
+    for &(id, link) in cuts {
         let new_link = link.map(|old| match new_links.iter().find(|(o, _)| *o == old) {
             Some((_, n)) => *n,
             None => {
@@ -1406,41 +1434,51 @@ pub(crate) fn split(
         });
         right_ids.push((id, p.allocate_id(), new_link));
     }
-    let seq = sequence_mut(p, sequence)?;
-    for track in tracks_mut(seq) {
-        for (left_id, right_id, right_link) in &right_ids {
-            if let Some(i) = track.clips.iter().position(|c| c.id == *left_id) {
-                let left = track.clips[i].clone();
-                let first = at - left.start;
-                // Volume and pan stay on both halves; the fade in stays at
-                // the start, on the left half, and the fade out at the end,
-                // on the right (each cut to fit its half after the change).
-                // Each half keeps the keyframes of its own part of the
-                // file, and one at the cut holding the value there.
-                let cut = left.source_at(at);
-                let right = Clip {
-                    id: *right_id,
-                    start: at,
-                    source_in: cut,
-                    duration: left.duration - first,
-                    link: *right_link,
-                    sound: left.sound.without_fade_in(),
-                    keyframes: left.keyframes.cut_to(cut, left.source_at(left.end())),
-                    // Both halves keep the whole ramp, in its place.
-                    ramp: left.ramp.shifted(Time::ZERO - first),
-                    ..left.clone()
-                };
-                track.clips[i] = Clip {
-                    duration: first,
-                    sound: left.sound.without_fade_out(),
-                    keyframes: left.keyframes.cut_to(left.source_in, cut),
-                    ..left
-                };
-                track.clips.insert(i + 1, right);
-            }
+    right_ids
+}
+
+/// `clip` cut at `at` (inside it): the part before, which keeps its id,
+/// and the part after, `right_id`, linked by `right_link`.
+pub(crate) fn halves(clip: &Clip, at: Time, right_id: ClipId, right_link: Option<LinkId>) -> (Clip, Clip) {
+    let first = at - clip.start;
+    // Volume and pan stay on both halves; the fade in stays at the start,
+    // on the left half, and the fade out at the end, on the right (each cut
+    // to fit its half after the change). Each half keeps the keyframes of
+    // its own part of the file, and one at the cut holding the value there.
+    let cut = clip.source_at(at);
+    let right = Clip {
+        id: right_id,
+        start: at,
+        source_in: cut,
+        duration: clip.duration - first,
+        link: right_link,
+        sound: clip.sound.without_fade_in(),
+        keyframes: clip.keyframes.cut_to(cut, clip.source_at(clip.end())),
+        // Both halves keep the whole ramp, in its place.
+        ramp: clip.ramp.shifted(Time::ZERO - first),
+        ..clip.clone()
+    };
+    let left = Clip {
+        duration: first,
+        sound: clip.sound.without_fade_out(),
+        keyframes: clip.keyframes.cut_to(clip.source_in, cut),
+        ..clip.clone()
+    };
+    (left, right)
+}
+
+/// The clip of `clips` (in start order, apart) that crosses `at`: starts
+/// before it and ends after it.
+pub(crate) fn crossing(clips: &imbl::Vector<Clip>, at: Time) -> Option<usize> {
+    let after = clips.binary_search_by(|c| {
+        if c.start < at {
+            std::cmp::Ordering::Less
+        } else {
+            std::cmp::Ordering::Greater
         }
-    }
-    Ok(())
+    });
+    let i = after.unwrap_or_else(|i| i).checked_sub(1)?;
+    clips.get(i).filter(|c| at < c.end()).map(|_| i)
 }
 
 pub(crate) fn sequence_ref(p: &Project, id: SequenceId) -> diag::Result<&Sequence> {
@@ -1508,12 +1546,27 @@ fn remove_clips(p: &mut Project, sequence: SequenceId, clips: &[ClipId], ripple:
 }
 
 /// `clips` and every clip linked to them; refused when one no longer exists.
-fn with_all_linked(seq: &Sequence, clips: &[ClipId]) -> diag::Result<Vec<ClipId>> {
-    let mut targets = Vec::new();
-    for clip in clips {
-        targets.extend(with_linked(seq, *clip)?);
+/// Two passes over the timeline whatever the number of clips: a selection of
+/// thousands costs no more per clip than one.
+fn with_all_linked(seq: &Sequence, clips: &[ClipId]) -> diag::Result<HashSet<ClipId>> {
+    let asked: HashSet<ClipId> = clips.iter().copied().collect();
+    let mut found = 0;
+    let mut links: HashSet<LinkId> = HashSet::new();
+    for c in seq.tracks().flat_map(|t| t.clips.iter()) {
+        if asked.contains(&c.id) {
+            found += 1;
+            links.extend(c.link);
+        }
     }
-    Ok(targets)
+    if found < asked.len() {
+        return Err(missing("clip"));
+    }
+    Ok(seq
+        .tracks()
+        .flat_map(|t| t.clips.iter())
+        .filter(|c| asked.contains(&c.id) || c.link.is_some_and(|l| links.contains(&l)))
+        .map(|c| c.id)
+        .collect())
 }
 
 /// See [`Command::RippleRemoveClips`]: the gaps close on every track, from
@@ -1545,16 +1598,30 @@ fn close_stretches(
     p: &mut Project,
     sequence: SequenceId,
     stretches: &[(Time, Time)],
-    going: &[ClipId],
+    going: &HashSet<ClipId>,
 ) -> diag::Result<()> {
     let seq = sequence_ref(p, sequence)?;
-    for &(start, end) in stretches {
-        let staying = seq.tracks().find_map(|t| {
-            t.clips
-                .iter()
-                .find(|c| !going.contains(&c.id) && c.start < end && start < c.end())
-                .map(|c| (t.name.clone(), p.clip_name(c)))
-        });
+    // The first stretch a clip that stays is in, by a search: stretches are
+    // in time order and apart. Named as a walk stretch by stretch, then
+    // track by track, would find it.
+    let mut first_in_the_way: Option<((usize, usize, usize), &Track, &Clip)> = None;
+    for (ti, t) in seq.tracks().enumerate() {
+        for (ci, c) in t.clips.iter().enumerate() {
+            if going.contains(&c.id) {
+                continue;
+            }
+            let k = stretches.partition_point(|&(_, end)| end <= c.start);
+            if stretches.get(k).is_some_and(|&(start, _)| start < c.end())
+                && first_in_the_way
+                    .as_ref()
+                    .is_none_or(|(at, _, _)| (k, ti, ci) < *at)
+            {
+                first_in_the_way = Some(((k, ti, ci), t, c));
+            }
+        }
+    }
+    {
+        let staying = first_in_the_way.map(|(_, t, c)| (t.name.clone(), p.clip_name(c)));
         if let Some((track, clip)) = staying {
             return Err(AppError::new("The gap can't be closed")
                 .why(format!(
@@ -1565,13 +1632,23 @@ fn close_stretches(
                 )));
         }
     }
+    // Each clip moves back by the stretches that end before it starts,
+    // added up: what closing them one at a time, from the last back, does.
+    let mut closed = vec![Time::ZERO];
+    for &(start, end) in stretches {
+        let before = closed[closed.len() - 1];
+        closed.push(before + (end - start));
+    }
     let seq = sequence_mut(p, sequence)?;
     for track in tracks_mut(seq) {
-        track.clips.retain(|c| !going.contains(&c.id));
-    }
-    for &(start, end) in stretches.iter().rev() {
-        for track in tracks_mut(seq) {
-            close_gap(track, end, end - start);
+        if !going.is_empty() {
+            track.clips.retain(|c| !going.contains(&c.id));
+        }
+        for clip in track.clips.iter_mut() {
+            let k = stretches.partition_point(|&(_, end)| end <= clip.start);
+            if k > 0 {
+                clip.start = clip.start - closed[k];
+            }
         }
     }
     Ok(())
@@ -1595,6 +1672,11 @@ fn move_clips(p: &mut Project, sequence: SequenceId, clips: &[ClipId], by: Time)
         moved.push((track.id, ours));
     }
     for (track, clips) in moved {
+        let track = track_mut(seq, track)?;
+        // The moved clips keep their spacing, so they can only land on the
+        // clips that stay: each is checked against its neighbours there by
+        // a search, then the two lists, both in start order, are merged.
+        let mut landed = Vec::with_capacity(clips.len());
         for mut c in clips {
             c.start = c.start + by;
             if c.start.is_negative() {
@@ -1602,10 +1684,43 @@ fn move_clips(p: &mut Project, sequence: SequenceId, clips: &[ClipId], by: Time)
                     AppError::new("The clips can't move there").why("One would start before the timeline.")
                 );
             }
-            insert_clip(track_mut(seq, track)?, c)?;
+            if overlaps_any(&track.clips, &c) {
+                return Err(overlap_error(track));
+            }
+            landed.push(c);
         }
+        let mut merged = imbl::Vector::new();
+        let mut staying = std::mem::take(&mut track.clips).into_iter().peekable();
+        for c in landed {
+            while let Some(s) = staying.next_if(|s| s.start <= c.start) {
+                merged.push_back(s);
+            }
+            merged.push_back(c);
+        }
+        merged.extend(staying);
+        track.clips = merged;
     }
     Ok(())
+}
+
+/// Whether `clip` overlaps one of `clips` (in start order, apart): only the
+/// clip starting last before its end can.
+fn overlaps_any(clips: &imbl::Vector<Clip>, clip: &Clip) -> bool {
+    let after = clips.binary_search_by(|c| {
+        if c.start < clip.end() {
+            std::cmp::Ordering::Less
+        } else {
+            std::cmp::Ordering::Greater
+        }
+    });
+    let after = after.unwrap_or_else(|i| i);
+    after > 0 && clips.get(after - 1).is_some_and(|c| clip.start < c.end())
+}
+
+fn overlap_error(track: &Track) -> AppError {
+    AppError::new("There is already a clip there")
+        .why(format!("It would overlap another clip on {}.", track.name))
+        .fix("Move it to an empty spot or another track.")
 }
 
 /// Removes a clip from whichever track holds it.
@@ -1625,9 +1740,7 @@ pub(crate) fn insert_clip(track: &mut Track, clip: Clip) -> diag::Result<()> {
         .iter()
         .any(|c| c.start < clip.end() && clip.start < c.end())
     {
-        return Err(AppError::new("There is already a clip there")
-            .why(format!("It would overlap another clip on {}.", track.name))
-            .fix("Move it to an empty spot or another track."));
+        return Err(overlap_error(track));
     }
     let index = track
         .clips
@@ -2916,6 +3029,158 @@ mod tests {
             .apply(&p)
             .is_err()
         );
+    }
+
+    /// A timeline of `n` clips of 3 s on V1, each linked to one on A1.
+    fn many_linked(n: i64) -> (Fixture, Project) {
+        let f = fixture();
+        let mut p = f.p.clone();
+        for i in 0..n {
+            let link = Some(LinkId(1_000 + i as u64));
+            let mut v = clip(&f, i * 3, 3, link);
+            v.source_in = Time::seconds(i % 30);
+            p = place(&f, &p, f.v1, v.clone()).unwrap();
+            p = place(&f, &p, f.a1, v).unwrap();
+        }
+        (f, p)
+    }
+
+    #[test]
+    fn many_stretches_leave_what_each_clip_keeps_outside_them() {
+        let (f, p) = many_linked(200);
+        let t = |ms: i64| Time::from_ratio(ms, 1000).unwrap();
+        // Inside clips, on their edges, across several, overlapping each
+        // other, and running past the end of the timeline.
+        let mut ranges: Vec<Region> = (0..150)
+            .map(|i| Region {
+                start: t(i * 3_900 + 700),
+                end: t(i * 3_900 + 700 + 40 * (i % 7) + 10),
+            })
+            .collect();
+        ranges.push(Region {
+            start: t(30_000),
+            end: t(36_000),
+        });
+        ranges.push(Region {
+            start: t(35_000),
+            end: t(40_000),
+        });
+        ranges.push(Region {
+            start: t(590_000),
+            end: t(2_000_000),
+        });
+        let q = Command::RemoveRanges {
+            sequence: f.seq,
+            ranges: ranges.clone(),
+        }
+        .apply(&p)
+        .unwrap();
+        let mut merged: Vec<Region> = ranges.clone();
+        merged.sort_by_key(|r| r.start);
+        let merged = merged.into_iter().fold(Vec::<Region>::new(), |mut m, r| {
+            match m.last_mut() {
+                Some(last) if r.start <= last.end => last.end = last.end.max(r.end),
+                _ => m.push(r),
+            }
+            m
+        });
+        let before = p.active().unwrap();
+        let after = q.active().unwrap();
+        for (old, new) in before.tracks().zip(after.tracks()) {
+            // Each clip on its own: its parts outside the stretches, moved
+            // back by the stretches before them.
+            let mut want = Vec::new();
+            for c in &old.clips {
+                let mut parts = vec![(c.start, c.end())];
+                for r in &merged {
+                    parts = parts
+                        .into_iter()
+                        .flat_map(|(a, b)| [(a, b.min(r.start)), (a.max(r.end), b)])
+                        .filter(|(a, b)| a < b)
+                        .collect();
+                }
+                for (a, b) in parts {
+                    let back = merged
+                        .iter()
+                        .filter(|r| r.end <= a)
+                        .fold(Time::ZERO, |sum, r| sum + r.length());
+                    want.push((a - back, b - a, c.source_at(a)));
+                }
+            }
+            let got: Vec<_> = new
+                .clips
+                .iter()
+                .map(|c| (c.start, c.duration, c.source_in))
+                .collect();
+            assert_eq!(got, want, "{}", old.name);
+        }
+        // The parts of linked clips stay linked to each other.
+        let (v, a) = (&after.video_tracks[0].clips, &after.audio_tracks[0].clips);
+        assert_eq!(v.len(), a.len());
+        for (v, a) in v.iter().zip(a.iter()) {
+            assert!(v.link.is_some() && v.link == a.link && v.id != a.id);
+        }
+    }
+
+    #[test]
+    fn large_selections_move_and_close_as_small_ones_do() {
+        let (f, p) = many_linked(300);
+        let seq = p.active().unwrap();
+        let every_third: Vec<ClipId> = seq.video_tracks[0]
+            .clips
+            .iter()
+            .step_by(3)
+            .map(|c| c.id)
+            .collect();
+        // Rippled out: every track closes up, linked sound included.
+        let q = Command::RippleRemoveClips {
+            sequence: f.seq,
+            clips: every_third.clone(),
+        }
+        .apply(&p)
+        .unwrap();
+        let s = q.active().unwrap();
+        assert_eq!(s.video_tracks[0].clips.len(), 200);
+        assert_eq!(s.length(), Time::seconds(600));
+        assert!(
+            s.video_tracks[0]
+                .clips
+                .iter()
+                .zip(s.audio_tracks[0].clips.iter())
+                .all(|(v, a)| v.start == a.start)
+        );
+        // Everything from 450 s on moves 30 s later, sound with it.
+        let later: Vec<ClipId> = seq.video_tracks[0]
+            .clips
+            .iter()
+            .filter(|c| c.start >= Time::seconds(450))
+            .map(|c| c.id)
+            .collect();
+        let q = Command::MoveClips {
+            sequence: f.seq,
+            clips: later,
+            by: Time::seconds(30),
+        }
+        .apply(&p)
+        .unwrap();
+        let s = q.active().unwrap();
+        for t in s.tracks() {
+            assert!(
+                t.clips
+                    .iter()
+                    .zip(t.clips.iter().skip(1))
+                    .all(|(a, b)| a.end() <= b.start),
+                "in order"
+            );
+        }
+        assert_eq!(s.length(), Time::seconds(930));
+        // Moved onto clips that stay: refused, nothing changed.
+        let onto = Command::MoveClips {
+            sequence: f.seq,
+            clips: every_third,
+            by: Time::seconds(1),
+        };
+        assert!(onto.apply(&p).is_err());
     }
 
     #[test]

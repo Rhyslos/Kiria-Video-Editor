@@ -279,7 +279,7 @@ impl ProxyBuilds {
         }
         self.asked.retain(|m| *m != media);
         let (shelf, fingerprint, stream) = (Arc::clone(&self.shelf), file.fingerprint.clone(), file.stream);
-        let handle = jobs.submit(
+        let handle = jobs.submit_write(
             PoolKind::Analysis,
             Priority::Interactive,
             "delete proxy",

@@ -67,12 +67,13 @@ impl Master {
     }
 
     /// Takes the summed tracks and writes the finished block, interleaved.
+    /// Without a readout the meter is skipped: nobody watches the mix.
     pub fn process(
         &mut self,
         l: &mut [f32; BLOCK],
         r: &mut [f32; BLOCK],
         out: &mut [f32; 2 * BLOCK],
-        readout: &MasterReadout,
+        readout: Option<&MasterReadout>,
     ) {
         let (from, to) = (self.gain, volume_gain(self.settings.volume_db));
         self.gain = to;
@@ -96,6 +97,7 @@ impl Master {
             frame[1] = *b;
         }
         self.limiter.process(out);
+        let Some(readout) = readout else { return };
         if readout.take_reset() {
             self.meter.reset();
         }
