@@ -175,6 +175,9 @@ impl Choice {
             )
         } else if self.audio == AudioCodec::Pcm24 {
             format!("{} · 24-bit", self.container.label())
+        } else if self.audio.label() == self.container.label() {
+            // An MP3 file holds MP3 sound: say it once.
+            self.container.label().to_owned()
         } else {
             format!("{} · {}", self.container.label(), self.audio.label())
         }
@@ -304,5 +307,17 @@ mod tests {
             ..Choice::default()
         };
         assert_eq!(wav.format_words(), "WAV · 24-bit");
+        let mp3 = Choice {
+            container: Container::Mp3,
+            audio: AudioCodec::Mp3,
+            ..Choice::default()
+        };
+        assert_eq!(mp3.format_words(), "MP3");
+        let ogg = Choice {
+            container: Container::Ogg,
+            audio: AudioCodec::Opus,
+            ..Choice::default()
+        };
+        assert_eq!(ogg.format_words(), "OGG · Opus");
     }
 }
