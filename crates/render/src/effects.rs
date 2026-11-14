@@ -35,6 +35,16 @@ pub enum Effect {
     Blur { radius: f32, spot: Spot },
     /// Blocks `size` reference pixels across inside `spot`.
     Pixelate { size: f32, spot: Spot },
+    /// The picture moved inside its own frame: enlarged `scale` times
+    /// about `fixed` (a point, 0-1, that stays where it is), turned by
+    /// `turn` radians and shifted by `shift` (0-1 of its width and height).
+    /// What would come from outside it is see-through.
+    Move {
+        scale: f32,
+        fixed: (f32, f32),
+        turn: f32,
+        shift: (f32, f32),
+    },
 }
 
 /// A box in a picture: its left, top, right and bottom edges, each 0-1 of
@@ -63,15 +73,44 @@ impl Spot {
 /// One pass of a shader: which, and its numbers.
 #[derive(Debug, Clone, Copy)]
 enum Pass {
-    Vignette { amount: f32, size: f32, softness: f32 },
-    Grain { amount: f32, size: f32 },
-    Sharpen { amount: f32, radius: f32 },
-    Bright { threshold: f32 },
-    BlurAcross { radius: f32 },
-    BlurDown { radius: f32 },
-    Add { amount: f32 },
-    Within { spot: Spot },
-    Pixelate { size: f32, spot: Spot },
+    Vignette {
+        amount: f32,
+        size: f32,
+        softness: f32,
+    },
+    Grain {
+        amount: f32,
+        size: f32,
+    },
+    Sharpen {
+        amount: f32,
+        radius: f32,
+    },
+    Bright {
+        threshold: f32,
+    },
+    BlurAcross {
+        radius: f32,
+    },
+    BlurDown {
+        radius: f32,
+    },
+    Add {
+        amount: f32,
+    },
+    Within {
+        spot: Spot,
+    },
+    Pixelate {
+        size: f32,
+        spot: Spot,
+    },
+    Move {
+        scale: f32,
+        fixed: (f32, f32),
+        turn: f32,
+        shift: (f32, f32),
+    },
 }
 
 impl Pass {
@@ -90,13 +129,16 @@ impl Pass {
             Pass::Add { amount } => [6.0, amount, 0.0, 0.0],
             Pass::Within { .. } => [7.0, 0.0, 0.0, 0.0],
             Pass::Pixelate { size, .. } => [8.0, size, 0.0, 0.0],
+            Pass::Move { scale, fixed, .. } => [9.0, scale, fixed.0, fixed.1],
         }
     }
 
-    fn spot(self) -> Spot {
+    /// The pass's third row: a box, or a move's turn and shift.
+    fn extra(self) -> [f32; 4] {
         match self {
-            Pass::Within { spot } | Pass::Pixelate { spot, .. } => spot,
-            _ => Spot::WHOLE,
+            Pass::Within { spot } | Pass::Pixelate { spot, .. } => spot.numbers(),
+            Pass::Move { turn, shift, .. } => [turn, shift.0, shift.1, 0.0],
+            _ => Spot::WHOLE.numbers(),
         }
     }
 }
@@ -236,6 +278,20 @@ impl Effects {
                 Effect::Pixelate { size, spot } => {
                     pass(encoder, &now, None, Pass::Pixelate { size, spot }, 0)
                 }
+                Effect::Move {
+                    scale,
+                    fixed,
+                    turn,
+                    shift,
+                } => {
+                    let moving = Pass::Move {
+                        scale,
+                        fixed,
+                        turn,
+                        shift,
+                    };
+                    pass(encoder, &now, None, moving, 0)
+                }
             };
             done.push(std::mem::replace(&mut now, next));
         }
@@ -263,7 +319,7 @@ impl Effects {
         let rows = [
             pass.numbers(),
             [linear, w as f32, h as f32, (seed % (1 << 24)) as f32],
-            pass.spot().numbers(),
+            pass.extra(),
         ];
         let bytes: Vec<u8> = rows.as_flattened().iter().flat_map(|n| n.to_ne_bytes()).collect();
         let uniforms = uniform_buffer(device, PASS_BYTES);

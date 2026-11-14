@@ -335,6 +335,16 @@ fn effects(clip: &Clip, at: Time) -> Vec<render::Effect> {
     let seed = (clip.source_at(at).as_secs_f64() * 1200.0)
         .round()
         .rem_euclid(f64::from(1 << 24)) as u32;
+    // How far through the clip `at` is, eased in and out (motion effects),
+    // and the seconds since its start (shake).
+    let since = (at - clip.start).as_secs_f64().max(0.0);
+    let length = clip.duration.as_secs_f64();
+    let through = if length > 0.0 {
+        (since / length).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let eased = (through * through * (3.0 - 2.0 * through)) as f32;
     clip.effects
         .applied()
         .map(|kind| match kind {
@@ -365,8 +375,50 @@ fn effects(clip: &Clip, at: Time) -> Vec<render::Effect> {
                 size: 4.0 + 96.0 * fraction(p.size),
                 spot: spot(&p.spot),
             },
+            project::EffectKind::Zoom(z) => render::Effect::Move {
+                scale: 1.0 + 2.0 * fraction(z.amount) * eased,
+                fixed: (fraction(z.x), fraction(z.y)),
+                turn: 0.0,
+                shift: (0.0, 0.0),
+            },
+            project::EffectKind::Shake(s) => shake(fraction(s.amount), fraction(s.speed), since),
+            project::EffectKind::Pan(p) => {
+                let scale = 1.0 + fraction(p.zoom);
+                // The view's middle, kept where the enlarged picture still
+                // covers the whole frame.
+                let room = 0.5 / scale;
+                let middle = |from: i32, to: i32| {
+                    let at = fraction(from) + (fraction(to) - fraction(from)) * eased;
+                    at.clamp(room, 1.0 - room) - 0.5
+                };
+                render::Effect::Move {
+                    scale,
+                    fixed: (0.5, 0.5),
+                    turn: 0.0,
+                    shift: (middle(p.from_x, p.to_x), middle(p.from_y, p.to_y)),
+                }
+            }
         })
         .collect()
+}
+
+/// A camera shake `since` seconds into the clip: a smooth wander and tilt
+/// (sums of slow waves, the same at the same moment every time), the
+/// picture enlarged just enough to keep its edges out of sight.
+fn shake(amount: f32, speed: f32, since: f64) -> render::Effect {
+    let t = since * f64::from(0.5 + 5.5 * speed);
+    let wave = |a: f64, b: f64, c: f64| {
+        ((t * 2.1 + a).sin() * 0.5 + (t * 3.7 + b).sin() * 0.3 + (t * 7.9 + c).sin() * 0.2) as f32
+    };
+    render::Effect::Move {
+        scale: 1.0 + amount * 0.1,
+        fixed: (0.5, 0.5),
+        turn: amount * 0.02 * wave(2.0, 0.4, 1.1),
+        shift: (
+            amount * 0.03 * wave(0.0, 1.3, 2.1),
+            amount * 0.03 * wave(4.2, 0.7, 3.3),
+        ),
+    }
 }
 
 /// A box of a picture as the shaders take it: its edges, 0-1.
@@ -562,6 +614,65 @@ mod tests {
             }],
             "the one switched off is left out"
         );
+    }
+
+    /// The first clip of a one-clip project with `kind` as its one effect,
+    /// described at `at` seconds.
+    fn moved_at(kind: project::EffectKind, at: f64) -> render::Effect {
+        let project = import(
+            &Project::new("T", SequenceSettings::GAME_CLIP),
+            media("a.mkv", (1920, 1080), 0),
+        );
+        let sequence = project.active_sequence;
+        let clip = project.active().unwrap().video_tracks[0].clips[0].id;
+        let project = Command::AddEffect { sequence, clip, kind }
+            .apply(&project)
+            .unwrap();
+        let at = Time::from_ratio((at * 1000.0).round() as i64, 1000).unwrap();
+        describe(&project, project.active().unwrap(), at).layers[0].effects[0]
+    }
+
+    #[test]
+    fn motion_follows_the_clip_from_its_start_to_its_end() {
+        let zoom = project::EffectKind::Zoom(project::effects::Zoom {
+            amount: 1_000_000,
+            x: 800_000,
+            y: 200_000,
+        });
+        let scale = |at| match moved_at(zoom, at) {
+            render::Effect::Move { scale, fixed, .. } => {
+                assert_eq!(fixed, (0.8, 0.2), "about its point");
+                scale
+            }
+            other => panic!("{other:?}"),
+        };
+        // The clip is ten seconds long.
+        assert_eq!(scale(0.0), 1.0, "as it is at the start");
+        assert!((scale(5.0) - 2.0).abs() < 1e-5, "halfway in the middle");
+        assert!((scale(9.999) - 3.0).abs() < 1e-3, "three times by the end");
+        assert!(scale(2.0) < scale(3.0), "growing");
+        // A pan stays where the enlarged picture covers the frame.
+        let pan = project::EffectKind::Pan(project::effects::Pan {
+            from_x: 0,
+            from_y: 500_000,
+            to_x: 1_000_000,
+            to_y: 500_000,
+            zoom: 1_000_000,
+        });
+        match (moved_at(pan, 0.0), moved_at(pan, 9.999)) {
+            (render::Effect::Move { shift: a, scale, .. }, render::Effect::Move { shift: b, .. }) => {
+                assert_eq!(scale, 2.0);
+                assert!(
+                    (a.0 + 0.25).abs() < 1e-5 && (b.0 - 0.25).abs() < 1e-3,
+                    "{a:?} to {b:?}"
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+        // A shake is the same at the same moment, and moves.
+        let shake = project::EffectKind::ALL[7];
+        assert_eq!(moved_at(shake, 1.5), moved_at(shake, 1.5));
+        assert_ne!(moved_at(shake, 1.5), moved_at(shake, 1.6));
     }
 
     #[test]

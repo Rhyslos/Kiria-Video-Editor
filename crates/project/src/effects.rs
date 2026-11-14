@@ -36,17 +36,23 @@ pub enum EffectKind {
     Glow(Glow),
     Blur(Blur),
     Pixelate(Pixelate),
+    Zoom(Zoom),
+    Shake(Shake),
+    Pan(Pan),
 }
 
 impl EffectKind {
     /// Every kind there is, with its usual settings: what is added.
-    pub const ALL: [EffectKind; 6] = [
+    pub const ALL: [EffectKind; 9] = [
         EffectKind::Vignette(Vignette::USUAL),
         EffectKind::Grain(Grain::USUAL),
         EffectKind::Sharpen(Sharpen::USUAL),
         EffectKind::Glow(Glow::USUAL),
         EffectKind::Blur(Blur::USUAL),
         EffectKind::Pixelate(Pixelate::USUAL),
+        EffectKind::Zoom(Zoom::USUAL),
+        EffectKind::Shake(Shake::USUAL),
+        EffectKind::Pan(Pan::USUAL),
     ];
 
     /// Its name, as the interface shows it.
@@ -58,6 +64,9 @@ impl EffectKind {
             EffectKind::Glow(_) => "Glow",
             EffectKind::Blur(_) => "Blur",
             EffectKind::Pixelate(_) => "Pixelate",
+            EffectKind::Zoom(_) => "Zoom to a point",
+            EffectKind::Shake(_) => "Shake",
+            EffectKind::Pan(_) => "Smooth pan",
         }
     }
 
@@ -70,6 +79,9 @@ impl EffectKind {
             EffectKind::Glow(g) => shares("Glow", &[g.amount, g.threshold, g.radius]),
             EffectKind::Blur(b) => shares("Blur", &[b.radius]).and_then(|()| b.spot.check("Blur")),
             EffectKind::Pixelate(p) => shares("Pixelate", &[p.size]).and_then(|()| p.spot.check("Pixelate")),
+            EffectKind::Zoom(z) => shares("Zoom to a point", &[z.amount, z.x, z.y]),
+            EffectKind::Shake(s) => shares("Shake", &[s.amount, s.speed]),
+            EffectKind::Pan(p) => shares("Smooth pan", &[p.from_x, p.from_y, p.to_x, p.to_y, p.zoom]),
         }
     }
 }
@@ -179,6 +191,67 @@ impl Pixelate {
     pub const USUAL: Pixelate = Pixelate {
         size: ONE * 3 / 10,
         spot: Spot::WHOLE,
+    };
+}
+
+/// Moves in on a point of the picture over the clip's length, easing in
+/// and out, inside the clip's own frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Zoom {
+    /// How far in by the clip's end: 0 (not at all) to [`ONE`] (three times).
+    pub amount: i32,
+    /// The point moved in on, which stays where it is: shares of the
+    /// picture's width and height.
+    pub x: i32,
+    pub y: i32,
+}
+
+impl Zoom {
+    pub const USUAL: Zoom = Zoom {
+        amount: ONE / 4,
+        x: ONE / 2,
+        y: ONE / 2,
+    };
+}
+
+/// A camera shake: the picture wanders and tilts a little, smoothly,
+/// enlarged just enough that its edges stay out of sight.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Shake {
+    /// How much: 0 to [`ONE`].
+    pub amount: i32,
+    /// How fast: 0 (slow drift) to [`ONE`] (jitter).
+    pub speed: i32,
+}
+
+impl Shake {
+    pub const USUAL: Shake = Shake {
+        amount: ONE * 3 / 10,
+        speed: ONE / 2,
+    };
+}
+
+/// The view slides from one part of the picture to another over the
+/// clip's length, easing in and out, enlarged so there is room to move.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Pan {
+    /// Where the view's middle starts and ends: shares of the picture's
+    /// width and height.
+    pub from_x: i32,
+    pub from_y: i32,
+    pub to_x: i32,
+    pub to_y: i32,
+    /// How far in: 0 (not at all: nothing to move over) to [`ONE`] (twice).
+    pub zoom: i32,
+}
+
+impl Pan {
+    pub const USUAL: Pan = Pan {
+        from_x: ONE * 3 / 10,
+        from_y: ONE / 2,
+        to_x: ONE * 7 / 10,
+        to_y: ONE / 2,
+        zoom: ONE * 3 / 10,
     };
 }
 
