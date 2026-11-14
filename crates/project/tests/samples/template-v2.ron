@@ -1,0 +1,307 @@
+(
+  format_version: 2,
+  template: (
+    length: (7, 1),
+    media: [
+      (
+        id: 1,
+        path: "recordings/match_04.mkv",
+        fingerprint: (
+          size: 2147483648,
+          sample_hash: "9f2c1a",
+        ),
+        kind: Video,
+        duration: (600, 1),
+        info: (
+          container: "matroska,webm",
+          video: Some((
+            index: 0,
+            codec: "hevc",
+            width: 2560,
+            height: 1440,
+            frame_rate: (60000, 1001),
+          )),
+          audio: [
+            (
+              index: 1,
+              codec: "aac",
+              channels: 2,
+              sample_rate: 48000,
+              name: "Game",
+            ),
+            (
+              index: 2,
+              codec: "opus",
+              channels: 1,
+              sample_rate: 48000,
+              name: "Mic",
+            ),
+          ],
+          stated_length: Some((660, 1)),
+        ),
+      ),
+    ],
+    video_tracks: [
+      (
+        id: 2,
+        kind: Video,
+        name: "V1",
+        clips: [
+          (
+            id: 3,
+            media: 1,
+            start: (0, 1),
+            source_in: (20753, 2000),
+            duration: (7, 1),
+            link: Some(4),
+            look: (
+              x: 320000,
+              y: 280000,
+              scale: 300000,
+              turn: -2500000,
+              crop_left: 120000,
+              crop_top: 0,
+              crop_right: 0,
+              crop_bottom: 50000,
+              opacity: 900000,
+              exposure: 250000,
+              contrast: 0,
+              saturation: 0,
+              temperature: 150000,
+              tint: 0,
+            ),
+            keyframes: {
+              X: [
+                (
+                  at: (20753, 2000),
+                  value: 360000,
+                  ease: Linear,
+                ),
+              ],
+              Y: [
+                (
+                  at: (20753, 2000),
+                  value: 280000,
+                  ease: Linear,
+                ),
+              ],
+              Scale: [
+                (
+                  at: (20753, 2000),
+                  value: 450000,
+                  ease: Linear,
+                ),
+              ],
+              Opacity: [
+                (
+                  at: (20753, 2000),
+                  value: 900000,
+                  ease: Linear,
+                ),
+              ],
+            },
+            ramp: [
+              (
+                at: (-8, 1),
+                speed: (
+                  num: 1,
+                  den: 1,
+                ),
+                ease: Smooth,
+              ),
+              (
+                at: (-15, 2),
+                speed: (
+                  num: 1,
+                  den: 4,
+                ),
+                ease: Linear,
+              ),
+              (
+                at: (-13, 2),
+                speed: (
+                  num: 1,
+                  den: 4,
+                ),
+                ease: Smooth,
+              ),
+              (
+                at: (-6, 1),
+                speed: (
+                  num: 1,
+                  den: 1,
+                ),
+                ease: Linear,
+              ),
+            ],
+            blend: Blend,
+          ),
+        ],
+      ),
+    ],
+    audio_tracks: [
+      (
+        id: 5,
+        kind: Audio,
+        name: "A1",
+        clips: [
+          (
+            id: 6,
+            media: 1,
+            stream: 1,
+            start: (0, 1),
+            source_in: (20753, 2000),
+            duration: (7, 1),
+            link: Some(4),
+            sound: (
+              gain_mdb: -3000,
+              pan: -200000,
+              fade_in: (0, 1),
+              fade_out: (0, 1),
+            ),
+            ramp: [
+              (
+                at: (-8, 1),
+                speed: (
+                  num: 1,
+                  den: 1,
+                ),
+                ease: Smooth,
+              ),
+              (
+                at: (-15, 2),
+                speed: (
+                  num: 1,
+                  den: 4,
+                ),
+                ease: Linear,
+              ),
+              (
+                at: (-13, 2),
+                speed: (
+                  num: 1,
+                  den: 4,
+                ),
+                ease: Smooth,
+              ),
+              (
+                at: (-6, 1),
+                speed: (
+                  num: 1,
+                  den: 1,
+                ),
+                ease: Linear,
+              ),
+            ],
+            lines: (
+              volume: [
+                (
+                  at: (9003, 2000),
+                  value: 0,
+                ),
+                (
+                  at: (11003, 2000),
+                  value: -9000,
+                ),
+                (
+                  at: (15003, 2000),
+                  value: 0,
+                ),
+              ],
+              pan: [
+                (
+                  at: (19003, 2000),
+                  value: 0,
+                ),
+                (
+                  at: (23003, 2000),
+                  value: 600000,
+                ),
+              ],
+            ),
+          ),
+        ],
+        sound: (
+          role: Effects,
+          pan: 0,
+          high_pass: (
+            on: false,
+            freq_hz: 80,
+          ),
+          eq: (
+            on: false,
+            bands: ((
+              on: true,
+              shape: LowShelf,
+              freq_hz: 100,
+              q_milli: 1000,
+              gain_mdb: 0,
+            ), (
+              on: true,
+              shape: Peak,
+              freq_hz: 250,
+              q_milli: 1000,
+              gain_mdb: 0,
+            ), (
+              on: true,
+              shape: Peak,
+              freq_hz: 1000,
+              q_milli: 1000,
+              gain_mdb: 0,
+            ), (
+              on: true,
+              shape: Peak,
+              freq_hz: 3000,
+              q_milli: 1000,
+              gain_mdb: 0,
+            ), (
+              on: true,
+              shape: Peak,
+              freq_hz: 6000,
+              q_milli: 1000,
+              gain_mdb: 0,
+            ), (
+              on: true,
+              shape: HighShelf,
+              freq_hz: 10000,
+              q_milli: 1000,
+              gain_mdb: 0,
+            )),
+          ),
+          compressor: (
+            on: false,
+            threshold_mdb: -24000,
+            ratio_milli: 3000,
+            attack_us: 5000,
+            release_us: 120000,
+            knee_mdb: 6000,
+            makeup_mdb: 4000,
+          ),
+          cleanup: (
+            on: false,
+            threshold_mdb: 6000,
+            reduction_mdb: -18000,
+            release_us: 120000,
+            profile: None,
+          ),
+          ducking: (
+            on: true,
+            threshold_mdb: -40000,
+            hold_us: 300000,
+            down_us: 40000,
+            up_us: 400000,
+            depth_mdb: -12000,
+          ),
+          loudness: (
+            on: false,
+            target_mlufs: -18000,
+            max_boost_mdb: 12000,
+            max_cut_mdb: 12000,
+          ),
+          volume_line: [],
+          pan_line: [],
+        ),
+      ),
+    ],
+  ),
+)

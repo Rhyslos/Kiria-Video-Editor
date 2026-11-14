@@ -9,7 +9,9 @@
 //! added to [`MIGRATIONS`] that turns file text of the previous version into
 //! the new one. So far every change has only added things: new fields have
 //! defaults (`#[serde(default)]`), so each step just writes the new version
-//! number and the old text reads as it is. The first change that renames or
+//! number and the old text reads as it is. Since format 18 values that are
+//! their default are left out of the file (`crate::defaults`), which makes
+//! each default part of the format. The first change that renames or
 //! reshapes something will need a frozen copy of the old types to read the
 //! old text into, convert and write again. Old files are migrated step by
 //! step when opened; a sample of every released version lives in
@@ -24,7 +26,7 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 /// The format this build writes.
-pub const FORMAT_VERSION: u32 = 17;
+pub const FORMAT_VERSION: u32 = 18;
 
 /// Turns the text of a version `n` file into the text of a version `n + 1` file.
 pub type Migration = fn(&str) -> diag::Result<String>;
@@ -32,7 +34,7 @@ pub type Migration = fn(&str) -> diag::Result<String>;
 /// `MIGRATIONS[i]` upgrades version `i + 1` to `i + 2`.
 pub const MIGRATIONS: &[Migration] = &[
     v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8, v8_to_v9, v9_to_v10, v10_to_v11,
-    v11_to_v12, v12_to_v13, v13_to_v14, v14_to_v15, v15_to_v16, v16_to_v17,
+    v11_to_v12, v12_to_v13, v13_to_v14, v14_to_v15, v15_to_v16, v16_to_v17, v17_to_v18,
 ];
 
 /// Format 2 adds `info` (the file's streams) to each media entry. The field
@@ -146,8 +148,18 @@ fn v16_to_v17(text: &str) -> diag::Result<String> {
     set_format_version(text, 16, 17)
 }
 
+/// Format 18 leaves values out of the file when they are their default
+/// (`crate::defaults`): an untouched clip is written as its place and its
+/// file. Every value that may be left out reads as its default when
+/// missing, so version 17 text, which has them all, reads as it is. The
+/// version goes up so that an older app says the file is from a newer
+/// version instead of calling it damaged.
+fn v17_to_v18(text: &str) -> diag::Result<String> {
+    set_format_version(text, 17, 18)
+}
+
 /// Rewrites the `format_version` number at the top of the file.
-fn set_format_version(text: &str, from: u32, to: u32) -> diag::Result<String> {
+pub(crate) fn set_format_version(text: &str, from: u32, to: u32) -> diag::Result<String> {
     let key = "format_version";
     let start = text.find(key).ok_or_else(damaged)?;
     let after_key = start + key.len();

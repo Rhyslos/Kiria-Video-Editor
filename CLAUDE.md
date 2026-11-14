@@ -76,7 +76,7 @@ Building needs libclang (for the FFmpeg bindings); on Windows set `LIBCLANG_PATH
 ## Decisions so far
 
 - Time is stored as exact fractions (frames over rate), never floats.
-- The project file is versioned from its first commit; every format change gets a migration and a stored sample.
+- The project file is versioned from its first commit; every format change gets a migration and a stored sample. Since format 18 (templates 2) values that are their default are left out of the file (`project::defaults`), so a default of a saved type is part of the format and changes only with a new version whose migration writes the old value in.
 - How a project is looked at (track heights, the video/audio divider) is view state, not an edit: it lives in `<project file>.view` beside the project, never in the project file, and makes no undo step.
 - Ways of looking at the timeline that are ways of working rather than about one project (the rough cut view, compact tracks, the divider between video and audio taken away, what a click on the timeline moves) are settings, the same for every project; they never change the heights or the divider's place kept in the `.view` file.
 - A clip's keyframes are kept in its file's time (source time), not the timeline's, so they stay on the picture through moves, trims and speed changes; values between keyframes are worked out in whole numbers so preview and export agree exactly.

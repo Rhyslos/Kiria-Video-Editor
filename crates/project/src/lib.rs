@@ -28,6 +28,7 @@ pub mod animate;
 pub mod clip_clipboard;
 pub mod clipboard;
 pub mod command;
+pub(crate) mod defaults;
 pub mod disk;
 pub mod document;
 mod edits;

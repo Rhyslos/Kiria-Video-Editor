@@ -104,4 +104,8 @@ Looked at and left: the true peak's ring of samples as a flat double buffer (the
 
 ### The project file (item 10, first part)
 
-The project was written indented, a field per line: 3.1 MB for the 2 516-clip timeline, a third of it spaces and line breaks. It is now written as a line per header field (the launcher still reads only those) and the project on one line: 1.0 MB, turned into text in 5 ms (13 before), read back in 80 ms (91). The format is the same to every RON reader, so it needs no new format version, and files written indented open as before. Left for a decision: leaving default values out of the file (a format version and a migration; several times smaller again), and checking only the tracks an edit touched.
+The project was written indented, a field per line: 3.1 MB for the 2 516-clip timeline, a third of it spaces and line breaks. It is now written as a line per header field (the launcher still reads only those) and the project on one line: 1.0 MB, turned into text in 5 ms (13 before), read back in 80 ms (91). The format is the same to every RON reader, so it needs no new format version, and files written indented open as before. Checking only the tracks an edit touched is left for later.
+
+### The project file (item 10, second part)
+
+Values that are their default are now left out of the file (format 18, templates format 2): an untouched clip is written as its id, file, stream, place and length, where it used to carry a whole plain look, normal speed, plain sound, no keyframes, no ramp and no lines (three quarters of the text). The 2 516-clip timeline goes from 1.0 MB to 254 KB, turned into text in 4 ms and read back in 17 ms (80 before). Older files read as they are; the version goes up so that an older app calls a new file newer, not damaged. Each default left out is part of the format from now on, kept by a test (`project::defaults`).
