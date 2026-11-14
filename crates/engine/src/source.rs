@@ -144,6 +144,7 @@ pub fn file_alone(media: &MediaRef) -> Option<Project> {
     let clip = Clip {
         lines: Default::default(),
         effects: Default::default(),
+        mode: Default::default(),
         id,
         media: media.id,
         stream: video.index,

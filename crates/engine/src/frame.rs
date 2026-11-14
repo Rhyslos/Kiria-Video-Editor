@@ -51,6 +51,8 @@ pub struct Group {
     pub colour: Colour,
     /// Its picture effects, in order, after its colour.
     pub effects: Vec<render::Effect>,
+    /// How it mixes with what is below it.
+    pub mode: render::Mode,
 }
 
 /// What an adjustment layer does to everything below it.
@@ -117,6 +119,8 @@ pub struct Layer {
     /// Its picture effects, in order, after its colour: drawn upright at
     /// the size it takes in the frame, changed, then placed.
     pub effects: Vec<render::Effect>,
+    /// How it mixes with what is below it.
+    pub mode: render::Mode,
     /// With frame blending on and the moment between two recorded frames:
     /// the next frame to mix in, and how much of it.
     pub blend: Option<Blend>,
@@ -155,7 +159,8 @@ pub fn blend_at(at: Time, rate: Rate) -> Option<Blend> {
 impl Layer {
     /// Whether nothing below this layer can be seen in a frame of `frame` pixels.
     pub fn hides_what_is_below(&self, frame: (u32, u32)) -> bool {
-        self.opacity >= 1.0 && self.area.covers(frame)
+        // Any mode but over lets what is below show through.
+        self.opacity >= 1.0 && self.mode == render::Mode::Normal && self.area.covers(frame)
     }
 }
 
@@ -215,7 +220,10 @@ fn seen(project: &Project, sequence: &Sequence, at: Time, depth: usize) -> (Vec<
                 let Some((group, inner, inner_opaque)) = nested(project, clip, id, size, at, depth) else {
                     continue;
                 };
-                let hides = inner_opaque && group.opacity >= 1.0 && group.area.covers(size);
+                let hides = inner_opaque
+                    && group.opacity >= 1.0
+                    && group.mode == render::Mode::Normal
+                    && group.area.covers(size);
                 nodes.push(Node::Timeline(group, inner));
                 hides
             }
@@ -281,6 +289,7 @@ fn nested(
         opacity,
         colour: colour(&look),
         effects: effects(clip, at),
+        mode: mode(clip.mode),
     };
     Some((group, nodes, opaque))
 }
@@ -320,6 +329,7 @@ fn layer(clip: &Clip, media: &MediaRef, frame: (u32, u32), at: Time) -> Option<L
         opacity: fraction(look.opacity),
         colour: colour(&look),
         effects: effects(clip, at),
+        mode: mode(clip.mode),
         blend: match clip.blend {
             FrameBlend::Blend => blend_at(source_time, video.frame_rate),
             FrameBlend::Off => None,
@@ -400,6 +410,17 @@ fn effects(clip: &Clip, at: Time) -> Vec<render::Effect> {
             }
         })
         .collect()
+}
+
+/// A blend mode as the compositor takes it.
+fn mode(mode: project::BlendMode) -> render::Mode {
+    match mode {
+        project::BlendMode::Normal => render::Mode::Normal,
+        project::BlendMode::Add => render::Mode::Add,
+        project::BlendMode::Screen => render::Mode::Screen,
+        project::BlendMode::Multiply => render::Mode::Multiply,
+        project::BlendMode::Lighten => render::Mode::Lighten,
+    }
 }
 
 /// A camera shake `since` seconds into the clip: a smooth wander and tilt
@@ -673,6 +694,32 @@ mod tests {
         let shake = project::EffectKind::ALL[7];
         assert_eq!(moved_at(shake, 1.5), moved_at(shake, 1.5));
         assert_ne!(moved_at(shake, 1.5), moved_at(shake, 1.6));
+    }
+
+    #[test]
+    fn a_picture_that_mixes_lets_the_one_below_show() {
+        let project = import(
+            &Project::new("T", SequenceSettings::GAME_CLIP),
+            media("a.mkv", (1920, 1080), 0),
+        );
+        let (project, _) = stack(&project, 0, 0, 5);
+        let top = project.active().unwrap().video_tracks[1].clips[0].id;
+        let at = Time::seconds(2);
+        assert_eq!(
+            describe(&project, project.active().unwrap(), at).layers.len(),
+            1,
+            "hidden below"
+        );
+        let project = Command::SetBlendMode {
+            sequence: project.active_sequence,
+            clip: top,
+            mode: project::BlendMode::Screen,
+        }
+        .apply(&project)
+        .unwrap();
+        let frame = describe(&project, project.active().unwrap(), at);
+        assert_eq!(frame.layers.len(), 2, "both drawn");
+        assert_eq!(frame.layers[1].mode, render::Mode::Screen);
     }
 
     #[test]

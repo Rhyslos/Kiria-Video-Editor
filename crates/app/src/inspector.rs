@@ -352,10 +352,18 @@ impl Inspector {
                 picture,
                 on_picture,
                 adjustment,
+                clip.mode,
                 &keys,
                 &mut values,
                 &mut touched,
             );
+            if let Some(mode) = asks.mode {
+                commands.push(Command::SetBlendMode {
+                    sequence,
+                    clip: clip.id,
+                    mode,
+                });
+            }
         }
 
         if track.kind == TrackKind::Video && !adjustment {
@@ -702,6 +710,8 @@ struct Asks {
     resets: Vec<&'static [LookField]>,
     /// A keyframe control was used, for this group.
     keys: Vec<(&'static [LookField], KeyClicks)>,
+    /// Another blend mode was picked.
+    mode: Option<project::BlendMode>,
 }
 
 impl Asks {
@@ -742,6 +752,7 @@ fn picture_sections(
     picture: (u32, u32),
     on_picture: (&mut bool, &str),
     adjustment: bool,
+    mode: project::BlendMode,
     keys: &KeyTable,
     values: &mut Values,
     touched: &mut Touched,
@@ -818,6 +829,7 @@ fn picture_sections(
                 &k(LookField::Opacity),
             );
             asks.row(touched, LookField::Opacity, keyed);
+            asks.mode = blend_row(ui, theme, mode);
             ui.horizontal_wrapped(|ui| {
                 ui.add_space(90.0);
                 if ui
@@ -912,6 +924,27 @@ fn picture_sections(
 }
 
 /// The Quick color section.
+/// The Blend row: how the picture mixes with what is below it. The mode
+/// picked, if another one was.
+fn blend_row(ui: &mut egui::Ui, theme: &Theme, mode: project::BlendMode) -> Option<project::BlendMode> {
+    let mut picked = None;
+    ui.horizontal(|ui| {
+        inspector::label_cell(ui, theme, "Blend", inspector::LABEL_WIDTH);
+        egui::ComboBox::from_id_salt("blend mode")
+            .selected_text(mode.name())
+            .show_ui(ui, |ui| {
+                for other in project::BlendMode::ALL {
+                    if ui.selectable_label(other == mode, other.name()).clicked() && other != mode {
+                        picked = Some(other);
+                    }
+                }
+            })
+            .response
+            .on_hover_text("How the picture mixes with what is below it: Add, Screen and Lighten brighten, Multiply darkens");
+    });
+    picked
+}
+
 fn colour_section(
     ui: &mut egui::Ui,
     theme: &Theme,
@@ -2092,6 +2125,7 @@ pub(crate) mod tests {
         let clicked = |group: &'static [LookField], clicks: KeyClicks| Asks {
             resets: Vec::new(),
             keys: vec![(group, clicks)],
+            mode: None,
         };
         let toggle = KeyClicks {
             toggle: true,
@@ -2146,6 +2180,7 @@ pub(crate) mod tests {
         let reset = Asks {
             resets: vec![&TRANSFORM],
             keys: Vec::new(),
+            mode: None,
         };
         let commands = answer(&mut inspector, &reset, 4);
         assert_eq!(

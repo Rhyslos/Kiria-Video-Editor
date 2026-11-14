@@ -308,6 +308,7 @@ fn command_for(action: &Action, p: &Project, media: MediaId, recording: MediaId)
                 clip: Clip {
                     lines: Default::default(),
                     effects: Default::default(),
+                    mode: Default::default(),
                     id: ClipId(0),
                     media,
                     stream: 0,

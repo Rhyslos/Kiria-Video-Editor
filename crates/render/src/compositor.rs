@@ -93,13 +93,66 @@ pub struct Drawn<'a> {
     /// must be stored the same way as `pixels` (the same kind of planes,
     /// colour and turn), or it is left out.
     pub blend: Option<(Pixels<'a>, f32)>,
+    /// How it mixes with what is below it.
+    pub mode: Mode,
+}
+
+/// How a layer mixes with what is below it, in the frame's working values
+/// (light, in a frame made in linear light). Each is the graphics card's own
+/// blending of premultiplied pictures, so it costs nothing extra; where a
+/// layer is see-through, what is below shows as it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Mode {
+    /// Over what is below, hiding it as far as it is opaque.
+    #[default]
+    Normal,
+    /// Its light added to what is below: brighter everywhere.
+    Add,
+    /// Like two projectors on one screen: brighter, never past white.
+    Screen,
+    /// What is below seen through it like a slide: darker, never lighter.
+    Multiply,
+    /// The lighter of the two, colour by colour.
+    Lighten,
+}
+
+impl Mode {
+    pub const ALL: [Mode; 5] = [
+        Mode::Normal,
+        Mode::Add,
+        Mode::Screen,
+        Mode::Multiply,
+        Mode::Lighten,
+    ];
+
+    fn state(self) -> wgpu::BlendState {
+        use wgpu::{BlendComponent, BlendFactor as F, BlendOperation as Op};
+        let colour = |src_factor, dst_factor, operation| BlendComponent {
+            src_factor,
+            dst_factor,
+            operation,
+        };
+        let over = colour(F::One, F::OneMinusSrcAlpha, Op::Add);
+        let rgb = match self {
+            Mode::Normal => over,
+            Mode::Add => colour(F::One, F::One, Op::Add),
+            Mode::Screen => colour(F::One, F::OneMinusSrc, Op::Add),
+            Mode::Multiply => colour(F::Dst, F::OneMinusSrcAlpha, Op::Add),
+            Mode::Lighten => colour(F::One, F::One, Op::Max),
+        };
+        wgpu::BlendState {
+            color: rgb,
+            alpha: over,
+        }
+    }
 }
 
 /// The pipelines that draw layers into frames of one working format.
 #[derive(Debug)]
 pub struct Compositor {
     working: Working,
-    pipeline: wgpu::RenderPipeline,
+    /// One per blend mode, in the order of [`Mode::ALL`].
+    pipelines: Vec<wgpu::RenderPipeline>,
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
 }
@@ -123,19 +176,24 @@ impl Compositor {
                 texture_entry(7),
             ],
         });
-        let pipeline = pipeline(
-            device,
-            "layer",
-            &layout,
-            &module,
-            ("place", "layer"),
-            working.format(),
-            // Layers come premultiplied by their opacity.
-            Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-        );
+        // Layers come premultiplied by their opacity.
+        let pipelines = Mode::ALL
+            .iter()
+            .map(|mode| {
+                pipeline(
+                    device,
+                    "layer",
+                    &layout,
+                    &module,
+                    ("place", "layer"),
+                    working.format(),
+                    Some(mode.state()),
+                )
+            })
+            .collect();
         Compositor {
             working,
-            pipeline,
+            pipelines,
             layout,
             sampler: smooth_sampler(device),
         }
@@ -248,10 +306,13 @@ impl Compositor {
             })],
             ..Default::default()
         });
-        pass.set_pipeline(&self.pipeline);
-        for group in &groups {
-            pass.set_bind_group(0, group, &[]);
-            pass.draw(0..4, 0..1);
+        for (group, layer) in groups.iter().zip(layers) {
+            let mode = Mode::ALL.iter().position(|m| *m == layer.mode).unwrap_or(0);
+            if let Some(pipeline) = self.pipelines.get(mode) {
+                pass.set_pipeline(pipeline);
+                pass.set_bind_group(0, group, &[]);
+                pass.draw(0..4, 0..1);
+            }
         }
     }
 }

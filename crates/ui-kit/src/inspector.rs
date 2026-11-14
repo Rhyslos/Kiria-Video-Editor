@@ -141,7 +141,7 @@ impl Touched {
 }
 
 /// Width of the label column.
-const LABEL_WIDTH: f32 = 86.0;
+pub const LABEL_WIDTH: f32 = 86.0;
 /// Width of the number at the end of a slider's row.
 const VALUE_WIDTH: f32 = 58.0;
 

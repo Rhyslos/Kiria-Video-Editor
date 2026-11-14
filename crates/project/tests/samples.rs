@@ -85,6 +85,7 @@ fn rich_project() -> Project {
     let clip = |id, stream| Clip {
         lines: Default::default(),
         effects: Default::default(),
+        mode: Default::default(),
         id,
         media: video,
         stream,
@@ -177,6 +178,8 @@ fn rich_project() -> Project {
         ramp: ramp.clone(),
         blend: project::FrameBlend::Blend,
         effects,
+        // Mixed as light over what is below (format 23).
+        mode: project::BlendMode::Screen,
         ..clip(v_clip, 0)
     });
     // The game sound a little quieter, a little to the left, fading in and out.
@@ -521,6 +524,24 @@ fn version_21_sample_opens_without_motion_effects() {
 }
 
 #[test]
+fn version_22_sample_opens_with_every_picture_over() {
+    let project = file::load(&sample_path(22)).expect("the version 22 sample opens");
+    for seq in &project.sequences {
+        assert!(
+            seq.tracks()
+                .all(|t| t.clips.iter().all(|c| c.mode == project::BlendMode::Normal))
+        );
+    }
+}
+
+#[test]
+fn the_current_sample_has_a_picture_mixed_as_light() {
+    let project = file::load(&sample_path(FORMAT_VERSION)).expect("the sample opens");
+    let clip = &project.active().expect("a timeline").video_tracks[0].clips[0];
+    assert_eq!(clip.mode, project::BlendMode::Screen);
+}
+
+#[test]
 fn the_current_sample_has_effects_one_switched_off() {
     let project = file::load(&sample_path(FORMAT_VERSION)).expect("the sample opens");
     let clip = &project.active().expect("a timeline").video_tracks[0].clips[0];
@@ -680,6 +701,8 @@ fn the_stored_template_matches_the_model_but_for_what_came_later() {
         // Clip lines came with format 17, effects with 19.
         clip.lines = project::ClipLines::default();
         clip.effects = project::Effects::default();
+        // Blend modes came with 23.
+        clip.mode = project::BlendMode::Normal;
     }
     for media in expected.media.iter_mut() {
         media.info.stated_length = None;

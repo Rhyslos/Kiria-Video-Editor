@@ -329,13 +329,21 @@ impl Drawing<'_> {
                                 drawn.push(placed.drawn(layer));
                             } else if let Some(picture) = with_effects.next() {
                                 let whole = Part::WHOLE;
-                                drawn.push(made(picture, layer.area, whole, layer.opacity, Colour::NEUTRAL));
+                                let placed = made(picture, layer.area, whole, layer.opacity, Colour::NEUTRAL);
+                                drawn.push(Drawn {
+                                    mode: layer.mode,
+                                    ..placed
+                                });
                             }
                         }
                     }
                     Step::Timeline(group) => {
                         if let Some(picture) = pictures.next() {
-                            drawn.push(made(picture, group.area, group.part, group.opacity, group.colour));
+                            let placed = made(picture, group.area, group.part, group.opacity, group.colour);
+                            drawn.push(Drawn {
+                                mode: group.mode,
+                                ..placed
+                            });
                         }
                     }
                     Step::Adjust(_) => {}
@@ -383,6 +391,7 @@ impl Drawing<'_> {
         let upright = Layer {
             area: Area::fitted(size, size),
             opacity: 1.0,
+            mode: render::Mode::Normal,
             ..layer.clone()
         };
         self.draw(
@@ -446,6 +455,7 @@ fn made<'a>(picture: &'a Frame, area: Area, part: Part, opacity: f32, colour: Co
         opacity,
         colour,
         blend: None,
+        mode: render::Mode::Normal,
     }
 }
 
@@ -464,6 +474,7 @@ impl Placed {
                 .as_ref()
                 .zip(layer.blend)
                 .map(|(next, blend)| (next.pixels(), blend.weight)),
+            mode: layer.mode,
         }
     }
 }

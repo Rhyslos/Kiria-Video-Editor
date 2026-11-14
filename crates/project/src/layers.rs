@@ -81,6 +81,7 @@ pub(crate) fn lay(
     let clip = |p: &mut Project, stream: u32| Clip {
         lines: Default::default(),
         effects: Default::default(),
+        mode: Default::default(),
         id: p.allocate_id(),
         media: id,
         stream,
@@ -762,6 +763,7 @@ mod tests {
             clip: Clip {
                 lines: Default::default(),
                 effects: Default::default(),
+                mode: Default::default(),
                 id: ClipId(0),
                 media: short,
                 stream: 1,

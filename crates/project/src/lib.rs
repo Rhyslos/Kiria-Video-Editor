@@ -68,6 +68,7 @@ pub use ids::{ClipId, LabelId, LinkId, MediaId, MediaLabelId, MediaListId, Seque
 pub use keyframes::{Ease, Keyframe, Keyframes, LookField};
 pub use library::{Library, MediaLabel, MediaList, MediaUse};
 pub use look::Look;
+pub use model::BlendMode;
 pub use model::FrameBlend;
 pub use model::{
     AudioStream, Clip, ClipKind, Fingerprint, LabelColor, MediaInfo, MediaKind, MediaRef, Project, Region,
