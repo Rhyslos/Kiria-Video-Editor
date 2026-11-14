@@ -12,6 +12,8 @@ pub const LEFT_PANEL_WIDTH: f32 = 240.0;
 pub const DRAWER_WIDTH: f32 = 264.0;
 /// Width of the tab on the left edge that opens the drawer.
 pub const EDGE_TAB_WIDTH: f32 = 22.0;
+/// Height of the drawer's edge tab, at most (shorter where there is less room).
+pub const EDGE_TAB_HEIGHT: f32 = 140.0;
 /// Width of the master column next to the timeline.
 pub const MASTER_WIDTH: f32 = 80.0;
 /// The Audio page's tools beside the viewer.

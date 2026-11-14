@@ -4,7 +4,7 @@
 //! the page fills in the list.
 
 use crate::Theme;
-use crate::layout::{DRAWER_WIDTH, EDGE_TAB_WIDTH};
+use crate::layout::{DRAWER_WIDTH, EDGE_TAB_HEIGHT, EDGE_TAB_WIDTH};
 use egui::epaint::TextShape;
 use egui::{
     Color32, Context, FontId, Id, InnerResponse, Order, Pos2, Rect, Response, Sense, Stroke, Ui, pos2, vec2,
@@ -19,10 +19,16 @@ pub enum DrawerTab {
 }
 
 /// The tab on the left edge: a tall rounded strip with its label written
-/// upward. Fills the height it is given; click it to open or close.
+/// upward, centred down the height it is given; click it to open or close.
 pub fn edge_tab(ui: &mut Ui, theme: &Theme, label: &str, open: bool) -> Response {
-    let height = ui.available_height().min(140.0);
-    let (rect, response) = ui.allocate_exact_size(vec2(EDGE_TAB_WIDTH, height), Sense::click());
+    // Centred down its spot (the height beside the toolbar and viewer).
+    let spot = ui.available_rect_before_wrap();
+    let height = spot.height().min(EDGE_TAB_HEIGHT);
+    let rect = Rect::from_center_size(
+        pos2(spot.left() + EDGE_TAB_WIDTH / 2.0, spot.center().y),
+        vec2(EDGE_TAB_WIDTH, height),
+    );
+    let response = ui.allocate_rect(rect, Sense::click());
     let tab = Rect::from_min_size(rect.min + vec2(2.0, 0.0), vec2(EDGE_TAB_WIDTH - 4.0, height));
     let fill = if open {
         theme.accent.gamma_multiply(0.25)
@@ -154,6 +160,30 @@ mod tests {
 
     fn page() -> Rect {
         Rect::from_min_size(pos2(16.0, 64.0), vec2(1400.0, 820.0))
+    }
+
+    #[test]
+    fn the_edge_tab_is_centred_down_its_spot() {
+        let ctx = Context::default();
+        let spot = tab_rect(page(), 450.0);
+        let mut drawn = None;
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1600.0, 1000.0))),
+            ..Default::default()
+        };
+        let output = ctx.run_ui(input, |ui| {
+            let mut edge = ui.new_child(egui::UiBuilder::new().max_rect(spot));
+            drawn = Some(edge_tab(&mut edge, &Theme::ASH, "Media", false).rect);
+        });
+        // Nothing draws this frame.
+        output.drop_without_applying_deltas();
+        let tab = drawn.unwrap();
+        assert_eq!(tab.height(), EDGE_TAB_HEIGHT);
+        assert!(
+            (tab.center().y - spot.center().y).abs() < 0.5,
+            "{tab:?} in {spot:?}"
+        );
+        assert!((tab.center().x - spot.center().x).abs() < 0.5);
     }
 
     #[test]
