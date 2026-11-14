@@ -88,6 +88,10 @@ The check opened a file three times plus once per sound stream, each with a full
 ### Clip pictures kept (item 12)
 
 The pictures inside video clips (and the Library's cards, which use the same strips) were read from every recording again each session, a picture at a time (6.6 ms each for a long recording's key frames here). Now each strip is kept in the cache folder's `pictures/` by the recording's fingerprint, the pictures as small JPEGs (a few hundred kilobytes a recording, 512 MB at most, used longest ago dropped first), and read back in milliseconds the next time any project shows that recording. A strip also opens its decoder once where it used to open it twice. Settings › Cache clears them with the waveforms.
+### A Library card's picture first
+
+A card waited for its file's whole strip before showing anything: 6.8 s for a one-minute 1440p recording here, so a new import's cards stayed empty for a long time. Each card's resting picture (a third of the way in, on a picture of the strip) is now read on its own at a higher priority, ahead of every strip, in 29 ms for the same file, and kept beside the strips; the strip still follows for skimming.
+
 ### Small things (items 15 and 16, and one from proxies)
 
 - **The search palette** named every clip of the timeline each frame, even with nothing typed, and looked each clip up in the list of files found one by one: 2.5 to 2.8 ms a frame on the big timeline. Now nothing is named until something is typed, and found files are a set.
