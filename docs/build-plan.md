@@ -497,9 +497,10 @@ Phase 9 fills the Effects side of the Edit page's drawer and ships background re
 
 **9.0 Effects on a clip** (`render` and `project`)
 
-- [ ] A clip's effects as an ordered list in the project file (a format version, a migration and a sample): each effect an id, a kind and its settings, with keyframes in the clip's file time like look keyframes; a clip without effects stores nothing. Phase 11's migration turns each list into a graph in a straight line.
-- [ ] Applied one after another on the GPU in `render`, in the compositor's linear-light working space (16-bit float, what adjustment layers use already), the same code for preview and export; golden-frame tests.
-- [ ] Commands to add, remove, reorder, switch off and change effects (undoable, one step per drag).
+- [x] A clip's effects as an ordered list in the project file (a format version, a migration and a sample): each effect an id, a kind and its settings; a clip without effects stores nothing. Phase 11's migration turns each list into a graph in a straight line. (Done: format 19, `project::Effects`; the first effect is Vignette, set in the inspector's Effects section.)
+- [ ] Keyframes on effect settings, in the clip's file time like look keyframes.
+- [x] Applied one after another on the GPU in `render`, in the compositor's linear-light working space (16-bit float, what adjustment layers use already), the same code for preview and export; golden-frame tests. (Done: `render::Effects`; a picture with effects is drawn upright at the size it takes in the frame, changed, then placed; tested on the graphics card in both working spaces and through the composer.)
+- [x] Commands to add, remove, reorder, switch off and change effects (undoable, one step per drag). (Done: `AddEffect`, `SetEffects`.)
 
 **9.1 Effects drawer**
 

@@ -1,5 +1,5 @@
 //! The Edit page's inspector: the selected clip's Transform, Crop, Quick
-//! color, Speed and Audio, on the right. A clip on an audio track shows
+//! color, Effects, Speed and Audio, on the right. A clip on an audio track shows
 //! Speed and Audio alone; a picture's Audio is the sound linked to it.
 //!
 //! A value being dragged is shown in the viewer at once ([`Inspector::shown`]
@@ -28,6 +28,7 @@ use ui_kit::Theme;
 use ui_kit::inspector::{self, Keyed, Number, Touched, Words};
 use ui_kit::keyframe::{KeyClicks, KeyState, Keys};
 
+mod effects;
 mod speed;
 
 /// A look being set and not yet an undo step: whose, at which moment of
@@ -57,6 +58,8 @@ pub struct Inspector {
     /// Sound being set and not yet an undo step: each sound clip's new
     /// settings (a picture's linked sound clips change together).
     pending_sound: Option<Vec<(ClipId, Sound)>>,
+    /// A picture's effects with a setting being dragged, not yet an undo step.
+    pending_effects: Option<(ClipId, project::Effects)>,
     /// A sound clip's volume (thousandths of a decibel) being dragged on
     /// the timeline, by its level line: shown as it moves. The timeline
     /// makes the undo step when it is let go, not the panel.
@@ -111,6 +114,17 @@ impl Inspector {
         let looked = self
             .pending
             .and_then(|pending| pending.command(sequence).apply(project).ok());
+        let looked = match &self.pending_effects {
+            Some((clip, effects)) => Command::SetEffects {
+                sequence,
+                clip: *clip,
+                effects: Box::new(effects.clone()),
+            }
+            .apply(looked.as_ref().unwrap_or(project))
+            .ok()
+            .or(looked),
+            None => looked,
+        };
         let Some(sounds) = &self.pending_sound else {
             return looked;
         };
@@ -225,6 +239,13 @@ impl Inspector {
             self.pending = None;
             self.held = false;
         }
+        if let Some((clip, effects)) = self.pending_effects.take_if(|(clip, _)| Some(*clip) != showing) {
+            commands.push(Command::SetEffects {
+                sequence,
+                clip,
+                effects: Box::new(effects),
+            });
+        }
         let hearing: Vec<ClipId> = target
             .map(|(seq, _, clip)| sound_clips(seq, clip).iter().map(|c| c.id).collect())
             .unwrap_or_default();
@@ -335,6 +356,30 @@ impl Inspector {
                 &mut values,
                 &mut touched,
             );
+        }
+
+        if track.kind == TrackKind::Video && !adjustment {
+            let shown = match &self.pending_effects {
+                Some((id, effects)) if *id == clip.id => effects.clone(),
+                _ => clip.effects.clone(),
+            };
+            let asked = effects::section(ui, theme, sequence, clip.id, &shown);
+            if !asked.commands.is_empty() {
+                self.pending_effects = None;
+                commands.extend(asked.commands);
+            } else if let Some(effects) = asked.dragging {
+                self.pending_effects = Some((clip.id, effects));
+            }
+            if !asked.busy
+                && let Some((id, effects)) = self.pending_effects.take()
+                && effects != clip.effects
+            {
+                commands.push(Command::SetEffects {
+                    sequence,
+                    clip: id,
+                    effects: Box::new(effects),
+                });
+            }
         }
 
         let speed = match adjustment {

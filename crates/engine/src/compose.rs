@@ -69,6 +69,7 @@ pub(crate) struct Refused;
 const FRAMES_KEPT: usize = 4;
 
 pub(crate) struct Composer {
+    effects: render::Effects,
     composing: Composing,
     compositor: Compositor,
     /// Frames handed out before. One nobody else holds is drawn into again.
@@ -85,6 +86,7 @@ impl Composer {
     pub fn new(composing: Composing) -> Composer {
         Composer {
             compositor: Compositor::new(&composing.device, Working::Linear),
+            effects: render::Effects::new(&composing.device, Working::Linear),
             composing,
             frames: Vec::new(),
             uploads: Vec::new(),
@@ -140,6 +142,7 @@ impl Composer {
         });
         let mut drawing = Drawing {
             compositor: &self.compositor,
+            effects: &self.effects,
             device,
             queue,
             layers: &description.layers,
@@ -251,6 +254,7 @@ struct Placed {
 /// picture below, coloured; at half, halfway between.
 struct Drawing<'a> {
     compositor: &'a Compositor,
+    effects: &'a render::Effects,
     device: &'a wgpu::Device,
     queue: &'a wgpu::Queue,
     layers: &'a [Layer],
@@ -296,7 +300,17 @@ impl Drawing<'_> {
                 if let Step::Timeline(group) = step {
                     let mut picture = self.take(group.size);
                     self.steps(encoder, &group.steps, &mut picture, Background::Clear);
-                    nested.push(picture);
+                    nested.push(self.with_effects(encoder, picture, &group.effects));
+                }
+            }
+            // Pictures with effects, each drawn upright on its own first.
+            let mut changed = Vec::new();
+            for step in stretch {
+                if let Step::Picture(index) = step
+                    && let (Some(layer), Some(Some(placed))) = (layers.get(*index), placed.get(*index))
+                    && !layer.effects.is_empty()
+                {
+                    changed.push(self.picture_with_effects(encoder, layer, placed));
                 }
             }
             let mut drawn = Vec::with_capacity(stretch.len() + 2);
@@ -306,11 +320,17 @@ impl Drawing<'_> {
                 drawn.push(made(picture, whole, Part::WHOLE, adjust.opacity, adjust.colour));
             }
             let mut pictures = nested.iter();
+            let mut with_effects = changed.iter();
             for step in stretch {
                 match step {
                     Step::Picture(index) => {
                         if let (Some(layer), Some(Some(placed))) = (layers.get(*index), placed.get(*index)) {
-                            drawn.push(placed.drawn(layer));
+                            if layer.effects.is_empty() {
+                                drawn.push(placed.drawn(layer));
+                            } else if let Some(picture) = with_effects.next() {
+                                let whole = Part::WHOLE;
+                                drawn.push(made(picture, layer.area, whole, layer.opacity, Colour::NEUTRAL));
+                            }
                         }
                     }
                     Step::Timeline(group) => {
@@ -334,6 +354,7 @@ impl Drawing<'_> {
             };
             drop(drawn);
             self.used.extend(nested);
+            self.used.extend(changed);
             self.used.extend(below.take().map(|(picture, _)| picture));
             match (next, cut) {
                 (Some(next), Some(at)) => {
@@ -343,6 +364,53 @@ impl Drawing<'_> {
                 _ => return,
             }
         }
+    }
+
+    /// `layer`'s picture drawn upright, coloured, at the size it takes in
+    /// the frame, with its effects applied: ready to be placed.
+    fn picture_with_effects(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        layer: &Layer,
+        placed: &Placed,
+    ) -> Frame {
+        let (w, h) = layer.area.size();
+        let size = (
+            (w.round() as u32).clamp(1, LARGEST_EFFECT_PICTURE),
+            (h.round() as u32).clamp(1, LARGEST_EFFECT_PICTURE),
+        );
+        let mut picture = self.take(size);
+        let upright = Layer {
+            area: Area::fitted(size, size),
+            opacity: 1.0,
+            ..layer.clone()
+        };
+        self.draw(
+            encoder,
+            &mut picture,
+            &[placed.drawn(&upright)],
+            Background::Clear,
+        );
+        self.with_effects(encoder, picture, &layer.effects)
+    }
+
+    /// `picture` with `effects` applied, the spare picture they took turns
+    /// with put aside for next time.
+    fn with_effects(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        picture: Frame,
+        effects: &[render::Effect],
+    ) -> Frame {
+        if effects.is_empty() {
+            return picture;
+        }
+        let spare = self.take(picture.size());
+        let (result, other) = self
+            .effects
+            .apply(self.device, self.queue, encoder, picture, spare, effects);
+        self.used.push(other);
+        result
     }
 
     fn draw(
@@ -356,6 +424,10 @@ impl Drawing<'_> {
             .draw_over(self.device, self.queue, encoder, frame, drawn, background);
     }
 }
+
+/// The largest side a picture with effects is drawn at before it is placed:
+/// a clip zoomed in far is changed at this size and enlarged after.
+const LARGEST_EFFECT_PICTURE: u32 = 8192;
 
 /// A picture the compositor made, drawn again where `area` says.
 fn made<'a>(picture: &'a Frame, area: Area, part: Part, opacity: f32, colour: Colour) -> Drawn<'a> {
@@ -499,3 +571,6 @@ impl Views {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

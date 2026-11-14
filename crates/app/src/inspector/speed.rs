@@ -350,6 +350,7 @@ mod tests {
     fn clip() -> Clip {
         Clip {
             lines: Default::default(),
+            effects: Default::default(),
             id: ClipId(7),
             media: project::MediaId(1),
             stream: 0,

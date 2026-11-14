@@ -472,6 +472,21 @@ pub enum Command {
         clip: ClipId,
         lines: Box<ClipLines>,
     },
+    /// Adds an effect at the end of a picture's effects (format 19), with
+    /// its usual settings and the next number free on that clip.
+    AddEffect {
+        sequence: SequenceId,
+        clip: ClipId,
+        kind: crate::effects::EffectKind,
+    },
+    /// A picture's effects, all at once: taking one away, reordering,
+    /// switching one off or changing its settings (format 19). Refused if
+    /// it would bring an effect the clip doesn't have (`AddEffect` adds).
+    SetEffects {
+        sequence: SequenceId,
+        clip: ClipId,
+        effects: Box<crate::effects::Effects>,
+    },
     /// The mix's compressor and true-peak limiter (format 16).
     SetMasterSound {
         sequence: SequenceId,
@@ -998,6 +1013,26 @@ impl Command {
                     .ok_or_else(|| missing("clip"))?;
                 found.lines = (**lines).clone();
             }
+            Command::AddEffect { sequence, clip, kind } => {
+                let found = picture_for_effects(sequence_mut(&mut p, *sequence)?, *clip)?;
+                let (effects, _) = found.effects.with_added(*kind);
+                effects.check()?;
+                found.effects = effects;
+            }
+            Command::SetEffects {
+                sequence,
+                clip,
+                effects,
+            } => {
+                effects.check()?;
+                let found = picture_for_effects(sequence_mut(&mut p, *sequence)?, *clip)?;
+                if !found.effects.has_every_id_of(effects) {
+                    return Err(AppError::new("Those effects can't be set")
+                        .why("One of them isn't on the clip.")
+                        .fix("Add it from the inspector's Effects section first."));
+                }
+                found.effects = (**effects).clone();
+            }
             Command::SetMasterSound { sequence, sound } => {
                 sound.check()?;
                 sequence_mut(&mut p, *sequence)?.master_sound = *sound;
@@ -1320,6 +1355,7 @@ fn place_media(
     };
     let clip = |p: &mut Project, stream: u32| Clip {
         lines: Default::default(),
+        effects: Default::default(),
         id: p.allocate_id(),
         media: id,
         stream,
@@ -1760,6 +1796,31 @@ fn close_gap(track: &mut Track, from: Time, by: Time) {
     }
 }
 
+/// The clip `clip` of `seq`, which effects can be set on: a picture (on a
+/// video track) that plays a file or a nested timeline.
+fn picture_for_effects(seq: &mut Sequence, clip: ClipId) -> diag::Result<&mut Clip> {
+    if seq
+        .audio_tracks
+        .iter()
+        .any(|t| t.clips.iter().any(|c| c.id == clip))
+    {
+        return Err(AppError::new("Effects are set on pictures")
+            .why("This clip is sound, on an audio track.")
+            .fix("Select the picture it belongs to."));
+    }
+    let found = seq
+        .video_tracks
+        .iter_mut()
+        .flat_map(|track| track.clips.iter_mut())
+        .find(|c| c.id == clip)
+        .ok_or_else(|| missing("clip"))?;
+    if found.is_adjustment() {
+        return Err(AppError::new("An adjustment layer has no effects yet")
+            .why("Effects on everything below an adjustment layer come later; its colour works today."));
+    }
+    Ok(found)
+}
+
 pub(crate) fn missing(thing: &str) -> AppError {
     AppError::new(format!("That {thing} no longer exists"))
         .why("It may have been removed by an earlier change.")
@@ -1810,6 +1871,7 @@ mod tests {
     fn clip(f: &Fixture, start: i64, len: i64, link: Option<LinkId>) -> Clip {
         Clip {
             lines: Default::default(),
+            effects: Default::default(),
             id: ClipId(0),
             media: f.media,
             stream: 0,
@@ -2542,6 +2604,53 @@ mod tests {
             sound: master,
         };
         assert!(over.apply(&f.p).is_err());
+    }
+
+    #[test]
+    fn effects_are_added_changed_and_taken_away_on_pictures_only() {
+        use crate::effects::{EffectId, EffectKind, Vignette};
+        let f = fixture();
+        let p = place(&f, &f.p, f.a1, clip(&f, 0, 10, None)).unwrap();
+        let p = place(&f, &p, f.v1, clip(&f, 0, 10, None)).unwrap();
+        let seq = p.active().unwrap();
+        let (sound, picture) = (seq.audio_tracks[0].clips[0].id, seq.video_tracks[0].clips[0].id);
+        let add = |clip| Command::AddEffect {
+            sequence: f.seq,
+            clip,
+            kind: EffectKind::ALL[0],
+        };
+        assert!(add(sound).apply(&p).is_err(), "sound has no picture effects");
+        let p = add(picture).apply(&p).unwrap();
+        let p = add(picture).apply(&p).unwrap();
+        let effects = |p: &Project| p.active().unwrap().video_tracks[0].clips[0].effects.clone();
+        let ids: Vec<EffectId> = effects(&p).iter().map(|e| e.id).collect();
+        assert_eq!(ids, [EffectId(1), EffectId(2)]);
+        // Reorder, switch the first off and darken the other: one step.
+        let mut changed = effects(&p);
+        changed.0.reverse();
+        changed.0[1].off = true;
+        changed.0[0].kind = EffectKind::Vignette(Vignette {
+            amount: 900_000,
+            ..Vignette::USUAL
+        });
+        let set = |effects: &crate::effects::Effects| Command::SetEffects {
+            sequence: f.seq,
+            clip: picture,
+            effects: Box::new(effects.clone()),
+        };
+        let p = set(&changed).apply(&p).unwrap();
+        assert_eq!(effects(&p), changed);
+        // Taking one away is a change too; bringing a new number is not.
+        let fewer = crate::effects::Effects(changed.0[..1].to_vec());
+        assert_eq!(effects(&set(&fewer).apply(&p).unwrap()), fewer);
+        let (forged, _) = changed.with_added(EffectKind::ALL[0]);
+        assert!(set(&forged).apply(&p).is_err());
+        let mut far = changed.clone();
+        far.0[0].kind = EffectKind::Vignette(Vignette {
+            softness: -1,
+            ..Vignette::USUAL
+        });
+        assert!(set(&far).apply(&p).is_err(), "settings are checked");
     }
 
     #[test]

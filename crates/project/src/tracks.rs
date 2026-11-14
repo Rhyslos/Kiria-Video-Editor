@@ -192,6 +192,7 @@ mod tests {
             track,
             clip: Clip {
                 lines: Default::default(),
+                effects: Default::default(),
                 id: ClipId(0),
                 media: *p.media.keys().next().unwrap(),
                 stream: 0,

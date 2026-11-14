@@ -154,6 +154,18 @@ fn compose(
     size: (u32, u32),
     layers: &[Drawn<'_>],
 ) -> Shown {
+    compose_with(gpu, working, target, size, layers, &[])
+}
+
+/// Like [`compose`], with `effects` applied to the frame before it is shown.
+fn compose_with(
+    gpu: &Gpu,
+    working: Working,
+    target: wgpu::TextureFormat,
+    size: (u32, u32),
+    layers: &[Drawn<'_>],
+    effects: &[crate::Effect],
+) -> Shown {
     let (device, queue) = gpu;
     let compositor = Compositor::new(device, working);
     let shower = Shower::new(device, target);
@@ -176,6 +188,11 @@ fn compose(
     let window_view = window.create_view(&wgpu::TextureViewDescriptor::default());
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     compositor.draw(device, queue, &mut encoder, &mut frame, layers);
+    if !effects.is_empty() {
+        let spare = compositor.frame(device, size);
+        let passes = crate::Effects::new(device, working);
+        frame = passes.apply(device, queue, &mut encoder, frame, spare, effects).0;
+    }
     let showing = shower.showing(device, queue, frame.view(), frame.working());
     {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -682,6 +699,68 @@ fn a_picture_the_compositor_made_is_drawn_again_as_it_was_and_coloured() {
             near(brighter.at(4, 8), [171; 3], 2),
             "{working:?}: {:?}",
             brighter.at(4, 8)
+        );
+    }
+}
+
+#[test]
+fn a_vignette_darkens_the_edges_as_light_in_both_working_formats() {
+    let Some(gpu) = gpu() else { return };
+    let size = (64, 64);
+    let white = Planes::flat(&gpu, size, WHITE);
+    let hard = |amount| crate::Effect::Vignette {
+        amount,
+        size: 0.5,
+        softness: 0.0,
+    };
+    for working in BOTH {
+        let full = compose_with(
+            &gpu,
+            working,
+            EIGHT,
+            size,
+            &[whole(white.two(), size)],
+            &[hard(1.0)],
+        );
+        assert!(
+            near(full.at(32, 32), [255, 255, 255], 2),
+            "{working:?} middle: {:?}",
+            full.at(32, 32)
+        );
+        assert!(
+            near(full.at(0, 0), [0, 0, 0], 2),
+            "{working:?} corner: {:?}",
+            full.at(0, 0)
+        );
+        // Half the light at the corners, whatever the frame is made in.
+        let half = compose_with(
+            &gpu,
+            working,
+            EIGHT,
+            size,
+            &[whole(white.two(), size)],
+            &[hard(0.5)],
+        );
+        let want = (0.5f32.powf(1.0 / 2.4) * 255.0).round() as u8;
+        assert!(
+            near(half.at(0, 0), [want; 3], 3),
+            "{working:?}: {:?} for {want}",
+            half.at(0, 0)
+        );
+        // Two in a row: a quarter.
+        let twice = compose_with(
+            &gpu,
+            working,
+            EIGHT,
+            size,
+            &[whole(white.two(), size)],
+            &[hard(0.5), hard(0.5)],
+        );
+        let want = (0.25f32.powf(1.0 / 2.4) * 255.0).round() as u8;
+        assert!(
+            near(twice.at(0, 0), [want; 3], 3),
+            "{working:?}: {:?} for {want}",
+            twice.at(0, 0)
         );
     }
 }

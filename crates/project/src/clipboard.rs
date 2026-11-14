@@ -231,6 +231,7 @@ mod tests {
                 track,
                 clip: Clip {
                     lines: Default::default(),
+                    effects: Default::default(),
                     id: ClipId(0),
                     media,
                     stream: 0,

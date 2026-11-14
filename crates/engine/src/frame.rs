@@ -49,6 +49,8 @@ pub struct Group {
     pub part: Part,
     pub opacity: f32,
     pub colour: Colour,
+    /// Its picture effects, in order, after its colour.
+    pub effects: Vec<render::Effect>,
 }
 
 /// What an adjustment layer does to everything below it.
@@ -112,6 +114,9 @@ pub struct Layer {
     pub opacity: f32,
     /// Its quick colour.
     pub colour: Colour,
+    /// Its picture effects, in order, after its colour: drawn upright at
+    /// the size it takes in the frame, changed, then placed.
+    pub effects: Vec<render::Effect>,
     /// With frame blending on and the moment between two recorded frames:
     /// the next frame to mix in, and how much of it.
     pub blend: Option<Blend>,
@@ -275,6 +280,7 @@ fn nested(
         part: shown_part(&look),
         opacity,
         colour: colour(&look),
+        effects: effects(clip),
     };
     Some((group, nodes, opaque))
 }
@@ -313,11 +319,26 @@ fn layer(clip: &Clip, media: &MediaRef, frame: (u32, u32), at: Time) -> Option<L
         part,
         opacity: fraction(look.opacity),
         colour: colour(&look),
+        effects: effects(clip),
         blend: match clip.blend {
             FrameBlend::Blend => blend_at(source_time, video.frame_rate),
             FrameBlend::Off => None,
         },
     })
+}
+
+/// A clip's picture effects that are switched on, as the shaders take them.
+fn effects(clip: &Clip) -> Vec<render::Effect> {
+    clip.effects
+        .applied()
+        .map(|kind| match kind {
+            project::EffectKind::Vignette(v) => render::Effect::Vignette {
+                amount: fraction(v.amount),
+                size: fraction(v.size),
+                softness: fraction(v.softness),
+            },
+        })
+        .collect()
 }
 
 /// One of a look's whole numbers (millionths) as a fraction.
@@ -464,6 +485,45 @@ mod tests {
         assert_eq!(layer.source_time, Time::seconds(3));
         assert_eq!(layer.part, Part::WHOLE);
         assert!(layer.hides_what_is_below(frame.size));
+    }
+
+    #[test]
+    fn a_clips_effects_that_are_on_go_with_its_picture() {
+        let project = import(
+            &Project::new("T", SequenceSettings::GAME_CLIP),
+            media("a.mkv", (1920, 1080), 0),
+        );
+        let sequence = project.active_sequence;
+        let clip = project.active().unwrap().video_tracks[0].clips[0].id;
+        let add = |p: &Project| {
+            Command::AddEffect {
+                sequence,
+                clip,
+                kind: project::EffectKind::ALL[0],
+            }
+            .apply(p)
+            .unwrap()
+        };
+        let project = add(&add(&project));
+        let mut effects = project.active().unwrap().video_tracks[0].clips[0].effects.clone();
+        effects.0[0].off = true;
+        let project = Command::SetEffects {
+            sequence,
+            clip,
+            effects: Box::new(effects),
+        }
+        .apply(&project)
+        .unwrap();
+        let frame = describe(&project, project.active().unwrap(), Time::seconds(3));
+        assert_eq!(
+            frame.layers[0].effects,
+            [render::Effect::Vignette {
+                amount: 0.5,
+                size: 0.6,
+                softness: 0.5
+            }],
+            "the one switched off is left out"
+        );
     }
 
     #[test]
