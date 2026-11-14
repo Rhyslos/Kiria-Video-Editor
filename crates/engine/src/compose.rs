@@ -394,8 +394,8 @@ impl Drawing<'_> {
         self.with_effects(encoder, picture, &layer.effects)
     }
 
-    /// `picture` with `effects` applied, the spare picture they took turns
-    /// with put aside for next time.
+    /// `picture` with `effects` applied; the pictures the passes wrote on
+    /// the way go to `used`, to be drawn into again next time.
     fn with_effects(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -405,12 +405,18 @@ impl Drawing<'_> {
         if effects.is_empty() {
             return picture;
         }
-        let spare = self.take(picture.size());
-        let (result, other) = self
-            .effects
-            .apply(self.device, self.queue, encoder, picture, spare, effects);
-        self.used.push(other);
-        result
+        let (compositor, device) = (self.compositor, self.device);
+        let spare = &mut self.spare;
+        let mut take = |size: (u32, u32)| match spare.iter().position(|frame| frame.size() == size) {
+            Some(found) => spare.swap_remove(found),
+            None => compositor.frame(device, size),
+        };
+        let pictures = render::Pictures {
+            take: &mut take,
+            done: &mut self.used,
+        };
+        self.effects
+            .apply(self.device, self.queue, encoder, picture, effects, pictures)
     }
 
     fn draw(

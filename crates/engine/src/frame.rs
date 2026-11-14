@@ -280,7 +280,7 @@ fn nested(
         part: shown_part(&look),
         opacity,
         colour: colour(&look),
-        effects: effects(clip),
+        effects: effects(clip, at),
     };
     Some((group, nodes, opaque))
 }
@@ -319,7 +319,7 @@ fn layer(clip: &Clip, media: &MediaRef, frame: (u32, u32), at: Time) -> Option<L
         part,
         opacity: fraction(look.opacity),
         colour: colour(&look),
-        effects: effects(clip),
+        effects: effects(clip, at),
         blend: match clip.blend {
             FrameBlend::Blend => blend_at(source_time, video.frame_rate),
             FrameBlend::Off => None,
@@ -327,8 +327,14 @@ fn layer(clip: &Clip, media: &MediaRef, frame: (u32, u32), at: Time) -> Option<L
     })
 }
 
-/// A clip's picture effects that are switched on, as the shaders take them.
-fn effects(clip: &Clip) -> Vec<render::Effect> {
+/// A clip's picture effects that are switched on, as the shaders take them
+/// at `at` (a time of the timeline the clip is on). Sizes become reference
+/// pixels (of 1080 lines). Grain's pattern follows the moment of the file,
+/// so the same frame always has the same grain, in preview and export.
+fn effects(clip: &Clip, at: Time) -> Vec<render::Effect> {
+    let seed = (clip.source_at(at).as_secs_f64() * 1200.0)
+        .round()
+        .rem_euclid(f64::from(1 << 24)) as u32;
     clip.effects
         .applied()
         .map(|kind| match kind {
@@ -336,6 +342,20 @@ fn effects(clip: &Clip) -> Vec<render::Effect> {
                 amount: fraction(v.amount),
                 size: fraction(v.size),
                 softness: fraction(v.softness),
+            },
+            project::EffectKind::Grain(g) => render::Effect::Grain {
+                amount: fraction(g.amount),
+                size: 1.0 + 3.0 * fraction(g.size),
+                seed,
+            },
+            project::EffectKind::Sharpen(s) => render::Effect::Sharpen {
+                amount: fraction(s.amount),
+                radius: 0.5 + 2.5 * fraction(s.radius),
+            },
+            project::EffectKind::Glow(g) => render::Effect::Glow {
+                amount: fraction(g.amount),
+                threshold: fraction(g.threshold),
+                radius: 2.0 + 58.0 * fraction(g.radius),
             },
         })
         .collect()

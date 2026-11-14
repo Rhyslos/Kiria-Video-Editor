@@ -189,9 +189,14 @@ fn compose_with(
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     compositor.draw(device, queue, &mut encoder, &mut frame, layers);
     if !effects.is_empty() {
-        let spare = compositor.frame(device, size);
         let passes = crate::Effects::new(device, working);
-        frame = passes.apply(device, queue, &mut encoder, frame, spare, effects).0;
+        let mut take = |size| compositor.frame(device, size);
+        let mut done = Vec::new();
+        let pictures = crate::Pictures {
+            take: &mut take,
+            done: &mut done,
+        };
+        frame = passes.apply(device, queue, &mut encoder, frame, effects, pictures);
     }
     let showing = shower.showing(device, queue, frame.view(), frame.working());
     {
@@ -763,4 +768,113 @@ fn a_vignette_darkens_the_edges_as_light_in_both_working_formats() {
             twice.at(0, 0)
         );
     }
+}
+
+/// A picture of `size` from its brightness per pixel, in a frame of its size, with `effects`.
+fn with_effects(
+    gpu: &Gpu,
+    working: Working,
+    size: (u32, u32),
+    luma: impl Fn(u32, u32) -> u8,
+    effects: &[crate::Effect],
+) -> Shown {
+    let planes = Planes::new(gpu, size, luma, [128, 128]);
+    compose_with(gpu, working, EIGHT, size, &[whole(planes.two(), size)], effects)
+}
+
+fn reds(shown: &Shown) -> Vec<u8> {
+    shown.bytes.chunks(4).map(|p| p[0]).collect()
+}
+
+#[test]
+fn grain_varies_the_picture_the_same_way_for_the_same_frame() {
+    let Some(gpu) = gpu() else { return };
+    let size = (64, 64);
+    let grain = |seed| crate::Effect::Grain {
+        amount: 0.6,
+        size: 1.0,
+        seed,
+    };
+    for working in BOTH {
+        let plain = reds(&with_effects(&gpu, working, size, |_, _| GREY[0], &[]));
+        let one = reds(&with_effects(&gpu, working, size, |_, _| GREY[0], &[grain(7)]));
+        let again = reds(&with_effects(&gpu, working, size, |_, _| GREY[0], &[grain(7)]));
+        let next = reds(&with_effects(&gpu, working, size, |_, _| GREY[0], &[grain(8)]));
+        assert_eq!(one, again, "{working:?}: the same frame, the same grain");
+        assert_ne!(one, next, "{working:?}: the next frame, other grain");
+        let differ = one.iter().zip(&plain).filter(|(a, b)| a != b).count();
+        assert!(
+            differ > one.len() / 2,
+            "{working:?}: most pixels change: {differ}"
+        );
+        let mean = |v: &[u8]| v.iter().map(|&x| f64::from(x)).sum::<f64>() / v.len() as f64;
+        assert!(
+            (mean(&one) - mean(&plain)).abs() < 4.0,
+            "{working:?}: about as bright as before"
+        );
+    }
+}
+
+#[test]
+fn sharpen_leaves_flat_areas_and_steepens_edges() {
+    let Some(gpu) = gpu() else { return };
+    let size = (64, 64);
+    let sharpen = [crate::Effect::Sharpen {
+        amount: 1.0,
+        radius: 20.0,
+    }];
+    // Dark left half, light right half.
+    let step = |x: u32, _| if x < 32 { 70 } else { 180 };
+    let plain = with_effects(&gpu, Working::Linear, size, step, &[]);
+    let sharp = with_effects(&gpu, Working::Linear, size, step, &sharpen);
+    assert!(
+        near(sharp.at(8, 32), [plain.at(8, 32)[0]; 3], 2),
+        "flat stays: {:?}",
+        sharp.at(8, 32)
+    );
+    assert!(
+        sharp.at(31, 32)[0] < plain.at(31, 32)[0],
+        "darker beside the edge"
+    );
+    assert!(
+        sharp.at(32, 32)[0] > plain.at(32, 32)[0],
+        "lighter beside the edge"
+    );
+}
+
+#[test]
+fn glow_spreads_light_around_bright_parts_only() {
+    let Some(gpu) = gpu() else { return };
+    let size = (64, 64);
+    let glow = [crate::Effect::Glow {
+        amount: 1.0,
+        threshold: 0.5,
+        radius: 200.0,
+    }];
+    // A white square in the middle of dark grey.
+    let square = |x: u32, y: u32| {
+        if (28..36).contains(&x) && (28..36).contains(&y) {
+            235
+        } else {
+            40
+        }
+    };
+    let plain = with_effects(&gpu, Working::Linear, size, square, &[]);
+    let lit = with_effects(&gpu, Working::Linear, size, square, &glow);
+    assert!(
+        lit.at(24, 32)[0] > plain.at(24, 32)[0] + 5,
+        "light beside it: {:?}",
+        lit.at(24, 32)
+    );
+    assert!(
+        lit.at(1, 1)[0] <= plain.at(1, 1)[0] + 2,
+        "little in the far corner: {:?}",
+        lit.at(1, 1)
+    );
+    // Nothing over the threshold: nothing glows.
+    let dull = with_effects(&gpu, Working::Linear, size, |_, _| 40, &glow);
+    assert_eq!(
+        reds(&dull),
+        reds(&with_effects(&gpu, Working::Linear, size, |_, _| 40, &[]))
+    );
 }

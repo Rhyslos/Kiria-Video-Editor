@@ -31,23 +31,37 @@ pub struct Effect {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EffectKind {
     Vignette(Vignette),
+    Grain(Grain),
+    Sharpen(Sharpen),
+    Glow(Glow),
 }
 
 impl EffectKind {
     /// Every kind there is, with its usual settings: what is added.
-    pub const ALL: [EffectKind; 1] = [EffectKind::Vignette(Vignette::USUAL)];
+    pub const ALL: [EffectKind; 4] = [
+        EffectKind::Vignette(Vignette::USUAL),
+        EffectKind::Grain(Grain::USUAL),
+        EffectKind::Sharpen(Sharpen::USUAL),
+        EffectKind::Glow(Glow::USUAL),
+    ];
 
     /// Its name, as the interface shows it.
     pub fn name(&self) -> &'static str {
         match self {
             EffectKind::Vignette(_) => "Vignette",
+            EffectKind::Grain(_) => "Film grain",
+            EffectKind::Sharpen(_) => "Sharpen",
+            EffectKind::Glow(_) => "Glow",
         }
     }
 
     /// Whether its settings are within what the interface offers.
     fn check(&self) -> diag::Result<()> {
         match self {
-            EffectKind::Vignette(v) => v.check(),
+            EffectKind::Vignette(v) => shares("Vignette", &[v.amount, v.size, v.softness]),
+            EffectKind::Grain(g) => shares("Film grain", &[g.amount, g.size]),
+            EffectKind::Sharpen(s) => shares("Sharpen", &[s.amount, s.radius]),
+            EffectKind::Glow(g) => shares("Glow", &[g.amount, g.threshold, g.radius]),
         }
     }
 }
@@ -71,18 +85,68 @@ impl Vignette {
         size: ONE * 6 / 10,
         softness: ONE / 2,
     };
+}
 
-    fn check(&self) -> diag::Result<()> {
-        for (name, value) in [
-            ("amount", self.amount),
-            ("size", self.size),
-            ("softness", self.softness),
-        ] {
-            if !(0..=ONE).contains(&value) {
-                return Err(out_of_range("Vignette", name));
-            }
-        }
-        Ok(())
+/// Brightness noise like film's, new every frame, strongest in the middle
+/// tones.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Grain {
+    /// How strong: 0 to [`ONE`].
+    pub amount: i32,
+    /// How coarse: 0 (fine, a pixel of 1080 lines) to [`ONE`] (four).
+    pub size: i32,
+}
+
+impl Grain {
+    pub const USUAL: Grain = Grain {
+        amount: ONE * 3 / 10,
+        size: ONE * 3 / 10,
+    };
+}
+
+/// Crisper detail: the picture pushed away from a slight blur of itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Sharpen {
+    /// How much: 0 to [`ONE`].
+    pub amount: i32,
+    /// How fine the detail it works on: 0 (half a pixel of 1080 lines) to
+    /// [`ONE`] (three).
+    pub radius: i32,
+}
+
+impl Sharpen {
+    pub const USUAL: Sharpen = Sharpen {
+        amount: ONE * 4 / 10,
+        radius: ONE * 3 / 10,
+    };
+}
+
+/// Bright parts spill a soft light around them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Glow {
+    /// How strong: 0 to [`ONE`].
+    pub amount: i32,
+    /// How bright a part must be to glow: 0 (everything) to [`ONE`]
+    /// (white only).
+    pub threshold: i32,
+    /// How far the light spreads: 0 (two pixels of 1080 lines) to [`ONE`]
+    /// (sixty).
+    pub radius: i32,
+}
+
+impl Glow {
+    pub const USUAL: Glow = Glow {
+        amount: ONE / 2,
+        threshold: ONE * 6 / 10,
+        radius: ONE * 4 / 10,
+    };
+}
+
+/// Refuses any of `values` outside 0 to [`ONE`].
+fn shares(effect: &str, values: &[i32]) -> diag::Result<()> {
+    match values.iter().all(|v| (0..=ONE).contains(v)) {
+        true => Ok(()),
+        false => Err(out_of_range(effect)),
     }
 }
 
@@ -138,9 +202,9 @@ impl Effects {
     }
 }
 
-fn out_of_range(effect: &str, setting: &str) -> AppError {
+fn out_of_range(effect: &str) -> AppError {
     AppError::new(format!("That {effect} can't be used"))
-        .why(format!("Its {setting} is outside what the effect allows."))
+        .why("One of its settings is outside what the effect allows.")
         .fix("Choose a value the slider offers.")
 }
 

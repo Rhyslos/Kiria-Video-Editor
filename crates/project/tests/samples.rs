@@ -152,6 +152,10 @@ fn rich_project() -> Project {
         softness: 200_000,
     }));
     effects.0[1].off = true;
+    // Grain, sharpen and glow (format 20).
+    let (effects, _) = effects.with_added(project::EffectKind::ALL[1]);
+    let (effects, _) = effects.with_added(project::EffectKind::ALL[2]);
+    let (effects, _) = effects.with_added(project::EffectKind::ALL[3]);
     seq.video_tracks[0].clips.push_back(Clip {
         look,
         keyframes,
@@ -476,11 +480,23 @@ fn version_18_sample_opens_with_no_effects() {
 }
 
 #[test]
+fn version_19_sample_opens_with_vignettes_only() {
+    let project = file::load(&sample_path(19)).expect("the version 19 sample opens");
+    let clip = &project.active().expect("a timeline").video_tracks[0].clips[0];
+    assert!(
+        clip.effects
+            .iter()
+            .all(|e| matches!(e.kind, project::EffectKind::Vignette(_)))
+    );
+    assert_eq!(clip.effects.iter().count(), 2);
+}
+
+#[test]
 fn the_current_sample_has_effects_one_switched_off() {
     let project = file::load(&sample_path(FORMAT_VERSION)).expect("the sample opens");
     let clip = &project.active().expect("a timeline").video_tracks[0].clips[0];
-    assert_eq!(clip.effects.iter().count(), 2);
-    assert_eq!(clip.effects.applied().count(), 1);
+    assert_eq!(clip.effects.iter().count(), 5);
+    assert_eq!(clip.effects.applied().count(), 4);
     assert!(clip.effects.check().is_ok());
 }
 
