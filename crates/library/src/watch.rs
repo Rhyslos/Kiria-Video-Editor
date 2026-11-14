@@ -91,8 +91,9 @@ impl Scanner {
         });
         let mut changed = self.found.len() != before;
         let mut settling = HashMap::new();
+        let known: std::collections::HashSet<PathBuf> = self.found.iter().map(|f| f.path.clone()).collect();
         for (path, (folder, seen)) in now {
-            if self.found.iter().any(|f| f.path == path) {
+            if known.contains(&path) {
                 continue;
             }
             if self.settling.get(&path) == Some(&seen) && seen.size > 0 && opens(&path) {

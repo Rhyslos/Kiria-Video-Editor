@@ -135,19 +135,27 @@ pub fn results(
             });
         }
     }
+    // Nothing typed: no clip is found, so none is named (a name per clip
+    // every frame on a big timeline is milliseconds).
+    if q.is_empty() {
+        hits.extend(file_hits(&q, files));
+        return hits;
+    }
     // Picture clips only, so a file shows once rather than once per stream.
     let mut clips: Vec<&project::Clip> = seq.video_tracks.iter().flat_map(|t| t.clips.iter()).collect();
     if clips.is_empty() {
         clips = seq.audio_tracks.iter().flat_map(|t| t.clips.iter()).collect();
     }
     clips.sort_by_key(|c| c.start);
+    let found_files: Option<std::collections::HashSet<MediaId>> =
+        files.map(|files| files.iter().map(|(id, _)| *id).collect());
     for clip in clips {
-        let name = clip_name(clip);
-        let found = match files {
-            Some(files) => files.iter().any(|(id, _)| *id == clip.media),
-            None => matches(&name),
+        let found = match &found_files {
+            Some(found) => found.contains(&clip.media),
+            None => matches(&clip_name(clip)),
         };
-        if !q.is_empty() && found {
+        if found {
+            let name = clip_name(clip);
             hits.push(Hit::Clip {
                 id: clip.id,
                 name,
@@ -236,6 +244,27 @@ pub fn palette(
 mod tests {
     use super::*;
     use project::{Command, LabelColor, LabelId, Project, Time, TimelineLabel};
+
+    #[test]
+    fn with_nothing_typed_no_clip_is_named() {
+        let fixture =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../media/tests/fixtures/game-3-audio.mkv");
+        let p = Project::new_automatic("T");
+        let sequence = p.active_sequence;
+        let media = media::describe(&fixture).unwrap();
+        let p = Command::Import { sequence, media }.apply(&p).unwrap();
+        let table = ShortcutTable::default();
+        let named = std::cell::Cell::new(0);
+        let name = |_: &project::Clip| {
+            named.set(named.get() + 1);
+            "game-3-audio.mkv".to_owned()
+        };
+        let hits = results("", &table, p.active(), &[], name, None);
+        assert!(!hits.iter().any(|h| matches!(h, Hit::Clip { .. })));
+        assert_eq!(named.get(), 0, "named only when something is typed");
+        let hits = results("game", &table, p.active(), &[], name, None);
+        assert!(hits.iter().any(|h| matches!(h, Hit::Clip { .. })));
+    }
 
     #[test]
     fn finds_commands_labels_clips_and_settings() {

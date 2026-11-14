@@ -88,3 +88,12 @@ The check opened a file three times plus once per sound stream, each with a full
 ### Clip pictures kept (item 12)
 
 The pictures inside video clips (and the Library's cards, which use the same strips) were read from every recording again each session, a picture at a time (6.6 ms each for a long recording's key frames here). Now each strip is kept in the cache folder's `pictures/` by the recording's fingerprint, the pictures as small JPEGs (a few hundred kilobytes a recording, 512 MB at most, used longest ago dropped first), and read back in milliseconds the next time any project shows that recording. A strip also opens its decoder once where it used to open it twice. Settings › Cache clears them with the waveforms.
+### Small things (items 15 and 16, and one from proxies)
+
+- **The search palette** named every clip of the timeline each frame, even with nothing typed, and looked each clip up in the list of files found one by one: 2.5 to 2.8 ms a frame on the big timeline. Now nothing is named until something is typed, and found files are a set.
+- **Missing files** (`relink::watch`) made a list of every file's path each frame to see whether the media changed; now a pointer comparison, the list made only when it did.
+- **The launcher's cards** counted every card being read for each card drawn; now only for a card that would start reading.
+- **New files in your folders:** a set of the files found instead of a search through them for each file seen.
+- **"Proxy needed?"** judged a recording once per media entry, so one placed thirty times was measured thirty times (0.1 to 1 s each at the start); now once per recording and stream a session.
+
+Looked at and left: the true peak's ring of samples as a flat double buffer (the same result to the bit, but no gain measured here); finding encoders side by side and the preview's four open decoders, which can only be measured on a machine with a real graphics card and layered timelines.

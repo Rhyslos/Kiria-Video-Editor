@@ -27,7 +27,7 @@ use media::proxy::Steps;
 use project::{Fingerprint, MediaId, MediaKind, MediaRef, Project};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use ui_kit::timeline::LoadState;
 
@@ -151,7 +151,13 @@ pub struct ProxyBuilds {
     /// Counts proxies built and deleted: Settings › Cache measures again
     /// when it changes while it is open.
     built: u64,
+    /// How each recording (fingerprint and stream) was judged this session:
+    /// a recording placed as several media entries is judged once.
+    judged: Judged,
 }
+
+/// Judgements so far, shared with the workers that make them.
+type Judged = Arc<Mutex<HashMap<(project::Fingerprint, u32), cache::proxy::Judgement>>>;
 
 impl ProxyBuilds {
     /// Proxies in `folder`, `mode` as set, within `disk_gb` of disk.
@@ -168,6 +174,7 @@ impl ProxyBuilds {
             trimmed_once: false,
             hold_at,
             built: 0,
+            judged: Judged::default(),
         }
     }
 
@@ -407,7 +414,7 @@ impl ProxyBuilds {
     /// Looks on a worker whether `file`'s proxy exists, and with `judge`
     /// whether it needs one.
     fn look(&self, jobs: &JobSystem, ctx: &egui::Context, file: &File, judge: bool) -> JobHandle<Look> {
-        let (shelf, ctx) = (Arc::clone(&self.shelf), ctx.clone());
+        let (shelf, ctx, judged) = (Arc::clone(&self.shelf), ctx.clone(), Arc::clone(&self.judged));
         let (path, fingerprint, stream, length) = (
             file.path.clone(),
             file.fingerprint.clone(),
@@ -421,12 +428,20 @@ impl ProxyBuilds {
             move |_| {
                 let ready = shelf.ready(&fingerprint, stream).is_some();
                 let cleared = !ready && shelf.is_cleared(&fingerprint, stream);
-                let judgement = if judge && !ready && !cleared {
-                    Some(cache::proxy::judge(&path, stream, length, media::Decoding::Best)?)
-                } else {
-                    None
+                let key = (fingerprint.clone(), stream);
+                let known = judged.lock().ok().and_then(|j| j.get(&key).copied());
+                let judgement = match known {
+                    Some(known) if judge && !ready && !cleared => Some(known),
+                    _ if judge && !ready && !cleared => {
+                        let fresh = cache::proxy::judge(&path, stream, length, media::Decoding::Best)?;
+                        if let Ok(mut j) = judged.lock() {
+                            j.insert(key, fresh);
+                        }
+                        Some(fresh)
+                    }
+                    _ => None,
                 };
-                if let Some(judged) = &judgement {
+                if let Some(judged) = judgement.filter(|_| known.is_none()).as_ref() {
                     tracing::info!(
                         file = %path.display(),
                         "a jump takes about {} ms (key frames up to {:.1} s apart): {}",
@@ -886,6 +901,35 @@ mod tests {
         assert!(
             buildable(&builds.files[&ours].state, true, ProxyMode::Off),
             "by hand it is"
+        );
+    }
+
+    #[test]
+    fn a_recording_placed_twice_is_judged_once() {
+        let fixture =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../media/tests/fixtures/game-3-audio.mkv");
+        let dir = tempfile::tempdir().unwrap();
+        let builds = ProxyBuilds::new(dir.path().to_path_buf(), ProxyMode::Auto, 1, None);
+        let jobs = jobs::JobSystem::new(jobs::Budgets::default().resolve(&jobs::Machine::detect()));
+        let ctx = egui::Context::default();
+        let media = media::describe(&fixture).unwrap();
+        let file = File {
+            path: fixture.clone(),
+            fingerprint: media.fingerprint.clone(),
+            stream: media.info.video.as_ref().unwrap().index,
+            length: media.duration.as_secs_f64(),
+            state: State::Unjudged,
+        };
+        let looks: Vec<_> = (0..3).map(|_| builds.look(&jobs, &ctx, &file, true)).collect();
+        let judgements: Vec<_> = looks.into_iter().map(|h| h.wait().unwrap().judgement).collect();
+        assert!(
+            judgements.iter().all(|j| j.is_some() && *j == judgements[0]),
+            "the same verdict"
+        );
+        assert_eq!(
+            builds.judged.lock().unwrap().len(),
+            1,
+            "one recording, judged once"
         );
     }
 

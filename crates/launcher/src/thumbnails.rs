@@ -30,12 +30,16 @@ impl Thumbnails {
             .cards
             .get(&entry.path)
             .is_none_or(|(modified, _)| *modified != entry.modified);
-        let reading = self
-            .cards
-            .values()
-            .filter(|(_, s)| matches!(s, State::Reading(_)))
-            .count();
-        if stale && reading < READING_AT_ONCE {
+        // Counted only for a card that would start reading: not every card
+        // for every card drawn.
+        let room = || {
+            self.cards
+                .values()
+                .filter(|(_, s)| matches!(s, State::Reading(_)))
+                .count()
+                < READING_AT_ONCE
+        };
+        if stale && room() {
             let file = project::thumbnail_path(&entry.path);
             let task = Task::spawn(ctx, move || read(&file));
             self.cards

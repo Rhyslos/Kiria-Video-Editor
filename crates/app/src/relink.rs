@@ -49,6 +49,8 @@ enum Automatic {
 pub struct Relinker {
     /// The media (and where the project says it is) last checked.
     checked: Vec<(MediaId, PathBuf)>,
+    /// The project whose media was last compared with `checked`.
+    seen: Option<Project>,
     checking: Option<JobHandle<Vec<MediaId>>>,
     /// Media the project has that isn't on disk.
     pub missing: Vec<MediaId>,
@@ -74,8 +76,15 @@ impl Relinker {
             self.checking = None;
             self.first_check_done = true;
         }
+        // The files' list is made only when the media changed: a pointer
+        // comparison, not a list of every path each frame.
+        let same_media = self.seen.as_ref().is_some_and(|p| p.media.ptr_eq(&project.media));
+        if self.checking.is_some() || same_media {
+            return;
+        }
+        self.seen = Some(project.clone());
         let now = media_list(project);
-        if self.checking.is_none() && now != self.checked {
+        if now != self.checked {
             self.checked = now;
             let (project, ctx) = (project.clone(), ctx.clone());
             self.checking = Some(jobs.submit(
