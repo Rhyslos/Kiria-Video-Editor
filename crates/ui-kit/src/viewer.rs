@@ -353,11 +353,14 @@ pub struct Display {
     pub rough_cut: bool,
     /// Cuts, splits and pastes happen at the playhead (no edit needle).
     pub edit_at_playhead: bool,
+    /// Nothing is drawn over the picture: the play buttons are in the row
+    /// under it, and handles, notes and captions are away.
+    pub clean: bool,
 }
 
 /// The Display menu's lines: the command each runs, its words, and whether
 /// it is on.
-pub fn display_lines(display: Display) -> [(Action, &'static str, bool); 3] {
+pub fn display_lines(display: Display) -> [(Action, &'static str, bool); 4] {
     [
         (Action::SplitView, "Split view", display.split),
         (
@@ -366,6 +369,7 @@ pub fn display_lines(display: Display) -> [(Action, &'static str, bool); 3] {
             display.own_window,
         ),
         (Action::FullScreenViewer, "Full screen", display.full_screen),
+        (Action::CleanPicture, "Nothing over the picture", display.clean),
     ]
 }
 
@@ -453,9 +457,14 @@ mod tests {
         let actions: Vec<Action> = lines.iter().map(|(a, _, _)| *a).collect();
         assert_eq!(
             actions,
-            [Action::SplitView, Action::ViewerWindow, Action::FullScreenViewer]
+            [
+                Action::SplitView,
+                Action::ViewerWindow,
+                Action::FullScreenViewer,
+                Action::CleanPicture
+            ]
         );
-        assert_eq!(lines.map(|(_, _, on)| on), [true, false, false]);
+        assert_eq!(lines.map(|(_, _, on)| on), [true, false, false, false]);
         let timeline = timeline_lines(Display {
             compact_tracks: true,
             track_divider: false,

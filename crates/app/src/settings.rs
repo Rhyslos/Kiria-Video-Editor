@@ -56,6 +56,9 @@ pub struct Settings {
     /// The Edit page's viewer shows the selected clip's own picture (Source)
     /// beside the timeline's (Program).
     pub split_view: bool,
+    /// Nothing drawn over the picture in any viewer (H): the play buttons
+    /// in the row under it, handles, notes and captions away.
+    pub clean_picture: bool,
     /// Where the viewer's own window was last, so it opens there again.
     pub viewer_window: Option<crate::viewer_window::WindowPlace>,
     /// Proxies Off, On or Auto (the usual): the same for every project.
