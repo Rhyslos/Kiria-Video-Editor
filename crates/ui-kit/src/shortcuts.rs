@@ -215,6 +215,7 @@ const USUAL: &[(Action, Shortcut)] = &[
     (Action::RemoveSilence, Shortcut::ctrl_shift(Key::R)),
     (Action::FullScreenViewer, Shortcut::key(Key::F)),
     (Action::PictureHandles, Shortcut::key(Key::Q)),
+    (Action::CleanPicture, Shortcut::key(Key::H)),
     // Zooming the picture: Ctrl with the timeline's zoom keys (= and +,
     // -), Ctrl+0 for 100 %, Shift+Z to fit. The toolkit's own zoom of the
     // whole interface on these keys is off (`crate::setup`).

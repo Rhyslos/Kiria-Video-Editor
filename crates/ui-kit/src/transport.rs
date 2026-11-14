@@ -109,6 +109,69 @@ pub fn transport(
         egui::StrokeKind::Inside,
     );
 
+    let row = Row {
+        centre: bar.center(),
+        button,
+        gap,
+        scale,
+    };
+    buttons_ui(ui, theme, row, playing, looping, shortcuts, "transport")
+}
+
+/// Height of the compact transport.
+pub const COMPACT_HEIGHT: f32 = 24.0;
+
+/// The same buttons, small and without a bar, in a row centred on `centre`
+/// (the row under the viewer, when nothing is drawn over the picture).
+pub fn compact(
+    ui: &mut Ui,
+    theme: &Theme,
+    centre: Pos2,
+    playing: bool,
+    looping: Option<bool>,
+    shortcuts: &ShortcutTable,
+) -> Option<TransportClick> {
+    let scale = COMPACT_HEIGHT / BUTTON;
+    let row = Row {
+        centre,
+        button: COMPACT_HEIGHT,
+        gap: GAP * scale,
+        scale,
+    };
+    buttons_ui(ui, theme, row, playing, looping, shortcuts, "compact transport")
+}
+
+/// Where a row of the transport's buttons goes and how big.
+#[derive(Debug, Clone, Copy)]
+struct Row {
+    centre: Pos2,
+    button: f32,
+    gap: f32,
+    scale: f32,
+}
+
+/// The width of the compact transport's row.
+pub fn compact_width() -> f32 {
+    let scale = COMPACT_HEIGHT / BUTTON;
+    COMPACT_HEIGHT * (2 * EACH_SIDE + 1) as f32 + GAP * scale * (2 * EACH_SIDE) as f32
+}
+
+/// The buttons, play in the middle of `row`. Returns the one clicked.
+fn buttons_ui(
+    ui: &mut Ui,
+    theme: &Theme,
+    row: Row,
+    playing: bool,
+    looping: Option<bool>,
+    shortcuts: &ShortcutTable,
+    name: &str,
+) -> Option<TransportClick> {
+    let Row {
+        centre,
+        button,
+        gap,
+        scale,
+    } = row;
     // Slots from -4 to 4; play is slot 0, at the centre.
     let loop_words = match looping {
         Some(true) => "Loop inside the region: on",
@@ -181,9 +244,9 @@ pub fn transport(
     ];
     let mut clicked = None;
     for (i, (slot, icon, click, tip)) in buttons.iter().enumerate() {
-        let x = bar.center().x + slot * (button + gap);
-        let rect = Rect::from_center_size(pos2(x, bar.center().y), vec2(button, button));
-        let id = ui.scope_id().with(("transport", i));
+        let x = centre.x + slot * (button + gap);
+        let rect = Rect::from_center_size(pos2(x, centre.y), vec2(button, button));
+        let id = ui.scope_id().with((name, i));
         let enabled = *click != TransportClick::Loop || looping.is_some();
         let sense = if enabled { Sense::click() } else { Sense::hover() };
         let response = ui.interact(rect, id, sense).on_hover_text(tip.as_str());
@@ -313,6 +376,48 @@ fn draw(ui: &Ui, icon: Icon, c: Pos2, colour: Color32, k: f32) {
 mod tests {
     use super::*;
     use crate::Shortcut;
+
+    /// One frame of the compact row centred at (300, 20), with `events`.
+    fn compact_frame(ctx: &egui::Context, events: Vec<egui::Event>) -> Option<TransportClick> {
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(600.0, 40.0))),
+            events,
+            ..Default::default()
+        };
+        let mut clicked = None;
+        let output = ctx.run_ui(input, |ui| {
+            let table = ShortcutTable::default();
+            clicked = compact(ui, &Theme::ASH, pos2(300.0, 20.0), false, Some(false), &table);
+        });
+        // Nothing draws these frames.
+        output.drop_without_applying_deltas();
+        clicked
+    }
+
+    #[test]
+    fn the_compact_row_has_play_in_its_middle_and_the_rest_each_side() {
+        let ctx = egui::Context::default();
+        let press = |at: Pos2, pressed: bool| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let click = |at: Pos2| {
+            compact_frame(&ctx, vec![egui::Event::PointerMoved(at)]);
+            compact_frame(&ctx, vec![press(at, true)]);
+            compact_frame(&ctx, vec![press(at, false)])
+        };
+        compact_frame(&ctx, Vec::new());
+        assert_eq!(click(pos2(300.0, 20.0)), Some(TransportClick::PlayPause));
+        let step = COMPACT_HEIGHT + GAP * COMPACT_HEIGHT / BUTTON;
+        assert_eq!(
+            click(pos2(300.0 - 4.0 * step, 20.0)),
+            Some(TransportClick::MarkIn)
+        );
+        assert_eq!(click(pos2(300.0 + 4.0 * step, 20.0)), Some(TransportClick::Loop));
+        assert!((compact_width() - (9.0 * COMPACT_HEIGHT + 8.0 * (step - COMPACT_HEIGHT))).abs() < 0.01);
+    }
 
     #[test]
     fn tooltips_name_the_keys_in_use() {

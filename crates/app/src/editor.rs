@@ -845,6 +845,18 @@ impl Editor {
                 };
                 Ok(())
             }
+            Action::CleanPicture => {
+                self.settings.clean_picture = !self.settings.clean_picture;
+                self.status = if self.settings.clean_picture {
+                    format!(
+                        "Nothing over the picture: the play buttons are under it. {} brings everything back",
+                        self.shortcuts.keys_or_name(Action::CleanPicture)
+                    )
+                } else {
+                    "The play buttons are back over the picture".to_owned()
+                };
+                Ok(())
+            }
             Action::PictureHandles => {
                 self.settings.picture_handles = !self.settings.picture_handles;
                 self.status = if self.settings.picture_handles {
@@ -2263,6 +2275,7 @@ impl Editor {
             click_moves_needle: self.settings.click_moves == ui_kit::ClickMoves::EditNeedle,
             rough_cut: self.settings.rough_cut,
             edit_at_playhead: self.settings.edit_at_playhead,
+            clean: self.settings.clean_picture,
             ..self.display.state(full_screen)
         }
     }

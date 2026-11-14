@@ -587,13 +587,20 @@ impl Viewer {
                     }
                     (area.shrink(8.0), area.shrink(8.0))
                 } else {
-                    let (frame, response) =
-                        self.zoomed_picture_ui(ui, theme, own, timeline, &self.note.clone());
+                    // With nothing over the picture, not even its note.
+                    let note = if display.clean {
+                        String::new()
+                    } else {
+                        self.note.clone()
+                    };
+                    let (frame, response) = self.zoomed_picture_ui(ui, theme, own, timeline, &note);
                     // The handles line up with the whole frame, zoomed or not.
-                    over_picture(ui, frame, &response);
+                    if !display.clean {
+                        over_picture(ui, frame, &response);
+                    }
                     let seen = ui_kit::viewer::seen(frame, response.rect);
                     // Over the handles, so it can always be read.
-                    if split {
+                    if split && !display.clean {
                         ui_kit::viewer::caption(ui, theme, seen, "Program");
                     }
                     (frame, seen)
@@ -602,13 +609,24 @@ impl Viewer {
             .inner,
             self.frame_interval.is_some(),
         );
-        let click = ui_kit::transport::transport(ui, theme, seen, playing, Some(self.looping), shortcuts);
-        command = command.or(click.map(TransportClick::action));
+        if !display.clean {
+            let click = ui_kit::transport::transport(ui, theme, seen, playing, Some(self.looping), shortcuts);
+            command = command.or(click.map(TransportClick::action));
+        }
 
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(self.playhead.timecode(rate)).font(ui_kit::fonts::mono(13.0)))
+            let time = ui
+                .label(egui::RichText::new(self.playhead.timecode(rate)).font(ui_kit::fonts::mono(13.0)))
                 .on_hover_text("Playhead");
+            // With nothing over the picture, the play buttons are here,
+            // under its middle.
+            if display.clean {
+                let centre = egui::pos2(seen.center().x, time.rect.center().y);
+                let looping = Some(self.looping);
+                let click = ui_kit::transport::compact(ui, theme, centre, playing, looping, shortcuts);
+                command = command.or(click.map(TransportClick::action));
+            }
             if let Some(needle) = needle {
                 ui.label(
                     egui::RichText::new(needle.timecode(rate))

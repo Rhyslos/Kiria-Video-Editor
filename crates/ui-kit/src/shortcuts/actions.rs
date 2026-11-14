@@ -115,6 +115,7 @@ actions! {
     FullScreenViewer, Viewer, "Viewer full screen, and back";
     PictureHandles, Viewer, "Move, resize, crop and turn the selected clip on the picture: handles on or off";
     SplitView, Viewer, "Split view: the selected clip's own picture beside the timeline's";
+    CleanPicture, Viewer, "Nothing over the picture: the play buttons go under it, the handles and notes away; and back";
     ViewerWindow, Viewer, "Viewer in its own window, for another screen or monitor";
     SaveFrame, Viewer, "Save this frame as a picture…";
     ViewerZoomFit, Viewer, "Fit the picture in the viewer";
@@ -189,6 +190,14 @@ impl Action {
             Action::ToggleSnapping => &["magnet", "snap"],
             Action::RemoveSilence => &["silence", "dead air", "jump cut"],
             Action::SplitView => &["source", "program", "two up"],
+            Action::CleanPicture => &[
+                "hide",
+                "overlay",
+                "clean",
+                "transport",
+                "play buttons",
+                "uncovered",
+            ],
             Action::Undo => &["back", "revert"],
             Action::Search => &["find", "command palette"],
             Action::BuildProxiesFullSpeed => &["fast", "faster", "quick", "proxy", "proxies", "now"],
