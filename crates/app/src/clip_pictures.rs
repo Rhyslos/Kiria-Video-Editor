@@ -1,5 +1,7 @@
 //! The small pictures drawn inside video clips: read once per file on a
-//! worker, then uploaded a few at a time so the interface never stalls.
+//! worker (or read back from the cache folder's `pictures/`, where they are
+//! kept by the recording's fingerprint), then uploaded a few at a time so
+//! the interface never stalls.
 
 use crate::reading::{self, Pace};
 use cache::thumbs::Strip;
@@ -12,6 +14,9 @@ use ui_kit::timeline::LoadState;
 
 /// Pictures uploaded per frame while a file's strip arrives.
 const UPLOADS_PER_FRAME: usize = 24;
+
+/// What the kept pictures may take on disk; those used longest ago go first.
+const STORE_BUDGET: u64 = 512 * 1024 * 1024;
 
 /// How often the timeline is redrawn while pictures are being read.
 const REDRAW_EVERY: Duration = Duration::from_millis(100);
@@ -43,6 +48,8 @@ pub struct ClipPictures {
     hold_at: Option<f32>,
     /// Exact frames, not the nearest key frames (Settings › Editing).
     exact: bool,
+    /// Where strips are kept between sessions; none in tests.
+    store: Option<cache::thumbs::Store>,
 }
 
 impl ClipPictures {
@@ -51,6 +58,46 @@ impl ClipPictures {
         ClipPictures {
             hold_at,
             ..Default::default()
+        }
+    }
+
+    /// Keeps strips in `folder` between sessions, and trims those kept to
+    /// their budget on a worker.
+    pub fn keep_in(&mut self, folder: std::path::PathBuf, jobs: &JobSystem) {
+        let store = cache::thumbs::Store::new(folder);
+        let trimmed = store.clone();
+        // Nobody waits for it: the handle is let go.
+        drop(jobs.submit(
+            PoolKind::Analysis,
+            Priority::Background,
+            "clip pictures trim",
+            move |_| {
+                let removed = trimmed.trim(STORE_BUDGET);
+                if removed > 0 {
+                    tracing::info!("{removed} kept clip pictures used longest ago removed");
+                }
+                Ok(())
+            },
+        ));
+        self.store = Some(store);
+    }
+
+    /// Removes every strip kept on disk, on a worker (Settings › Cache), and
+    /// forgets those in memory: they are read again as needed.
+    pub fn clear_kept(&mut self, jobs: &JobSystem) {
+        self.stop();
+        self.files.clear();
+        if let Some(store) = self.store.clone() {
+            drop(jobs.submit_write(
+                PoolKind::Analysis,
+                Priority::Interactive,
+                "clear clip pictures",
+                move |_| {
+                    let removed = store.clear();
+                    tracing::info!("{removed} kept clip pictures cleared");
+                    Ok(())
+                },
+            ));
         }
     }
 
@@ -70,11 +117,16 @@ impl ClipPictures {
             let (path, ctx) = (media.path.clone(), ctx.clone());
             let rotation = media.info.video.as_ref().map_or(0, |v| v.rotation);
             let duration = media.duration.as_secs_f64();
+            let (store, fingerprint) = (self.store.clone(), media.fingerprint.clone());
             let handle = jobs.submit(
                 PoolKind::Analysis,
                 Priority::Background,
                 "clip pictures",
                 move |job| {
+                    if let Some(kept) = store.as_ref().and_then(|s| s.load(&fingerprint, stream, exact)) {
+                        ctx.request_repaint();
+                        return Ok(kept);
+                    }
                     let result = cache::thumbs::strip(
                         &path,
                         stream,
@@ -88,6 +140,13 @@ impl ClipPictures {
                             reading::hold(hold_at, done, job);
                         },
                     );
+                    // A strip cut short by a cancel is not kept.
+                    if let (Ok(strip), Some(store)) = (&result, &store)
+                        && !job.is_cancelled()
+                        && !strip.frames.is_empty()
+                    {
+                        store.save(&fingerprint, stream, exact, strip);
+                    }
                     ctx.request_repaint();
                     result
                 },
@@ -216,6 +275,57 @@ impl ClipPictures {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Asks for `media`'s pictures until they are ready.
+    fn ready(pictures: &mut ClipPictures, jobs: &JobSystem, media: &MediaRef) -> ui_kit::ClipPictures {
+        let ctx = egui::Context::default();
+        let index = media.info.video.as_ref().unwrap().index;
+        let give_up = Instant::now() + Duration::from_secs(60);
+        loop {
+            pictures.poll(&ctx, Instant::now());
+            if let (Some(ready), _) = pictures.get(jobs, &ctx, media, index) {
+                return ready;
+            }
+            assert!(Instant::now() < give_up, "ready in time");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn a_files_pictures_are_kept_for_the_next_session() {
+        let fixture =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../media/tests/fixtures/game-3-audio.mkv");
+        let media = media::describe(&fixture).unwrap();
+        let jobs = JobSystem::new(jobs::Budgets::default().resolve(&jobs::Machine::detect()));
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("pictures");
+        let mut first = ClipPictures::default();
+        first.keep_in(folder.clone(), &jobs);
+        let read = ready(&mut first, &jobs, &media);
+        // The next session: the recording is gone, its pictures are not.
+        let mut gone = media.clone();
+        gone.path = dir.path().join("moved away.mkv");
+        let mut next = ClipPictures::default();
+        next.keep_in(folder.clone(), &jobs);
+        let kept = ready(&mut next, &jobs, &gone);
+        assert_eq!(
+            (kept.every, kept.textures.len()),
+            (read.every, read.textures.len())
+        );
+        // Cleared, they are read again (and here can't be).
+        next.clear_kept(&jobs);
+        let ctx = egui::Context::default();
+        let index = media.info.video.as_ref().unwrap().index;
+        let give_up = Instant::now() + Duration::from_secs(60);
+        loop {
+            next.poll(&ctx, Instant::now());
+            if let (_, Some(LoadState::Failed)) = next.get(&jobs, &ctx, &gone, index) {
+                break;
+            }
+            assert!(Instant::now() < give_up, "read again, and failed");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
 
     #[test]
     fn switching_between_quick_and_exact_reads_the_pictures_again() {
