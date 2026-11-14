@@ -123,6 +123,25 @@ impl Measurements {
         }
     }
 
+    /// Forgets every reading and removes those kept on disk, on a worker
+    /// (Settings › Cache): files are measured again when next looked at.
+    pub fn clear_kept(&mut self, jobs: &JobSystem) {
+        self.stop();
+        self.files.clear();
+        if let Some(folder) = self.kept.clone() {
+            drop(jobs.submit_write(
+                PoolKind::Analysis,
+                Priority::Interactive,
+                "clear loudness readings",
+                move |_| {
+                    let removed = clear_folder(&folder);
+                    tracing::info!("{removed} kept loudness readings cleared");
+                    Ok(())
+                },
+            ));
+        }
+    }
+
     /// The app is closing: measurements under way stop.
     pub fn stop(&self) {
         for file in self.files.values() {
@@ -131,6 +150,20 @@ impl Measurements {
             }
         }
     }
+}
+
+/// Removes the readings kept in `folder`; how many went. Only the files
+/// written there are removed, never the folder's other contents.
+fn clear_folder(folder: &Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(folder) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|e| e == "txt") && path.is_file())
+        .filter(|path| std::fs::remove_file(path).is_ok())
+        .count()
 }
 
 /// The name a file's readings are kept under: its fingerprint, as its
@@ -370,6 +403,25 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         };
         assert!(failed.is_err(), "not read back for another file");
+    }
+
+    #[test]
+    fn clearing_removes_the_kept_readings_and_nothing_else() {
+        let jobs = JobSystem::new(jobs::Budgets::default().resolve(&jobs::Machine::detect()));
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("loudness");
+        std::fs::create_dir_all(&folder).unwrap();
+        let reading = folder.join("123-abc.txt");
+        let other = folder.join("not ours.dat");
+        std::fs::write(&reading, "loudness 1\n").unwrap();
+        std::fs::write(&other, "x").unwrap();
+        Measurements::keeping_in(folder).clear_kept(&jobs);
+        let give_up = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while reading.exists() {
+            assert!(std::time::Instant::now() < give_up, "cleared");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(other.exists(), "only readings are removed");
     }
 
     #[test]

@@ -207,10 +207,10 @@ pub const CATEGORIES: &[Category] = &[
                     .keywords("clear delete remove cache all"),
                     Setting::new(
                         CLEAR_WAVEFORMS,
-                        "Waveforms and clip pictures",
+                        "Waveforms, clip pictures and loudness",
                         "Kept so recordings are not read again each time. Clearing them reads them again when needed; proxies stay.",
                     )
-                    .keywords("clear delete remove cache waveforms peaks sound pictures thumbnails"),
+                    .keywords("clear delete remove cache waveforms peaks sound pictures thumbnails loudness lufs readings"),
                 ],
             },
         ],
@@ -422,7 +422,8 @@ impl Editor {
         if clear_waveforms {
             self.waveforms.clear_kept(&self.jobs);
             self.pictures.clear_kept(&self.jobs);
-            self.status = "Waveforms and clip pictures cleared: they are read again from the recordings as they are needed"
+            self.library_page.clear_loudness(&self.jobs);
+            self.status = "Waveforms, clip pictures and loudness readings cleared: they are read again from the recordings as they are needed"
                 .into();
         }
         self.show_settings = open;

@@ -322,6 +322,12 @@ impl LibraryPage {
         self.loudness = loudness::Measurements::keeping_in(folder);
     }
 
+    /// Forgets every loudness reading and removes those kept on disk
+    /// (Settings › Cache): files are measured again when next looked at.
+    pub fn clear_loudness(&mut self, jobs: &jobs::JobSystem) {
+        self.loudness.clear_kept(jobs);
+    }
+
     /// Opens a tab by its name: a type ("video", "audio", "images",
     /// "effects") or a list of the project. Returns whether one was found.
     pub fn open_tab_named(&mut self, name: &str, project: &Project) -> bool {
