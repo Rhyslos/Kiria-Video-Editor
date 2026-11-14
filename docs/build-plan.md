@@ -37,7 +37,7 @@ The platform (project file, errors, installs, safe updates) comes before any pag
 | 5 | Library | Import, index, tabs, lists, labels, prune | 500 clips import, filter and search instantly | Built; gate measured on the cloud machine (Library page passed, Edit page borderline), waiting for the owner's PC |
 | 6 | Export | Encode pipeline, presets, checks, queue | Exports match the timeline frame for frame | Built; gate measured on the cloud machine, waiting for the owner's PC |
 | 8 | Audio | Mixer, effects, loudness, clarity check | A noisy three-track recording mixes to −14 LUFS cleanly | Built; gate waiting for the owner's PC |
-| 9 | Effects and extras | Effects drawer and first effects on the Edit page, background removal, extra features | Hair edges hold, no flicker; extras pass their tests | Not started |
+| 9 | Effects and extras | Effects drawer and the cheap effects on the Edit page first; transitions, titles, tracking and background removal later | Effects match in preview and export; later, hair edges hold with no flicker | Not started |
 | 7 | Color | Float pipeline, wheels, curves, scopes, auto white balance | Preview and export colours match; grades copy between clips | Not started |
 | 10 | Release 1.0 | Hardening, docs, licence, first public release | Release checklist all ticked | Not started |
 | 11 | Composition | Node-based compositing and logic (each clip's effect list becomes a graph) | A layered facecam scene built as nodes plays in real time and exports the same | Not started |
@@ -498,36 +498,42 @@ Phase 9 fills the Effects side of the Edit page's drawer and ships background re
 **9.0 Effects on a clip** (`render` and `project`)
 
 - [ ] A clip's effects as an ordered list in the project file (a format version, a migration and a sample): each effect an id, a kind and its settings, with keyframes in the clip's file time like look keyframes; a clip without effects stores nothing. Phase 11's migration turns each list into a graph in a straight line.
-- [ ] Applied one after another on the GPU in `render`, the same code for preview and export; golden-frame tests.
+- [ ] Applied one after another on the GPU in `render`, in the compositor's linear-light working space (16-bit float, what adjustment layers use already), the same code for preview and export; golden-frame tests.
 - [ ] Commands to add, remove, reorder, switch off and change effects (undoable, one step per drag).
 
 **9.1 Effects drawer**
 
-- [ ] Media / Effects switch; group list left (Favourites, Recently used, Video transitions, Audio transitions, Titles, Motion, Keying, Stabilise, Blur and censor, Stylise, Overlays, Audio effects).
+- [ ] Media / Effects switch; group list left (Favourites, Recently used, Video transitions, Audio transitions, Titles, Motion, Keying, Stabilise, Blur and censor, Stylise, Overlays, Audio effects; a group shows once it has effects).
 - [ ] Larger rows with a preview thumbnail, grouped under collapsible headings; a setting switches to a grid of tiles.
-- [ ] Drag onto a clip or a cut; hovering an effect previews it on the selected clip.
+- [ ] Drag onto a clip (onto a cut too, once there are transitions); hovering an effect previews it on the selected clip.
 - [ ] Settings appear in the inspector's Effects section (the clip's graph as a list: order by dragging, switch off, remove) and are tuned on the picture wherever possible.
 
-**9.2 First effects** (each a small GPU shader or DSP module with a test)
+**9.2 First effects: the cheap ones** (each a small GPU shader in linear light with a golden-frame test; decided by the owner in November 2026: these first, the rest later)
 
-- [ ] Transitions: cross dissolve, dip to black/white, wipe, push, zoom; audio crossfade.
+- [ ] Stylise: vignette, film grain, sharpen, glow.
+- [ ] Blur and pixelate over the whole picture or a box (the box placed and keyframed by hand, not tracked), for censoring names and chat.
+- [ ] Motion: zoom to a point, shake, smooth pan (keyframed like the look).
+- [ ] Overlays: image and video on top with blend modes.
+
+**Gate 9**
+
+- [ ] Every effect works the same in preview and export (golden frames) and undoes cleanly.
+- [ ] The drawer opens and closes without moving anything underneath it.
+- [ ] A clip with all four kinds of effect plays in real time at 1440p 60 on the owner's PC.
+
+**9.3 Later effects** (after the cheap ones; the owner picks when)
+
+- [ ] Transitions: cross dissolve, dip to black/white, wipe, push, zoom; audio crossfade. (A transition sits on a cut and overlaps two clips: the timeline model, trims and playback change with it.)
 - [ ] Titles: lower third, centred title, end card; text tool from phase 4.
-- [ ] Motion: zoom to a point, shake, smooth pan.
-- [ ] Stabilise (tracking-based), blur and pixelate with a tracked box for censoring names and chat.
-- [ ] Stylise: vignette, film grain, sharpen, glow. Overlays: image and video on top with blend modes.
+- [ ] Stabilise (tracking-based), and the censor box following what it covers (tracked).
 
-**9.3 Background removal** (research workflow, `ml`)
+**9.4 Background removal** (research workflow, `ml`; later, with 9.3)
 
 - [ ] Evaluate two or three open video-matting models on your own facecam footage; check their licences fit the project.
 - [ ] Run through ONNX Runtime on the GPU (DirectML on Windows, CUDA / ROCm where available), CPU fallback.
 - [ ] High-resolution edge refinement, temporal smoothing with a strength slider, add/remove brushes, edge softness, choke/expand, spill suppression, matte view.
 - [ ] Mattes computed once in the background and stored in the render cache, so playback is real time afterwards.
-
-**Gate 9**
-
-- [ ] Background removal on the difficult-clips set (hair against busy backgrounds, fast motion, low light): no visible flicker and clean hair edges at full resolution.
-- [ ] Every effect works the same in preview and export (golden frames) and undoes cleanly.
-- [ ] The drawer opens and closes without moving anything underneath it.
+- [ ] Gate: background removal on the difficult-clips set (hair against busy backgrounds, fast motion, low light): no visible flicker and clean hair edges at full resolution.
 
 ## Phase 7 · Color
 
