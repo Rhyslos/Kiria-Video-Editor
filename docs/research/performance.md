@@ -80,3 +80,7 @@ Each pixel column of a waveform took the loudest of every peak under it, so zoom
 ### The launcher's picture after a save (item 11)
 
 Every save (an autosave each 30 s of editing) decoded the frame at the playhead again for the launcher's picture: about 290 ms of processor on a worker for a long-GOP recording, and the same on closing. The editor now remembers what the picture it wrote shows (`engine::thumbnail::shows`: the file, stream and moment, worked out without reading anything) and writes it again only when that changed, as when the playhead moved to another frame. Closing waits for none when nothing changed; a picture under way when the app closes still finishes (it is a write).
+
+### The import check (item 9)
+
+The check opened a file three times plus once per sound stream, each with a full probe, and decoded the first picture with a decoder of every thread. Now it opens the file once for describing it and checking its codecs, keeps what that probe found for the file's sound decoders (they read only the header, under a millisecond each, also when the file is played later), and decodes the first picture on one thread. A 1440p recording with three sound streams: 104 ms to 88 ms; a 1080p phone clip 28 ms to 21 ms. What is left is the fingerprint and the picture decoder's own open, which probes the file again: a picture decoder takes facts only probing finds (the pixel format, how far frames are reordered), so it is left to probe.
