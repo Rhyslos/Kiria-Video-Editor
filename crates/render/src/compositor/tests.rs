@@ -939,3 +939,41 @@ fn pixelate_makes_blocks_inside_its_box_only() {
         assert_eq!(pixel.at(x, 20), plain.at(x, 20), "untouched outside at {x}");
     }
 }
+
+#[test]
+fn a_move_enlarges_about_its_point_and_shifts_inside_the_frame() {
+    let Some(gpu) = gpu() else { return };
+    let size = (64, 64);
+    // Dark left half, light right half.
+    let step = |x: u32, _| if x < 32 { 40 } else { 200 };
+    let moved = |scale, fixed, shift| {
+        with_effects(
+            &gpu,
+            Working::Linear,
+            size,
+            step,
+            &[crate::Effect::Move {
+                scale,
+                fixed,
+                turn: 0.0,
+                shift,
+            }],
+        )
+    };
+    let plain = with_effects(&gpu, Working::Linear, size, step, &[]);
+    let (dark, light) = (plain.at(8, 32), plain.at(56, 32));
+    // Twice as large about the left edge's middle: the dark half fills the
+    // frame; about the right edge's, the light half does.
+    let zoomed = moved(2.0, (0.0, 0.5), (0.0, 0.0));
+    assert_eq!(zoomed.at(40, 32), dark, "dark further across");
+    assert_eq!(zoomed.at(56, 32), dark);
+    let other_way = moved(2.0, (1.0, 0.5), (0.0, 0.0));
+    assert_eq!(other_way.at(8, 32), light);
+    // Shifted half a picture: the light half on the left, nothing on the right.
+    let shifted = moved(1.0, (0.5, 0.5), (0.5, 0.0));
+    assert_eq!(shifted.at(8, 32), light);
+    assert!(
+        near(shifted.at(56, 32), [0, 0, 0], 1),
+        "see-through past its edge"
+    );
+}

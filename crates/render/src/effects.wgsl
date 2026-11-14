@@ -12,7 +12,8 @@ struct Pass {
     // in pixels (yz); a number that changes from frame to frame (w).
     linear_size_seed: vec4<f32>,
     // A box in the picture, its left, top, right and bottom in 0-1: where
-    // blur and pixelate apply (the whole picture is 0, 0, 1, 1).
+    // blur and pixelate apply (the whole picture is 0, 0, 1, 1). For a
+    // move: its turn in radians (x) and shift (yz).
     spot: vec4<f32>,
 };
 
@@ -167,6 +168,26 @@ fn pixelate(s: vec4<f32>, at: vec2<f32>) -> vec4<f32> {
     return mix(s, block, inside(at));
 }
 
+// 9: the picture moved inside its own frame: enlarged `scale` times
+// about a point that stays where it is (yz of the numbers, 0-1), turned
+// (spot.x, radians) and shifted (spot.yz, 0-1). What would come from
+// outside the picture is see-through.
+fn moved(at: vec2<f32>) -> vec4<f32> {
+    let scale = max(it.kind_numbers.y, 0.01);
+    let fixed = it.kind_numbers.zw;
+    let turn = it.spot.x;
+    // In pixels, so turning keeps the picture's shape.
+    let size = it.linear_size_seed.yz;
+    let d = (at - fixed) * size / scale;
+    let c = cos(turn);
+    let s = sin(turn);
+    let back = vec2<f32>(c * d.x + s * d.y, -s * d.x + c * d.y) / size;
+    let taken = fixed + back + it.spot.yz;
+    let sampled = textureSampleLevel(source, smooth_sampler, taken, 0.0);
+    let inside = all(taken >= vec2<f32>(0.0)) && all(taken <= vec2<f32>(1.0));
+    return select(vec4<f32>(0.0), sampled, inside);
+}
+
 // 6: the second picture's light added to the first's by `amount` (glow).
 fn add(p: vec4<f32>, at: vec2<f32>) -> vec3<f32> {
     let glow = light_of(textureSampleLevel(other, smooth_sampler, at, 0.0));
@@ -176,6 +197,9 @@ fn add(p: vec4<f32>, at: vec2<f32>) -> vec3<f32> {
 @fragment
 fn effect(in: Corner) -> @location(0) vec4<f32> {
     let kind = i32(round(it.kind_numbers.x));
+    if kind == 9 {
+        return moved(in.at);
+    }
     if kind == 7 || kind == 8 {
         // Mixing premultiplied values as they are: no light needed.
         let s = textureSampleLevel(source, smooth_sampler, in.at, 0.0);

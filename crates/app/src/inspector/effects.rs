@@ -6,7 +6,7 @@
 //! once) and becomes one undo step when let go (`SetEffects`); a click on a
 //! switch, an arrow, a remove button or Add is one step at once.
 
-use project::effects::{Blur, Glow, Grain, Pixelate, Sharpen, Spot, Vignette};
+use project::effects::{Blur, Glow, Grain, Pan, Pixelate, Shake, Sharpen, Spot, Vignette, Zoom};
 use project::look::ONE;
 use project::{ClipId, Command, EffectKind, Effects, SequenceId};
 use ui_kit::Theme;
@@ -141,6 +141,23 @@ fn settings(ui: &mut egui::Ui, theme: &Theme, kind: EffectKind) -> (EffectKind, 
         touched.set(touched.get().and(moved));
         millionths(shown)
     };
+    // A share shown as a size: 0 is 100 %, `ONE` is `most` %.
+    let size = |ui: &mut egui::Ui, label: &str, value: i32, usual: i32, most: f64| {
+        let as_size = |share: i32| 100.0 + (most - 100.0) * f64::from(share) / f64::from(ONE);
+        let mut shown = as_size(value);
+        let how = Number {
+            range: (100.0, most),
+            per_point: (most - 100.0) / 200.0,
+            decimals: 0,
+            suffix: " %",
+            usual: as_size(usual),
+        };
+        let moved = inspector::slider(ui, theme, label, &mut shown, how);
+        touched.set(touched.get().and(moved));
+        ((shown - 100.0) / (most - 100.0) * f64::from(ONE))
+            .round()
+            .clamp(0.0, f64::from(ONE)) as i32
+    };
     let spot = |ui: &mut egui::Ui, spot: Spot| {
         let mut whole = spot.is_whole();
         if ui
@@ -231,10 +248,35 @@ fn settings(ui: &mut egui::Ui, theme: &Theme, kind: EffectKind) -> (EffectKind, 
             })
         }
         EffectKind::Pixelate(p) => {
-            let size = slider(ui, "Block size", p.size, Pixelate::USUAL.size);
+            let blocks = slider(ui, "Block size", p.size, Pixelate::USUAL.size);
             EffectKind::Pixelate(Pixelate {
-                size,
+                size: blocks,
                 spot: spot(ui, p.spot),
+            })
+        }
+        EffectKind::Zoom(z) => {
+            let usual = Zoom::USUAL;
+            EffectKind::Zoom(Zoom {
+                amount: size(ui, "Zoom at end", z.amount, usual.amount, 300.0),
+                x: slider(ui, "Point across", z.x, usual.x),
+                y: slider(ui, "Point down", z.y, usual.y),
+            })
+        }
+        EffectKind::Shake(k) => {
+            let usual = Shake::USUAL;
+            EffectKind::Shake(Shake {
+                amount: slider(ui, "Amount", k.amount, usual.amount),
+                speed: slider(ui, "Speed", k.speed, usual.speed),
+            })
+        }
+        EffectKind::Pan(p) => {
+            let usual = Pan::USUAL;
+            EffectKind::Pan(Pan {
+                zoom: size(ui, "Zoom", p.zoom, usual.zoom, 200.0),
+                from_x: slider(ui, "From across", p.from_x, usual.from_x),
+                from_y: slider(ui, "From down", p.from_y, usual.from_y),
+                to_x: slider(ui, "To across", p.to_x, usual.to_x),
+                to_y: slider(ui, "To down", p.to_y, usual.to_y),
             })
         }
     };

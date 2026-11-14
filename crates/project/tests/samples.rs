@@ -163,6 +163,14 @@ fn rich_project() -> Project {
     }));
     let (mut effects, _) = effects.with_added(project::EffectKind::ALL[5]);
     effects.0[6].off = true;
+    // A zoom in on the top right, a light shake and a pan (format 22).
+    let (effects, _) = effects.with_added(project::EffectKind::Zoom(project::effects::Zoom {
+        amount: 500_000,
+        x: 800_000,
+        y: 200_000,
+    }));
+    let (effects, _) = effects.with_added(project::EffectKind::ALL[7]);
+    let (effects, _) = effects.with_added(project::EffectKind::ALL[8]);
     seq.video_tracks[0].clips.push_back(Clip {
         look,
         keyframes,
@@ -506,11 +514,18 @@ fn version_20_sample_opens_without_blur_or_pixelate() {
 }
 
 #[test]
+fn version_21_sample_opens_without_motion_effects() {
+    let project = file::load(&sample_path(21)).expect("the version 21 sample opens");
+    let clip = &project.active().expect("a timeline").video_tracks[0].clips[0];
+    assert_eq!(clip.effects.iter().count(), 7);
+}
+
+#[test]
 fn the_current_sample_has_effects_one_switched_off() {
     let project = file::load(&sample_path(FORMAT_VERSION)).expect("the sample opens");
     let clip = &project.active().expect("a timeline").video_tracks[0].clips[0];
-    assert_eq!(clip.effects.iter().count(), 7);
-    assert_eq!(clip.effects.applied().count(), 5);
+    assert_eq!(clip.effects.iter().count(), 10);
+    assert_eq!(clip.effects.applied().count(), 8);
     assert!(clip.effects.check().is_ok());
 }
 
