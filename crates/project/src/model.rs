@@ -338,6 +338,10 @@ pub struct Clip {
     /// none when missing. Set on clips on audio tracks only.
     #[serde(default, skip_serializing_if = "crate::defaults::is_default")]
     pub lines: ClipLines,
+    /// Its picture effects (format 19), applied in order after its quick
+    /// colour; none when missing. Set on pictures only.
+    #[serde(default, skip_serializing_if = "crate::defaults::is_default")]
+    pub effects: crate::effects::Effects,
 }
 
 /// What a clip shows and plays.
@@ -801,6 +805,7 @@ mod tests {
         let seq = p.sequences.front_mut().unwrap();
         seq.video_tracks[0].clips.push_back(Clip {
             lines: Default::default(),
+            effects: Default::default(),
             id: clip_id,
             media,
             stream: 0,

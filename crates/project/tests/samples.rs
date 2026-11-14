@@ -84,6 +84,7 @@ fn rich_project() -> Project {
     seq.settings.frame_rate = Rate::NTSC_60;
     let clip = |id, stream| Clip {
         lines: Default::default(),
+        effects: Default::default(),
         id,
         media: video,
         stream,
@@ -143,11 +144,20 @@ fn rich_project() -> Project {
         Time::from_ratio(1, 2).expect("half a second"),
         Some(Time::seconds(1)),
     );
+    // A soft vignette, and a harder one switched off (effects, format 19).
+    let (effects, _) = project::Effects::default().with_added(project::EffectKind::ALL[0]);
+    let (mut effects, _) = effects.with_added(project::EffectKind::Vignette(project::effects::Vignette {
+        amount: 800_000,
+        size: 400_000,
+        softness: 200_000,
+    }));
+    effects.0[1].off = true;
     seq.video_tracks[0].clips.push_back(Clip {
         look,
         keyframes,
         ramp: ramp.clone(),
         blend: project::FrameBlend::Blend,
+        effects,
         ..clip(v_clip, 0)
     });
     // The game sound a little quieter, a little to the left, fading in and out.
@@ -458,6 +468,23 @@ fn version_16_sample_opens_with_no_clip_lines() {
 }
 
 #[test]
+fn version_18_sample_opens_with_no_effects() {
+    let project = file::load(&sample_path(18)).expect("the version 18 sample opens");
+    for seq in &project.sequences {
+        assert!(seq.tracks().all(|t| t.clips.iter().all(|c| c.effects.is_empty())));
+    }
+}
+
+#[test]
+fn the_current_sample_has_effects_one_switched_off() {
+    let project = file::load(&sample_path(FORMAT_VERSION)).expect("the sample opens");
+    let clip = &project.active().expect("a timeline").video_tracks[0].clips[0];
+    assert_eq!(clip.effects.iter().count(), 2);
+    assert_eq!(clip.effects.applied().count(), 1);
+    assert!(clip.effects.check().is_ok());
+}
+
+#[test]
 fn the_current_sample_has_clip_volume_and_pan_lines() {
     let project = file::load(&sample_path(FORMAT_VERSION)).expect("the sample opens");
     let clip = &project.active().expect("a timeline").audio_tracks[0].clips[0];
@@ -605,8 +632,9 @@ fn the_stored_template_matches_the_model_but_for_what_came_later() {
         clip.keyframes = project::Keyframes::default();
         clip.ramp = project::Ramp::default();
         clip.blend = project::FrameBlend::Off;
-        // Clip lines came with format 17.
+        // Clip lines came with format 17, effects with 19.
         clip.lines = project::ClipLines::default();
+        clip.effects = project::Effects::default();
     }
     for media in expected.media.iter_mut() {
         media.info.stated_length = None;

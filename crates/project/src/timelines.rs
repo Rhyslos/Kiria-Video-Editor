@@ -326,6 +326,7 @@ fn lay_nested(
 fn unfilled(kind: ClipKind, at: Time, length: Time) -> Clip {
     Clip {
         lines: Default::default(),
+        effects: Default::default(),
         id: ClipId(0),
         media: MediaId::NONE,
         stream: 0,
