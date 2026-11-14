@@ -11,6 +11,9 @@ struct Pass {
     // 1 when the pictures are in linear light (x); their width and height
     // in pixels (yz); a number that changes from frame to frame (w).
     linear_size_seed: vec4<f32>,
+    // A box in the picture, its left, top, right and bottom in 0-1: where
+    // blur and pixelate apply (the whole picture is 0, 0, 1, 1).
+    spot: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> it: Pass;
@@ -136,6 +139,34 @@ fn blur(at: vec2<f32>, across: bool) -> vec4<f32> {
     return sum / weights;
 }
 
+// How far inside the box `at` is: 1 inside, 0 outside, softened over a
+// couple of pixels at its edges.
+fn inside(at: vec2<f32>) -> f32 {
+    let edge = texel() * 1.5;
+    let from_left = smoothstep(it.spot.x - edge.x, it.spot.x + edge.x, at.x);
+    let from_right = 1.0 - smoothstep(it.spot.z - edge.x, it.spot.z + edge.x, at.x);
+    let from_top = smoothstep(it.spot.y - edge.y, it.spot.y + edge.y, at.y);
+    let from_bottom = 1.0 - smoothstep(it.spot.w - edge.y, it.spot.w + edge.y, at.y);
+    return from_left * from_right * from_top * from_bottom;
+}
+
+// 7: the second picture (a blur of the first) inside the box, the first
+// outside it.
+fn within(s: vec4<f32>, at: vec2<f32>) -> vec4<f32> {
+    let blurred = textureSampleLevel(other, smooth_sampler, at, 0.0);
+    return mix(s, blurred, inside(at));
+}
+
+// 8: inside the box, blocks `size` reference pixels across, each the
+// colour at its middle (the blocks line up with the box's corner).
+fn pixelate(s: vec4<f32>, at: vec2<f32>) -> vec4<f32> {
+    let cell = max(it.kind_numbers.y * scale(), 1.0) * texel();
+    let from_corner = at - it.spot.xy;
+    let middle = it.spot.xy + (floor(from_corner / cell) + 0.5) * cell;
+    let block = textureSampleLevel(source, smooth_sampler, clamp(middle, it.spot.xy, it.spot.zw), 0.0);
+    return mix(s, block, inside(at));
+}
+
 // 6: the second picture's light added to the first's by `amount` (glow).
 fn add(p: vec4<f32>, at: vec2<f32>) -> vec3<f32> {
     let glow = light_of(textureSampleLevel(other, smooth_sampler, at, 0.0));
@@ -145,6 +176,11 @@ fn add(p: vec4<f32>, at: vec2<f32>) -> vec3<f32> {
 @fragment
 fn effect(in: Corner) -> @location(0) vec4<f32> {
     let kind = i32(round(it.kind_numbers.x));
+    if kind == 7 || kind == 8 {
+        // Mixing premultiplied values as they are: no light needed.
+        let s = textureSampleLevel(source, smooth_sampler, in.at, 0.0);
+        return select(pixelate(s, in.at), within(s, in.at), kind == 7);
+    }
     if kind == 4 || kind == 5 {
         let blurred = blur(in.at, kind == 4);
         // Blurring is done on the stored values: a blur in display values

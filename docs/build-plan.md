@@ -512,7 +512,7 @@ Phase 9 fills the Effects side of the Edit page's drawer and ships background re
 **9.2 First effects: the cheap ones** (each a small GPU shader in linear light with a golden-frame test; decided by the owner in November 2026: these first, the rest later)
 
 - [x] Stylise: vignette, film grain, sharpen, glow. (Done: sizes are shares of the picture's height, so a smaller preview looks like the export; grain's pattern follows the moment of the file; glow blurs in two passes, the blur the Blur effect will use.)
-- [ ] Blur and pixelate over the whole picture or a box (the box placed and keyframed by hand, not tracked), for censoring names and chat.
+- [x] Blur and pixelate over the whole picture or a box (the box placed and keyframed by hand, not tracked), for censoring names and chat. (Done: the box is set by its left, top, width and height in the inspector; dragging it on the picture and keyframing it come with keyframes on effect settings.)
 - [ ] Motion: zoom to a point, shake, smooth pan (keyframed like the look).
 - [ ] Overlays: image and video on top with blend modes.
 

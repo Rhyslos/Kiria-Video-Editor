@@ -9,6 +9,6 @@ pub mod geometry;
 pub mod reader;
 
 pub use compositor::{Background, Compositor, Drawn, Frame, Pixels, Shower, Showing, WHOLE, Working};
-pub use effects::{Effect, Effects, Pictures};
+pub use effects::{Effect, Effects, Pictures, Spot};
 pub use geometry::{Area, Colour, Part, Placement, Point};
 pub use reader::{ReadError, Reader};

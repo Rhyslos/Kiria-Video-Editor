@@ -357,8 +357,26 @@ fn effects(clip: &Clip, at: Time) -> Vec<render::Effect> {
                 threshold: fraction(g.threshold),
                 radius: 2.0 + 58.0 * fraction(g.radius),
             },
+            project::EffectKind::Blur(b) => render::Effect::Blur {
+                radius: 2.0 + 118.0 * fraction(b.radius),
+                spot: spot(&b.spot),
+            },
+            project::EffectKind::Pixelate(p) => render::Effect::Pixelate {
+                size: 4.0 + 96.0 * fraction(p.size),
+                spot: spot(&p.spot),
+            },
         })
         .collect()
+}
+
+/// A box of a picture as the shaders take it: its edges, 0-1.
+fn spot(spot: &project::effects::Spot) -> render::Spot {
+    render::Spot {
+        left: fraction(spot.left),
+        top: fraction(spot.top),
+        right: fraction(spot.left + spot.width),
+        bottom: fraction(spot.top + spot.height),
+    }
 }
 
 /// One of a look's whole numbers (millionths) as a fraction.

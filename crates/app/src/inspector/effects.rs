@@ -6,7 +6,7 @@
 //! once) and becomes one undo step when let go (`SetEffects`); a click on a
 //! switch, an arrow, a remove button or Add is one step at once.
 
-use project::effects::{Glow, Grain, Sharpen, Vignette};
+use project::effects::{Blur, Glow, Grain, Pixelate, Sharpen, Spot, Vignette};
 use project::look::ONE;
 use project::{ClipId, Command, EffectKind, Effects, SequenceId};
 use ui_kit::Theme;
@@ -133,17 +133,64 @@ pub fn section(
 
 /// The settings of one effect, as sliders; returns them as changed.
 fn settings(ui: &mut egui::Ui, theme: &Theme, kind: EffectKind) -> (EffectKind, Touched) {
-    let mut touched = Touched::default();
-    let mut slider = |ui: &mut egui::Ui, label: &str, value: i32, usual: i32| {
+    // Shared by the sliders' and the box's closures.
+    let touched = std::cell::Cell::new(Touched::default());
+    let slider = |ui: &mut egui::Ui, label: &str, value: i32, usual: i32| {
         let mut shown = percent(value);
-        touched = touched.and(inspector::slider(
-            ui,
-            theme,
-            label,
-            &mut shown,
-            PERCENT.usual_at(usual),
-        ));
+        let moved = inspector::slider(ui, theme, label, &mut shown, PERCENT.usual_at(usual));
+        touched.set(touched.get().and(moved));
         millionths(shown)
+    };
+    let spot = |ui: &mut egui::Ui, spot: Spot| {
+        let mut whole = spot.is_whole();
+        if ui
+            .checkbox(&mut whole, "Whole picture")
+            .on_hover_text("Untick to apply it to a box only: to hide a name or the chat")
+            .changed()
+        {
+            touched.set(touched.get().and(Touched {
+                changed: true,
+                busy: false,
+            }));
+            return if whole { Spot::WHOLE } else { Spot::MIDDLE };
+        }
+        if whole {
+            return spot;
+        }
+        let mut left = percent(spot.left);
+        let mut top = percent(spot.top);
+        let mut width = percent(spot.width);
+        let mut height = percent(spot.height);
+        let middle = Spot::MIDDLE;
+        let moved = inspector::slider(ui, theme, "Left", &mut left, PERCENT.usual_at(middle.left))
+            .and(inspector::slider(
+                ui,
+                theme,
+                "Top",
+                &mut top,
+                PERCENT.usual_at(middle.top),
+            ))
+            .and(inspector::slider(
+                ui,
+                theme,
+                "Width",
+                &mut width,
+                PERCENT.usual_at(middle.width),
+            ))
+            .and(inspector::slider(
+                ui,
+                theme,
+                "Height",
+                &mut height,
+                PERCENT.usual_at(middle.height),
+            ));
+        touched.set(touched.get().and(moved));
+        fitted_spot(
+            millionths(left),
+            millionths(top),
+            millionths(width),
+            millionths(height),
+        )
     };
     let changed = match kind {
         EffectKind::Vignette(v) => {
@@ -176,8 +223,36 @@ fn settings(ui: &mut egui::Ui, theme: &Theme, kind: EffectKind) -> (EffectKind, 
                 radius: slider(ui, "Spread", g.radius, usual.radius),
             })
         }
+        EffectKind::Blur(b) => {
+            let radius = slider(ui, "Amount", b.radius, Blur::USUAL.radius);
+            EffectKind::Blur(Blur {
+                radius,
+                spot: spot(ui, b.spot),
+            })
+        }
+        EffectKind::Pixelate(p) => {
+            let size = slider(ui, "Block size", p.size, Pixelate::USUAL.size);
+            EffectKind::Pixelate(Pixelate {
+                size,
+                spot: spot(ui, p.spot),
+            })
+        }
     };
-    (changed, touched)
+    (changed, touched.get())
+}
+
+/// A box from its sliders, kept inside the picture: a box pushed past an
+/// edge is moved back rather than refused, and is never less than 1 % across.
+fn fitted_spot(left: i32, top: i32, width: i32, height: i32) -> Spot {
+    let least = ONE / 100;
+    let width = width.clamp(least, ONE);
+    let height = height.clamp(least, ONE);
+    Spot {
+        left: left.clamp(0, ONE - width),
+        top: top.clamp(0, ONE - height),
+        width,
+        height,
+    }
 }
 
 trait UsualAt {
@@ -225,6 +300,14 @@ mod tests {
             );
         }
         assert_eq!(millionths(150.0), ONE, "kept in range");
+    }
+
+    #[test]
+    fn a_box_stays_inside_the_picture() {
+        let spot = fitted_spot(900_000, 0, 300_000, 0);
+        assert_eq!((spot.left, spot.width), (700_000, 300_000), "moved back in");
+        assert_eq!(spot.height, ONE / 100, "never nothing");
+        assert_eq!(fitted_spot(0, 0, ONE, ONE), Spot::WHOLE);
     }
 
     #[test]
