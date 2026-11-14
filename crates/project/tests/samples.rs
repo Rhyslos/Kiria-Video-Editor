@@ -156,6 +156,13 @@ fn rich_project() -> Project {
     let (effects, _) = effects.with_added(project::EffectKind::ALL[1]);
     let (effects, _) = effects.with_added(project::EffectKind::ALL[2]);
     let (effects, _) = effects.with_added(project::EffectKind::ALL[3]);
+    // A blurred box and the whole picture pixelated, switched off (format 21).
+    let (effects, _) = effects.with_added(project::EffectKind::Blur(project::effects::Blur {
+        radius: 700_000,
+        spot: project::effects::Spot::MIDDLE,
+    }));
+    let (mut effects, _) = effects.with_added(project::EffectKind::ALL[5]);
+    effects.0[6].off = true;
     seq.video_tracks[0].clips.push_back(Clip {
         look,
         keyframes,
@@ -492,11 +499,18 @@ fn version_19_sample_opens_with_vignettes_only() {
 }
 
 #[test]
+fn version_20_sample_opens_without_blur_or_pixelate() {
+    let project = file::load(&sample_path(20)).expect("the version 20 sample opens");
+    let clip = &project.active().expect("a timeline").video_tracks[0].clips[0];
+    assert_eq!(clip.effects.iter().count(), 5);
+}
+
+#[test]
 fn the_current_sample_has_effects_one_switched_off() {
     let project = file::load(&sample_path(FORMAT_VERSION)).expect("the sample opens");
     let clip = &project.active().expect("a timeline").video_tracks[0].clips[0];
-    assert_eq!(clip.effects.iter().count(), 5);
-    assert_eq!(clip.effects.applied().count(), 4);
+    assert_eq!(clip.effects.iter().count(), 7);
+    assert_eq!(clip.effects.applied().count(), 5);
     assert!(clip.effects.check().is_ok());
 }
 

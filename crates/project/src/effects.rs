@@ -34,15 +34,19 @@ pub enum EffectKind {
     Grain(Grain),
     Sharpen(Sharpen),
     Glow(Glow),
+    Blur(Blur),
+    Pixelate(Pixelate),
 }
 
 impl EffectKind {
     /// Every kind there is, with its usual settings: what is added.
-    pub const ALL: [EffectKind; 4] = [
+    pub const ALL: [EffectKind; 6] = [
         EffectKind::Vignette(Vignette::USUAL),
         EffectKind::Grain(Grain::USUAL),
         EffectKind::Sharpen(Sharpen::USUAL),
         EffectKind::Glow(Glow::USUAL),
+        EffectKind::Blur(Blur::USUAL),
+        EffectKind::Pixelate(Pixelate::USUAL),
     ];
 
     /// Its name, as the interface shows it.
@@ -52,6 +56,8 @@ impl EffectKind {
             EffectKind::Grain(_) => "Film grain",
             EffectKind::Sharpen(_) => "Sharpen",
             EffectKind::Glow(_) => "Glow",
+            EffectKind::Blur(_) => "Blur",
+            EffectKind::Pixelate(_) => "Pixelate",
         }
     }
 
@@ -62,6 +68,8 @@ impl EffectKind {
             EffectKind::Grain(g) => shares("Film grain", &[g.amount, g.size]),
             EffectKind::Sharpen(s) => shares("Sharpen", &[s.amount, s.radius]),
             EffectKind::Glow(g) => shares("Glow", &[g.amount, g.threshold, g.radius]),
+            EffectKind::Blur(b) => shares("Blur", &[b.radius]).and_then(|()| b.spot.check("Blur")),
+            EffectKind::Pixelate(p) => shares("Pixelate", &[p.size]).and_then(|()| p.spot.check("Pixelate")),
         }
     }
 }
@@ -140,6 +148,79 @@ impl Glow {
         threshold: ONE * 6 / 10,
         radius: ONE * 4 / 10,
     };
+}
+
+/// Softens the picture, or a box in it (names and chat to hide).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Blur {
+    /// How soft: 0 (two pixels of 1080 lines) to [`ONE`] (a hundred and
+    /// twenty).
+    pub radius: i32,
+    pub spot: Spot,
+}
+
+impl Blur {
+    pub const USUAL: Blur = Blur {
+        radius: ONE * 4 / 10,
+        spot: Spot::WHOLE,
+    };
+}
+
+/// Big square blocks over the picture, or a box in it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Pixelate {
+    /// How big the blocks: 0 (four pixels of 1080 lines) to [`ONE`] (a
+    /// hundred).
+    pub size: i32,
+    pub spot: Spot,
+}
+
+impl Pixelate {
+    pub const USUAL: Pixelate = Pixelate {
+        size: ONE * 3 / 10,
+        spot: Spot::WHOLE,
+    };
+}
+
+/// Where in the picture an effect applies: a box, its left and top edge and
+/// its size, each a share of the picture's width or height in millionths.
+/// The whole picture is (0, 0, [`ONE`], [`ONE`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Spot {
+    pub left: i32,
+    pub top: i32,
+    pub width: i32,
+    pub height: i32,
+}
+
+impl Spot {
+    pub const WHOLE: Spot = Spot {
+        left: 0,
+        top: 0,
+        width: ONE,
+        height: ONE,
+    };
+
+    /// A box in the middle, a third of the picture each way: where a box
+    /// starts when one is asked for.
+    pub const MIDDLE: Spot = Spot {
+        left: ONE / 3,
+        top: ONE / 3,
+        width: ONE / 3,
+        height: ONE / 3,
+    };
+
+    pub fn is_whole(&self) -> bool {
+        *self == Spot::WHOLE
+    }
+
+    fn check(&self, effect: &str) -> diag::Result<()> {
+        shares(effect, &[self.left, self.top, self.width, self.height])?;
+        match self.left + self.width <= ONE && self.top + self.height <= ONE {
+            true => Ok(()),
+            false => Err(out_of_range(effect)),
+        }
+    }
 }
 
 /// Refuses any of `values` outside 0 to [`ONE`].

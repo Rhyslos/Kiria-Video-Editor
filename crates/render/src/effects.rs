@@ -31,6 +31,33 @@ pub enum Effect {
         threshold: f32,
         radius: f32,
     },
+    /// A gaussian blur `radius` reference pixels wide inside `spot`.
+    Blur { radius: f32, spot: Spot },
+    /// Blocks `size` reference pixels across inside `spot`.
+    Pixelate { size: f32, spot: Spot },
+}
+
+/// A box in a picture: its left, top, right and bottom edges, each 0-1 of
+/// the way across or down.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Spot {
+    pub left: f32,
+    pub top: f32,
+    pub right: f32,
+    pub bottom: f32,
+}
+
+impl Spot {
+    pub const WHOLE: Spot = Spot {
+        left: 0.0,
+        top: 0.0,
+        right: 1.0,
+        bottom: 1.0,
+    };
+
+    fn numbers(self) -> [f32; 4] {
+        [self.left, self.top, self.right, self.bottom]
+    }
 }
 
 /// One pass of a shader: which, and its numbers.
@@ -43,6 +70,8 @@ enum Pass {
     BlurAcross { radius: f32 },
     BlurDown { radius: f32 },
     Add { amount: f32 },
+    Within { spot: Spot },
+    Pixelate { size: f32, spot: Spot },
 }
 
 impl Pass {
@@ -59,11 +88,20 @@ impl Pass {
             Pass::BlurAcross { radius } => [4.0, radius, 0.0, 0.0],
             Pass::BlurDown { radius } => [5.0, radius, 0.0, 0.0],
             Pass::Add { amount } => [6.0, amount, 0.0, 0.0],
+            Pass::Within { .. } => [7.0, 0.0, 0.0, 0.0],
+            Pass::Pixelate { size, .. } => [8.0, size, 0.0, 0.0],
+        }
+    }
+
+    fn spot(self) -> Spot {
+        match self {
+            Pass::Within { spot } | Pass::Pixelate { spot, .. } => spot,
+            _ => Spot::WHOLE,
         }
     }
 }
 
-const PASS_BYTES: u64 = 32;
+const PASS_BYTES: u64 = 48;
 
 /// The effect passes for pictures made in one working space.
 #[derive(Debug)]
@@ -188,6 +226,16 @@ impl Effects {
                     done.extend([lit, across, down]);
                     glowing
                 }
+                Effect::Blur { radius, spot } => {
+                    let across = pass(encoder, &now, None, Pass::BlurAcross { radius }, 0);
+                    let down = pass(encoder, &across, None, Pass::BlurDown { radius }, 0);
+                    let blurred = pass(encoder, &now, Some(&down), Pass::Within { spot }, 0);
+                    done.extend([across, down]);
+                    blurred
+                }
+                Effect::Pixelate { size, spot } => {
+                    pass(encoder, &now, None, Pass::Pixelate { size, spot }, 0)
+                }
             };
             done.push(std::mem::replace(&mut now, next));
         }
@@ -215,6 +263,7 @@ impl Effects {
         let rows = [
             pass.numbers(),
             [linear, w as f32, h as f32, (seed % (1 << 24)) as f32],
+            pass.spot().numbers(),
         ];
         let bytes: Vec<u8> = rows.as_flattened().iter().flat_map(|n| n.to_ne_bytes()).collect();
         let uniforms = uniform_buffer(device, PASS_BYTES);

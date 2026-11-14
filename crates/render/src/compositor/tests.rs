@@ -878,3 +878,64 @@ fn glow_spreads_light_around_bright_parts_only() {
         reds(&with_effects(&gpu, Working::Linear, size, |_, _| 40, &[]))
     );
 }
+
+const LEFT_HALF: crate::Spot = crate::Spot {
+    left: 0.0,
+    top: 0.0,
+    right: 0.5,
+    bottom: 1.0,
+};
+
+#[test]
+fn blur_smooths_inside_its_box_and_leaves_the_rest() {
+    let Some(gpu) = gpu() else { return };
+    let size = (64, 64);
+    // Stripes two pixels wide.
+    let stripes = |x: u32, _| if (x / 2).is_multiple_of(2) { 40 } else { 200 };
+    let blur = [crate::Effect::Blur {
+        radius: 100.0,
+        spot: LEFT_HALF,
+    }];
+    for working in BOTH {
+        let plain = with_effects(&gpu, working, size, stripes, &[]);
+        let soft = with_effects(&gpu, working, size, stripes, &blur);
+        let spread = |shown: &Shown, xs: std::ops::Range<u32>| {
+            let row: Vec<u8> = xs.map(|x| shown.at(x, 32)[0]).collect();
+            row.iter().max().unwrap() - row.iter().min().unwrap()
+        };
+        assert!(
+            spread(&soft, 8..24) < spread(&plain, 8..24) / 4,
+            "{working:?}: smoothed inside"
+        );
+        for x in 40..64 {
+            assert_eq!(
+                soft.at(x, 32),
+                plain.at(x, 32),
+                "{working:?}: untouched outside at {x}"
+            );
+        }
+    }
+}
+
+#[test]
+fn pixelate_makes_blocks_inside_its_box_only() {
+    let Some(gpu) = gpu() else { return };
+    let size = (64, 64);
+    let ramp = |x: u32, y: u32| (16 + x * 2 + y) as u8;
+    let blocks = [crate::Effect::Pixelate {
+        // 16 pixels of a 64-line picture.
+        size: 16.0 * 1080.0 / 64.0,
+        spot: LEFT_HALF,
+    }];
+    let plain = with_effects(&gpu, Working::Linear, size, ramp, &[]);
+    let pixel = with_effects(&gpu, Working::Linear, size, ramp, &blocks);
+    // One block: the same colour across it (away from the box's edge).
+    let first = pixel.at(2, 2);
+    for (x, y) in [(5, 5), (10, 3), (13, 13)] {
+        assert_eq!(pixel.at(x, y), first, "one block at {x},{y}");
+    }
+    assert_ne!(pixel.at(20, 2), first, "the next block differs");
+    for x in 40..64 {
+        assert_eq!(pixel.at(x, 20), plain.at(x, 20), "untouched outside at {x}");
+    }
+}
