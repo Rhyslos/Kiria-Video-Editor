@@ -116,7 +116,7 @@ impl TopBar<'_> {
             egui::UiBuilder::new().max_rect(right.shrink2(vec2(12.0, 0.0))),
             |ui| {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if settings_button(ui, self.settings_keys).clicked() {
+                    if settings_button(ui, theme, self.settings_keys).clicked() {
                         clicks.settings = true;
                     }
                     ui.add_space(6.0);
@@ -208,7 +208,7 @@ impl TitleBar<'_> {
             egui::UiBuilder::new().max_rect(right.shrink2(vec2(12.0, 0.0))),
             |ui| {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    settings = settings_button(ui, self.settings_keys).clicked();
+                    settings = settings_button(ui, theme, self.settings_keys).clicked();
                 });
             },
         );
@@ -218,14 +218,53 @@ impl TitleBar<'_> {
     }
 }
 
-fn settings_button(ui: &mut Ui, keys: &str) -> egui::Response {
+/// The Settings button: a drawn gear, in the same strokes and hover as the
+/// app's other drawn buttons (the transport's), not a character of a font.
+fn settings_button(ui: &mut Ui, theme: &Theme, keys: &str) -> egui::Response {
     let tip = if keys.is_empty() {
         "Settings".to_owned()
     } else {
         format!("Settings ({keys})")
     };
-    ui.add(egui::Button::new(RichText::new("⚙").size(15.0)).frame(false))
-        .on_hover_text(tip)
+    let (rect, response) = ui.allocate_exact_size(vec2(26.0, 26.0), Sense::click());
+    let response = response.on_hover_text(tip);
+    if response.hovered() {
+        ui.painter().rect_filled(rect, 13.0, theme.line);
+    }
+    let colour = if response.hovered() {
+        theme.text
+    } else {
+        theme.muted
+    };
+    paint_gear(ui.painter(), rect.center(), 7.5, colour);
+    response
+}
+
+/// A gear of eight teeth around `centre`, `radius` to the teeth's tips, in
+/// strokes: its outline and the hole in its middle.
+pub fn paint_gear(painter: &egui::Painter, centre: egui::Pos2, radius: f32, colour: egui::Color32) {
+    let stroke = Stroke::new(1.5, colour);
+    painter.add(egui::Shape::closed_line(gear_outline(centre, radius), stroke));
+    painter.circle_stroke(centre, radius * 0.32, stroke);
+}
+
+/// The outline of a gear of eight teeth reaching out to `radius`: four
+/// corners a tooth, going round.
+fn gear_outline(centre: egui::Pos2, radius: f32) -> Vec<egui::Pos2> {
+    const TEETH: usize = 8;
+    let (tip, root) = (radius, radius * 0.74);
+    let step = std::f32::consts::TAU / TEETH as f32;
+    let at = |r: f32, a: f32| centre + vec2(a.cos(), a.sin()) * r;
+    let mut outline = Vec::with_capacity(TEETH * 4);
+    for i in 0..TEETH {
+        let a = i as f32 * step;
+        // A tooth narrows a little towards its tip.
+        outline.push(at(root, a - step * 0.36));
+        outline.push(at(tip, a - step * 0.2));
+        outline.push(at(tip, a + step * 0.2));
+        outline.push(at(root, a + step * 0.36));
+    }
+    outline
 }
 
 /// A button's or field's words with the keys for it after a gap, the way
@@ -236,5 +275,23 @@ pub fn with_keys(words: &str, keys: &str) -> String {
         words.to_owned()
     } else {
         format!("{words}   {keys}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_gear_has_eight_teeth_inside_its_radius() {
+        let centre = pos2(10.0, 20.0);
+        let outline = gear_outline(centre, 8.0);
+        assert_eq!(outline.len(), 32);
+        let tips = outline
+            .iter()
+            .filter(|p| ((**p - centre).length() - 8.0).abs() < 1e-3)
+            .count();
+        assert_eq!(tips, 16, "two corners at the tip of every tooth");
+        assert!(outline.iter().all(|p| (*p - centre).length() <= 8.0 + 1e-3));
     }
 }
