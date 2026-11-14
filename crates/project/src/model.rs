@@ -24,7 +24,7 @@ pub struct Project {
     pub sequences: Vector<Sequence>,
     pub active_sequence: SequenceId,
     /// Labels, lists and notes on the media (format 13); empty when missing.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "crate::defaults::is_default")]
     pub library: crate::library::Library,
     /// The next unused id. Ids are never reused.
     next_id: u64,
@@ -135,7 +135,7 @@ pub struct MediaRef {
     pub duration: Time,
     /// What the file holds, read when it was imported. Empty for media added
     /// before format 2.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "crate::defaults::is_default")]
     pub info: MediaInfo,
 }
 
@@ -152,7 +152,7 @@ pub struct MediaInfo {
     /// Set when the file's end is missing and it was imported anyway (format
     /// 14): the length the file says it has. The media's `duration` is
     /// what is really there.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "crate::defaults::is_default")]
     pub stated_length: Option<Time>,
 }
 
@@ -170,9 +170,10 @@ pub struct VideoStream {
     pub frame_rate: Rate,
     /// The file's frames are unevenly spaced (common in game recordings).
     /// Frames are then placed by their timestamps.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "crate::defaults::is_default")]
     pub variable_frame_rate: bool,
     /// Clockwise turn to show the picture upright: 0, 90, 180 or 270.
+    #[serde(default, skip_serializing_if = "crate::defaults::is_default")]
     pub rotation: u16,
 }
 
@@ -221,19 +222,21 @@ pub struct Sequence {
     pub settings: SequenceSettings,
     pub video_tracks: Vector<Track>,
     pub audio_tracks: Vector<Track>,
+    #[serde(default, skip_serializing_if = "crate::defaults::is_default")]
     pub labels: Vector<TimelineLabel>,
+    #[serde(default, skip_serializing_if = "crate::defaults::is_default")]
     pub region: Option<Region>,
     /// Where cuts, splits and pastes happen; separate from the playhead.
     pub edit_needle: Time,
     /// "Automatic": the first video imported sets `settings` (which hold
     /// placeholder values until then). Off once settled or chosen by hand.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "crate::defaults::is_default")]
     pub automatic: bool,
     /// Volume of the whole mix in decibels (format 6); 0 leaves it as it is.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "crate::defaults::is_default")]
     pub master_gain_db: f32,
     /// The mix's compressor and true-peak limiter (format 16); off when missing.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "crate::defaults::is_default")]
     pub master_sound: MasterSound,
 }
 
@@ -265,15 +268,20 @@ pub struct Track {
     pub kind: TrackKind,
     pub name: String,
     pub clips: Vector<Clip>,
+    #[serde(default, skip_serializing_if = "crate::defaults::is_default")]
     pub muted: bool,
+    #[serde(default, skip_serializing_if = "crate::defaults::is_default")]
     pub solo: bool,
+    #[serde(default, skip_serializing_if = "crate::defaults::is_default")]
     pub locked: bool,
+    #[serde(default, skip_serializing_if = "crate::defaults::is_default")]
     pub hidden: bool,
     /// Track volume in decibels; 0 leaves it unchanged.
+    #[serde(default, skip_serializing_if = "crate::defaults::is_default")]
     pub gain_db: f32,
     /// Its role, pan, effects and volume and pan lines (format 16; audio
     /// tracks only). Every effect off when missing.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "crate::defaults::is_default")]
     pub sound: TrackSound,
 }
 
@@ -283,6 +291,7 @@ pub struct Clip {
     pub id: ClipId,
     pub media: MediaId,
     /// Which stream of the file: the video stream, or one of several audio streams.
+    #[serde(default, skip_serializing_if = "crate::defaults::is_default")]
     pub stream: u32,
     /// Where the clip starts on the timeline.
     pub start: Time,
@@ -290,43 +299,44 @@ pub struct Clip {
     pub source_in: Time,
     pub duration: Time,
     /// Clips with the same link move and split together.
+    #[serde(default, skip_serializing_if = "crate::defaults::is_default")]
     pub link: Option<LinkId>,
     /// How fast it plays its file (format 7); normal speed when missing.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "crate::defaults::is_default")]
     pub speed: Speed,
     /// Where its picture sits in the frame, which part shows, how strong and
     /// its quick colour (format 8); the picture as it is when missing.
     /// Means nothing for sound.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "crate::defaults::is_default")]
     pub look: Look,
     /// How loud it is, its pan and its fades (format 9); the sound as it is
     /// when missing. Set on clips on audio tracks only: a picture's sound is
     /// its linked sound clips.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "crate::defaults::is_default")]
     pub sound: Sound,
     /// How numbers of its look change over time (format 10): keyframes at
     /// moments of its file. Numbers without any keep `look`'s value. Means
     /// nothing for sound.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "crate::defaults::is_default")]
     pub keyframes: Keyframes,
     /// How its speed changes over time (format 11): speed keyframes on
     /// the timeline from its start. Empty: it plays at `speed` throughout,
     /// and `speed` means nothing while it isn't.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "crate::defaults::is_default")]
     pub ramp: Ramp,
     /// What it shows between two recorded frames when it is slowed down
     /// further than its file has frames for (format 11). Means nothing
     /// for sound.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "crate::defaults::is_default")]
     pub blend: FrameBlend,
     /// What it shows and plays (format 12): a part of a file (`media`),
     /// another timeline of the project, or nothing of its own (an
     /// adjustment layer). A file when missing.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "crate::defaults::is_default")]
     pub kind: ClipKind,
     /// Its own volume and pan lines (format 17), at moments of its file;
     /// none when missing. Set on clips on audio tracks only.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "crate::defaults::is_default")]
     pub lines: ClipLines,
 }
 

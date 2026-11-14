@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 /// The template format this build writes. It goes up whenever the file
 /// changes shape, which includes a change to the model types it holds
 /// (`Clip`, `Track`, `MediaRef`) that old text can't be read into.
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
 
 /// File extension of a template, without the dot.
 pub const FILE_EXTENSION: &str = "template";
@@ -30,8 +30,16 @@ pub const FILE_EXTENSION: &str = "template";
 /// Turns the text of a version `n` template into the text of version `n + 1`.
 pub type Migration = fn(&str) -> diag::Result<String>;
 
-/// `MIGRATIONS[i]` upgrades version `i + 1` to `i + 2`. Empty so far.
-pub const MIGRATIONS: &[Migration] = &[];
+/// `MIGRATIONS[i]` upgrades version `i + 1` to `i + 2`.
+pub const MIGRATIONS: &[Migration] = &[v1_to_v2];
+
+/// Template format 2 leaves values out when they are their default, as
+/// project format 18 does (`crate::defaults`). Version 1 text has them all
+/// and reads as it is; the version goes up so an older app says the
+/// template is from a newer version instead of calling it damaged.
+fn v1_to_v2(text: &str) -> diag::Result<String> {
+    crate::file::set_format_version(text, 1, 2)
+}
 
 /// A stretch of a timeline, ready to be dropped into any project.
 ///
@@ -1476,7 +1484,11 @@ mod tests {
         let dir = folder(data.path());
         save(&intro(), &dir, "Good").unwrap();
         let text = to_string(&intro()).unwrap();
-        let newer = text.replacen("format_version: 1", "format_version: 99", 1);
+        let newer = text.replacen(
+            &format!("format_version: {FORMAT_VERSION}"),
+            "format_version: 99",
+            1,
+        );
         assert_ne!(newer, text);
         fs::write(path_of(&dir, "From the future"), newer).unwrap();
         fs::write(path_of(&dir, "Broken"), "(format_version: 1, template: (").unwrap();
@@ -1495,16 +1507,22 @@ mod tests {
 
     #[test]
     fn older_formats_are_upgraded_step_by_step() {
-        fn one_to_two(text: &str) -> diag::Result<String> {
-            Ok(text.replacen("format_version: 1", "format_version: 2", 1))
-        }
         let text = to_string(&intro()).unwrap();
-        assert_eq!(from_str_with(&text, 2, &[one_to_two]).unwrap(), intro());
+        let one = text.replacen(
+            &format!("format_version: {FORMAT_VERSION}"),
+            "format_version: 1",
+            1,
+        );
+        assert_eq!(from_str(&one).unwrap(), intro(), "version 1 text, upgraded");
         assert!(
-            from_str_with(&text, 2, &[]).is_err(),
+            from_str_with(&one, 2, &[]).is_err(),
             "no way up is an error, not a guess"
         );
-        let zero = text.replacen("format_version: 1", "format_version: 0", 1);
+        let zero = text.replacen(
+            &format!("format_version: {FORMAT_VERSION}"),
+            "format_version: 0",
+            1,
+        );
         assert!(from_str(&zero).is_err());
     }
 }
