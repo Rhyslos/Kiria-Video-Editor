@@ -87,6 +87,9 @@ pub struct Editor {
     thumbnail: Option<JobHandle<bool>>,
     /// A save finished (or the project has no picture yet): write one.
     thumbnail_due: Thumbnail,
+    /// What the launcher's picture was last written of, this session: a
+    /// save that leaves it the same writes nothing.
+    thumbnail_shows: Option<engine::thumbnail::Shows>,
     importer: Importer,
     import_requested: bool,
     /// What the timeline's settings settled on during the import under way.
@@ -476,6 +479,7 @@ impl Editor {
             settings_keeper,
             thumbnail: None,
             thumbnail_due: Thumbnail::IfMissing,
+            thumbnail_shows: None,
             importer,
             import_requested: false,
             import_settled: None,
@@ -1843,6 +1847,7 @@ impl Editor {
         {
             if let Err(err) = result {
                 tracing::info!("no project picture: {}", err.report());
+                self.thumbnail_shows = None;
             }
             self.thumbnail = None;
         }
@@ -1852,12 +1857,21 @@ impl Editor {
         }
         let only_if_missing = self.thumbnail_due == Thumbnail::IfMissing;
         self.thumbnail_due = Thumbnail::No;
-        let (project, out, at) = (
-            document.project().clone(),
-            project::thumbnail_path(document.path()),
-            self.viewer.playhead,
-        );
-        self.thumbnail = Some(self.jobs.submit(
+        let project = document.project();
+        let Some(shows) = engine::thumbnail::shows(project, project.active_sequence, self.viewer.playhead)
+        else {
+            return;
+        };
+        // After a save that left the picture as it was (the playhead on the
+        // same frame of the same file), nothing is decoded again.
+        if self.thumbnail_shows.as_ref() == Some(&shows) {
+            return;
+        }
+        // When only written if missing, what the one there shows is unknown.
+        self.thumbnail_shows = (!only_if_missing).then(|| shows.clone());
+        let out = project::thumbnail_path(document.path());
+        // Written even when closing comes first: closing counts on it.
+        self.thumbnail = Some(self.jobs.submit_write(
             PoolKind::Analysis,
             Priority::Background,
             "project picture",
@@ -1865,7 +1879,7 @@ impl Editor {
                 if only_if_missing && out.exists() {
                     return Ok(false);
                 }
-                engine::thumbnail::write(&project, project.active_sequence, at, &out)
+                engine::thumbnail::write_shown(&shows, &out).map(|()| true)
             },
         ));
     }
@@ -3758,10 +3772,14 @@ impl eframe::App for Editor {
         if self.thumbnail_due == Thumbnail::Now
             && let Some(document) = &self.document
         {
-            // One small frame on the way out, so the launcher shows the latest.
+            // One small frame on the way out, so the launcher shows the
+            // latest, unless it shows that already.
             let p = document.project();
             let out = project::thumbnail_path(document.path());
-            if let Err(err) = engine::thumbnail::write(p, p.active_sequence, self.viewer.playhead, &out) {
+            let shows = engine::thumbnail::shows(p, p.active_sequence, self.viewer.playhead);
+            if let Some(shows) = shows.filter(|s| self.thumbnail_shows.as_ref() != Some(s))
+                && let Err(err) = engine::thumbnail::write_shown(&shows, &out)
+            {
                 tracing::info!("no project picture: {}", err.report());
             }
         }

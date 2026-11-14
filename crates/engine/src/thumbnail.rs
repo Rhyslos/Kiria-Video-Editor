@@ -25,31 +25,49 @@ pub fn frame_time(project: &Project, sequence: SequenceId, at: Time) -> Option<T
         .min()
 }
 
+/// What the picture at `at` shows: the frame of a file it is made of. Two
+/// the same make the same picture, so one need not be written again.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Shows {
+    pub path: std::path::PathBuf,
+    pub stream: u32,
+    pub rotation: u16,
+    /// Time in the file.
+    pub at: Time,
+}
+
+/// What the picture at `at` (see [`frame_time`]) would show; `None` with
+/// no video on the timeline. Cheap: nothing is read.
+pub fn shows(project: &Project, sequence: SequenceId, at: Time) -> Option<Shows> {
+    let at = frame_time(project, sequence, at)?;
+    let seq = project.sequences.iter().find(|s| s.id == sequence)?;
+    let showing = video_at(project, seq, at)?;
+    Some(Shows {
+        path: showing.media.path.clone(),
+        stream: showing.clip.stream,
+        rotation: showing.media.info.video.as_ref().map_or(0, |v| v.rotation),
+        at: showing.source_time,
+    })
+}
+
 /// Writes the timeline's picture at `at` (see [`frame_time`]) to `out` as a
 /// PNG. With no video on the timeline, nothing is written and `Ok(false)`
 /// comes back.
 pub fn write(project: &Project, sequence: SequenceId, at: Time, out: &Path) -> diag::Result<bool> {
-    let Some(at) = frame_time(project, sequence, at) else {
+    let Some(shows) = shows(project, sequence, at) else {
         return Ok(false);
     };
-    let Some(seq) = project.sequences.iter().find(|s| s.id == sequence) else {
-        return Ok(false);
-    };
-    let Some(showing) = video_at(project, seq, at) else {
-        return Ok(false);
-    };
-    let rotation = showing.media.info.video.as_ref().map_or(0, |v| v.rotation);
-    // The CPU is plenty for one small frame and leaves the GPU to playback.
-    let mut decoder = VideoDecoder::open(
-        &showing.media.path,
-        showing.clip.stream,
-        rotation,
-        Decoding::Software,
-    )?;
-    let frame = decoder.frame_at(showing.source_time.as_secs_f64(), WIDTH, HEIGHT)?;
-    let picture = letterbox(&frame.rgba, frame.width, frame.height);
-    save_png(&picture, WIDTH, HEIGHT, out, "The project picture can't be saved")?;
+    write_shown(&shows, out)?;
     Ok(true)
+}
+
+/// Writes the picture of what `shows` names to `out` as a PNG.
+pub fn write_shown(shows: &Shows, out: &Path) -> diag::Result<()> {
+    // The CPU is plenty for one small frame and leaves the GPU to playback.
+    let mut decoder = VideoDecoder::open(&shows.path, shows.stream, shows.rotation, Decoding::Software)?;
+    let frame = decoder.frame_at(shows.at.as_secs_f64(), WIDTH, HEIGHT)?;
+    let picture = letterbox(&frame.rgba, frame.width, frame.height);
+    save_png(&picture, WIDTH, HEIGHT, out, "The project picture can't be saved")
 }
 
 /// Saves the timeline's frame at `at` at the full size of its file, as a
@@ -170,7 +188,17 @@ mod tests {
             "a gap"
         );
 
+        // What the picture shows: the same frame of the same file makes the
+        // same picture, so it need not be written again; another moment
+        // makes another.
+        let at = Time::from_ratio(1, 2).unwrap();
+        assert_eq!(shows(&p, seq, at), shows(&p, seq, at));
+        assert_ne!(shows(&p, seq, at), shows(&p, seq, Time::ZERO));
+        assert_eq!(shows(&p, seq, at).unwrap().at, at, "the file's own time there");
+        write_shown(&shows(&p, seq, at).unwrap(), &out).unwrap();
+
         let empty = Project::new_automatic("E");
+        assert!(shows(&empty, empty.active_sequence, Time::ZERO).is_none());
         assert!(!write(&empty, empty.active_sequence, Time::ZERO, &out).unwrap());
         std::fs::remove_dir_all(&dir).unwrap();
     }

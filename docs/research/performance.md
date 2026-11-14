@@ -77,3 +77,6 @@ Each sound stream of a file was measured in a pass of its own (a five-stream 144
 ### Drawing long waveforms (item 8)
 
 Each pixel column of a waveform took the loudest of every peak under it, so zoomed out over hours a frame went over every peak (100 a second, so 720 000 for two hours). Now each set of peaks gets levels (the loudest of each two, of each two of those, and so on), made once on a thread of their own and kept while it is drawn, and a column takes a few steps. Two 2-hour waveforms all on screen: 0.86 ms a frame before, 0.22 ms after (`timeline_cost`'s `long_waveform_frame_cost`, release build); the cost now follows the width, so five 3-hour streams cost what two do. The Library's rows, cards and detail panel draw through the same levels.
+### The launcher's picture after a save (item 11)
+
+Every save (an autosave each 30 s of editing) decoded the frame at the playhead again for the launcher's picture: about 290 ms of processor on a worker for a long-GOP recording, and the same on closing. The editor now remembers what the picture it wrote shows (`engine::thumbnail::shows`: the file, stream and moment, worked out without reading anything) and writes it again only when that changed, as when the playhead moved to another frame. Closing waits for none when nothing changed; a picture under way when the app closes still finishes (it is a write).
