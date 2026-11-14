@@ -206,8 +206,14 @@ pub struct About<'a> {
     pub new_files: crate::new_files::NewFiles<'a>,
 }
 
-/// What reading a file's pictures gives: them, once read, and how far the reading is.
-pub type PictureLook = (Option<ui_kit::ClipPictures>, Option<LoadState>);
+/// What reading a file's pictures gives: its strip, once read, how far the
+/// reading is, and the picture its card rests on (read first, on its own).
+pub struct PictureLook {
+    pub strip: Option<ui_kit::ClipPictures>,
+    pub state: Option<LoadState>,
+    /// With its width over its height.
+    pub cover: Option<(egui::TextureId, f32)>,
+}
 
 /// Reading what files hold, for their thumbnails and waveforms: started
 /// the first time a file is in view, kept for the session.

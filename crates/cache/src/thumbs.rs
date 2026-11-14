@@ -1,6 +1,7 @@
 //! Small pictures along a video file, for drawing inside timeline clips,
 //! and kept on disk by the recording's fingerprint ([`Store`]), so a
-//! file's pictures are read once, not once a session.
+//! file's pictures are read once, not once a session. A file's [`cover`],
+//! the one picture a Library card rests on, is read on its own first.
 
 use media::{Decoding, Frame, VideoDecoder};
 use project::Fingerprint;
@@ -83,10 +84,39 @@ pub fn strip(
     Ok(Strip { every, frames })
 }
 
+/// The moment a card rests on in a file `duration` seconds long: a third of
+/// the way in, past dark openings, on a picture of its strip (the strip's
+/// picture a third of the way along), so the cover and the strip agree.
+pub fn resting_moment(duration: f64) -> f64 {
+    let every = spacing(duration);
+    let count = (duration.max(0.001) / every).ceil();
+    (count / 3.0).floor() * every
+}
+
+/// The one picture a Library card shows at rest ([`resting_moment`]), read
+/// on its own so a card has a picture long before its whole strip is in:
+/// the key frame there when one is close (one frame decoded), else the
+/// exact frame.
+pub fn cover(path: &Path, stream: u32, rotation: u16, duration: f64) -> diag::Result<Frame> {
+    let at = resting_moment(duration);
+    let mut decoder = VideoDecoder::open_for_glances(path, stream, rotation, Decoding::Software)?;
+    let key = decoder
+        .key_frames()
+        .nearest(at)
+        .filter(|key| (key - at).abs() <= CLOSEST);
+    if let Some(key) = key
+        && let Ok(media::Decoded::Rgba(frame)) = decoder.key_frame_picture(key, WIDTH, HEIGHT, true)
+    {
+        return Ok(frame);
+    }
+    decoder.frame_at(at, WIDTH, HEIGHT)
+}
+
 /// Strips kept on disk, one file per recording and picture stream, named by
 /// the recording's fingerprint (as proxies and waveforms are), each picture
 /// a small JPEG: a few hundred kilobytes a recording. The folder keeps the
-/// most recently used within its budget ([`Store::trim`]).
+/// most recently used within its budget ([`Store::trim`]). Covers are kept
+/// beside them, a file each (`.cover`).
 #[derive(Debug, Clone)]
 pub struct Store {
     folder: PathBuf,
@@ -94,6 +124,18 @@ pub struct Store {
 
 /// What a pictures file starts with: its kind and format version.
 const MAGIC: &[u8; 8] = b"PICTS\0\0\x01";
+
+/// The endings of kept strips and covers.
+const PICTURES: &str = "pictures";
+const COVER: &str = "cover";
+
+/// Marks a kept file used now: what `trim` keeps the newest of.
+fn touch(path: &Path) {
+    let _ = std::fs::File::options()
+        .append(true)
+        .open(path)
+        .and_then(|f| f.set_modified(std::time::SystemTime::now()));
+}
 
 /// How finely the pictures are kept: plenty for 160 × 90.
 const QUALITY: u8 = 85;
@@ -104,10 +146,31 @@ impl Store {
     }
 
     fn file_for(&self, fingerprint: &Fingerprint, stream: u32) -> PathBuf {
+        self.file_named(fingerprint, stream, PICTURES)
+    }
+
+    fn file_named(&self, fingerprint: &Fingerprint, stream: u32, kind: &str) -> PathBuf {
         self.folder.join(format!(
-            "{}-{}-{stream}.pictures",
+            "{}-{}-{stream}.{kind}",
             fingerprint.size, fingerprint.sample_hash
         ))
+    }
+
+    /// The cover kept for this stream, if any.
+    pub fn load_cover(&self, fingerprint: &Fingerprint, stream: u32) -> Option<Frame> {
+        let path = self.file_named(fingerprint, stream, COVER);
+        let mut strip = decode(&std::fs::read(&path).ok()?, false)?;
+        touch(&path);
+        strip.frames.pop()
+    }
+
+    /// Keeps a cover for this stream. Failing only costs reading it again.
+    pub fn save_cover(&self, fingerprint: &Fingerprint, stream: u32, cover: &Frame) {
+        let strip = Strip {
+            every: 0.0,
+            frames: vec![cover.clone()],
+        };
+        self.write(&self.file_named(fingerprint, stream, COVER), &strip, false);
     }
 
     /// The strip kept for this stream, if any, readable and taken the same
@@ -117,11 +180,7 @@ impl Store {
         let bytes = std::fs::read(&path).ok()?;
         let strip = decode(&bytes, exact);
         if strip.is_some() {
-            // Its last use: what `trim` keeps the newest of.
-            let _ = std::fs::File::options()
-                .append(true)
-                .open(&path)
-                .and_then(|f| f.set_modified(std::time::SystemTime::now()));
+            touch(&path);
         }
         strip
     }
@@ -129,9 +188,13 @@ impl Store {
     /// Keeps `strip` (taken `exact`ly or not) for this stream. Failing only
     /// costs reading it again.
     pub fn save(&self, fingerprint: &Fingerprint, stream: u32, exact: bool, strip: &Strip) {
+        self.write(&self.file_for(fingerprint, stream), strip, exact);
+    }
+
+    fn write(&self, path: &Path, strip: &Strip, exact: bool) {
         let written = encode(strip, exact).and_then(|bytes| {
             std::fs::create_dir_all(&self.folder)
-                .and_then(|()| project::disk::write_atomic(&self.file_for(fingerprint, stream), &bytes))
+                .and_then(|()| project::disk::write_atomic(path, &bytes))
                 .map_err(|e| e.to_string())
         });
         if let Err(why) = written {
@@ -139,7 +202,8 @@ impl Store {
         }
     }
 
-    /// Removes every strip kept (Settings › Cache). Returns how many went.
+    /// Removes every strip and cover kept (Settings › Cache). Returns how
+    /// many files went.
     pub fn clear(&self) -> usize {
         self.trim(0)
     }
@@ -152,7 +216,7 @@ impl Store {
         };
         let mut files: Vec<(std::time::SystemTime, u64, PathBuf)> = entries
             .flatten()
-            .filter(|e| e.path().extension().is_some_and(|x| x == "pictures"))
+            .filter(|e| e.path().extension().is_some_and(|x| x == PICTURES || x == COVER))
             .filter_map(|e| {
                 let meta = e.metadata().ok()?;
                 Some((meta.modified().ok()?, meta.len(), e.path()))
@@ -323,5 +387,49 @@ mod tests {
         assert_eq!(store.trim(u64::MAX), 0);
         assert_eq!(store.clear(), 1);
         assert!(store.load(&media.fingerprint, index, false).is_none());
+    }
+
+    #[test]
+    fn a_cover_is_the_strips_resting_picture_read_on_its_own_and_kept() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../media/tests/fixtures/game-3-audio.mkv");
+        let media = media::describe(&fixture).unwrap();
+        let index = media.info.video.as_ref().unwrap().index;
+        let duration = media.duration.as_secs_f64();
+        let read = strip(&fixture, index, 0, duration, false, || false, |_| ()).unwrap();
+        let resting = &read.frames[read.frames.len() / 3];
+        let cover = cover(&fixture, index, 0, duration).unwrap();
+        assert!(
+            (cover.time - resting.time).abs() <= CLOSEST,
+            "{} against {}",
+            cover.time,
+            resting.time
+        );
+        assert!(cover.width <= WIDTH && cover.height <= HEIGHT);
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("pictures"));
+        assert!(store.load_cover(&media.fingerprint, index).is_none());
+        store.save_cover(&media.fingerprint, index, &cover);
+        let kept = store.load_cover(&media.fingerprint, index).expect("kept");
+        assert_eq!(
+            (kept.width, kept.height, kept.time),
+            (cover.width, cover.height, cover.time)
+        );
+        assert!(
+            store.load(&media.fingerprint, index, false).is_none(),
+            "not a strip"
+        );
+        assert_eq!(store.clear(), 1, "cleared with the strips");
+    }
+
+    #[test]
+    fn the_resting_moment_is_a_third_of_the_way_on_a_picture_of_the_strip() {
+        assert_eq!(resting_moment(60.0), 20.0);
+        assert_eq!(resting_moment(3_000.0), 1_000.0);
+        assert_eq!(
+            resting_moment(1.0),
+            0.0,
+            "a short file rests on its first picture"
+        );
+        assert_eq!(resting_moment(0.0), 0.0);
     }
 }

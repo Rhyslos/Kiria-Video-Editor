@@ -114,15 +114,23 @@ fn shown(page: &mut LibraryPage, readers: &mut Readers<'_>, media: &MediaRef, sk
     let Some(stream) = super::picture_stream(media) else {
         return Shown::Nothing;
     };
-    match (readers.pictures)(media, stream) {
-        (Some(pictures), _) if !pictures.textures.is_empty() => {
-            let count = pictures.textures.len();
-            // Resting: a third of the way in, past dark openings.
-            let i = skim.map_or(count / 3, |share| (share * count as f32) as usize);
-            Shown::Picture(pictures.textures[i.min(count - 1)], pictures.aspect)
-        }
-        (_, Some(LoadState::Failed)) | (Some(_), _) => Shown::Nothing,
-        (None, _) => {
+    let look = (readers.pictures)(media, stream);
+    let strip = look.strip.as_ref().filter(|p| !p.textures.is_empty());
+    let at = |pictures: &ui_kit::ClipPictures, share: f32| {
+        let count = pictures.textures.len();
+        let i = ((share * count as f32) as usize).min(count - 1);
+        Shown::Picture(pictures.textures[i], pictures.aspect)
+    };
+    match (skim, strip, look.cover) {
+        // Skimming runs through the strip once it is in.
+        (Some(share), Some(pictures), _) => at(pictures, share),
+        // At rest, or until the strip is in: the cover.
+        (_, _, Some((texture, aspect))) => Shown::Picture(texture, aspect),
+        // No cover (a picture file, or it couldn't be read): the strip, a
+        // third of the way in, past dark openings.
+        (None, Some(pictures), None) => at(pictures, 1.0 / 3.0),
+        (_, None, None) if look.state == Some(LoadState::Failed) || look.strip.is_some() => Shown::Nothing,
+        (_, None, None) => {
             page.waiting += 1;
             Shown::Reading
         }

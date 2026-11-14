@@ -6,7 +6,7 @@
 //! and the timeline's playback stops when the player starts.
 
 use super::Editor;
-use crate::library_page::{About, Picked, Readers, placing};
+use crate::library_page::{About, Picked, PictureLook, Readers, placing};
 use crate::settings::LibraryMarks;
 use project::{Document, MediaRef};
 use ui_kit::{Action, Page};
@@ -45,7 +45,14 @@ impl Editor {
             &mut self.pictures,
             ui.ctx().clone(),
         );
-        let mut read_pictures = |m: &MediaRef, stream| pictures.get(jobs, &ctx, m, stream);
+        let mut read_pictures = |m: &MediaRef, stream| {
+            // The card's one picture first, then the strip it skims.
+            let cover = (m.kind == project::MediaKind::Video)
+                .then(|| pictures.cover(jobs, &ctx, m, stream))
+                .flatten();
+            let (strip, state) = pictures.get(jobs, &ctx, m, stream);
+            PictureLook { strip, state, cover }
+        };
         let mut read_waveform = |m: &MediaRef, stream| waveforms.get(jobs, &ctx, m, stream);
         let mut readers = Readers {
             pictures: &mut read_pictures,

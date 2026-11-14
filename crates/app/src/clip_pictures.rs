@@ -1,7 +1,8 @@
 //! The small pictures drawn inside video clips: read once per file on a
 //! worker (or read back from the cache folder's `pictures/`, where they are
 //! kept by the recording's fingerprint), then uploaded a few at a time so
-//! the interface never stalls.
+//! the interface never stalls. A Library card's one resting picture (its
+//! cover) is read on its own, ahead of the strip, so cards fill quickly.
 
 use crate::reading::{self, Pace};
 use cache::thumbs::Strip;
@@ -41,9 +42,17 @@ enum State {
     Failed,
 }
 
+/// A file's cover: the one picture its Library card rests on.
+enum Cover {
+    Reading(JobHandle<media::Frame>),
+    Ready(egui::TextureHandle, f32),
+    Failed,
+}
+
 #[derive(Default)]
 pub struct ClipPictures {
     files: HashMap<(MediaId, u32), State>,
+    covers: HashMap<(MediaId, u32), Cover>,
     /// `--hold-reading`: workers stop at this share, for screenshots of reading in progress.
     hold_at: Option<f32>,
     /// Exact frames, not the nearest key frames (Settings › Editing).
@@ -87,6 +96,7 @@ impl ClipPictures {
     pub fn clear_kept(&mut self, jobs: &JobSystem) {
         self.stop();
         self.files.clear();
+        self.covers.clear();
         if let Some(store) = self.store.clone() {
             drop(jobs.submit_write(
                 PoolKind::Analysis,
@@ -172,10 +182,73 @@ impl ClipPictures {
         }
     }
 
+    /// The picture a Library card of this file rests on, with its width
+    /// over its height, once read; starts reading it if nobody has yet,
+    /// ahead of the file's strip (or reads it back from the cache folder).
+    pub fn cover(
+        &mut self,
+        jobs: &JobSystem,
+        ctx: &egui::Context,
+        media: &MediaRef,
+        stream: u32,
+    ) -> Option<(egui::TextureId, f32)> {
+        let key = (media.id, stream);
+        let cover = self.covers.entry(key).or_insert_with(|| {
+            let (path, ctx) = (media.path.clone(), ctx.clone());
+            let rotation = media.info.video.as_ref().map_or(0, |v| v.rotation);
+            let duration = media.duration.as_secs_f64();
+            let (store, fingerprint) = (self.store.clone(), media.fingerprint.clone());
+            Cover::Reading(jobs.submit(
+                PoolKind::Analysis,
+                Priority::Interactive,
+                "card picture",
+                move |_| {
+                    let kept = store.as_ref().and_then(|s| s.load_cover(&fingerprint, stream));
+                    let result =
+                        kept.map_or_else(|| cache::thumbs::cover(&path, stream, rotation, duration), Ok);
+                    if let (Ok(frame), Some(store)) = (&result, &store) {
+                        store.save_cover(&fingerprint, stream, frame);
+                    }
+                    ctx.request_repaint();
+                    result
+                },
+            ))
+        });
+        if let Cover::Reading(handle) = cover
+            && let Some(result) = handle.try_result()
+        {
+            *cover = match result {
+                Ok(frame) => {
+                    let size = [frame.width as usize, frame.height as usize];
+                    let image = egui::ColorImage::from_rgba_unmultiplied(size, &frame.rgba);
+                    let name = format!("card-picture-{}-{stream}", media.id.0);
+                    let aspect = frame.width as f32 / frame.height.max(1) as f32;
+                    Cover::Ready(
+                        ctx.load_texture(name, image, egui::TextureOptions::LINEAR),
+                        aspect,
+                    )
+                }
+                Err(err) => {
+                    tracing::info!("no card picture: {}", err.report());
+                    Cover::Failed
+                }
+            };
+        }
+        match cover {
+            Cover::Ready(texture, aspect) => Some((texture.id(), *aspect)),
+            Cover::Reading(_) | Cover::Failed => None,
+        }
+    }
+
     /// Asks every reading still under way to stop (the app is closing).
     pub fn stop(&self) {
         for state in self.files.values() {
             if let State::Reading { handle, .. } = state {
+                handle.cancel();
+            }
+        }
+        for cover in self.covers.values() {
+            if let Cover::Reading(handle) = cover {
                 handle.cancel();
             }
         }
@@ -190,6 +263,7 @@ impl ClipPictures {
                 .files
                 .values()
                 .any(|s| matches!(s, State::Reading { .. } | State::Uploading { .. }))
+                && !self.covers.values().any(|c| matches!(c, Cover::Reading(_)))
     }
 
     /// Collects finished readings, looks at how far the others are, and
@@ -269,6 +343,14 @@ impl ClipPictures {
             }
             *id != media
         });
+        self.covers.retain(|(id, _), cover| {
+            if *id == media
+                && let Cover::Reading(handle) = cover
+            {
+                handle.cancel();
+            }
+            *id != media
+        });
     }
 }
 
@@ -325,6 +407,42 @@ mod tests {
             assert!(Instant::now() < give_up, "read again, and failed");
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    #[test]
+    fn a_card_picture_is_read_on_its_own_and_kept() {
+        let fixture =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../media/tests/fixtures/game-3-audio.mkv");
+        let media = media::describe(&fixture).unwrap();
+        let index = media.info.video.as_ref().unwrap().index;
+        let jobs = JobSystem::new(jobs::Budgets::default().resolve(&jobs::Machine::detect()));
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("pictures");
+        let ctx = egui::Context::default();
+        let cover = |pictures: &mut ClipPictures, media: &MediaRef| {
+            let give_up = Instant::now() + Duration::from_secs(60);
+            loop {
+                if let Some(cover) = pictures.cover(&jobs, &ctx, media, index) {
+                    return cover;
+                }
+                assert!(Instant::now() < give_up, "ready in time");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        };
+        let mut first = ClipPictures::default();
+        first.keep_in(folder.clone(), &jobs);
+        let (_, aspect) = cover(&mut first, &media);
+        assert!(
+            !first.files.contains_key(&(media.id, index)),
+            "the strip is not read for it"
+        );
+        assert!(first.settled());
+        // The next session reads it back, the recording gone.
+        let mut gone = media.clone();
+        gone.path = dir.path().join("moved away.mkv");
+        let mut next = ClipPictures::default();
+        next.keep_in(folder, &jobs);
+        assert_eq!(cover(&mut next, &gone).1, aspect);
     }
 
     #[test]

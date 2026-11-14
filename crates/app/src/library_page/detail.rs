@@ -200,13 +200,20 @@ fn preview(
             ui.painter().rect_filled(rect, 6.0, theme.viewport);
             if let Some(stream) = super::picture_stream(media) {
                 match (readers.pictures)(media, stream) {
-                    (Some(pictures), _) if !pictures.textures.is_empty() => {
+                    super::PictureLook {
+                        strip: Some(pictures),
+                        ..
+                    } if !pictures.textures.is_empty() => {
                         let fitted = super::cards::fit(rect, pictures.aspect);
                         let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
                         ui.painter()
                             .image(pictures.textures[0], fitted, uv, egui::Color32::WHITE);
                     }
-                    (None, Some(state)) if state != ui_kit::timeline::LoadState::Failed => page.waiting += 1,
+                    super::PictureLook {
+                        strip: None,
+                        state: Some(state),
+                        ..
+                    } if state != ui_kit::timeline::LoadState::Failed => page.waiting += 1,
                     _ => {}
                 }
             }
