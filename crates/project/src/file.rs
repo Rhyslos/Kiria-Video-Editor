@@ -200,15 +200,6 @@ impl Summary {
     }
 }
 
-#[derive(Serialize)]
-struct FileOut<'a> {
-    format_version: u32,
-    summary: Option<Summary>,
-    /// The last autosave-journal entry already included in this file.
-    journal_seq: u64,
-    project: &'a Project,
-}
-
 #[derive(Deserialize)]
 struct FileIn {
     #[allow(dead_code)]
@@ -253,17 +244,18 @@ pub fn to_string(project: &Project) -> diag::Result<String> {
     to_string_with_journal_seq(project, 0)
 }
 
+/// The file is a header of a line per field (what the launcher reads
+/// without reading the rest: see [`read_head`]), then the project on one
+/// line, without the spaces and line breaks of indenting: a third of the
+/// size, quicker to write and read, and the same to every RON reader.
 fn to_string_with_journal_seq(project: &Project, journal_seq: u64) -> diag::Result<String> {
-    let file = FileOut {
-        format_version: FORMAT_VERSION,
-        summary: Summary::of(project),
-        journal_seq,
-        project,
-    };
-    let config = ron::ser::PrettyConfig::new().indentor("  ".to_owned());
-    ron::ser::to_string_pretty(&file, config).or_explain(|| {
-        AppError::new("The project can't be saved").why("It could not be turned into file text.")
-    })
+    let explain =
+        || AppError::new("The project can't be saved").why("It could not be turned into file text.");
+    let summary = ron::ser::to_string(&Summary::of(project)).or_explain(explain)?;
+    let body = ron::ser::to_string(project).or_explain(explain)?;
+    Ok(format!(
+        "(\n  format_version: {FORMAT_VERSION},\n  summary: {summary},\n  journal_seq: {journal_seq},\n{PROJECT_FIELD}{body},\n)\n"
+    ))
 }
 
 /// Opens a project file, migrating it from an older format if needed.
@@ -509,6 +501,44 @@ mod tests {
         assert_eq!(load(&path).unwrap(), project);
         let names: Vec<_> = fs::read_dir(tmp.path()).unwrap().collect();
         assert_eq!(names.len(), 1, "the temporary file is renamed away");
+    }
+
+    #[test]
+    fn the_project_is_written_on_one_line_and_files_written_indented_still_open() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("test.project");
+        let project = sample_project();
+        save_with_journal_seq(&project, &path, 7).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            text.lines().count(),
+            6,
+            "a line per header field, the project on one"
+        );
+        assert_eq!(load_with_journal_seq(&path).unwrap(), (project.clone(), 7));
+        assert_eq!(read_journal_seq(&path).unwrap(), 7);
+        // As files were written before: indented, the project over many lines.
+        #[derive(Serialize)]
+        struct Indented<'a> {
+            format_version: u32,
+            summary: Option<Summary>,
+            journal_seq: u64,
+            project: &'a Project,
+        }
+        let indented = ron::ser::to_string_pretty(
+            &Indented {
+                format_version: FORMAT_VERSION,
+                summary: Summary::of(&project),
+                journal_seq: 3,
+                project: &project,
+            },
+            ron::ser::PrettyConfig::new().indentor("  ".to_owned()),
+        )
+        .unwrap();
+        assert!(indented.len() > text.len(), "the one-line file is smaller");
+        fs::write(&path, indented).unwrap();
+        assert_eq!(load_with_journal_seq(&path).unwrap(), (project, 3));
+        assert_eq!(read_summary(&path).unwrap().unwrap().name, "Round trip");
     }
 
     #[test]

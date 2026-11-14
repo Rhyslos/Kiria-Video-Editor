@@ -97,3 +97,7 @@ The pictures inside video clips (and the Library's cards, which use the same str
 - **"Proxy needed?"** judged a recording once per media entry, so one placed thirty times was measured thirty times (0.1 to 1 s each at the start); now once per recording and stream a session.
 
 Looked at and left: the true peak's ring of samples as a flat double buffer (the same result to the bit, but no gain measured here); finding encoders side by side and the preview's four open decoders, which can only be measured on a machine with a real graphics card and layered timelines.
+
+### The project file (item 10, first part)
+
+The project was written indented, a field per line: 3.1 MB for the 2 516-clip timeline, a third of it spaces and line breaks. It is now written as a line per header field (the launcher still reads only those) and the project on one line: 1.0 MB, turned into text in 5 ms (13 before), read back in 80 ms (91). The format is the same to every RON reader, so it needs no new format version, and files written indented open as before. Left for a decision: leaving default values out of the file (a format version and a migration; several times smaller again), and checking only the tracks an edit touched.
