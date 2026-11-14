@@ -700,6 +700,7 @@ name = "cache"
 version = "0.1.0"
 dependencies = [
  "diag",
+ "image",
  "media",
  "project",
  "serde",
@@ -2194,6 +2195,8 @@ dependencies = [
  "num-traits",
  "png",
  "tiff",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]

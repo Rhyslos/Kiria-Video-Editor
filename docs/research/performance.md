@@ -84,3 +84,7 @@ Every save (an autosave each 30 s of editing) decoded the frame at the playhead 
 ### The import check (item 9)
 
 The check opened a file three times plus once per sound stream, each with a full probe, and decoded the first picture with a decoder of every thread. Now it opens the file once for describing it and checking its codecs, keeps what that probe found for the file's sound decoders (they read only the header, under a millisecond each, also when the file is played later), and decodes the first picture on one thread. A 1440p recording with three sound streams: 104 ms to 88 ms; a 1080p phone clip 28 ms to 21 ms. What is left is the fingerprint and the picture decoder's own open, which probes the file again: a picture decoder takes facts only probing finds (the pixel format, how far frames are reordered), so it is left to probe.
+
+### Clip pictures kept (item 12)
+
+The pictures inside video clips (and the Library's cards, which use the same strips) were read from every recording again each session, a picture at a time (6.6 ms each for a long recording's key frames here). Now each strip is kept in the cache folder's `pictures/` by the recording's fingerprint, the pictures as small JPEGs (a few hundred kilobytes a recording, 512 MB at most, used longest ago dropped first), and read back in milliseconds the next time any project shows that recording. A strip also opens its decoder once where it used to open it twice. Settings › Cache clears them with the waveforms.

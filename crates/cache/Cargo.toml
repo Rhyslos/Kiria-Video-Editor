@@ -9,6 +9,8 @@ publish = false
 
 [dependencies]
 diag = { path = "../diag" }
+# Clip pictures are kept on disk as JPEG (MIT or Apache-2.0).
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
 media = { path = "../media" }
 project = { path = "../project" }
 serde = { version = "1", features = ["derive"] }

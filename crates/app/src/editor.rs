@@ -433,9 +433,10 @@ impl Editor {
             hold_reading,
         );
         waveforms.trim(&jobs);
-        // Files' loudness readings too.
+        // Files' loudness readings and clip pictures too.
         if let Some(cache) = proxy_dir.parent() {
             library_page.keep_loudness_in(cache.join("loudness"));
+            pictures.keep_in(cache.join("pictures"), &jobs);
         }
         let proxies = crate::proxies::ProxyBuilds::new(
             proxy_dir,
