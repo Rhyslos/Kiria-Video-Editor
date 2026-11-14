@@ -200,7 +200,7 @@ pub struct AudioStream {
 
 /// Size plus a hash of the start and end of a file: quick to compute on huge
 /// recordings, and enough to recognise the same file in a new place.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Fingerprint {
     pub size: u64,
     pub sample_hash: String,
