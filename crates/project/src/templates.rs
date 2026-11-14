@@ -767,6 +767,7 @@ mod tests {
         let clip = |media, stream, start, source_in, len, link, speed| Clip {
             lines: Default::default(),
             effects: Default::default(),
+            mode: Default::default(),
             id: ClipId(0),
             media,
             stream,

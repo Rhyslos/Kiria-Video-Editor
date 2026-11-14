@@ -41,6 +41,10 @@ mod tests {
         );
         assert_eq!(ron::to_string(&ClipKind::default()).unwrap(), "File");
         assert_eq!(ron::to_string(&crate::effects::Effects::default()).unwrap(), "[]");
+        assert_eq!(
+            ron::to_string(&crate::model::BlendMode::default()).unwrap(),
+            "Normal"
+        );
         assert_eq!(ron::to_string(&FrameBlend::default()).unwrap(), "Off");
         assert_eq!(ron::to_string(&TrackSound::default()).unwrap(), TRACK_SOUND);
         assert_eq!(ron::to_string(&MasterSound::default()).unwrap(), MASTER_SOUND);

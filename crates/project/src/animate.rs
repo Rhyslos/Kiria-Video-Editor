@@ -309,6 +309,7 @@ mod tests {
             clip: Clip {
                 lines: Default::default(),
                 effects: Default::default(),
+                mode: Default::default(),
                 id: ClipId(0),
                 media,
                 stream: 0,

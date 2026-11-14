@@ -487,6 +487,12 @@ pub enum Command {
         clip: ClipId,
         effects: Box<crate::effects::Effects>,
     },
+    /// How a picture mixes with what is below it (format 23).
+    SetBlendMode {
+        sequence: SequenceId,
+        clip: ClipId,
+        mode: crate::model::BlendMode,
+    },
     /// The mix's compressor and true-peak limiter (format 16).
     SetMasterSound {
         sequence: SequenceId,
@@ -1033,6 +1039,9 @@ impl Command {
                 }
                 found.effects = (**effects).clone();
             }
+            Command::SetBlendMode { sequence, clip, mode } => {
+                picture_for_effects(sequence_mut(&mut p, *sequence)?, *clip)?.mode = *mode;
+            }
             Command::SetMasterSound { sequence, sound } => {
                 sound.check()?;
                 sequence_mut(&mut p, *sequence)?.master_sound = *sound;
@@ -1356,6 +1365,7 @@ fn place_media(
     let clip = |p: &mut Project, stream: u32| Clip {
         lines: Default::default(),
         effects: Default::default(),
+        mode: Default::default(),
         id: p.allocate_id(),
         media: id,
         stream,
@@ -1872,6 +1882,7 @@ mod tests {
         Clip {
             lines: Default::default(),
             effects: Default::default(),
+            mode: Default::default(),
             id: ClipId(0),
             media: f.media,
             stream: 0,
@@ -2604,6 +2615,26 @@ mod tests {
             sound: master,
         };
         assert!(over.apply(&f.p).is_err());
+    }
+
+    #[test]
+    fn a_pictures_blend_mode_is_set_and_sound_has_none() {
+        let f = fixture();
+        let p = place(&f, &f.p, f.a1, clip(&f, 0, 10, None)).unwrap();
+        let p = place(&f, &p, f.v1, clip(&f, 0, 10, None)).unwrap();
+        let seq = p.active().unwrap();
+        let (sound, picture) = (seq.audio_tracks[0].clips[0].id, seq.video_tracks[0].clips[0].id);
+        let set = |clip| Command::SetBlendMode {
+            sequence: f.seq,
+            clip,
+            mode: crate::BlendMode::Screen,
+        };
+        assert!(set(sound).apply(&p).is_err());
+        let p = set(picture).apply(&p).unwrap();
+        assert_eq!(
+            p.active().unwrap().video_tracks[0].clips[0].mode,
+            crate::BlendMode::Screen
+        );
     }
 
     #[test]

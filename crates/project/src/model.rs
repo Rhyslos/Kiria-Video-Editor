@@ -342,6 +342,47 @@ pub struct Clip {
     /// colour; none when missing. Set on pictures only.
     #[serde(default, skip_serializing_if = "crate::defaults::is_default")]
     pub effects: crate::effects::Effects,
+    /// How its picture mixes with what is below it (format 23); over it,
+    /// as usual, when missing.
+    #[serde(default, skip_serializing_if = "crate::defaults::is_default")]
+    pub mode: BlendMode,
+}
+
+/// How a picture mixes with what is below it. Every mode leaves what is
+/// below as it is where the picture is see-through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum BlendMode {
+    /// Over what is below, hiding it as far as it is opaque.
+    #[default]
+    Normal,
+    /// Its light added: brighter everywhere (glows, light leaks, fire).
+    Add,
+    /// Brighter, never past white (light overlays on dark footage).
+    Screen,
+    /// Darker, never lighter: white in it disappears (shadows, paper).
+    Multiply,
+    /// The lighter of the two, colour by colour.
+    Lighten,
+}
+
+impl BlendMode {
+    pub const ALL: [BlendMode; 5] = [
+        BlendMode::Normal,
+        BlendMode::Add,
+        BlendMode::Screen,
+        BlendMode::Multiply,
+        BlendMode::Lighten,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            BlendMode::Normal => "Normal",
+            BlendMode::Add => "Add",
+            BlendMode::Screen => "Screen",
+            BlendMode::Multiply => "Multiply",
+            BlendMode::Lighten => "Lighten",
+        }
+    }
 }
 
 /// What a clip shows and plays.
@@ -806,6 +847,7 @@ mod tests {
         seq.video_tracks[0].clips.push_back(Clip {
             lines: Default::default(),
             effects: Default::default(),
+            mode: Default::default(),
             id: clip_id,
             media,
             stream: 0,

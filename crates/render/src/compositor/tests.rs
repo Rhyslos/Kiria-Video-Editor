@@ -124,6 +124,7 @@ fn whole(pixels: Pixels<'_>, frame: (u32, u32)) -> Drawn<'_> {
         opacity: 1.0,
         colour: Colour::NEUTRAL,
         blend: None,
+        mode: Mode::Normal,
     }
 }
 
@@ -975,5 +976,60 @@ fn a_move_enlarges_about_its_point_and_shifts_inside_the_frame() {
     assert!(
         near(shifted.at(56, 32), [0, 0, 0], 1),
         "see-through past its edge"
+    );
+}
+
+#[test]
+fn blend_modes_mix_with_what_is_below_as_light() {
+    let Some(gpu) = gpu() else { return };
+    let size = (16, 16);
+    let grey = Planes::flat(&gpu, size, GREY);
+    // Middle grey, as light: what the reference display's curve makes of it.
+    let light = |v: f32| v.powf(2.4);
+    let shown = |l: f32| (l.min(1.0).powf(1.0 / 2.4) * 255.0).round() as u8;
+    let g = light((f32::from(GREY[0]) - 16.0) / 219.0);
+    for (mode, want) in [
+        (Mode::Normal, g),
+        (Mode::Add, g + g),
+        (Mode::Screen, g + g - g * g),
+        (Mode::Multiply, g * g),
+        (Mode::Lighten, g),
+    ] {
+        let top = Drawn {
+            mode,
+            ..whole(grey.two(), size)
+        };
+        let out = compose(
+            &gpu,
+            Working::Linear,
+            EIGHT,
+            size,
+            &[whole(grey.two(), size), top],
+        );
+        let want = shown(want);
+        assert!(
+            near(out.at(8, 8), [want; 3], 2),
+            "{mode:?}: {:?} for {want}",
+            out.at(8, 8)
+        );
+    }
+    // Half see-through: half way to the mix.
+    let top = Drawn {
+        mode: Mode::Multiply,
+        opacity: 0.5,
+        ..whole(grey.two(), size)
+    };
+    let out = compose(
+        &gpu,
+        Working::Linear,
+        EIGHT,
+        size,
+        &[whole(grey.two(), size), top],
+    );
+    let want = shown(g * (0.5 * g + 0.5));
+    assert!(
+        near(out.at(8, 8), [want; 3], 2),
+        "half multiply: {:?} for {want}",
+        out.at(8, 8)
     );
 }

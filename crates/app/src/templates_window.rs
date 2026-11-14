@@ -517,6 +517,7 @@ mod tests {
         let clip = |start: i64| Clip {
             lines: Default::default(),
             effects: Default::default(),
+            mode: Default::default(),
             id: ClipId(0),
             media,
             stream: 0,

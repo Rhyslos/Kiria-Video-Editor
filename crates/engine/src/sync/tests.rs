@@ -285,6 +285,7 @@ fn clip(start: f64, source_in: f64, duration: f64) -> Clip {
         kind: Default::default(),
         lines: Default::default(),
         effects: Default::default(),
+        mode: Default::default(),
     }
 }
 

@@ -514,7 +514,7 @@ Phase 9 fills the Effects side of the Edit page's drawer and ships background re
 - [x] Stylise: vignette, film grain, sharpen, glow. (Done: sizes are shares of the picture's height, so a smaller preview looks like the export; grain's pattern follows the moment of the file; glow blurs in two passes, the blur the Blur effect will use.)
 - [x] Blur and pixelate over the whole picture or a box (the box placed and keyframed by hand, not tracked), for censoring names and chat. (Done: the box is set by its left, top, width and height in the inspector; dragging it on the picture and keyframing it come with keyframes on effect settings.)
 - [x] Motion: zoom to a point, shake, smooth pan (keyframed like the look). (Done, without keyframes yet: each moves the picture inside its own frame over the clip's length, easing in and out; the shake is smooth waves, the same at the same moment every time.)
-- [ ] Overlays: image and video on top with blend modes.
+- [x] Overlays: image and video on top with blend modes. (Done: a picture's Blend in Transform, under Opacity: Normal, Add, Screen, Multiply, Lighten, the graphics card's own blending of premultiplied pictures, in linear light; any mode but Normal lets what is below show, so it is always drawn.)
 
 **Gate 9**
 
