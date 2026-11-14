@@ -6,7 +6,7 @@
 //! once) and becomes one undo step when let go (`SetEffects`); a click on a
 //! switch, an arrow, a remove button or Add is one step at once.
 
-use project::effects::Vignette;
+use project::effects::{Glow, Grain, Sharpen, Vignette};
 use project::look::ONE;
 use project::{ClipId, Command, EffectKind, Effects, SequenceId};
 use ui_kit::Theme;
@@ -133,35 +133,51 @@ pub fn section(
 
 /// The settings of one effect, as sliders; returns them as changed.
 fn settings(ui: &mut egui::Ui, theme: &Theme, kind: EffectKind) -> (EffectKind, Touched) {
-    match kind {
+    let mut touched = Touched::default();
+    let mut slider = |ui: &mut egui::Ui, label: &str, value: i32, usual: i32| {
+        let mut shown = percent(value);
+        touched = touched.and(inspector::slider(
+            ui,
+            theme,
+            label,
+            &mut shown,
+            PERCENT.usual_at(usual),
+        ));
+        millionths(shown)
+    };
+    let changed = match kind {
         EffectKind::Vignette(v) => {
-            let mut amount = percent(v.amount);
-            let mut size = percent(v.size);
-            let mut softness = percent(v.softness);
             let usual = Vignette::USUAL;
-            let touched = inspector::slider(ui, theme, "Amount", &mut amount, PERCENT.usual_at(usual.amount))
-                .and(inspector::slider(
-                    ui,
-                    theme,
-                    "Size",
-                    &mut size,
-                    PERCENT.usual_at(usual.size),
-                ))
-                .and(inspector::slider(
-                    ui,
-                    theme,
-                    "Softness",
-                    &mut softness,
-                    PERCENT.usual_at(usual.softness),
-                ));
-            let changed = Vignette {
-                amount: millionths(amount),
-                size: millionths(size),
-                softness: millionths(softness),
-            };
-            (EffectKind::Vignette(changed), touched)
+            EffectKind::Vignette(Vignette {
+                amount: slider(ui, "Amount", v.amount, usual.amount),
+                size: slider(ui, "Size", v.size, usual.size),
+                softness: slider(ui, "Softness", v.softness, usual.softness),
+            })
         }
-    }
+        EffectKind::Grain(g) => {
+            let usual = Grain::USUAL;
+            EffectKind::Grain(Grain {
+                amount: slider(ui, "Amount", g.amount, usual.amount),
+                size: slider(ui, "Size", g.size, usual.size),
+            })
+        }
+        EffectKind::Sharpen(s) => {
+            let usual = Sharpen::USUAL;
+            EffectKind::Sharpen(Sharpen {
+                amount: slider(ui, "Amount", s.amount, usual.amount),
+                radius: slider(ui, "Size", s.radius, usual.radius),
+            })
+        }
+        EffectKind::Glow(g) => {
+            let usual = Glow::USUAL;
+            EffectKind::Glow(Glow {
+                amount: slider(ui, "Amount", g.amount, usual.amount),
+                threshold: slider(ui, "Threshold", g.threshold, usual.threshold),
+                radius: slider(ui, "Spread", g.radius, usual.radius),
+            })
+        }
+    };
+    (changed, touched)
 }
 
 trait UsualAt {
