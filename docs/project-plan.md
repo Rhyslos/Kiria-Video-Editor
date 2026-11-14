@@ -53,6 +53,7 @@ The editor starts out aimed at game footage, so MKV and MP4 recordings get the m
 - **Global search** and **explained errors** throughout.
 - **Resource controls** for CPU, GPU, RAM and disk cache.
 - **Background removal** that holds up on hair, motion and difficult edges.
+- **Effects** applied and tuned on the Edit page: each clip's effects are an ordered list.
 
 ### Formats
 
@@ -68,7 +69,7 @@ Still images (PNG, JPEG) come in v1 as well, since titles and overlays need them
 
 ### Not in version 1
 
-Multi-user collaboration, cloud sync, motion graphics beyond basic transforms and text, multicam, HDR grading, plugin API, mobile.
+Multi-user collaboration, cloud sync, motion graphics beyond basic transforms and text, multicam, HDR grading, plugin API, mobile. The **Composition page** (node-based compositing and logic, below) comes after version 1.
 
 ## Architecture
 
@@ -150,7 +151,7 @@ Note: no OS lets an app reserve an exact GPU percentage. The GPU setting is a wo
 
 ## Pages and UX
 
-The app has five pages (Library, Edit, Color, Audio, Export) switched from tabs in the top bar, plus a launcher before any project opens. Pages share one project state, so switching is instant.
+The app has five pages (Library, Edit, Color, Audio, Export) switched from tabs in the top bar, plus a launcher before any project opens. Pages share one project state, so switching is instant. A sixth, **Composition**, comes after version 1, between Edit and Color.
 
 ### Launcher
 
@@ -178,7 +179,7 @@ Media is organised by **type** (Video, Audio, Image, Effect) and by any number o
 The agreed layout is in the [mockups](https://claude.ai/artifact/BoWqShTxNag7Q1yD8BoKLr) (the Editor row).
 
 - **Top bar**: project name on the left; page tabs centred over the viewport, in line with the play button, and in the same spot on every page; on the right a Search button that opens the pop-up palette (Ctrl K), the live CPU / GPU / RAM readout (opens resource settings), and a settings cog.
-- **Media pool**: a thin tab on the left edge, beside the viewer (the timeline under it runs the window's whole width), slides out a compact copy of the library over the page (nothing underneath moves), with its filters, so clips can be dragged straight onto the timeline. The same drawer has a Media / Effects switch: on Effects it becomes the effects library, a full-height panel that slides over the picture (nothing underneath moves). A vertical list of groups sits on the left (Favourites, Recently used, Video transitions, Audio transitions, Titles, Motion, Keying, Stabilise, Blur and censor, Stylise, Overlays, Audio effects); picking one shows its effects on the right as larger rows with a preview thumbnail, grouped under collapsible headings. Effects are dragged onto a clip or a cut, and hovering one previews it on the selected clip. A setting switches the rows to a grid of bigger tiles. Effect settings appear in the right-hand panel and are tuned on the picture wherever possible (drag a box to aim a zoom, drag a ramp to set timing). There is no separate Effects page.
+- **Media pool**: a thin tab on the left edge, beside the viewer (the timeline under it runs the window's whole width), slides out a compact copy of the library over the page (nothing underneath moves), with its filters, so clips can be dragged straight onto the timeline. The same drawer has a Media / Effects switch: on Effects it becomes the effects library, a full-height panel that slides over the picture (nothing underneath moves). A vertical list of groups sits on the left (Favourites, Recently used, Video transitions, Audio transitions, Titles, Motion, Keying, Stabilise, Blur and censor, Stylise, Overlays, Audio effects); picking one shows its effects on the right as larger rows with a preview thumbnail, grouped under collapsible headings. Effects are dragged onto a clip or a cut, and hovering one previews it on the selected clip. A setting switches the rows to a grid of bigger tiles. Effect settings appear in the right-hand panel and are tuned on the picture wherever possible (drag a box to aim a zoom, drag a ramp to set timing). In version 1 this is where effects live; the Composition page, later, shows the same effects as a node graph for deeper work, and the Edit page keeps applying and tuning them as here.
 - **Viewport** in the centre. The row under the picture holds a **Display** menu (single or split view, the viewer in its own window, full screen, timeline Full or Rough cut, compact tracks, the divider between video and audio tracks, effects quality, proxies, background, overlays such as timecode, cache status, safe areas and clipped whites) beside an always-visible **Preview resolution** dropdown and the **zoom** (Fit, 50 %, 100 %, 200 %, in and out; Ctrl+wheel over the picture zooms at the pointer and a middle-button drag moves around).
 - **Split view** shows **Source** (raw clip, no effects) next to **Program** (final result with grades, keying and effects). It is off by default and switched on from the Display menu.
 - **Transport**: a low, squircle-shaped bar floating at the bottom of the viewport. Play/pause sits at the exact horizontal centre of the viewport. Left of it: In, Out, go to the start, frame back. Right of it: frame forward, go to the end, stop, loop. (Play reverse and play forward were planned for the two go-to buttons' places; the owner chose the go-to buttons, November 2026.) Space plays and pauses (pausing goes back to where playback started); Ctrl+Space stops and leaves the playhead where it is.
@@ -201,6 +202,15 @@ Two themes ship in version 1, switched in Settings. The interface itself stays n
 - The accent marks the playhead, selection, active tool and primary button only.
 - Green always means cached or ready; amber means a warning; red means a blocking error. The one exception is the red edit needle on the timeline.
 - Inter for interface text, a monospace face for every timecode and number readout.
+
+### Composition (after version 1)
+
+The page for advanced effects: node-based compositing and logic. It shows a clip's effects (or an adjustment layer's, or a nested timeline's) as a graph of nodes instead of a list, so effects can branch, be masked, merge several inputs and be driven by logic.
+
+- **Same effects, another view.** A clip's list of effects from version 1 is a graph in a straight line: when this page comes, a format migration turns each list into that graph, and both pages read and change the one model from then on, so they never disagree. A graph that is still a straight line shows on the Edit page as a list, as before; one that branches shows there as one entry, "Composition", that opens this page.
+- **Layout** like the other deep-work pages: a large viewer top left that can show the picture at any node, the selected node's settings top right, the node graph across the bottom, the timeline a click away.
+- **Nodes:** inputs (the clip, another track or timeline, a solid colour, text, an image), every effect from the effects library, merge with blend modes, masks (shapes, painted, tracked) and keys, transforms, and the clip's output. Later, logic: numbers, time, maths, switches and expressions in a small built-in expression language (no scripting runtime), and node groups saved as reusable presets that belong to the person, like templates.
+- **Fast and light:** each node's result is cached by what goes into it, so a change works out only the nodes after it; preview can run at a lower resolution; a clip without a graph costs nothing. Preview and export run the same evaluator (golden frames).
 
 ### Color
 
@@ -314,6 +324,10 @@ Errors appear inline next to the thing they affect, never as a blocking pop-up u
 ## Effects
 
 Version 1 ships three effect families and does each one properly: color grading, background removal, and audio clarity.
+
+### Effects on a clip
+
+In version 1 a clip's picture effects are an ordered list, applied one after another on the GPU, the same in preview and export. Nothing is built ahead for the Composition page: no graph is stored or evaluated until that page comes, and a format migration then turns each list into a graph in a straight line. The only thing version 1 does with the page in mind is what a good list needs anyway: each effect has an id, a kind and its settings (with keyframes in the clip's file time), so it can become a node unchanged.
 
 ### Color grading
 

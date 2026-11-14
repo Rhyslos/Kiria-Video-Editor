@@ -4,7 +4,7 @@
 
 ## How to use this plan
 
-Version 1.0 is built in ten phases plus a release phase, in the order they appear here (after phase 6: Audio, then Effects, then Color, then the release, as the owner decided in November 2026; the phases keep their numbers); each phase ends at a gate that must pass before the next one starts. The [project plan](project-plan.md) says *what* the app is; this doc says *how* and *in what order* to build it. The agreed look is in the [mockups](https://claude.ai/artifact/BoWqShTxNag7Q1yD8BoKLr).
+Version 1.0 is built in ten phases plus a release phase, in the order they appear here (after phase 6: Audio, then Effects, then Color, then the release, as the owner decided in November 2026; the Composition page, phase 11, comes after version 1; the phases keep their numbers); each phase ends at a gate that must pass before the next one starts. The [project plan](project-plan.md) says *what* the app is; this doc says *how* and *in what order* to build it. The agreed look is in the [mockups](https://claude.ai/artifact/BoWqShTxNag7Q1yD8BoKLr).
 
 **Resuming work (people or Claude):**
 
@@ -20,7 +20,7 @@ Version 1.0 is built in ten phases plus a release phase, in the order they appea
 flowchart LR
     P0[0 Foundations] --> P1[1 Installer] --> P2[2 Launcher] --> P3[3 Safe updates]
     P3 --> P4[4 Edit page] --> P5[5 Library] --> P6[6 Export]
-    P6 --> P8[8 Audio] --> P9[9 Effects] --> P7[7 Color] --> P10[10 Release 1.0]
+    P6 --> P8[8 Audio] --> P9[9 Effects] --> P7[7 Color] --> P10[10 Release 1.0] --> P11[11 Composition]
 ```
 
 Every arrow is a gate: the phase before it is tested on both machines before the next one starts.
@@ -37,9 +37,10 @@ The platform (project file, errors, installs, safe updates) comes before any pag
 | 5 | Library | Import, index, tabs, lists, labels, prune | 500 clips import, filter and search instantly | Built; gate measured on the cloud machine (Library page passed, Edit page borderline), waiting for the owner's PC |
 | 6 | Export | Encode pipeline, presets, checks, queue | Exports match the timeline frame for frame | Built; gate measured on the cloud machine, waiting for the owner's PC |
 | 8 | Audio | Mixer, effects, loudness, clarity check | A noisy three-track recording mixes to −14 LUFS cleanly | Built; gate waiting for the owner's PC |
-| 9 | Effects and extras | Effects drawer, background removal, extra features | Hair edges hold, no flicker; extras pass their tests | Not started |
+| 9 | Effects and extras | Effects drawer and first effects on the Edit page, background removal, extra features | Hair edges hold, no flicker; extras pass their tests | Not started |
 | 7 | Color | Float pipeline, wheels, curves, scopes, auto white balance | Preview and export colours match; grades copy between clips | Not started |
 | 10 | Release 1.0 | Hardening, docs, licence, first public release | Release checklist all ticked | Not started |
+| 11 | Composition | Node-based compositing and logic (each clip's effect list becomes a graph) | A layered facecam scene built as nodes plays in real time and exports the same | Not started |
 
 ## Ground rules and how each task is done
 
@@ -492,14 +493,20 @@ A voice-over edit (screen recording, a separate mic with hiss, music) found thes
 
 ## Phase 9 · Effects library and background removal
 
-Phase 9 fills the Effects side of the Edit page's drawer and ships background removal that holds up on hair and motion; nothing here adds a page.
+Phase 9 fills the Effects side of the Edit page's drawer and ships background removal that holds up on hair and motion; nothing here adds a page. Effects version 1 is the Edit page only, so effects are usable quickly; the Composition page (phase 11) comes after version 1, and nothing is built ahead for it unless something here truly needs it (decided by the owner in November 2026).
+
+**9.0 Effects on a clip** (`render` and `project`)
+
+- [ ] A clip's effects as an ordered list in the project file (a format version, a migration and a sample): each effect an id, a kind and its settings, with keyframes in the clip's file time like look keyframes; a clip without effects stores nothing. Phase 11's migration turns each list into a graph in a straight line.
+- [ ] Applied one after another on the GPU in `render`, the same code for preview and export; golden-frame tests.
+- [ ] Commands to add, remove, reorder, switch off and change effects (undoable, one step per drag).
 
 **9.1 Effects drawer**
 
 - [ ] Media / Effects switch; group list left (Favourites, Recently used, Video transitions, Audio transitions, Titles, Motion, Keying, Stabilise, Blur and censor, Stylise, Overlays, Audio effects).
 - [ ] Larger rows with a preview thumbnail, grouped under collapsible headings; a setting switches to a grid of tiles.
 - [ ] Drag onto a clip or a cut; hovering an effect previews it on the selected clip.
-- [ ] Settings appear in the inspector's Effects section and are tuned on the picture wherever possible.
+- [ ] Settings appear in the inspector's Effects section (the clip's graph as a list: order by dragging, switch off, remove) and are tuned on the picture wherever possible.
 
 **9.2 First effects** (each a small GPU shader or DSP module with a test)
 
@@ -580,6 +587,7 @@ Phase 10 adds no big features: it polishes, settles the two open decisions, and 
 - [ ] Changelog from 0.1 to 1.0; tag `v1.0.0` on the Stable channel.
 - [ ] Manual smoke test on both machines: install, launcher, import, cut, grade, key, mix, export, update to a 1.0.1 test build.
 
+
 ## Phase 10b · Highlight finder (last, may be dropped)
 
 Moved here by the owner (November 2026): it may turn out not to be needed, so it comes after everything else and may be left out. The research is done: `docs/research/highlights.md` and `spikes/highlights/` (loudness on every audio stream plus cuts from key frames found 92 % of planted moments with no false positives on synthetic clips; the owner's recordings with picked moments settle the choice).
@@ -601,3 +609,28 @@ Ideas that are agreed as worth doing but deliberately not in 1.0. Anything new t
 - Multicam editing.
 - Plugin API.
 - Working on the same project together (sync, shared libraries).
+
+## Phase 11 · Composition (after version 1)
+
+Phase 11 adds the Composition page: advanced effects as node-based compositing and logic. See the project plan's Composition section.
+
+**11.0 Effects graph** (research workflow)
+
+- [ ] Research note (`docs/research/effects-graph.md`) and two or three evaluators prototyped in `spikes/` (a chain of whole-picture passes; results kept per node and reused; only the part of the picture in view), measured on the same clips with 1, 5 and 20 nodes at 1440p.
+- [ ] The graph in the project file: a format version whose migration turns each clip's effect list into a graph in a straight line, and a sample. The evaluator shared by preview and export, each node's result cached by a hash of what goes in.
+
+**11.1 Page**
+
+- [ ] The Composition tab between Edit and Color; a large viewer that shows the picture at any node, the selected node's settings, the node graph across the bottom (pan, zoom, box-select, links dragged between ports), the timeline a click away; the shared top bar, transport and shortcut table.
+- [ ] The Edit page's effect list and the node graph are the same model; a branching graph shows on the Edit page as one "Composition" entry that opens the page.
+
+**11.2 Nodes**
+
+- [ ] Inputs: the clip, another track or timeline, a solid colour, text, an image. Merge with blend modes, transform, masks (shapes, painted, tracked), keys; every effect from the effects library as a node.
+- [ ] Logic: numbers, time, maths, switches, and expressions in a small built-in expression language (no scripting runtime).
+- [ ] Node groups saved as reusable presets in the app's data folder (like templates: their own file and format version, nothing of them in a project file until used).
+
+**Gate 11**
+
+- [ ] A layered facecam scene (game, facecam keyed and masked, a title driven by an expression) built as nodes plays in real time at 1440p on the owner's PC and exports frame for frame the same (golden frames).
+- [ ] A clip without a graph renders as fast as before the page existed.
