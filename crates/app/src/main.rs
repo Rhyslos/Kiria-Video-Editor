@@ -14,6 +14,7 @@ mod close_prompt;
 mod device_decoding;
 mod display;
 mod editor;
+mod effects_drawer;
 mod export_page;
 mod fake_pointer;
 mod frame_grab;
@@ -158,6 +159,7 @@ fn main() -> ExitCode {
         library_select: options.library_select.clone(),
         full_screen: options.full_screen,
         select_first_clip: options.select_first_clip,
+        effects_drawer: options.effects_drawer,
         sync_by_sound: options.sync_by_sound,
         actions: options.actions.clone(),
         then_actions: options.then_actions.clone(),

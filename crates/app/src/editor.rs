@@ -335,6 +335,7 @@ impl Editor {
         let mut audio_page = crate::audio_page::AudioPage::default();
         audio_page.tool = audio_start.tool.unwrap_or_default();
         let select_first_clip = project.as_ref().is_some_and(|p| p.select_first_clip);
+        let effects_drawer = project.as_ref().is_some_and(|p| p.effects_drawer);
         let sync_when_ready = project.as_ref().is_some_and(|p| p.sync_by_sound);
         let hold_reading = project.as_ref().and_then(|p| p.hold_reading);
         let screenshot_wait = project
@@ -538,7 +539,13 @@ impl Editor {
                 let ctx = cc.egui_ctx.clone();
                 library::Live::start(move || ctx.request_repaint())
             },
-            drawer: crate::media_drawer::MediaDrawer::new(drawer_open, find),
+            drawer: {
+                let mut drawer = crate::media_drawer::MediaDrawer::new(drawer_open || effects_drawer, find);
+                if effects_drawer {
+                    drawer.tab = ui_kit::drawer::DrawerTab::Effects;
+                }
+                drawer
+            },
             library_page,
             library_tab,
             shown_page: start_page,
@@ -1359,6 +1366,11 @@ impl Editor {
                     }
                 } else {
                     self.lay_media(media, at, track);
+                }
+            }
+            E::DropEffect { effect, clip } => {
+                if let Some(kind) = crate::effects_drawer::by_index(effect) {
+                    self.add_effect(kind, project::ClipId(clip));
                 }
             }
             E::OpenNested { clip } => self.open_nested(project::ClipId(clip)),
@@ -2256,7 +2268,7 @@ impl Editor {
         let height = ui.available_height() - 28.0 - FULL_SCREEN_SCRUB;
         // Full screen is for watching: no handles on the picture. A change
         // still being made when it was entered stays on show.
-        let being_changed = self.inspector.shown(p);
+        let being_changed = self.effect_previewed(p, self.inspector.shown(p));
         let command = self.viewer.ui(
             ui,
             &self.theme,
@@ -2276,6 +2288,42 @@ impl Editor {
         if let Some(seconds) = seek {
             self.seek(seconds);
         }
+    }
+
+    /// Puts `kind` on `clip` (one undo step) and keeps it among the effects
+    /// used last; says why not when the clip can't have it.
+    fn add_effect(&mut self, kind: project::EffectKind, clip: project::ClipId) {
+        let result = self.with_document(|d| {
+            let sequence = d.project().active_sequence;
+            d.apply(Command::AddEffect { sequence, clip, kind })
+        });
+        match result {
+            Ok(()) => {
+                self.settings.recent_effects =
+                    crate::effects_drawer::used(&self.settings.recent_effects, &kind);
+                self.selected = vec![clip];
+                self.status = format!("{} added: tune it in the inspector's Effects", kind.name());
+            }
+            Err(err) => self.errors.push(&err),
+        }
+    }
+
+    /// `being_changed` (or the project as it is) with the effect the
+    /// pointer rests on in the drawer added to the selected picture, to be
+    /// seen before it is added. No undo step.
+    fn effect_previewed(
+        &self,
+        p: &project::Project,
+        being_changed: Option<project::Project>,
+    ) -> Option<project::Project> {
+        let kind = self.drawer.effects.previewing?;
+        let clip = crate::inspector::effects_target(p, &self.selected)?;
+        let base = being_changed.as_ref().unwrap_or(p);
+        let sequence = base.active_sequence;
+        Command::AddEffect { sequence, clip, kind }
+            .apply(base)
+            .ok()
+            .or(being_changed)
     }
 
     /// The whole timeline as a scrub bar: the playhead, the region, a tick
@@ -2354,7 +2402,8 @@ impl Editor {
             self.drawer.open = false;
         }
         let rect = ui_kit::drawer::drawer_rect(page);
-        let dragging_out = egui::DragAndDrop::has_payload_of_type::<ui_kit::DraggedMedia>(&ctx);
+        let dragging_out = egui::DragAndDrop::has_payload_of_type::<ui_kit::DraggedMedia>(&ctx)
+            || egui::DragAndDrop::has_payload_of_type::<ui_kit::DraggedEffect>(&ctx);
         let keep = ui_kit::drawer::keep_while_dragging(rect, tab);
         let named = self.document.as_ref().and_then(|d| {
             self.drawer
@@ -2376,6 +2425,11 @@ impl Editor {
             files: &new_files,
             checking: &|path| importer.is_reading(path),
         };
+        let picture_selected = self
+            .document
+            .as_ref()
+            .is_some_and(|d| crate::inspector::effects_target(d.project(), &self.selected).is_some());
+        let recent_effects = &self.settings.recent_effects;
         let (drawer, theme, missing) = (&mut self.drawer, &self.theme, &self.relink.missing);
         let (proxies, global_labels) = (&self.proxies, &self.global_labels.labels);
         let proxy = crate::media_drawer::ProxyInfo {
@@ -2392,6 +2446,8 @@ impl Editor {
                     proxy,
                     global: global_labels,
                     new_files,
+                    picture_selected,
+                    recent_effects,
                 };
                 drawer.ui(ui, theme, document.project(), &about)
             })
@@ -2401,6 +2457,20 @@ impl Editor {
         use crate::media_drawer::Picked;
         let picked = match picked {
             Some(Picked::Place(media, placement)) => Some((media, placement)),
+            Some(Picked::AddEffect(kind)) => {
+                let target = self
+                    .document
+                    .as_ref()
+                    .and_then(|d| crate::inspector::effects_target(d.project(), &self.selected));
+                match target {
+                    Some(clip) => self.add_effect(kind, clip),
+                    None => {
+                        self.status =
+                            "Select a picture to add the effect to, or drag it onto a clip".to_owned()
+                    }
+                }
+                None
+            }
             Some(Picked::BuildProxy(media)) => {
                 self.proxies.build_now(media);
                 None
@@ -2978,7 +3048,7 @@ impl Editor {
             // A value being dragged in the inspector, the picture being
             // dragged in the viewer, or keyframe marks being dragged on the
             // timeline, are seen at once.
-            let being_changed = self.inspector.shown(p);
+            let being_changed = self.effect_previewed(p, self.inspector.shown(p));
             let mut being_changed =
                 timeline_panel::keyframes_moved(&self.timeline, being_changed.as_ref().unwrap_or(p))
                     .or(being_changed);
@@ -3964,6 +4034,8 @@ pub struct ProjectToOpen {
     /// Select the first clip of the top video track that has one, once
     /// imports are done.
     pub select_first_clip: bool,
+    /// Open the media drawer on its Effects side.
+    pub effects_drawer: bool,
     /// Select every clip once imports are done, and run Sync by sound.
     pub sync_by_sound: bool,
     /// Commands to run once open, by name.
