@@ -527,7 +527,7 @@ Phase 9 fills the Effects side of the Edit page's drawer and ships background re
 **9.3 Later effects** (after the cheap ones; the owner picks when)
 
 - [x] Transitions: cross dissolve, dip to black/white, wipe, push, zoom; audio crossfade. (Done: cross dissolve, dip to black, wipe, push and zoom through, kept on the clip coming in (`Clip::transition`, format 25) and played centred on its cut; nothing is trimmed or overlapped, each clip is read past its edge where its file goes on and holds its edge frame where it doesn't. Dragged from the drawer onto a cut or added to the selected clip; kind and length in the inspector's Transition in section. Not yet: dip to white, audio crossfade (a fade on each side does it today), transitions on nested timelines and adjustment layers.)
-- [ ] Titles: lower third, centred title, end card; text tool from phase 4.
+- [x] Titles: lower third, centred title, end card; text tool from phase 4. (Done: titles are clips of their own (`ClipKind::Title`, format 26) with their words and look in `Clip::title`, dragged from the drawer's Titles group onto the timeline or added at the playhead; words, layout, size, colour and band in the inspector's Title section, shown as they are typed. Drawn on the processor into only the part of the frame they cover, in the interface's own font made a little heavier, and composited like any picture, so place, opacity, colour, effects and keyframes all apply. Not yet: the text tool (typing on the picture), other fonts, outlines and shadows, words that animate in.)
 - [ ] Stabilise (tracking-based), and the censor box following what it covers (tracked).
 
 **9.4 Background removal** (research workflow, `ml`; later, with 9.3)

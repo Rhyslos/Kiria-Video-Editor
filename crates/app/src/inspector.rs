@@ -30,6 +30,7 @@ use ui_kit::keyframe::{KeyClicks, KeyState, Keys};
 
 mod effects;
 mod speed;
+mod title;
 mod transition;
 
 /// A look being set and not yet an undo step: whose, at which moment of
@@ -61,6 +62,8 @@ pub struct Inspector {
     pending_sound: Option<Vec<(ClipId, Sound)>>,
     /// A picture's effects with a setting being dragged, not yet an undo step.
     pending_effects: Option<(ClipId, project::Effects)>,
+    /// A title's words being typed or size dragged, not yet an undo step.
+    pending_title: Option<(ClipId, project::Title)>,
     /// A sound clip's volume (thousandths of a decibel) being dragged on
     /// the timeline, by its level line: shown as it moves. The timeline
     /// makes the undo step when it is let go, not the panel.
@@ -120,6 +123,17 @@ impl Inspector {
                 sequence,
                 clip: *clip,
                 effects: Box::new(effects.clone()),
+            }
+            .apply(looked.as_ref().unwrap_or(project))
+            .ok()
+            .or(looked),
+            None => looked,
+        };
+        let looked = match &self.pending_title {
+            Some((clip, title)) => Command::SetTitle {
+                sequence,
+                clip: *clip,
+                title: Box::new(title.clone()),
             }
             .apply(looked.as_ref().unwrap_or(project))
             .ok()
@@ -271,6 +285,7 @@ impl Inspector {
         // What it is.
         let name = match clip.kind {
             project::ClipKind::Adjustment => project::timelines::ADJUSTMENT_NAME.to_owned(),
+            project::ClipKind::Title => project.clip_name(clip),
             project::ClipKind::Timeline(id) => project.sequence(id).map_or_else(
                 || "A missing timeline".to_owned(),
                 |s| format!("{} (nested timeline)", s.name),
@@ -325,6 +340,24 @@ impl Inspector {
             );
         }
         ui.add_space(6.0);
+
+        // Words typed into another title, left by selecting this clip.
+        if let Some((id, title)) = self.pending_title.take_if(|(id, _)| *id != clip.id) {
+            commands.push(Command::SetTitle {
+                sequence,
+                clip: id,
+                title: Box::new(title),
+            });
+        }
+        if let Some(stored) = clip.title.as_deref().filter(|_| clip.is_title()) {
+            let shown = match &self.pending_title {
+                Some((id, title)) if *id == clip.id => title.clone(),
+                _ => stored.clone(),
+            };
+            let asked = title::section(ui, theme, sequence, clip.id, stored, &shown);
+            self.pending_title = asked.changing.map(|title| (clip.id, title));
+            commands.extend(asked.command);
+        }
 
         let before = match self.pending {
             Some(pending) if pending.clip == clip.id => pending.look,
@@ -403,7 +436,7 @@ impl Inspector {
             commands.extend(transition::section(ui, theme, sequence, track, clip));
         }
 
-        let speed = match adjustment {
+        let speed = match adjustment || clip.is_title() {
             // It plays nothing, so it has no speed.
             true => speed::Asked::default(),
             false => speed::section(
@@ -1017,7 +1050,8 @@ fn picture_size(project: &Project, clip: &project::Clip) -> Option<(u32, u32)> {
         project::ClipKind::Timeline(id) => project
             .sequence(id)
             .map(|s| (s.settings.width, s.settings.height)),
-        project::ClipKind::Adjustment => None,
+        // A title's picture is the frame.
+        project::ClipKind::Adjustment | project::ClipKind::Title => None,
     }
 }
 

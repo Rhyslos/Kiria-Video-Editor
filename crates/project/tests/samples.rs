@@ -87,6 +87,7 @@ fn rich_project() -> Project {
         effects: Default::default(),
         mode: Default::default(),
         transition: None,
+        title: None,
         id,
         media: video,
         stream,
@@ -277,6 +278,7 @@ fn rich_project() -> Project {
         ..clip(second_shot, 0)
     });
     let (nested_id, nested_clip, adjustment) = (short.id, p.allocate_id(), p.allocate_id());
+    let lower_third = p.allocate_id();
     let (mut v2, mut v3) = (
         p.new_track(project::TrackKind::Video, "V2"),
         p.new_track(project::TrackKind::Video, "V3"),
@@ -293,6 +295,21 @@ fn rich_project() -> Project {
         },
         kind: project::ClipKind::Timeline(nested_id),
         ..clip(nested_clip, 0)
+    });
+    // A yellow lower third from 40 s for 4 s, no band (format 26).
+    let mut words = project::Title::new(project::TitleStyle::LowerThird);
+    words.text = "Sam\nCasting the final".into();
+    words.colour = [255, 220, 0];
+    words.backing = false;
+    v2.clips.push_back(Clip {
+        media: project::MediaId::NONE,
+        start: Time::seconds(40),
+        source_in: Time::ZERO,
+        duration: Time::seconds(4),
+        link: None,
+        kind: project::ClipKind::Title,
+        title: Some(Box::new(words)),
+        ..clip(lower_third, 0)
     });
     v3.clips.push_back(Clip {
         media: project::MediaId::NONE,
@@ -571,6 +588,30 @@ fn version_24_sample_opens_with_plain_cuts() {
                 .all(|t| t.clips.iter().all(|c| c.transition.is_none()))
         );
     }
+}
+
+#[test]
+fn version_25_sample_opens_without_titles() {
+    let project = file::load(&sample_path(25)).expect("the version 25 sample opens");
+    for seq in project.sequences.iter() {
+        assert!(
+            seq.tracks()
+                .all(|t| t.clips.iter().all(|c| !c.is_title() && c.title.is_none()))
+        );
+    }
+}
+
+#[test]
+fn the_current_sample_has_a_lower_third() {
+    let project = file::load(&sample_path(FORMAT_VERSION)).expect("the sample opens");
+    let seq = project.active().expect("a timeline");
+    let title = seq
+        .tracks()
+        .flat_map(|t| t.clips.iter())
+        .find(|c| c.is_title())
+        .expect("a title");
+    assert_eq!(project.clip_name(title), "Title: Sam");
+    assert_eq!(title.title.as_ref().map(|t| t.colour), Some([255, 220, 0]));
 }
 
 #[test]

@@ -146,6 +146,8 @@ pub enum ClipShows {
     Timeline,
     /// An adjustment layer: light stripes across it.
     Adjustment,
+    /// A title: a small "T" in its top right corner.
+    Title,
 }
 
 /// Small pictures along a clip's file: one every `every` seconds from the
@@ -378,6 +380,9 @@ pub enum TimelineEvent {
     /// A dragged transition was let go by a cut: it goes into `clip`, from
     /// the clip that ends where it starts.
     DropTransition { transition: u32, clip: u64 },
+    /// A dragged title was let go at `at`, over `track` (a video track; none
+    /// over the audio area or below the rows).
+    DropTitle { title: u32, at: f64, track: Option<u64> },
     /// "Add a video track" or "Add an audio track" from the menu of the track names.
     AddTrack { audio: bool },
     /// "Remove" from that menu, for a track without clips.
@@ -479,6 +484,11 @@ pub struct DraggedEffect(pub u32);
 /// in the page's list of transitions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DraggedTransition(pub u32);
+
+/// A title being dragged from the media drawer onto the timeline: its
+/// place in the page's list of titles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DraggedTitle(pub u32);
 
 /// One end of a clip.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3136,8 +3146,10 @@ impl TimelineView {
             let r = ui.interact(time_area, id.with(("area", from_bottom)), Sense::click_and_drag());
             // While a file is dragged here from a list, the list has the
             // pointer: the area is not pointed at, but the file is over it.
+            let title_over = r.dnd_hover_payload::<DraggedTitle>().is_some();
             let file_over = r.dnd_hover_payload::<DraggedMedia>().is_some()
-                || r.dnd_hover_payload::<DraggedTimeline>().is_some();
+                || r.dnd_hover_payload::<DraggedTimeline>().is_some()
+                || title_over;
             let effect_over = r.dnd_hover_payload::<DraggedEffect>().is_some();
             let transition_over = from_bottom && r.dnd_hover_payload::<DraggedTransition>().is_some();
             let file_at = ui
@@ -3201,6 +3213,16 @@ impl TimelineView {
                     at: t.max(0.0),
                     track: drop_row.and_then(|row| tracks.get(row)).map(|t| t.id),
                 });
+                continue;
+            }
+            if title_over {
+                if let Some(dragged) = r.dnd_release_payload::<DraggedTitle>() {
+                    events.push(TimelineEvent::DropTitle {
+                        title: dragged.0,
+                        at: t.max(0.0),
+                        track: drop_row.and_then(|row| tracks.get(row)).map(|t| t.id),
+                    });
+                }
                 continue;
             }
             if transition_over {
@@ -4272,8 +4294,8 @@ fn draw_clip_marks(p: &egui::Painter, theme: &Theme, r: Rect, clip: &TimelineCli
 }
 
 /// The mark of a clip that plays no file: light stripes across an
-/// adjustment layer, and a small stack of two frames in the top right
-/// corner of a nested timeline.
+/// adjustment layer, a small stack of two frames in the top right corner
+/// of a nested timeline, and a "T" there on a title.
 fn draw_what_it_shows(p: &egui::Painter, theme: &Theme, r: Rect, shows: ClipShows) {
     match shows {
         ClipShows::File => {}
@@ -4286,6 +4308,19 @@ fn draw_what_it_shows(p: &egui::Painter, theme: &Theme, r: Rect, shows: ClipShow
                 inside.line_segment([pos2(x, r.bottom()), pos2(x + r.height(), r.top())], stroke);
                 x += step;
             }
+        }
+        ClipShows::Title => {
+            let seen = r.intersect(p.clip_rect());
+            if seen.width() < 40.0 || seen.height() < 14.0 {
+                return;
+            }
+            p.text(
+                pos2(seen.right() - 8.0, seen.top() + 4.0),
+                Align2::RIGHT_TOP,
+                "T",
+                FontId::proportional(12.0),
+                theme.text_secondary,
+            );
         }
         ClipShows::Timeline => {
             // In the top right corner of the part in view.

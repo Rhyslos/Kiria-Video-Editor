@@ -33,7 +33,12 @@ pub enum Source<'a> {
     },
     /// An adjustment layer: it has no picture of its own.
     Adjustment,
+    /// A title: words, with no file.
+    Title,
 }
+
+/// What the Source says for a title.
+pub const NO_FILE: &str = "A title has no file: its words show in the picture on the right";
 
 /// What the Source says for an adjustment layer.
 pub const NO_PICTURE_OF_ITS_OWN: &str =
@@ -55,6 +60,7 @@ pub fn source<'a>(
     let at = clip.source_at(within(clip, playhead, sequence.settings.frame_rate));
     match clip.kind {
         project::ClipKind::Adjustment => Source::Adjustment,
+        project::ClipKind::Title => Source::Title,
         project::ClipKind::Timeline(inner) => Source::Nested {
             clip,
             sequence: inner,
@@ -88,7 +94,7 @@ pub fn timeline_alone(project: &Project, sequence: project::SequenceId) -> Optio
 fn picture_clip<'a>(project: &Project, sequence: &'a Sequence, selected: &[ClipId]) -> Option<&'a Clip> {
     let has_picture = |clip: &Clip| match clip.kind {
         // Said in words or shown as their timeline.
-        project::ClipKind::Adjustment | project::ClipKind::Timeline(_) => true,
+        project::ClipKind::Adjustment | project::ClipKind::Timeline(_) | project::ClipKind::Title => true,
         project::ClipKind::File => project
             .media
             .get(&clip.media)
@@ -146,6 +152,7 @@ pub fn file_alone(media: &MediaRef) -> Option<Project> {
         effects: Default::default(),
         mode: Default::default(),
         transition: None,
+        title: None,
         id,
         media: media.id,
         stream: video.index,

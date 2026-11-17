@@ -122,7 +122,7 @@ fn fits(project: &Project, sequence: SequenceId, clip: &Clip) -> bool {
     match clip.kind {
         ClipKind::File => project.media.contains_key(&clip.media),
         ClipKind::Timeline(inner) => project.sequence(inner).is_some() && !project.plays(inner, sequence),
-        ClipKind::Adjustment => true,
+        ClipKind::Adjustment | ClipKind::Title => true,
     }
 }
 

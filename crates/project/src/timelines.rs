@@ -329,6 +329,7 @@ fn unfilled(kind: ClipKind, at: Time, length: Time) -> Clip {
         effects: Default::default(),
         mode: Default::default(),
         transition: None,
+        title: None,
         id: ClipId(0),
         media: MediaId::NONE,
         stream: 0,
@@ -431,8 +432,46 @@ pub(crate) fn add_adjustment(
     length: Time,
     track: Option<TrackId>,
 ) -> diag::Result<()> {
+    add_layer(
+        p,
+        sequence,
+        track,
+        unfilled(ClipKind::Adjustment, at, length),
+        "An adjustment layer",
+    )
+}
+
+/// See [`crate::Command::AddTitle`]: on a video track as an adjustment
+/// layer goes, the first free one from `track` up, or a new one on top.
+pub(crate) fn add_title(
+    p: &mut Project,
+    sequence: SequenceId,
+    at: Time,
+    length: Time,
+    track: Option<TrackId>,
+    title: &crate::titles::Title,
+) -> diag::Result<()> {
+    title.check()?;
+    let clip = Clip {
+        title: Some(Box::new(title.clone())),
+        ..unfilled(ClipKind::Title, at, length)
+    };
+    add_layer(p, sequence, track, clip, "A title")
+}
+
+/// Puts `clip` (an adjustment layer or a title, no id yet) on the first
+/// video track free for its whole length from `track` up, or on a new
+/// track on top. `what` names it in messages.
+fn add_layer(
+    p: &mut Project,
+    sequence: SequenceId,
+    track: Option<TrackId>,
+    clip: Clip,
+    what: &str,
+) -> diag::Result<()> {
+    let (at, length) = (clip.start, clip.duration);
     if at.is_negative() || length <= Time::ZERO {
-        return Err(AppError::new("An adjustment layer can't go there")
+        return Err(AppError::new(format!("{what} can't go there"))
             .why("It would start before the timeline or have no length."));
     }
     let seq = sequence_ref(p, sequence)?;
@@ -445,10 +484,11 @@ pub(crate) fn add_adjustment(
                 seq.video_tracks.iter().position(|v| v.id == id).unwrap_or(0)
             }
             Some(t) => {
-                return Err(AppError::new("An adjustment layer goes on a video track")
+                return Err(AppError::new(format!("{what} goes on a video track"))
                     .why(format!(
-                        "{} is an audio track; an adjustment layer changes the picture.",
-                        t.name
+                        "{} is an audio track; {} is part of the picture.",
+                        t.name,
+                        what.to_lowercase()
                     ))
                     .fix("Right-click a video track."));
             }
@@ -474,7 +514,7 @@ pub(crate) fn add_adjustment(
     };
     let clip = Clip {
         id: p.allocate_id(),
-        ..unfilled(ClipKind::Adjustment, at, length)
+        ..clip
     };
     let seq = sequence_mut(p, sequence)?;
     insert_clip(crate::command::track_mut(seq, on)?, clip)

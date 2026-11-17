@@ -302,7 +302,7 @@ pub fn drawn(
                 let is_missing = match c.kind {
                     project::ClipKind::File => media.is_none_or(|m| missing.contains(&m.id)),
                     project::ClipKind::Timeline(_) => nested.is_some_and(|s| s.is_none()),
-                    project::ClipKind::Adjustment => false,
+                    project::ClipKind::Adjustment | project::ClipKind::Title => false,
                 };
                 let (source_in, speed) = (c.source_in.as_secs_f64(), c.speed.as_f64());
                 let length = c.duration.as_secs_f64();
@@ -340,6 +340,7 @@ pub fn drawn(
                 cache.extend(unready(c.start.as_secs_f64(), length, shown, state));
                 let name = match (c.kind, nested.flatten()) {
                     (project::ClipKind::Adjustment, _) => project::timelines::ADJUSTMENT_NAME.to_owned(),
+                    (project::ClipKind::Title, _) => project.clip_name(c),
                     (project::ClipKind::Timeline(_), Some(seq)) => seq.name.clone(),
                     _ => media
                         .and_then(|m| m.path.file_name())
@@ -358,6 +359,9 @@ pub fn drawn(
                     info: match (c.kind, nested.flatten()) {
                         (project::ClipKind::Adjustment, _) => {
                             "An adjustment layer: its colour and opacity change everything below it".into()
+                        }
+                        (project::ClipKind::Title, _) => {
+                            "A title: change its words in the inspector, move it like any clip".into()
                         }
                         (project::ClipKind::Timeline(_), Some(seq)) => format!(
                             "The timeline {} · {} · double-click to open it",
@@ -397,6 +401,7 @@ pub fn drawn(
                         project::ClipKind::File => ClipShows::File,
                         project::ClipKind::Timeline(_) => ClipShows::Timeline,
                         project::ClipKind::Adjustment => ClipShows::Adjustment,
+                        project::ClipKind::Title => ClipShows::Title,
                     },
                     line: None,
                     slip_room: slip_room(project, c),

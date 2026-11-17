@@ -287,6 +287,7 @@ fn clip(start: f64, source_in: f64, duration: f64) -> Clip {
         effects: Default::default(),
         mode: Default::default(),
         transition: None,
+        title: None,
     }
 }
 

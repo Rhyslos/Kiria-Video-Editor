@@ -53,6 +53,7 @@ pub mod sound;
 pub mod templates;
 pub mod time;
 pub mod timelines;
+pub mod titles;
 pub mod track_sound;
 pub mod tracks;
 pub mod transitions;
@@ -80,6 +81,7 @@ pub use side_files::SideFile;
 pub use sound::{ClipLines, Sound};
 pub use templates::Template;
 pub use time::{Rate, Speed, Time};
+pub use titles::{Title, TitleStyle};
 pub use track_sound::{MasterSound, TrackRole, TrackSound};
 pub use transitions::{Transition, TransitionKind};
 

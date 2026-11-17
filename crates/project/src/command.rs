@@ -569,6 +569,22 @@ pub enum Command {
         length: Time,
         track: Option<TrackId>,
     },
+    /// Adds a title (format 26) at `at` for `length`, on a video track as
+    /// an adjustment layer goes: the first free from `track` up, or a new
+    /// one on top.
+    AddTitle {
+        sequence: SequenceId,
+        at: Time,
+        length: Time,
+        track: Option<TrackId>,
+        title: Box<crate::titles::Title>,
+    },
+    /// What a title says and how it looks (format 26).
+    SetTitle {
+        sequence: SequenceId,
+        clip: ClipId,
+        title: Box<crate::titles::Title>,
+    },
     /// Pastes copied clips with the earliest at `at` (see
     /// [`crate::clip_clipboard`]): each on the track of the same kind and
     /// number (missing ones made), cutting away what it lands on there;
@@ -1094,6 +1110,31 @@ impl Command {
                 length,
                 track,
             } => crate::timelines::add_adjustment(&mut p, *sequence, *at, *length, *track)?,
+            Command::AddTitle {
+                sequence,
+                at,
+                length,
+                track,
+                title,
+            } => crate::timelines::add_title(&mut p, *sequence, *at, *length, *track, title)?,
+            Command::SetTitle {
+                sequence,
+                clip,
+                title,
+            } => {
+                title.check()?;
+                let seq = sequence_mut(&mut p, *sequence)?;
+                let found = seq
+                    .video_tracks
+                    .iter_mut()
+                    .flat_map(|track| track.clips.iter_mut())
+                    .find(|c| c.id == *clip)
+                    .filter(|c| c.is_title())
+                    .ok_or_else(|| {
+                        AppError::new("That clip isn't a title").why("Only a title has words to change.")
+                    })?;
+                found.title = Some(title.clone());
+            }
             Command::PasteClips { sequence, at, clips } => {
                 crate::clip_clipboard::paste(&mut p, *sequence, *at, clips)?
             }
@@ -1383,6 +1424,7 @@ fn place_media(
         effects: Default::default(),
         mode: Default::default(),
         transition: None,
+        title: None,
         id: p.allocate_id(),
         media: id,
         stream,
@@ -1903,6 +1945,7 @@ mod tests {
             effects: Default::default(),
             mode: Default::default(),
             transition: None,
+            title: None,
             id: ClipId(0),
             media: f.media,
             stream: 0,
@@ -2635,6 +2678,53 @@ mod tests {
             sound: master,
         };
         assert!(over.apply(&f.p).is_err());
+    }
+
+    #[test]
+    fn a_title_goes_above_the_picture_and_its_words_change() {
+        use crate::titles::{Title, TitleStyle};
+        let f = fixture();
+        let p = place(&f, &f.p, f.v1, clip(&f, 0, 10, None)).unwrap();
+        let add = |track| Command::AddTitle {
+            sequence: f.seq,
+            at: Time::seconds(2),
+            length: Time::seconds(4),
+            track,
+            title: Box::new(Title::new(TitleStyle::LowerThird)),
+        };
+        assert!(add(Some(f.a1)).apply(&p).is_err(), "not on sound");
+        let p = add(None).apply(&p).unwrap();
+        let seq = p.active().unwrap();
+        assert_eq!(seq.video_tracks.len(), 2, "a track made above the picture");
+        let title = seq.video_tracks[1].clips[0].clone();
+        assert!(title.is_title());
+        assert_eq!(p.clip_name(&title), "Title: Name");
+        let mut words = Title::new(TitleStyle::Centred);
+        words.text = "Round two".into();
+        let set = |clip| Command::SetTitle {
+            sequence: f.seq,
+            clip,
+            title: Box::new(words.clone()),
+        };
+        let picture = seq.video_tracks[0].clips[0].id;
+        assert!(set(picture).apply(&p).is_err(), "a picture has no words");
+        let p = set(title.id).apply(&p).unwrap();
+        let shown = &p.active().unwrap().video_tracks[1].clips[0];
+        assert_eq!(shown.title.as_ref().unwrap().text, "Round two");
+        // Split, both halves keep the words.
+        let p = Command::Split {
+            sequence: f.seq,
+            at: Time::seconds(4),
+            clip: Some(title.id),
+        }
+        .apply(&p)
+        .unwrap();
+        let clips = &p.active().unwrap().video_tracks[1].clips;
+        assert!(
+            clips
+                .iter()
+                .all(|c| c.title.as_ref().is_some_and(|t| t.text == "Round two"))
+        );
     }
 
     #[test]

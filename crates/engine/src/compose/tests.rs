@@ -39,6 +39,7 @@ fn layer(area: Area, effects: Vec<render::Effect>) -> Layer {
         effects,
         mode: render::Mode::Normal,
         blend: None,
+        title: None,
     }
 }
 

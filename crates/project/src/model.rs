@@ -351,6 +351,10 @@ pub struct Clip {
     /// Set on pictures only.
     #[serde(default, skip_serializing_if = "crate::defaults::is_default")]
     pub transition: Option<crate::transitions::Transition>,
+    /// What a title says and how (format 26); set on titles only
+    /// (`ClipKind::Title`).
+    #[serde(default, skip_serializing_if = "crate::defaults::is_default")]
+    pub title: Option<Box<crate::titles::Title>>,
 }
 
 /// How a picture mixes with what is below it. Every mode leaves what is
@@ -406,6 +410,10 @@ pub enum ClipKind {
     /// long as it lasts. Its place, size, turn and crop mean nothing. Its
     /// `media` is [`MediaId::NONE`].
     Adjustment,
+    /// Words, only on video tracks (format 26): `Clip::title` says what
+    /// and how. Its `media` is [`MediaId::NONE`]; it has no file, sound or
+    /// speed, and lasts as long as it is made.
+    Title,
 }
 
 /// What a clip shows at a moment between two of its file's frames.
@@ -429,7 +437,7 @@ impl Clip {
     pub fn nested(&self) -> Option<SequenceId> {
         match self.kind {
             ClipKind::Timeline(id) => Some(id),
-            ClipKind::File | ClipKind::Adjustment => None,
+            ClipKind::File | ClipKind::Adjustment | ClipKind::Title => None,
         }
     }
 
@@ -440,7 +448,12 @@ impl Clip {
     /// Whether it would play from before the start of what it plays. An
     /// adjustment layer plays nothing, so it can reach as far back as wanted.
     pub fn starts_before_its_source(&self) -> bool {
-        self.source_in.is_negative() && !self.is_adjustment()
+        self.source_in.is_negative() && !self.is_adjustment() && !self.is_title()
+    }
+
+    /// Whether it is a title: words, with no file.
+    pub fn is_title(&self) -> bool {
+        self.kind == ClipKind::Title
     }
 
     /// Whether it plays a part of a media file (and `media` means something).
@@ -709,6 +722,12 @@ impl Project {
                 .map(|s| s.name.clone())
                 .unwrap_or_else(|| "A nested timeline".to_owned()),
             ClipKind::Adjustment => crate::timelines::ADJUSTMENT_NAME.to_owned(),
+            ClipKind::Title => clip
+                .title
+                .as_ref()
+                .map(|t| t.first_line())
+                .filter(|line| !line.is_empty())
+                .map_or_else(|| "A title".to_owned(), |line| format!("Title: {line}")),
         }
     }
 
@@ -723,7 +742,7 @@ impl Project {
                 .filter(|m| m.kind != MediaKind::Image && m.duration > Time::ZERO)
                 .map(|m| m.duration),
             ClipKind::Timeline(id) => self.sequence(id).map(Sequence::length),
-            ClipKind::Adjustment => None,
+            ClipKind::Adjustment | ClipKind::Title => None,
         }
     }
 
@@ -748,6 +767,19 @@ impl Project {
                 ClipKind::Adjustment => {
                     if track.kind == TrackKind::Audio {
                         problems.push(format!("{place} is an adjustment layer on an audio track"));
+                    }
+                }
+                ClipKind::Title => {
+                    if track.kind == TrackKind::Audio {
+                        problems.push(format!("{place} is a title on an audio track"));
+                    }
+                    match &clip.title {
+                        None => problems.push(format!("{place} is a title with no words")),
+                        Some(title) => {
+                            if let Err(err) = title.check() {
+                                problems.push(format!("{place}: {err}"));
+                            }
+                        }
                     }
                 }
             }
@@ -854,6 +886,7 @@ mod tests {
             effects: Default::default(),
             mode: Default::default(),
             transition: None,
+            title: None,
             id: clip_id,
             media,
             stream: 0,

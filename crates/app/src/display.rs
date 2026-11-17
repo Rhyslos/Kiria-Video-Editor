@@ -11,7 +11,7 @@
 
 use crate::viewer::Viewer;
 use crate::viewer_window::{News, ViewerWindow, WindowPlace};
-use engine::source::{NO_PICTURE_OF_ITS_OWN, Source, file_alone, source, timeline_alone};
+use engine::source::{NO_FILE, NO_PICTURE_OF_ITS_OWN, Source, file_alone, source, timeline_alone};
 use project::{ClipId, MediaRef, Project, Time};
 use ui_kit::{PreviewQuality, ShortcutTable, Slot, Theme};
 
@@ -131,6 +131,9 @@ impl ViewerDisplay {
             }
             Source::Adjustment => {
                 ui_kit::viewer::empty(ui, theme, size, NO_PICTURE_OF_ITS_OWN);
+            }
+            Source::Title => {
+                ui_kit::viewer::empty(ui, theme, size, NO_FILE);
             }
             Source::Nested { sequence, at, .. } => {
                 // The project with the nested timeline open, made again only

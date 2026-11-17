@@ -33,6 +33,10 @@ render = { path = "../render" }
 # on the window's device.
 wgpu = "30"
 tracing = "0.1"
+# Titles: their letters drawn from the font the interface ships with
+# (both MIT or Apache-2.0; the font under the Ubuntu Font Licence).
+ab_glyph = "0.2"
+epaint_default_fonts = "0.37"
 
 [dev-dependencies]
 tempfile = "3"

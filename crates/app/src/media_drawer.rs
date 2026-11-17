@@ -51,6 +51,8 @@ pub enum Picked {
     AddEffect(project::EffectKind),
     /// Put this transition into the selected picture (the Effects side).
     AddTransition(project::TransitionKind),
+    /// Add a title of this layout at the playhead (the Effects side).
+    AddTitle(project::TitleStyle),
 }
 
 /// What the drawer is told besides the project.
@@ -188,6 +190,7 @@ impl MediaDrawer {
             return asked.map(|asked| match asked {
                 crate::effects_drawer::Asked::Add(kind) => Picked::AddEffect(kind),
                 crate::effects_drawer::Asked::AddTransition(kind) => Picked::AddTransition(kind),
+                crate::effects_drawer::Asked::AddTitle(style) => Picked::AddTitle(style),
             });
         }
         self.effects.previewing = None;
