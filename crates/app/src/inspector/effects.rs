@@ -5,12 +5,19 @@
 //! A setting being dragged is kept by the inspector (shown in the viewer at
 //! once) and becomes one undo step when let go (`SetEffects`); a click on a
 //! switch, an arrow, a remove button or Add is one step at once.
+//!
+//! Every setting has the keyframe control the look's rows have: the
+//! diamond adds a keyframe at the playhead (or removes the one there), the
+//! arrows go to the one before or after, a right-click on a filled diamond
+//! picks its ease. The values shown are the effect's at the playhead.
 
-use project::effects::{Blur, Glow, Grain, Pan, Pixelate, Shake, Sharpen, Spot, Vignette, Zoom};
+use project::effects::Spot;
+use project::keyframes::Ease;
 use project::look::ONE;
-use project::{ClipId, Command, EffectKind, Effects, SequenceId};
+use project::{Clip, Command, EffectKind, Effects, Rate, SequenceId, Time};
 use ui_kit::Theme;
 use ui_kit::inspector::{self, Number, Touched};
+use ui_kit::keyframe::{KeyState, Keys};
 
 /// What the section asked for.
 #[derive(Debug, Default)]
@@ -21,34 +28,108 @@ pub struct Asked {
     pub dragging: Option<Effects>,
     /// Whether a setting is still held: no step yet.
     pub busy: bool,
+    /// Where the playhead was asked to go (an arrow beside a keyframe).
+    pub seek: Option<Time>,
 }
 
-/// Percent, 0 to 100, in steps of one.
-const PERCENT: Number = Number {
-    range: (0.0, 100.0),
-    per_point: 0.5,
-    decimals: 0,
-    suffix: " %",
-    usual: 0.0,
-};
+/// Where the playhead is, for the settings shown and the keyframe controls.
+#[derive(Debug, Clone, Copy)]
+pub struct At<'a> {
+    pub clip: &'a Clip,
+    pub playhead: Time,
+    pub rate: Rate,
+}
 
-/// The section for `clip`'s effects as `shown` (with a drag in progress).
-pub fn section(
-    ui: &mut egui::Ui,
-    theme: &Theme,
-    sequence: SequenceId,
-    clip: ClipId,
-    shown: &Effects,
-) -> Asked {
+/// How a setting's whole millionths are shown.
+#[derive(Debug, Clone, Copy)]
+enum Show {
+    /// 0 to 100 %.
+    Percent,
+    /// As a size: 0 is 100 %, `ONE` is this many %.
+    Size(f64),
+}
+
+/// Each setting of an effect, in [`EffectKind::numbers`] order: its label
+/// and how it is shown.
+fn knobs(kind: &EffectKind) -> &'static [(&'static str, Show)] {
+    use Show::{Percent, Size};
+    const BOX: [(&str, Show); 4] = [
+        ("Left", Percent),
+        ("Top", Percent),
+        ("Width", Percent),
+        ("Height", Percent),
+    ];
+    match kind {
+        EffectKind::Vignette(_) => &[("Amount", Percent), ("Size", Percent), ("Softness", Percent)],
+        EffectKind::Grain(_) => &[("Amount", Percent), ("Size", Percent)],
+        EffectKind::Sharpen(_) => &[("Amount", Percent), ("Size", Percent)],
+        EffectKind::Glow(_) => &[("Amount", Percent), ("Threshold", Percent), ("Spread", Percent)],
+        EffectKind::Blur(_) => &[("Amount", Percent), BOX[0], BOX[1], BOX[2], BOX[3]],
+        EffectKind::Pixelate(_) => &[("Block size", Percent), BOX[0], BOX[1], BOX[2], BOX[3]],
+        EffectKind::Zoom(_) => &[
+            ("Zoom at end", Size(300.0)),
+            ("Point across", Percent),
+            ("Point down", Percent),
+        ],
+        EffectKind::Shake(_) => &[("Amount", Percent), ("Speed", Percent)],
+        EffectKind::Pan(_) => &[
+            ("Zoom", Size(200.0)),
+            ("From across", Percent),
+            ("From down", Percent),
+            ("To across", Percent),
+            ("To down", Percent),
+        ],
+    }
+}
+
+impl Show {
+    fn shown(self, millionths: i32) -> f64 {
+        let share = f64::from(millionths) / f64::from(ONE);
+        match self {
+            Show::Percent => share * 100.0,
+            Show::Size(most) => 100.0 + (most - 100.0) * share,
+        }
+    }
+
+    fn millionths(self, shown: f64) -> i32 {
+        let share = match self {
+            Show::Percent => shown / 100.0,
+            Show::Size(most) => (shown - 100.0) / (most - 100.0),
+        };
+        (share * f64::from(ONE)).round().clamp(0.0, f64::from(ONE)) as i32
+    }
+
+    fn number(self, usual: i32) -> Number {
+        let (range, per_point) = match self {
+            Show::Percent => ((0.0, 100.0), 0.5),
+            Show::Size(most) => ((100.0, most), (most - 100.0) / 200.0),
+        };
+        Number {
+            range,
+            per_point,
+            decimals: 0,
+            suffix: " %",
+            usual: self.shown(usual),
+        }
+    }
+}
+
+/// The eases a keyframe can have, as the control offers them.
+const EASES: [&str; 3] = [Ease::ALL[0].label(), Ease::ALL[1].label(), Ease::ALL[2].label()];
+
+/// The section for `at.clip`'s effects as `shown` (with a drag in progress).
+pub fn section(ui: &mut egui::Ui, theme: &Theme, sequence: SequenceId, at: At<'_>, shown: &Effects) -> Asked {
+    let clip = at.clip.id;
     let mut asked = Asked::default();
     let mut changed = shown.clone();
     let mut touched = Touched::default();
     let mut clicked: Option<Effects> = None;
     let mut add: Option<EffectKind> = None;
+    let mut seek = None;
     let clicks = inspector::section(ui, theme, "Effects", &summary(shown), !shown.is_empty(), |ui| {
         let count = shown.0.len();
         for i in 0..count {
-            let effect = changed.0[i];
+            let effect = &shown.0[i];
             ui.horizontal(|ui| {
                 let mut on = !effect.off;
                 if ui
@@ -91,9 +172,20 @@ pub fn section(
                 });
             });
             ui.add_enabled_ui(!effect.off, |ui| {
-                let (kind, t) = settings(ui, theme, effect.kind);
-                changed.0[i].kind = kind;
-                touched = touched.and(t);
+                let row = settings(ui, theme, at, effect);
+                match row {
+                    Row::Clicked(next) => {
+                        let mut all = shown.clone();
+                        all.0[i] = next;
+                        clicked = Some(all);
+                    }
+                    Row::Moved(next, t) => {
+                        changed.0[i] = next;
+                        touched = touched.and(t);
+                    }
+                    Row::Seek(to) => seek = Some(to),
+                    Row::Still => {}
+                }
             });
             ui.add_space(4.0);
         }
@@ -101,7 +193,7 @@ pub fn section(
             inspector::note(
                 ui,
                 theme,
-                "None yet. Effects change this clip's picture, in the order listed.",
+                "None yet. Effects change this clip's picture, in the order listed. Drag one from the media drawer's Effects, or:",
             );
         }
         ui.menu_button("Add effect", |ui| {
@@ -118,6 +210,7 @@ pub fn section(
         clip,
         effects: Box::new(effects),
     };
+    asked.seek = seek;
     if clicks.reset {
         asked.commands.push(set(Effects::default()));
     } else if let Some(next) = clicked {
@@ -131,196 +224,132 @@ pub fn section(
     asked
 }
 
-/// The settings of one effect, as sliders; returns them as changed.
-fn settings(ui: &mut egui::Ui, theme: &Theme, kind: EffectKind) -> (EffectKind, Touched) {
-    // Shared by the sliders' and the box's closures.
-    let touched = std::cell::Cell::new(Touched::default());
-    let slider = |ui: &mut egui::Ui, label: &str, value: i32, usual: i32| {
-        let mut shown = percent(value);
-        let moved = inspector::slider(ui, theme, label, &mut shown, PERCENT.usual_at(usual));
-        touched.set(touched.get().and(moved));
-        millionths(shown)
-    };
-    // A share shown as a size: 0 is 100 %, `ONE` is `most` %.
-    let size = |ui: &mut egui::Ui, label: &str, value: i32, usual: i32, most: f64| {
-        let as_size = |share: i32| 100.0 + (most - 100.0) * f64::from(share) / f64::from(ONE);
-        let mut shown = as_size(value);
-        let how = Number {
-            range: (100.0, most),
-            per_point: (most - 100.0) / 200.0,
-            decimals: 0,
-            suffix: " %",
-            usual: as_size(usual),
-        };
-        let moved = inspector::slider(ui, theme, label, &mut shown, how);
-        touched.set(touched.get().and(moved));
-        ((shown - 100.0) / (most - 100.0) * f64::from(ONE))
-            .round()
-            .clamp(0.0, f64::from(ONE)) as i32
-    };
-    let spot = |ui: &mut egui::Ui, spot: Spot| {
-        let mut whole = spot.is_whole();
-        if ui
-            .checkbox(&mut whole, "Whole picture")
-            .on_hover_text("Untick to apply it to a box only: to hide a name or the chat")
-            .changed()
+/// What happened in one effect's settings.
+enum Row {
+    Still,
+    /// A setting is being dragged (or typed): the effect as it leaves it.
+    Moved(project::Effect, Touched),
+    /// A keyframe was added, removed or eased, or the whole picture ticked:
+    /// one step at once.
+    Clicked(project::Effect),
+    /// An arrow beside a keyframe: the playhead goes there.
+    Seek(Time),
+}
+
+/// The settings of one effect at the playhead, each with its keyframe
+/// control. A change to a setting that has keyframes is a keyframe at the
+/// playhead; one without changes it for the whole clip.
+fn settings(ui: &mut egui::Ui, theme: &Theme, at: At<'_>, effect: &project::Effect) -> Row {
+    let clip = at.clip;
+    let source = clip.source_at(at.playhead);
+    let near = clip.frame_in_file(at.playhead, at.rate);
+    let here = at.rate.frame_at(at.playhead);
+    let on_clip = clip.start <= at.playhead && at.playhead < clip.start + clip.duration;
+    let now = effect.kind_at(source).numbers();
+    let usual = EffectKind::ALL
+        .iter()
+        .find(|k| k.name() == effect.kind.name())
+        .map_or_else(|| effect.kind.numbers(), EffectKind::numbers);
+    let mut next = effect.clone();
+    let mut touched = Touched::default();
+    let mut result = Row::Still;
+    // A box: the whole picture, or its four settings.
+    let spot = effect.kind.spot_numbers();
+    let whole = spot.clone().is_some_and(|range| {
+        let whole = Spot::WHOLE;
+        now[range] == [whole.left, whole.top, whole.width, whole.height]
+    });
+    for (index, (label, show)) in knobs(&effect.kind).iter().enumerate() {
+        if let Some(range) = spot.clone()
+            && index == range.start
         {
-            touched.set(touched.get().and(Touched {
-                changed: true,
-                busy: false,
-            }));
-            return if whole { Spot::WHOLE } else { Spot::MIDDLE };
+            let mut ticked = whole;
+            let box_tip = "Untick to apply it to a box only: to hide a name or the chat";
+            if ui
+                .checkbox(&mut ticked, "Whole picture")
+                .on_hover_text(box_tip)
+                .changed()
+            {
+                let corner = if ticked { Spot::WHOLE } else { Spot::MIDDLE };
+                let mut numbers = next.kind.numbers();
+                numbers[range.clone()].copy_from_slice(&[
+                    corner.left,
+                    corner.top,
+                    corner.width,
+                    corner.height,
+                ]);
+                next.kind = next.kind.with_numbers(&numbers);
+                next.keys.clear(range.clone());
+                return Row::Clicked(next);
+            }
         }
-        if whole {
-            return spot;
+        if whole && spot.as_ref().is_some_and(|r| r.contains(&index)) {
+            continue;
         }
-        let mut left = percent(spot.left);
-        let mut top = percent(spot.top);
-        let mut width = percent(spot.width);
-        let mut height = percent(spot.height);
-        let middle = Spot::MIDDLE;
-        let moved = inspector::slider(ui, theme, "Left", &mut left, PERCENT.usual_at(middle.left))
-            .and(inspector::slider(
-                ui,
-                theme,
-                "Top",
-                &mut top,
-                PERCENT.usual_at(middle.top),
-            ))
-            .and(inspector::slider(
-                ui,
-                theme,
-                "Width",
-                &mut width,
-                PERCENT.usual_at(middle.width),
-            ))
-            .and(inspector::slider(
-                ui,
-                theme,
-                "Height",
-                &mut height,
-                PERCENT.usual_at(middle.height),
-            ));
-        touched.set(touched.get().and(moved));
-        fitted_spot(
-            millionths(left),
-            millionths(top),
-            millionths(width),
-            millionths(height),
-        )
-    };
-    let changed = match kind {
-        EffectKind::Vignette(v) => {
-            let usual = Vignette::USUAL;
-            EffectKind::Vignette(Vignette {
-                amount: slider(ui, "Amount", v.amount, usual.amount),
-                size: slider(ui, "Size", v.size, usual.size),
-                softness: slider(ui, "Softness", v.softness, usual.softness),
-            })
+        let keys = next.keys.of(index);
+        let frames: Vec<i64> = keys
+            .iter()
+            .map(|k| at.rate.frame_at(clip.timeline_at(k.at)))
+            .collect();
+        let key_here = keys.iter().find(|k| near.0 <= k.at && k.at < near.1);
+        let state = match (keys.is_empty(), key_here.is_some()) {
+            (true, _) => KeyState::Still,
+            (false, true) => KeyState::At,
+            (false, false) => KeyState::Between,
+        };
+        let before = frames.iter().rev().find(|f| **f < here).copied();
+        let after = frames.iter().find(|f| **f > here).copied();
+        let control = Keys {
+            state,
+            before: before.is_some(),
+            after: after.is_some(),
+            can: on_clip,
+            eases: &EASES,
+            ease: key_here.and_then(|k| Ease::ALL.iter().position(|e| *e == k.ease)),
+        };
+        let mut value = show.shown(now[index]);
+        let keyed =
+            inspector::keyed_slider(ui, theme, label, &mut value, show.number(usual[index]), &control);
+        if keyed.touched.changed {
+            let value = show.millionths(value);
+            if keys.is_empty() {
+                let mut numbers = next.kind.numbers();
+                numbers[index] = value;
+                next.kind = next.kind.with_numbers(&numbers);
+            } else if on_clip {
+                next.keys.set(index, source, near, value);
+            }
         }
-        EffectKind::Grain(g) => {
-            let usual = Grain::USUAL;
-            EffectKind::Grain(Grain {
-                amount: slider(ui, "Amount", g.amount, usual.amount),
-                size: slider(ui, "Size", g.size, usual.size),
-            })
-        }
-        EffectKind::Sharpen(s) => {
-            let usual = Sharpen::USUAL;
-            EffectKind::Sharpen(Sharpen {
-                amount: slider(ui, "Amount", s.amount, usual.amount),
-                radius: slider(ui, "Size", s.radius, usual.radius),
-            })
-        }
-        EffectKind::Glow(g) => {
-            let usual = Glow::USUAL;
-            EffectKind::Glow(Glow {
-                amount: slider(ui, "Amount", g.amount, usual.amount),
-                threshold: slider(ui, "Threshold", g.threshold, usual.threshold),
-                radius: slider(ui, "Spread", g.radius, usual.radius),
-            })
-        }
-        EffectKind::Blur(b) => {
-            let radius = slider(ui, "Amount", b.radius, Blur::USUAL.radius);
-            EffectKind::Blur(Blur {
-                radius,
-                spot: spot(ui, b.spot),
-            })
-        }
-        EffectKind::Pixelate(p) => {
-            let blocks = slider(ui, "Block size", p.size, Pixelate::USUAL.size);
-            EffectKind::Pixelate(Pixelate {
-                size: blocks,
-                spot: spot(ui, p.spot),
-            })
-        }
-        EffectKind::Zoom(z) => {
-            let usual = Zoom::USUAL;
-            EffectKind::Zoom(Zoom {
-                amount: size(ui, "Zoom at end", z.amount, usual.amount, 300.0),
-                x: slider(ui, "Point across", z.x, usual.x),
-                y: slider(ui, "Point down", z.y, usual.y),
-            })
-        }
-        EffectKind::Shake(k) => {
-            let usual = Shake::USUAL;
-            EffectKind::Shake(Shake {
-                amount: slider(ui, "Amount", k.amount, usual.amount),
-                speed: slider(ui, "Speed", k.speed, usual.speed),
-            })
-        }
-        EffectKind::Pan(p) => {
-            let usual = Pan::USUAL;
-            EffectKind::Pan(Pan {
-                zoom: size(ui, "Zoom", p.zoom, usual.zoom, 200.0),
-                from_x: slider(ui, "From across", p.from_x, usual.from_x),
-                from_y: slider(ui, "From down", p.from_y, usual.from_y),
-                to_x: slider(ui, "To across", p.to_x, usual.to_x),
-                to_y: slider(ui, "To down", p.to_y, usual.to_y),
-            })
-        }
-    };
-    (changed, touched.get())
-}
-
-/// A box from its sliders, kept inside the picture: a box pushed past an
-/// edge is moved back rather than refused, and is never less than 1 % across.
-fn fitted_spot(left: i32, top: i32, width: i32, height: i32) -> Spot {
-    let least = ONE / 100;
-    let width = width.clamp(least, ONE);
-    let height = height.clamp(least, ONE);
-    Spot {
-        left: left.clamp(0, ONE - width),
-        top: top.clamp(0, ONE - height),
-        width,
-        height,
-    }
-}
-
-trait UsualAt {
-    fn usual_at(self, millionths: i32) -> Number;
-}
-
-impl UsualAt for Number {
-    fn usual_at(self, millionths: i32) -> Number {
-        Number {
-            usual: percent(millionths),
-            ..self
+        touched = touched.and(keyed.touched);
+        let clicks = keyed.clicks;
+        if clicks.toggle && on_clip {
+            let mut keyed = effect.clone();
+            match state {
+                KeyState::At => keyed.keys.remove(index, near),
+                _ => keyed.keys.set(index, source, near, now[index]),
+            }
+            result = Row::Clicked(keyed);
+        } else if let Some(ease) = clicks.ease.and_then(|i| Ease::ALL.get(i)) {
+            let mut eased = effect.clone();
+            eased.keys.set_ease(index, near, *ease);
+            result = Row::Clicked(eased);
+        } else if let Some(frame) = match (clicks.previous, clicks.next) {
+            (true, _) => before,
+            (_, true) => after,
+            _ => None,
+        } {
+            result = Row::Seek(at.rate.frame_start(frame));
         }
     }
-}
-
-fn percent(millionths: i32) -> f64 {
-    f64::from(millionths) * 100.0 / f64::from(ONE)
-}
-
-fn millionths(percent: f64) -> i32 {
-    (percent.clamp(0.0, 100.0) * f64::from(ONE) / 100.0).round() as i32
+    match result {
+        Row::Still if touched.changed || touched.busy => Row::Moved(next, touched),
+        other => other,
+    }
 }
 
 /// The section's line while folded: the effects that are on, in order.
 pub fn summary(effects: &Effects) -> String {
-    let on: Vec<&str> = effects.applied().map(EffectKind::name).collect();
+    let on: Vec<&str> = effects.applied().map(|e| e.kind.name()).collect();
     match (on.is_empty(), effects.is_empty()) {
         (_, true) => "None".to_owned(),
         (true, false) => "All switched off".to_owned(),
@@ -333,23 +362,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn percents_go_to_millionths_and_back() {
-        for millionths_in in [0, 1, 333_333, 500_000, ONE] {
-            let back = millionths(percent(millionths_in));
-            assert!(
-                (back - millionths_in).abs() <= 1,
-                "{millionths_in} came back as {back}"
-            );
+    fn every_setting_has_a_row_and_comes_back_as_it_went() {
+        for kind in EffectKind::ALL {
+            let numbers = kind.numbers();
+            assert_eq!(knobs(&kind).len(), numbers.len(), "{}", kind.name());
+            for ((_, show), value) in knobs(&kind).iter().zip(numbers) {
+                let back = show.millionths(show.shown(value));
+                assert!(
+                    (back - value).abs() <= 1,
+                    "{}: {value} came back as {back}",
+                    kind.name()
+                );
+            }
         }
-        assert_eq!(millionths(150.0), ONE, "kept in range");
-    }
-
-    #[test]
-    fn a_box_stays_inside_the_picture() {
-        let spot = fitted_spot(900_000, 0, 300_000, 0);
-        assert_eq!((spot.left, spot.width), (700_000, 300_000), "moved back in");
-        assert_eq!(spot.height, ONE / 100, "never nothing");
-        assert_eq!(fitted_spot(0, 0, ONE, ONE), Spot::WHOLE);
+        assert_eq!(Show::Size(300.0).shown(ONE), 300.0);
+        assert_eq!(Show::Percent.millionths(150.0), ONE, "kept in range");
     }
 
     #[test]

@@ -371,7 +371,15 @@ impl Inspector {
                 Some((id, effects)) if *id == clip.id => effects.clone(),
                 _ => clip.effects.clone(),
             };
-            let asked = effects::section(ui, theme, sequence, clip.id, &shown);
+            let at = effects::At {
+                clip,
+                playhead,
+                rate: seq.settings.frame_rate,
+            };
+            let asked = effects::section(ui, theme, sequence, at, &shown);
+            if let Some(to) = asked.seek {
+                self.seek = Some(to);
+            }
             if !asked.commands.is_empty() {
                 self.pending_effects = None;
                 commands.extend(asked.commands);

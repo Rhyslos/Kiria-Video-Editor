@@ -355,8 +355,11 @@ fn effects(clip: &Clip, at: Time) -> Vec<render::Effect> {
         0.0
     };
     let eased = (through * through * (3.0 - 2.0 * through)) as f32;
+    // Settings that change over the clip are read at the moment of the file.
+    let source = clip.source_at(at);
     clip.effects
         .applied()
+        .map(|effect| effect.kind_at(source))
         .map(|kind| match kind {
             project::EffectKind::Vignette(v) => render::Effect::Vignette {
                 amount: fraction(v.amount),
