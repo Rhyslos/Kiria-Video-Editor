@@ -1,7 +1,9 @@
 //! A file's own scrub bar: where in the file the preview is, the part
 //! marked to add (in and out), and a click or drag to go somewhere. Under
 //! the Library's small player, and over its large waveform, so a file is
-//! scrubbed the same way whatever it holds.
+//! scrubbed the same way whatever it holds. The full-screen viewer has one
+//! for the whole timeline, its region as the marked part and its cuts as
+//! small ticks ([`cuts`]).
 
 use crate::Theme;
 use egui::{Rect, Sense, Stroke, Ui, pos2, vec2};
@@ -123,6 +125,22 @@ pub fn scrub(
         ui.ctx().request_repaint();
     }
     seek.filter(|_| length > 0.0)
+}
+
+/// Small ticks over a bar's track where the picture cuts from one clip to
+/// another, `at` seconds into something `length` long: drawn before
+/// [`scrub`], so the playhead stays on top.
+pub fn cuts(ui: &Ui, theme: &Theme, rect: Rect, length: f64, at: &[f64]) {
+    if length <= 0.0 {
+        return;
+    }
+    let painter = ui.painter_at(rect);
+    let colour = theme.muted.gamma_multiply(0.8);
+    for seconds in at.iter().filter(|s| **s > 0.0 && **s < length) {
+        let x = rect.left() + (seconds / length) as f32 * rect.width();
+        let tick = Rect::from_center_size(pos2(x, rect.center().y), vec2(1.0, 10.0));
+        painter.rect_filled(tick, 0.0, colour);
+    }
 }
 
 #[cfg(test)]
