@@ -551,9 +551,9 @@ Phase 7 builds the grading pipeline and the Color page from the mockup: one tool
 
 **7.2 Auto white balance** (research workflow)
 
-- [ ] Compare at least two statistical methods and one small learned model on facecam and game clips.
-- [ ] Chosen method: several frames across the clip, linear light, ignores clipped, near-black and strongly saturated pixels.
-- [ ] Writes into the temperature and tint sliders; strength slider; the "pick something white" eyedropper overrides it; never runs on its own.
+- [ ] Compare at least two statistical methods and one small learned model on facecam and game clips. (Two statistical methods and their combination compared on made-up pictures; the owner's clips and a learned model are still to do.)
+- [x] Chosen method: several frames across the clip, linear light, ignores clipped, near-black and strongly saturated pixels. (Done, preliminary: grey world and white patch combined in three passes, `engine::white_balance`; see `docs/research/auto-white-balance.md`.)
+- [ ] Writes into the temperature and tint sliders; strength slider; the "pick something white" eyedropper overrides it; never runs on its own. (Done but the eyedropper: Auto by White balance on Basic, with its strength beside it.)
 
 **7.3 Page (as in the mockup)**
 

@@ -48,6 +48,7 @@ pub mod thumbnail;
 pub mod timeline;
 pub mod title;
 pub mod track;
+pub mod white_balance;
 
 pub use compose::{Composed, Composing};
 pub use export::{Export, ExportSettings};

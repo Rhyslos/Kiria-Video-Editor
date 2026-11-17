@@ -43,7 +43,7 @@ pub enum ApplyTo {
 }
 
 /// The page's own state.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct ColorPage {
     pub tool: Tool,
     /// The layer the tools change.
@@ -57,6 +57,10 @@ pub struct ColorPage {
     changing: Option<(ClipId, Grade)>,
     /// The scope shown.
     pub scope: engine::scope::ScopeKind,
+    /// How much of Auto white balance's correction is used, 0 to 1.
+    pub auto_strength: f64,
+    /// Auto white balance looking at a clip: which, and the work.
+    balancing: Option<(ClipId, engine::white_balance::Balancing)>,
     /// The scope's picture on the card, and what it was made from.
     scope_picture: Option<ScopePicture>,
 }
@@ -67,6 +71,23 @@ struct ScopePicture(usize, engine::scope::ScopeKind, egui::TextureHandle);
 impl std::fmt::Debug for ScopePicture {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "ScopePicture({:?})", self.1)
+    }
+}
+
+impl Default for ColorPage {
+    fn default() -> ColorPage {
+        ColorPage {
+            tool: Tool::default(),
+            layer: 0,
+            advanced: false,
+            apply_to: ApplyTo::default(),
+            copied: None,
+            changing: None,
+            scope: engine::scope::ScopeKind::default(),
+            scope_picture: None,
+            auto_strength: 1.0,
+            balancing: None,
+        }
     }
 }
 
@@ -147,6 +168,7 @@ impl ColorPage {
         theme: &Theme,
         sequence: SequenceId,
         clip: &project::Clip,
+        media: Option<&project::MediaRef>,
     ) -> Asked {
         let stored = &clip.grade;
         let mut grade = match &self.changing {
@@ -199,14 +221,68 @@ impl ColorPage {
         ui.add_space(8.0);
         let before = grade.0.get(self.layer).map_or(Primary::PLAIN, |l| l.primary);
         let mut primary = before;
+        let working = self.balancing.as_ref().is_some_and(|(id, _)| *id == clip.id);
+        let mut asked = Asked::default();
         let busy = match self.tool {
-            Tool::Basic => basic::ui(ui, theme, &mut primary),
+            Tool::Basic => {
+                let basic = basic::ui(ui, theme, &mut primary, &mut self.auto_strength, working);
+                if basic.auto {
+                    match media.and_then(|m| Some((m, m.info.video.as_ref()?))) {
+                        Some((media, video)) if clip.is_file() => {
+                            let look = engine::white_balance::Look {
+                                path: media.path.clone(),
+                                stream: clip.stream,
+                                rotation: video.rotation,
+                                from: clip.source_in,
+                                to: clip.source_at(clip.end()),
+                            };
+                            match engine::white_balance::Balancing::start(look) {
+                                Ok(work) => self.balancing = Some((clip.id, work)),
+                                Err(err) => asked.status = Some(err.to_string()),
+                            }
+                        }
+                        _ => {
+                            asked.status =
+                                Some("Auto white balance looks at a recording; this clip has none".into())
+                        }
+                    }
+                }
+                basic.busy
+            }
             Tool::Wheels => wheels::ui(ui, theme, &mut primary, self.advanced),
         };
+        // Auto's answer goes into the sliders, as a change of their own.
+        if let Some((id, work)) = &self.balancing
+            && let Some(answer) = work.answer()
+        {
+            let for_this = *id == clip.id;
+            self.balancing = None;
+            match answer {
+                Ok(Some((temperature, tint))) if for_this => {
+                    let strength = self.auto_strength.clamp(0.0, 1.0);
+                    primary.temperature = (f64::from(temperature) * strength * 1_000_000.0).round() as i32;
+                    primary.tint = (f64::from(tint) * strength * 1_000_000.0).round() as i32;
+                    asked.status = Some(
+                        "White balance set from the clip: fine-tune it with Temperature and Tint".into(),
+                    );
+                }
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    asked.status = Some(
+                        "Too little in this clip is neutral to tell the light's colour: it is left as it is"
+                            .into(),
+                    )
+                }
+                Err(err) => asked.status = Some(err.to_string()),
+            }
+            ui.ctx().request_repaint();
+        } else if self.balancing.is_some() {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(100));
+        }
         if primary != before {
             grade.layer_mut(self.layer).primary = primary;
         }
-        let mut asked = Asked::default();
         if grade == *stored {
             self.changing = None;
         } else if busy {

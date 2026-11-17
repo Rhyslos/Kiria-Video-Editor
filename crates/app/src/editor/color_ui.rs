@@ -101,7 +101,8 @@ impl Editor {
         frame.show(&mut under, |ui| {
             ui.set_min_size(tools.size() - egui::vec2(24.0, 20.0));
             if let Some(clip) = graded {
-                asked.push(self.color_page.tools_ui(ui, &self.theme, seq.id, clip));
+                let media = p.media.get(&clip.media);
+                asked.push(self.color_page.tools_ui(ui, &self.theme, seq.id, clip, media));
             }
         });
 
