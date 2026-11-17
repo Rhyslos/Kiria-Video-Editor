@@ -18,8 +18,19 @@ fn number(range: (f64, f64), decimals: usize, suffix: &'static str, usual: f64) 
     }
 }
 
-/// Draws the tool; says whether a slider is still held.
-pub fn ui(ui: &mut egui::Ui, theme: &Theme, p: &mut Primary) -> bool {
+/// What the tool asked for besides its sliders.
+#[derive(Debug, Default)]
+pub struct Basic {
+    /// A slider is still held.
+    pub busy: bool,
+    /// Auto white balance was clicked.
+    pub auto: bool,
+}
+
+/// Draws the tool. `strength` is Auto's (0 to 1, kept by the page);
+/// `working` says Auto is looking at the clip now.
+pub fn ui(ui: &mut egui::Ui, theme: &Theme, p: &mut Primary, strength: &mut f64, working: bool) -> Basic {
+    let mut auto = false;
     let mut busy = false;
     let one = f64::from(ONE);
     let mut row = |ui: &mut egui::Ui, label: &str, value: &mut i32, scale: f64, how: Number| {
@@ -32,12 +43,22 @@ pub fn ui(ui: &mut egui::Ui, theme: &Theme, p: &mut Primary) -> bool {
     };
     ui.columns(2, |columns| {
         let ui = &mut columns[0];
-        ui.label(
-            egui::RichText::new("White balance")
-                .small()
-                .strong()
-                .color(theme.muted),
-        );
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("White balance").small().strong().color(theme.muted));
+            let label = if working { "Looking…" } else { "Auto" };
+            let button = ui.add_enabled(!working, egui::Button::new(label).small());
+            auto = button
+                .on_hover_text("Finds the light's colour from frames across the clip and sets Temperature and Tint to take it back to neutral. Never runs by itself.")
+                .clicked();
+            let mut percent = *strength * 100.0;
+            if ui
+                .add(egui::DragValue::new(&mut percent).range(0.0..=100.0).speed(1.0).suffix(" %"))
+                .on_hover_text("How much of Auto's correction is used")
+                .changed()
+            {
+                *strength = percent / 100.0;
+            }
+        });
         row(
             ui,
             "Temperature",
@@ -99,5 +120,5 @@ pub fn ui(ui: &mut egui::Ui, theme: &Theme, p: &mut Primary) -> bool {
             number((0.0, 200.0), 0, " %", 100.0),
         );
     });
-    busy
+    Basic { busy, auto }
 }
