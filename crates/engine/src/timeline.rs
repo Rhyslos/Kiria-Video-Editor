@@ -45,7 +45,7 @@ fn video_within<'a>(
             ClipKind::Timeline(id) => {
                 video_within(project, project.sequence(id)?, clip.source_at(at), depth + 1)
             }
-            ClipKind::Adjustment => None,
+            ClipKind::Adjustment | ClipKind::Title => None,
         })
 }
 

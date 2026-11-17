@@ -215,6 +215,45 @@ impl Editor {
         Ok(())
     }
 
+    /// Adds a new title of `style` at `at` (on the frame grid), on `track`
+    /// or the first free video track above it, and selects it so its words
+    /// can be typed in the inspector. One undo step.
+    pub(super) fn add_title(
+        &mut self,
+        style: project::TitleStyle,
+        at: Time,
+        track: Option<TrackId>,
+    ) -> diag::Result<()> {
+        let at = self.snapped(at);
+        self.with_document(|d| {
+            let sequence = d.project().active_sequence;
+            d.apply(Command::AddTitle {
+                sequence,
+                at,
+                length: project::titles::TITLE_LENGTH,
+                track,
+                title: Box::new(project::Title::new(style)),
+            })
+        })?;
+        let added = self
+            .document
+            .as_ref()
+            .and_then(|d| d.project().active())
+            .and_then(|seq| {
+                seq.video_tracks
+                    .iter()
+                    .flat_map(|t| t.clips.iter())
+                    .filter(|c| c.is_title() && c.start == at)
+                    .map(|c| c.id)
+                    .max()
+            });
+        if let Some(clip) = added {
+            self.selected = vec![clip];
+        }
+        self.status = format!("{} added: type its words in the inspector", style.name());
+        Ok(())
+    }
+
     /// Places the timeline `nested` in the open one: at `at` on the video
     /// track `track`, or at its end.
     pub(super) fn place_timeline(

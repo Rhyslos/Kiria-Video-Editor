@@ -250,6 +250,7 @@ impl Preview {
             proxies: Proxies::default(),
             glancer: None,
             last_glance: None,
+            titles: VecDeque::new(),
         };
         let (running, ended) = channel::<()>();
         let spawned = std::thread::Builder::new().name("preview".into()).spawn(move || {
@@ -495,6 +496,9 @@ struct Worker {
     key_frame_first: bool,
     /// Proxies: where they are and the decoders reading them.
     proxies: Proxies,
+    /// Titles drawn last, newest first, with the size they were drawn at:
+    /// a title that stays the same isn't drawn again every frame.
+    titles: VecDeque<(crate::title::TitleLayer, (u32, u32), media::Frame)>,
     /// A decoder of its own for a key frame shown first, and its file: the
     /// one at the playhead keeps its place.
     glancer: Option<((MediaId, u32), VideoDecoder)>,
@@ -912,6 +916,11 @@ impl Worker {
         let top = description.layers.len() - 1;
         let mut pictures = Vec::with_capacity(description.layers.len());
         for (index, layer) in description.layers.iter().enumerate() {
+            if let Some(words) = &layer.title {
+                let drawn = self.title_picture(words, title_size(layer));
+                pictures.push((index, Decoded::Rgba(drawn), None));
+                continue;
+            }
             let Some(media) = r.project.media.get(&layer.media) else {
                 continue;
             };
@@ -966,6 +975,22 @@ impl Worker {
         }
         out.took = started.elapsed();
         Some(out)
+    }
+
+    /// A title drawn at `size`: as it was last time when it is the same,
+    /// else drawn now and kept.
+    fn title_picture(&mut self, words: &crate::title::TitleLayer, size: (u32, u32)) -> media::Frame {
+        if let Some(i) = self.titles.iter().position(|(w, s, _)| w == words && *s == size)
+            && let Some(kept) = self.titles.remove(i)
+        {
+            let frame = kept.2.clone();
+            self.titles.push_front(kept);
+            return frame;
+        }
+        let frame = crate::title::draw(words, size);
+        self.titles.push_front((words.clone(), size, frame.clone()));
+        self.titles.truncate(TITLES_KEPT);
+        frame
     }
 
     /// For frame blending: the recorded frame after `shown` (the one on
@@ -1561,6 +1586,19 @@ fn pixels_needed(layer: &frame::Layer) -> (u32, u32) {
     (whole(w, layer.part.width), whole(h, layer.part.height))
 }
 
+/// How many drawn titles are kept.
+const TITLES_KEPT: usize = 4;
+
+/// The pixels a title's picture is drawn at: the size its part of the
+/// frame takes on screen.
+fn title_size(layer: &frame::Layer) -> (u32, u32) {
+    let (w, h) = layer.area.size();
+    (
+        w.ceil().clamp(1.0, 8192.0) as u32,
+        h.ceil().clamp(1.0, 8192.0) as u32,
+    )
+}
+
 /// Whether two descriptions show the same clips' files, layer for layer.
 fn same_layers(a: &FrameDescription, b: &FrameDescription) -> bool {
     a.layers.len() == b.layers.len()
@@ -1943,6 +1981,7 @@ mod tests {
             proxies: Proxies::default(),
             glancer: None,
             last_glance: None,
+            titles: VecDeque::new(),
         };
         assert_eq!(worker.ladder_for(failed), [Device, Hardware, Software]);
         worker.off_device.insert(failed);
@@ -1996,6 +2035,7 @@ mod tests {
             proxies: Proxies::default(),
             glancer: None,
             last_glance: None,
+            titles: VecDeque::new(),
         };
         (worker, p, seq)
     }

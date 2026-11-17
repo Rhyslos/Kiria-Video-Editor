@@ -7,8 +7,17 @@
 //! (`ui_kit::DraggedTransition`), or double-clicked to go into the
 //! selected clip from the one before it.
 
-use project::{EffectKind, TransitionKind};
-use ui_kit::{DraggedEffect, DraggedTransition, Theme};
+use project::{EffectKind, TitleStyle, TransitionKind};
+use ui_kit::{DraggedEffect, DraggedTitle, DraggedTransition, Theme};
+
+/// What a title layout is for, in a line.
+fn title_line(style: TitleStyle) -> &'static str {
+    match style {
+        TitleStyle::LowerThird => "A name low on the left, on a dark band",
+        TitleStyle::Centred => "Big words in the middle of the picture",
+        TitleStyle::EndCard => "Words on a dark card filling the picture",
+    }
+}
 
 /// What a transition does, in a line.
 fn transition_line(kind: TransitionKind) -> &'static str {
@@ -26,6 +35,7 @@ fn transition_line(kind: TransitionKind) -> &'static str {
 enum Item {
     Effect(EffectKind),
     Transition(TransitionKind),
+    Title(TitleStyle),
 }
 
 impl Item {
@@ -33,6 +43,7 @@ impl Item {
         match self {
             Item::Effect(kind) => kind.name(),
             Item::Transition(kind) => kind.name(),
+            Item::Title(style) => style.name(),
         }
     }
 
@@ -40,6 +51,7 @@ impl Item {
         match self {
             Item::Effect(kind) => about(&kind).1,
             Item::Transition(kind) => transition_line(kind),
+            Item::Title(style) => title_line(style),
         }
     }
 }
@@ -72,6 +84,8 @@ pub enum Asked {
     Add(EffectKind),
     /// Put this transition into the selected picture.
     AddTransition(TransitionKind),
+    /// Add a title of this layout at the playhead.
+    AddTitle(TitleStyle),
 }
 
 /// The Effects side's own state.
@@ -105,6 +119,18 @@ pub fn used(recent: &[String], kind: &EffectKind) -> Vec<String> {
 /// A transition by its place in [`TransitionKind::ALL`], as a drag carries it.
 pub fn transition_by_index(index: u32) -> Option<TransitionKind> {
     TransitionKind::ALL.get(index as usize).copied()
+}
+
+/// A title layout by its place in [`TitleStyle::ALL`], as a drag carries it.
+pub fn title_by_index(index: u32) -> Option<TitleStyle> {
+    TitleStyle::ALL.get(index as usize).copied()
+}
+
+/// Whether a title layout matches the words of `find`.
+fn title_matches(style: TitleStyle, find: &str) -> bool {
+    let text = format!("{} titles text words {}", style.name(), title_line(style)).to_lowercase();
+    find.split_whitespace()
+        .all(|word| text.contains(&word.to_lowercase()))
 }
 
 /// Whether a transition matches the words of `find` (its name, its
@@ -171,6 +197,15 @@ impl EffectsDrawer {
                     any = true;
                     self.group(ui, theme, "Transitions", &transitions, selected, &mut asked);
                 }
+                let titles: Vec<Item> = TitleStyle::ALL
+                    .into_iter()
+                    .filter(|s| title_matches(*s, &self.find))
+                    .map(Item::Title)
+                    .collect();
+                if !titles.is_empty() {
+                    any = true;
+                    self.group(ui, theme, "Titles", &titles, true, &mut asked);
+                }
                 for group in GROUPS {
                     let kinds: Vec<Item> = EffectKind::ALL
                         .into_iter()
@@ -223,6 +258,10 @@ impl EffectsDrawer {
                 let index = TransitionKind::ALL.iter().position(|k| *k == kind).unwrap_or(0) as u32;
                 response.dnd_set_drag_payload(DraggedTransition(index));
             }
+            Item::Title(style) => {
+                let index = TitleStyle::ALL.iter().position(|s| *s == style).unwrap_or(0) as u32;
+                response.dnd_set_drag_payload(DraggedTitle(index));
+            }
         }
         let lit = response.hovered() || response.dragged();
         if lit {
@@ -260,6 +299,7 @@ impl EffectsDrawer {
             let tip = match item {
                 Item::Effect(_) => "Add to the selected clip",
                 Item::Transition(_) => "Put it into the selected clip, from the clip before it",
+                Item::Title(_) => "Add it at the playhead",
             };
             let add = ui
                 .interact(plus, response.id.with("add"), egui::Sense::click())
@@ -278,6 +318,7 @@ impl EffectsDrawer {
                 asked = Some(match item {
                     Item::Effect(kind) => Asked::Add(kind),
                     Item::Transition(kind) => Asked::AddTransition(kind),
+                    Item::Title(style) => Asked::AddTitle(style),
                 });
             }
         }
@@ -317,6 +358,17 @@ mod tests {
         }
         assert!(transition_matches(TransitionKind::DipToBlack, "black"));
         assert!(!transition_matches(TransitionKind::Wipe, "black"));
+    }
+
+    #[test]
+    fn titles_travel_by_place_and_are_found_by_their_words() {
+        for (i, style) in TitleStyle::ALL.iter().enumerate() {
+            assert_eq!(title_by_index(i as u32), Some(*style));
+            assert!(title_matches(*style, "title"));
+            assert!(title_matches(*style, "text"));
+        }
+        assert!(title_matches(TitleStyle::LowerThird, "name"));
+        assert!(!title_matches(TitleStyle::Centred, "band"));
     }
 
     #[test]

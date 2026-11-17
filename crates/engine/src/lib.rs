@@ -44,6 +44,7 @@ pub mod source;
 pub mod sync;
 pub mod thumbnail;
 pub mod timeline;
+pub mod title;
 
 pub use compose::{Composed, Composing};
 pub use export::{Export, ExportSettings};

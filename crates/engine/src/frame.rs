@@ -126,6 +126,9 @@ pub struct Layer {
     /// With frame blending on and the moment between two recorded frames:
     /// the next frame to mix in, and how much of it.
     pub blend: Option<Blend>,
+    /// A title's words, drawn instead of a file's picture (its `media` is
+    /// none): its area is where the part of the frame they cover lands.
+    pub title: Option<Box<crate::title::TitleLayer>>,
 }
 
 /// The second picture of a blended layer: the recorded frame after the one
@@ -237,6 +240,13 @@ fn seen(project: &Project, sequence: &Sequence, at: Time, depth: usize) -> (Vec<
                     && group.area.covers(size);
                 nodes.push(Node::Timeline(group, inner));
                 hides
+            }
+            ClipKind::Title => {
+                if let Some(layer) = title_layer(clip, size, at).filter(|l| l.opacity > 0.0) {
+                    nodes.push(Node::Picture(layer));
+                }
+                // Mostly see-through: what is below always shows.
+                false
             }
             ClipKind::Adjustment => {
                 let look = clip.look_at(at);
@@ -355,6 +365,35 @@ fn layer_seen(
             FrameBlend::Blend => blend_at(source_time, video.frame_rate),
             FrameBlend::Off => None,
         },
+        title: None,
+    })
+}
+
+/// A title's words at `at`: placed as a picture the size of the frame
+/// would be, of which only the part they cover (and its look leaves) is
+/// drawn. Nothing when that is nothing.
+fn title_layer(clip: &Clip, frame: (u32, u32), at: Time) -> Option<Layer> {
+    let words = clip.title.as_deref()?;
+    let look = clip.look_at(at);
+    let covered = crate::title::bounds(words, frame)?;
+    let shown = crate::title::overlap(shown_part(&look), covered)?;
+    Some(Layer {
+        clip: clip.id,
+        media: clip.media,
+        stream: 0,
+        source_time: Time::ZERO,
+        area: Area::of_part(placement(&look, frame, frame), shown),
+        part: Part::WHOLE,
+        opacity: fraction(look.opacity),
+        colour: colour(&look),
+        effects: effects(clip, at),
+        mode: mode(clip.mode),
+        blend: None,
+        title: Some(Box::new(crate::title::TitleLayer {
+            title: words.clone(),
+            frame,
+            region: shown,
+        })),
     })
 }
 
@@ -744,6 +783,38 @@ mod tests {
         let frame = describe(&project, project.active().unwrap(), at);
         assert_eq!(frame.layers.len(), 2, "both drawn");
         assert_eq!(frame.layers[1].mode, render::Mode::Screen);
+    }
+
+    #[test]
+    fn a_title_is_drawn_over_the_picture_where_its_words_are() {
+        let project = import(
+            &Project::new("T", SequenceSettings::GAME_CLIP),
+            media("a.mkv", (1920, 1080), 0),
+        );
+        let project = Command::AddTitle {
+            sequence: project.active_sequence,
+            at: Time::seconds(1),
+            length: Time::seconds(3),
+            track: None,
+            title: Box::new(project::Title::new(project::TitleStyle::LowerThird)),
+        }
+        .apply(&project)
+        .unwrap();
+        let sequence = project.active().unwrap();
+        let frame = describe(&project, sequence, Time::seconds(2));
+        assert_eq!(frame.layers.len(), 2, "the picture still shows under it");
+        let words = frame.layers[1].title.as_ref().expect("the title on top");
+        let area = frame.layers[1].area;
+        // Low on the left, the size of the part of the frame it covers.
+        assert!((area.origin.0 - words.region.left * 1920.0).abs() < 0.5);
+        assert!(area.origin.1 > 1080.0 * 0.6);
+        assert!((area.size().0 - words.region.width * 1920.0).abs() < 0.5);
+        assert_eq!(frame.layers[1].part, Part::WHOLE);
+        assert!(
+            describe(&project, sequence, Time::seconds(5)).layers[0]
+                .title
+                .is_none()
+        );
     }
 
     #[test]

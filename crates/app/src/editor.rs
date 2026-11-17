@@ -1373,6 +1373,13 @@ impl Editor {
                     self.add_effect(kind, project::ClipId(clip));
                 }
             }
+            E::DropTitle { title, at, track } => {
+                if let Some(style) = crate::effects_drawer::title_by_index(title)
+                    && let Err(err) = self.add_title(style, seconds(at), track.map(project::TrackId))
+                {
+                    self.errors.push(&err);
+                }
+            }
             E::DropTransition { transition, clip } => {
                 if let Some(kind) = crate::effects_drawer::transition_by_index(transition) {
                     self.add_transition(kind, project::ClipId(clip));
@@ -2430,7 +2437,8 @@ impl Editor {
         let rect = ui_kit::drawer::drawer_rect(page);
         let dragging_out = egui::DragAndDrop::has_payload_of_type::<ui_kit::DraggedMedia>(&ctx)
             || egui::DragAndDrop::has_payload_of_type::<ui_kit::DraggedEffect>(&ctx)
-            || egui::DragAndDrop::has_payload_of_type::<ui_kit::DraggedTransition>(&ctx);
+            || egui::DragAndDrop::has_payload_of_type::<ui_kit::DraggedTransition>(&ctx)
+            || egui::DragAndDrop::has_payload_of_type::<ui_kit::DraggedTitle>(&ctx);
         let keep = ui_kit::drawer::keep_while_dragging(rect, tab);
         let named = self.document.as_ref().and_then(|d| {
             self.drawer
@@ -2495,6 +2503,13 @@ impl Editor {
                         self.status =
                             "Select a picture to add the effect to, or drag it onto a clip".to_owned()
                     }
+                }
+                None
+            }
+            Some(Picked::AddTitle(style)) => {
+                let at = self.viewer.playhead;
+                if let Err(err) = self.add_title(style, at, None) {
+                    self.errors.push(&err);
                 }
                 None
             }
