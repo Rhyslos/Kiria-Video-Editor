@@ -59,6 +59,8 @@ pub struct Settings {
     /// The effects used last, newest first, by name: the drawer's
     /// "Recently used".
     pub recent_effects: Vec<String>,
+    /// The drawer's Effects side as a grid of tiles rather than rows.
+    pub effect_tiles: bool,
     /// Nothing drawn over the picture in any viewer (H): the play buttons
     /// in the row under it, handles, notes and captions away.
     pub clean_picture: bool,
