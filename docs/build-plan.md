@@ -506,10 +506,10 @@ Phase 9 fills the Effects side of the Edit page's drawer and ships background re
 
 **9.1 Effects drawer**
 
-- [ ] Media / Effects switch; group list left (Favourites, Recently used, Video transitions, Audio transitions, Titles, Motion, Keying, Stabilise, Blur and censor, Stylise, Overlays, Audio effects; a group shows once it has effects).
-- [ ] Larger rows with a preview thumbnail, grouped under collapsible headings; a setting switches to a grid of tiles.
-- [ ] Drag onto a clip (onto a cut too, once there are transitions); hovering an effect previews it on the selected clip.
-- [ ] Settings appear in the inspector's Effects section (the clip's graph as a list: order by dragging, switch off, remove) and are tuned on the picture wherever possible.
+- [x] Media / Effects switch; group list left (Favourites, Recently used, Video transitions, Audio transitions, Titles, Motion, Keying, Stabilise, Blur and censor, Stylise, Overlays, Audio effects; a group shows once it has effects). (Done: Recently used, Motion, Blur and censor, Stylise as headings over the rows, with a find box; Favourites and the other groups come with their effects.)
+- [ ] Larger rows with a preview thumbnail, grouped under collapsible headings; a setting switches to a grid of tiles. (Rows with a name and a line on what it does are in; the thumbnails, folding headings and the grid are not.)
+- [x] Drag onto a clip (onto a cut too, once there are transitions); hovering an effect previews it on the selected clip. (Done: the clip under the pointer is outlined; double-click or + adds to the selected clip.)
+- [x] Settings appear in the inspector's Effects section (the clip's graph as a list: order by dragging, switch off, remove) and are tuned on the picture wherever possible. (Done with arrows to reorder; tuning on the picture comes with keyframes on effect settings.)
 
 **9.2 First effects: the cheap ones** (each a small GPU shader in linear light with a golden-frame test; decided by the owner in November 2026: these first, the rest later)
 

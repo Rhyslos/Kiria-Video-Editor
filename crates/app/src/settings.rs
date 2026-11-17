@@ -56,6 +56,9 @@ pub struct Settings {
     /// The Edit page's viewer shows the selected clip's own picture (Source)
     /// beside the timeline's (Program).
     pub split_view: bool,
+    /// The effects used last, newest first, by name: the drawer's
+    /// "Recently used".
+    pub recent_effects: Vec<String>,
     /// Nothing drawn over the picture in any viewer (H): the play buttons
     /// in the row under it, handles, notes and captions away.
     pub clean_picture: bool,

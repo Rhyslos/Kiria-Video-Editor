@@ -50,6 +50,9 @@ pub struct Options {
     /// screenshots of what a selected clip shows: the inspector's values,
     /// the handles on its picture).
     pub select_first_clip: bool,
+    /// Start with the media drawer open on its Effects side
+    /// (`--effects-drawer`, for screenshots).
+    pub effects_drawer: bool,
     /// Select every clip of the open timeline once the project and its
     /// imports are in, and run Sync by sound on them (`--sync-by-sound`,
     /// for screenshots of its result).
@@ -210,6 +213,7 @@ impl Options {
                 }
                 "--full-screen" => options.full_screen = true,
                 "--select-first-clip" => options.select_first_clip = true,
+                "--effects-drawer" => options.effects_drawer = true,
                 "--sync-by-sound" => options.sync_by_sound = true,
                 "--cpu-colour" => options.cpu_colour = true,
                 "--graphics-warning" => options.graphics_warning = true,
@@ -409,6 +413,7 @@ mod tests {
         );
         assert!(parse(&["p.x", "--select-first-clip"]).unwrap().select_first_clip);
         assert!(!parse(&["p.x"]).unwrap().select_first_clip);
+        assert!(parse(&["p.x", "--effects-drawer"]).unwrap().effects_drawer);
         assert!(parse(&["p.x", "--sync-by-sound"]).unwrap().sync_by_sound);
         assert!(!parse(&["p.x"]).unwrap().cpu_colour);
         assert_eq!(

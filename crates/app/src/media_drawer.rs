@@ -47,6 +47,8 @@ pub enum Picked {
     Dismiss(std::path::PathBuf),
     /// A command of the ⋯ menu (Prune, Package project).
     Run(ui_kit::Action),
+    /// Put this effect on the selected picture (the Effects side).
+    AddEffect(project::EffectKind),
 }
 
 /// What the drawer is told besides the project.
@@ -59,6 +61,10 @@ pub struct About<'a> {
     /// The labels offered in every project.
     pub global: &'a GlobalLabels,
     pub new_files: crate::new_files::NewFiles<'a>,
+    /// Whether a picture effects can go on is selected (the Effects side).
+    pub picture_selected: bool,
+    /// The effects used last, by name.
+    pub recent_effects: &'a [String],
 }
 
 /// What the drawer is told about proxies: each file's, and the mode.
@@ -80,6 +86,8 @@ pub struct MediaDrawer {
     /// Only files in this list.
     pub list: Option<MediaListId>,
     pub sort: Sort,
+    /// The Effects side.
+    pub effects: crate::effects_drawer::EffectsDrawer,
     /// What is being typed in a file's Labels, Lists and Note menus.
     organiser: Organiser,
 }
@@ -168,13 +176,16 @@ impl MediaDrawer {
             proxy,
             global,
             new_files,
+            picture_selected,
+            recent_effects,
         } = about;
         ui_kit::drawer::tab_switch(ui, &mut self.tab);
         ui.add_space(6.0);
         if self.tab == DrawerTab::Effects {
-            ui.label(egui::RichText::new("Effects arrive with the inspector.").color(theme.muted));
-            return None;
+            let asked = self.effects.ui(ui, theme, *picture_selected, recent_effects);
+            return asked.map(|crate::effects_drawer::Asked::Add(kind)| Picked::AddEffect(kind));
         }
+        self.effects.previewing = None;
         let mut ran = None;
         ui.horizontal(|ui| {
             ran = more_menu(ui);

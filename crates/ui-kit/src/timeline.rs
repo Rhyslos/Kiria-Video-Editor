@@ -369,6 +369,8 @@ pub enum TimelineEvent {
         insert: bool,
         track: Option<u64>,
     },
+    /// A dragged effect was let go over a clip.
+    DropEffect { effect: u32, clip: u64 },
     /// "Add a video track" or "Add an audio track" from the menu of the track names.
     AddTrack { audio: bool },
     /// "Remove" from that menu, for a track without clips.
@@ -460,6 +462,11 @@ pub struct DraggedMedia(pub u64);
 /// be placed in it as one piece.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DraggedTimeline(pub u64);
+
+/// An effect being dragged from the media drawer onto a clip: its place in
+/// the page's list of effects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DraggedEffect(pub u32);
 
 /// One end of a clip.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -682,6 +689,8 @@ pub struct TimelineView {
     /// A file dragged in from a list is over the timeline: the time under
     /// the pointer and the video row it would land on (none over the audio area).
     file_over: Option<(f64, Option<usize>)>,
+    /// The clip a dragged effect is over, and where it is drawn.
+    effect_over: Option<Rect>,
     /// A drag with the middle button that pans the view: the area it began
     /// over (`None`: the ruler or the scroll bar, which only pan time).
     pan_drag: Option<Option<Half>>,
@@ -756,6 +765,7 @@ impl Default for TimelineView {
             names_menu: None,
             rename: None,
             file_over: None,
+            effect_over: None,
             pan_drag: None,
             steps: Vec::new(),
             max_zoom: MAX_ZOOM,
@@ -1633,6 +1643,7 @@ impl TimelineView {
         let video_rows = self.rows(Half::Video, &layout, data);
         let audio_rows = self.rows(Half::Audio, &layout, data);
         self.file_over = None;
+        self.effect_over = None;
         // While the middle button pans, nothing else reacts to the pointer.
         if !panning {
             self.input(ui, &layout, data, [&video_rows, &audio_rows], &mut events);
@@ -1952,6 +1963,13 @@ impl TimelineView {
         if !renaming_shown {
             // The track whose name was being typed has left the view, or is gone.
             self.rename = None;
+        }
+        // An effect dragged over a clip: the clip it would go onto.
+        if let Some(clip) = self.effect_over {
+            let tracks = Rect::from_min_max(pos2(left, layout.video.top()), layout.audio.max);
+            let mark = ui.visuals().selection.stroke.color;
+            ui.painter_at(tracks)
+                .rect_stroke(clip, 4.0, Stroke::new(2.0, mark), egui::StrokeKind::Inside);
         }
         // A file dragged over the timeline: where it would land.
         if let Some((at, row)) = self.file_over {
@@ -3080,7 +3098,10 @@ impl TimelineView {
             // pointer: the area is not pointed at, but the file is over it.
             let file_over = r.dnd_hover_payload::<DraggedMedia>().is_some()
                 || r.dnd_hover_payload::<DraggedTimeline>().is_some();
-            let file_at = ui.input(|i| i.pointer.interact_pos()).filter(|_| file_over);
+            let effect_over = r.dnd_hover_payload::<DraggedEffect>().is_some();
+            let file_at = ui
+                .input(|i| i.pointer.interact_pos())
+                .filter(|_| file_over || effect_over);
             let menu_marks = self.menu_marks(tracks, data.fps);
             let menu_clip = self
                 .menu_at
@@ -3139,6 +3160,35 @@ impl TimelineView {
                     at: t.max(0.0),
                     track: drop_row.and_then(|row| tracks.get(row)).map(|t| t.id),
                 });
+                continue;
+            }
+            if effect_over {
+                // The clip under the pointer, outlined while the effect is
+                // over it; let go there, the effect goes onto it.
+                let under = rows
+                    .at(p.y)
+                    .and_then(|row| Some((row, tracks.get(row)?)))
+                    .and_then(|(row, track)| {
+                        let clip = track
+                            .clips
+                            .iter()
+                            .find(|c| c.start <= t && t < c.start + c.duration)?;
+                        let band = row_rects.get(row)?;
+                        let x = (
+                            self.x_of(left, clip.start),
+                            self.x_of(left, clip.start + clip.duration),
+                        );
+                        Some((clip.id, Rect::from_x_y_ranges(x.0..=x.1, band.y_range())))
+                    });
+                self.effect_over = under.map(|(_, rect)| rect);
+                if let Some(dragged) = r.dnd_release_payload::<DraggedEffect>()
+                    && let Some((clip, _)) = under
+                {
+                    events.push(TimelineEvent::DropEffect {
+                        effect: dragged.0,
+                        clip,
+                    });
+                }
                 continue;
             }
             if let Some(dragged) = r.dnd_release_payload::<DraggedMedia>() {
@@ -5839,6 +5889,34 @@ mod tests {
         rig.move_to(at);
         rig.move_to(at);
         rig.button(at, primary, false)
+    }
+
+    #[test]
+    fn a_dropped_effect_goes_onto_the_clip_under_the_pointer() {
+        let mut rig = Rig::new(2, 2);
+        let primary = egui::PointerButton::Primary;
+        let drawer = pos2(60.0, 395.0);
+        let drop = |rig: &mut Rig, at: Pos2| {
+            rig.move_to(drawer);
+            rig.button(drawer, primary, true);
+            egui::DragAndDrop::set_payload(&rig.ctx, DraggedEffect(4));
+            rig.move_to(at);
+            rig.move_to(at);
+            let outlined = rig.view.effect_over.is_some();
+            (outlined, rig.button(at, primary, false))
+        };
+        // The upper video track's clip (1 s to 5 s) at 3 s.
+        assert_eq!(
+            drop(&mut rig, pos2(x_at(3.0), 130.0)),
+            (true, vec![TimelineEvent::DropEffect { effect: 4, clip: 1 }])
+        );
+        assert_eq!(
+            drop(&mut rig, pos2(x_at(3.0), 190.0)),
+            (true, vec![TimelineEvent::DropEffect { effect: 4, clip: 0 }]),
+            "the lower one"
+        );
+        // Past the clips: nothing happens.
+        assert_eq!(drop(&mut rig, pos2(x_at(6.0), 130.0)), (false, Vec::new()));
     }
 
     #[test]
