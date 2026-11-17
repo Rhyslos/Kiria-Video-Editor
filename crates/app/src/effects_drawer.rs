@@ -7,6 +7,10 @@
 //! (`ui_kit::DraggedTransition`), or double-clicked to go into the
 //! selected clip from the one before it.
 
+mod thumbs;
+
+use std::collections::HashSet;
+
 use project::{EffectKind, TitleStyle, TransitionKind};
 use ui_kit::{DraggedEffect, DraggedTitle, DraggedTransition, Theme};
 
@@ -87,6 +91,8 @@ pub enum Asked {
     AddTransition(TransitionKind),
     /// Add a title of this layout at the playhead.
     AddTitle(TitleStyle),
+    /// Show them as tiles (true) or rows: a setting.
+    Tiles(bool),
 }
 
 /// The Effects side's own state.
@@ -96,6 +102,10 @@ pub struct EffectsDrawer {
     pub find: String,
     /// The effect the pointer rests on, previewed on the selected picture.
     pub previewing: Option<EffectKind>,
+    /// Shown as a grid of tiles rather than rows (a setting, set by the page).
+    pub tiles: bool,
+    /// The groups folded away, by title, for the session.
+    folded: HashSet<String>,
 }
 
 /// An effect by its place in [`EffectKind::ALL`], as a drag carries it.
@@ -162,11 +172,27 @@ impl EffectsDrawer {
         recent: &[String],
     ) -> Option<Asked> {
         self.previewing = None;
-        ui.add(
-            egui::TextEdit::singleline(&mut self.find)
-                .hint_text("Find an effect")
-                .desired_width(f32::INFINITY),
-        );
+        let mut asked = None;
+        ui.horizontal(|ui| {
+            for (tiles, label, tip) in [
+                (false, "☰", "Show them as rows"),
+                (true, "▦", "Show them as tiles"),
+            ] {
+                if ui
+                    .selectable_label(self.tiles == tiles, label)
+                    .on_hover_text(tip)
+                    .clicked()
+                    && self.tiles != tiles
+                {
+                    asked = Some(Asked::Tiles(tiles));
+                }
+            }
+            ui.add(
+                egui::TextEdit::singleline(&mut self.find)
+                    .hint_text("Find an effect")
+                    .desired_width(f32::INFINITY),
+            );
+        });
         ui.add_space(4.0);
         let hint = if selected {
             "Drag one onto a clip (a transition onto a cut), or double-click to add it to the selected clip. Rest on an effect to preview it."
@@ -175,7 +201,6 @@ impl EffectsDrawer {
         };
         ui.label(egui::RichText::new(hint).small().color(theme.muted));
         ui.add_space(6.0);
-        let mut asked = None;
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -234,22 +259,69 @@ impl EffectsDrawer {
         selected: bool,
         asked: &mut Option<Asked>,
     ) {
-        ui.label(egui::RichText::new(title).small().strong().color(theme.muted));
-        for item in items {
-            if let Some(a) = self.row(ui, theme, *item, selected) {
-                *asked = Some(a);
+        let folded = self.folded.contains(title);
+        let arrow = if folded { "▸" } else { "▾" };
+        let heading = ui
+            .add(
+                egui::Label::new(
+                    egui::RichText::new(format!("{arrow} {title}"))
+                        .small()
+                        .strong()
+                        .color(theme.muted),
+                )
+                .sense(egui::Sense::click()),
+            )
+            .on_hover_text(if folded {
+                "Show this group"
+            } else {
+                "Fold this group away"
+            });
+        if heading.clicked() {
+            if folded {
+                self.folded.remove(title);
+            } else {
+                self.folded.insert(title.to_owned());
+            }
+        }
+        if folded {
+            ui.add_space(4.0);
+            return;
+        }
+        if self.tiles {
+            let width = ((ui.available_width() - TILE_GAP) / 2.0).floor().max(60.0);
+            for pair in items.chunks(2) {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = TILE_GAP;
+                    for item in pair {
+                        if let Some(a) = self.row(ui, theme, *item, selected, egui::vec2(width, TILE_HEIGHT))
+                        {
+                            *asked = Some(a);
+                        }
+                    }
+                });
+            }
+        } else {
+            for item in items {
+                let size = egui::vec2(ui.available_width(), ROW_HEIGHT);
+                if let Some(a) = self.row(ui, theme, *item, selected, size) {
+                    *asked = Some(a);
+                }
             }
         }
         ui.add_space(8.0);
     }
 
-    /// One effect or transition: its name and line; dragged,
-    /// double-clicked or + to add.
-    fn row(&mut self, ui: &mut egui::Ui, theme: &Theme, item: Item, selected: bool) -> Option<Asked> {
-        let (rect, response) = ui.allocate_exact_size(
-            egui::vec2(ui.available_width(), ROW_HEIGHT),
-            egui::Sense::click_and_drag(),
-        );
+    /// One effect, transition or title: its picture, name and (as a row)
+    /// its line; dragged, double-clicked or + to add.
+    fn row(
+        &mut self,
+        ui: &mut egui::Ui,
+        theme: &Theme,
+        item: Item,
+        selected: bool,
+        size: egui::Vec2,
+    ) -> Option<Asked> {
+        let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
         match item {
             Item::Effect(kind) => {
                 let index = EffectKind::ALL.iter().position(|k| *k == kind).unwrap_or(0) as u32;
@@ -276,27 +348,56 @@ impl EffectsDrawer {
             self.previewing = Some(kind);
         }
         let painter = ui.painter_at(rect);
-        let text = rect.shrink2(egui::vec2(10.0, 6.0));
-        painter.text(
-            text.left_top(),
-            egui::Align2::LEFT_TOP,
-            item.name(),
-            egui::FontId::proportional(14.0),
-            theme.text,
-        );
-        painter.text(
-            text.left_bottom(),
-            egui::Align2::LEFT_BOTTOM,
-            item.line(),
-            egui::FontId::proportional(11.5),
-            theme.muted,
-        );
+        let tile = size.y >= TILE_HEIGHT;
+        if tile {
+            let picture = egui::Rect::from_min_size(
+                rect.min + egui::vec2(4.0, 4.0),
+                egui::vec2(rect.width() - 8.0, TILE_HEIGHT - 26.0),
+            );
+            thumbs::draw(&painter, picture, item);
+            painter.text(
+                egui::pos2(rect.left() + 6.0, rect.bottom() - 6.0),
+                egui::Align2::LEFT_BOTTOM,
+                item.name(),
+                egui::FontId::proportional(12.5),
+                theme.text,
+            );
+        } else {
+            let picture = egui::Rect::from_min_size(
+                egui::pos2(rect.left() + 6.0, rect.center().y - THUMB.y / 2.0),
+                THUMB,
+            );
+            thumbs::draw(&painter, picture, item);
+            let text = rect.shrink2(egui::vec2(10.0, 6.0));
+            let left = picture.right() + 10.0;
+            painter.text(
+                egui::pos2(left, text.top()),
+                egui::Align2::LEFT_TOP,
+                item.name(),
+                egui::FontId::proportional(14.0),
+                theme.text,
+            );
+            painter.text(
+                egui::pos2(left, text.bottom()),
+                egui::Align2::LEFT_BOTTOM,
+                item.line(),
+                egui::FontId::proportional(11.5),
+                theme.muted,
+            );
+        }
+        let response = response.on_hover_text(item.line());
         let mut asked = None;
         if selected {
-            let plus = egui::Rect::from_center_size(
-                egui::pos2(rect.right() - 18.0, rect.center().y),
-                egui::vec2(24.0, 24.0),
-            );
+            let plus = match tile {
+                true => egui::Rect::from_center_size(
+                    egui::pos2(rect.right() - 14.0, rect.bottom() - 12.0),
+                    egui::vec2(22.0, 22.0),
+                ),
+                false => egui::Rect::from_center_size(
+                    egui::pos2(rect.right() - 18.0, rect.center().y),
+                    egui::vec2(24.0, 24.0),
+                ),
+            };
             let tip = match item {
                 Item::Effect(_) => "Add to the selected clip",
                 Item::Transition(_) => "Put it into the selected clip, from the clip before it",
@@ -329,7 +430,14 @@ impl EffectsDrawer {
 }
 
 /// Height of one effect's row.
-const ROW_HEIGHT: f32 = 44.0;
+const ROW_HEIGHT: f32 = 48.0;
+
+/// A row's picture.
+const THUMB: egui::Vec2 = egui::vec2(60.0, 36.0);
+
+/// A tile's height, and the gap between two tiles.
+const TILE_HEIGHT: f32 = 92.0;
+const TILE_GAP: f32 = 8.0;
 
 #[cfg(test)]
 mod tests {

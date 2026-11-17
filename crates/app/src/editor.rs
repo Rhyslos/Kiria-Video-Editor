@@ -2473,6 +2473,7 @@ impl Editor {
             .as_ref()
             .is_some_and(|d| crate::inspector::effects_target(d.project(), &self.selected).is_some());
         let recent_effects = &self.settings.recent_effects;
+        self.drawer.effects.tiles = self.settings.effect_tiles;
         let (drawer, theme, missing) = (&mut self.drawer, &self.theme, &self.relink.missing);
         let (proxies, global_labels) = (&self.proxies, &self.global_labels.labels);
         let proxy = crate::media_drawer::ProxyInfo {
@@ -2512,6 +2513,10 @@ impl Editor {
                             "Select a picture to add the effect to, or drag it onto a clip".to_owned()
                     }
                 }
+                None
+            }
+            Some(Picked::EffectTiles(tiles)) => {
+                self.settings.effect_tiles = tiles;
                 None
             }
             Some(Picked::AddTitle(style)) => {

@@ -53,6 +53,8 @@ pub enum Picked {
     AddTransition(project::TransitionKind),
     /// Add a title of this layout at the playhead (the Effects side).
     AddTitle(project::TitleStyle),
+    /// Show the Effects side as tiles (true) or rows: a setting.
+    EffectTiles(bool),
 }
 
 /// What the drawer is told besides the project.
@@ -191,6 +193,7 @@ impl MediaDrawer {
                 crate::effects_drawer::Asked::Add(kind) => Picked::AddEffect(kind),
                 crate::effects_drawer::Asked::AddTransition(kind) => Picked::AddTransition(kind),
                 crate::effects_drawer::Asked::AddTitle(style) => Picked::AddTitle(style),
+                crate::effects_drawer::Asked::Tiles(tiles) => Picked::EffectTiles(tiles),
             });
         }
         self.effects.previewing = None;
