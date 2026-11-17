@@ -32,6 +32,8 @@ pub struct Asked {
     pub seek: Option<Time>,
     /// The effect whose box is to follow what it covers from the playhead.
     pub follow: Option<project::EffectId>,
+    /// The Stabilise effect whose correction is to be found.
+    pub steady: Option<project::EffectId>,
 }
 
 /// Where the playhead is, for the settings shown and the keyframe controls.
@@ -74,6 +76,12 @@ fn knobs(kind: &EffectKind) -> &'static [(&'static str, Show)] {
             ("Point down", Percent),
         ],
         EffectKind::Shake(_) => &[("Amount", Percent), ("Speed", Percent)],
+        EffectKind::Stabilise(_) => &[
+            ("Smoothing", Percent),
+            ("Zoom", Size(150.0)),
+            ("View across", Percent),
+            ("View down", Percent),
+        ],
         EffectKind::Pan(_) => &[
             ("Zoom", Size(200.0)),
             ("From across", Percent),
@@ -129,6 +137,7 @@ pub fn section(ui: &mut egui::Ui, theme: &Theme, sequence: SequenceId, at: At<'_
     let mut add: Option<EffectKind> = None;
     let mut seek = None;
     let mut follow = None;
+    let mut steady = None;
     let clicks = inspector::section(ui, theme, "Effects", &summary(shown), !shown.is_empty(), |ui| {
         let count = shown.0.len();
         for i in 0..count {
@@ -188,6 +197,7 @@ pub fn section(ui: &mut egui::Ui, theme: &Theme, sequence: SequenceId, at: At<'_
                     }
                     Row::Seek(to) => seek = Some(to),
                     Row::Follow(id) => follow = Some(id),
+                    Row::Steady(id) => steady = Some(id),
                     Row::Still => {}
                 }
             });
@@ -216,6 +226,7 @@ pub fn section(ui: &mut egui::Ui, theme: &Theme, sequence: SequenceId, at: At<'_
     };
     asked.seek = seek;
     asked.follow = follow;
+    asked.steady = steady;
     if clicks.reset {
         asked.commands.push(set(Effects::default()));
     } else if let Some(next) = clicked {
@@ -241,6 +252,8 @@ enum Row {
     Seek(Time),
     /// "Follow it from here": this effect's box is to follow what it covers.
     Follow(project::EffectId),
+    /// "Analyse the clip": this Stabilise effect's correction is to be found.
+    Steady(project::EffectId),
 }
 
 /// The settings of one effect at the playhead, each with its keyframe
@@ -266,6 +279,30 @@ fn settings(ui: &mut egui::Ui, theme: &Theme, at: At<'_>, effect: &project::Effe
         let whole = Spot::WHOLE;
         now[range] == [whole.left, whole.top, whole.width, whole.height]
     });
+    if matches!(effect.kind, EffectKind::Stabilise(_)) && clip.is_file() {
+        let analysed = !next.keys.of(project::effects::Stabilise::MIDDLE).is_empty();
+        let label = if analysed {
+            "Analyse again"
+        } else {
+            "Analyse the clip"
+        };
+        if ui
+            .button(label)
+            .on_hover_text(
+                "Finds how the camera moves over the whole clip and sets the view to follow it smoothed out",
+            )
+            .clicked()
+        {
+            return Row::Steady(effect.id);
+        }
+        if !analysed {
+            ui.label(
+                egui::RichText::new("Not analysed yet: it only zooms in until then.")
+                    .color(theme.muted)
+                    .size(12.0),
+            );
+        }
+    }
     for (index, (label, show)) in knobs(&effect.kind).iter().enumerate() {
         if let Some(range) = spot.clone()
             && index == range.start

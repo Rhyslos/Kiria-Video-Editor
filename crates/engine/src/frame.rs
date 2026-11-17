@@ -455,6 +455,19 @@ fn effects(clip: &Clip, at: Time) -> Vec<render::Effect> {
                 shift: (0.0, 0.0),
             },
             project::EffectKind::Shake(s) => shake(fraction(s.amount), fraction(s.speed), since),
+            project::EffectKind::Stabilise(s) => {
+                let scale = 1.0 + 0.5 * fraction(s.zoom);
+                // The view's middle, kept where the enlarged picture still
+                // covers the whole frame.
+                let room = 0.5 - 0.5 / scale;
+                let middle = |at: i32| (fraction(at) - 0.5).clamp(-room, room);
+                render::Effect::Move {
+                    scale,
+                    fixed: (0.5, 0.5),
+                    turn: 0.0,
+                    shift: (middle(s.x), middle(s.y)),
+                }
+            }
             project::EffectKind::Pan(p) => {
                 let scale = 1.0 + fraction(p.zoom);
                 // The view's middle, kept where the enlarged picture still

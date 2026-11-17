@@ -68,6 +68,7 @@ fn about(kind: &EffectKind) -> (&'static str, &'static str) {
         EffectKind::Zoom(_) => ("Motion", "Moves in on a point over the clip"),
         EffectKind::Shake(_) => ("Motion", "A smooth camera shake"),
         EffectKind::Pan(_) => ("Motion", "Slides across the picture over the clip"),
+        EffectKind::Stabilise(_) => ("Motion", "Steadies a shaky camera, after analysing the clip"),
         EffectKind::Blur(_) => ("Blur and censor", "Softens the picture, or a box in it"),
         EffectKind::Pixelate(_) => ("Blur and censor", "Big blocks over the picture, or a box in it"),
         EffectKind::Vignette(_) => ("Stylise", "Darker towards the edges"),

@@ -258,10 +258,22 @@ fn rich_project() -> Project {
     let main = p.active_sequence;
     let mut short = p.new_sequence("Short cut", SequenceSettings::VERTICAL_SHORT);
     let inner_clip = p.allocate_id();
+    // Steadied, its view keyed by an analysis (format 27).
+    let (steadied, steady_id) = project::Effects::default()
+        .with_added(project::EffectKind::Stabilise(project::effects::Stabilise::USUAL));
+    let mut steadied = steadied;
+    let view = [
+        (Time::ZERO, (500_000, 500_000)),
+        (Time::seconds(1), (510_000, 495_000)),
+    ];
+    if let Some(at) = steadied.0.iter().position(|e| e.id == steady_id) {
+        steadied.0[at] = steadied.0[at].keyed_pair(project::effects::Stabilise::MIDDLE, &view);
+    }
     short.video_tracks[0].clips.push_back(Clip {
         start: Time::ZERO,
         duration: Time::seconds(4),
         link: None,
+        effects: steadied,
         ..clip(inner_clip, 0)
     });
     // A second shot dissolving in over a second across its cut (format 25).
@@ -599,6 +611,36 @@ fn version_25_sample_opens_without_titles() {
                 .all(|t| t.clips.iter().all(|c| !c.is_title() && c.title.is_none()))
         );
     }
+}
+
+#[test]
+fn version_26_sample_opens_without_stabilise() {
+    let project = file::load(&sample_path(26)).expect("the version 26 sample opens");
+    for seq in project.sequences.iter() {
+        let clips = seq.tracks().flat_map(|t| t.clips.iter());
+        assert!(
+            clips
+                .flat_map(|c| c.effects.iter())
+                .all(|e| e.kind.name() != "Stabilise")
+        );
+    }
+}
+
+#[test]
+fn the_current_sample_has_a_steadied_shot() {
+    let project = file::load(&sample_path(FORMAT_VERSION)).expect("the sample opens");
+    let short = project
+        .sequences
+        .iter()
+        .find(|s| s.name == "Short cut")
+        .expect("the second timeline");
+    let steady = short.video_tracks[0].clips[0]
+        .effects
+        .iter()
+        .next()
+        .expect("an effect");
+    assert_eq!(steady.kind.name(), "Stabilise");
+    assert_eq!(steady.keys.of(project::effects::Stabilise::MIDDLE).len(), 2);
 }
 
 #[test]
