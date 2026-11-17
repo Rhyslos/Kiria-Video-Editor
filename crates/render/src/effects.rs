@@ -45,6 +45,57 @@ pub enum Effect {
         turn: f32,
         shift: (f32, f32),
     },
+    /// A grade's primary corrections (`GradeNumbers`), on light.
+    Grade(GradeNumbers),
+}
+
+/// A grade layer's numbers as the shader takes them: each wheel's red,
+/// green, blue and brightness (-1 to 1); exposure in stops; contrast (0
+/// leaves it, 1 twice as hard) around `pivot` (a light level); saturation
+/// (1 leaves it); the white balance as gains on red, green and blue; and
+/// highlights and shadows in stops.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GradeNumbers {
+    pub shadows_wheel: [f32; 4],
+    pub midtones_wheel: [f32; 4],
+    pub highlights_wheel: [f32; 4],
+    pub overall_wheel: [f32; 4],
+    pub exposure: f32,
+    pub contrast: f32,
+    pub pivot: f32,
+    pub saturation: f32,
+    pub balance: [f32; 3],
+    pub highlights: f32,
+    pub shadows: f32,
+}
+
+impl GradeNumbers {
+    /// One that changes nothing.
+    pub const PLAIN: GradeNumbers = GradeNumbers {
+        shadows_wheel: [0.0; 4],
+        midtones_wheel: [0.0; 4],
+        highlights_wheel: [0.0; 4],
+        overall_wheel: [0.0; 4],
+        exposure: 0.0,
+        contrast: 0.0,
+        pivot: 0.18,
+        saturation: 1.0,
+        balance: [1.0; 3],
+        highlights: 0.0,
+        shadows: 0.0,
+    };
+
+    fn rows(&self) -> [[f32; 4]; 7] {
+        [
+            self.shadows_wheel,
+            self.midtones_wheel,
+            self.highlights_wheel,
+            self.overall_wheel,
+            [self.exposure, self.contrast, self.pivot, self.saturation],
+            [self.balance[0], self.balance[1], self.balance[2], self.highlights],
+            [self.shadows, 0.0, 0.0, 0.0],
+        ]
+    }
 }
 
 /// A box in a picture: its left, top, right and bottom edges, each 0-1 of
@@ -111,6 +162,7 @@ enum Pass {
         turn: f32,
         shift: (f32, f32),
     },
+    Grade(GradeNumbers),
 }
 
 impl Pass {
@@ -130,6 +182,7 @@ impl Pass {
             Pass::Within { .. } => [7.0, 0.0, 0.0, 0.0],
             Pass::Pixelate { size, .. } => [8.0, size, 0.0, 0.0],
             Pass::Move { scale, fixed, .. } => [9.0, scale, fixed.0, fixed.1],
+            Pass::Grade(_) => [10.0, 0.0, 0.0, 0.0],
         }
     }
 
@@ -141,9 +194,17 @@ impl Pass {
             _ => Spot::WHOLE.numbers(),
         }
     }
+
+    /// The pass's grade rows: a grade's numbers, plain for every other.
+    fn grade(self) -> [[f32; 4]; 7] {
+        match self {
+            Pass::Grade(numbers) => numbers.rows(),
+            _ => GradeNumbers::PLAIN.rows(),
+        }
+    }
 }
 
-const PASS_BYTES: u64 = 48;
+const PASS_BYTES: u64 = 48 + 7 * 16;
 
 /// The effect passes for pictures made in one working space.
 #[derive(Debug)]
@@ -292,6 +353,7 @@ impl Effects {
                     };
                     pass(encoder, &now, None, moving, 0)
                 }
+                Effect::Grade(numbers) => pass(encoder, &now, None, Pass::Grade(numbers), 0),
             };
             done.push(std::mem::replace(&mut now, next));
         }
@@ -316,10 +378,18 @@ impl Effects {
         // Each pass its own numbers: they are written when the queue is
         // submitted, after every pass has been recorded. The seed stays
         // below 2^24, where a float holds every whole number.
+        let grade = pass.grade();
         let rows = [
             pass.numbers(),
             [linear, w as f32, h as f32, (seed % (1 << 24)) as f32],
             pass.extra(),
+            grade[0],
+            grade[1],
+            grade[2],
+            grade[3],
+            grade[4],
+            grade[5],
+            grade[6],
         ];
         let bytes: Vec<u8> = rows.as_flattened().iter().flat_map(|n| n.to_ne_bytes()).collect();
         let uniforms = uniform_buffer(device, PASS_BYTES);

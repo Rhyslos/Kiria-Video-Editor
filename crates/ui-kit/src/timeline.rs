@@ -133,6 +133,8 @@ pub struct TimelineClip {
     /// How long the transition into it from the clip before lasts, in
     /// seconds, when it has one: drawn as a box centred on its start.
     pub transition_in: Option<f64>,
+    /// It has a grade from the Color page: a small dot in its bottom left.
+    pub graded: bool,
 }
 
 /// What a clip plays, as the timeline draws it.
@@ -4269,6 +4271,9 @@ fn draw_clip_marks(p: &egui::Painter, theme: &Theme, r: Rect, clip: &TimelineCli
         );
     }
     draw_what_it_shows(p, theme, r, clip.shows);
+    if clip.graded && r.width() > 16.0 && r.height() > 14.0 {
+        p.circle_filled(pos2(r.left() + 7.0, r.bottom() - 7.0), 3.0, theme.accent);
+    }
     if clip.selected {
         p.rect_stroke(r, 4.0, Stroke::new(2.0, theme.accent), egui::StrokeKind::Inside);
     }
@@ -4508,6 +4513,7 @@ mod tests {
             slip_room: None,
             plays_until: None,
             transition_in: None,
+            graded: false,
         }
     }
 

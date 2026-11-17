@@ -515,6 +515,7 @@ mod tests {
                     mode: Default::default(),
                     transition: None,
                     title: None,
+                    grade: Default::default(),
                     id: ClipId(0),
                     media: *media,
                     stream: 0,

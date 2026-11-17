@@ -504,6 +504,12 @@ pub enum Command {
         clip: ClipId,
         transition: Option<crate::transitions::Transition>,
     },
+    /// Pictures' grades (format 28), each clip its own, in one step:
+    /// a grade set, pasted onto several clips or put back as it comes.
+    SetGrades {
+        sequence: SequenceId,
+        grades: Vec<(ClipId, crate::grade::Grade)>,
+    },
     /// The mix's compressor and true-peak limiter (format 16).
     SetMasterSound {
         sequence: SequenceId,
@@ -1074,6 +1080,13 @@ impl Command {
                 clip,
                 transition,
             } => crate::transitions::set(sequence_mut(&mut p, *sequence)?, *clip, *transition)?,
+            Command::SetGrades { sequence, grades } => {
+                let seq = sequence_mut(&mut p, *sequence)?;
+                for (clip, grade) in grades {
+                    grade.check()?;
+                    picture_for_effects(seq, *clip)?.grade = grade.clone();
+                }
+            }
             Command::SetMasterSound { sequence, sound } => {
                 sound.check()?;
                 sequence_mut(&mut p, *sequence)?.master_sound = *sound;
@@ -1425,6 +1438,7 @@ fn place_media(
         mode: Default::default(),
         transition: None,
         title: None,
+        grade: Default::default(),
         id: p.allocate_id(),
         media: id,
         stream,
@@ -1946,6 +1960,7 @@ mod tests {
             mode: Default::default(),
             transition: None,
             title: None,
+            grade: Default::default(),
             id: ClipId(0),
             media: f.media,
             stream: 0,
@@ -2678,6 +2693,38 @@ mod tests {
             sound: master,
         };
         assert!(over.apply(&f.p).is_err());
+    }
+
+    #[test]
+    fn grades_are_set_on_pictures_in_one_step() {
+        let f = fixture();
+        let p = place(&f, &f.p, f.v1, clip(&f, 0, 4, None)).unwrap();
+        let p = place(&f, &p, f.v1, clip(&f, 4, 4, None)).unwrap();
+        let p = place(&f, &p, f.a1, clip(&f, 0, 4, None)).unwrap();
+        let seq = p.active().unwrap();
+        let pictures: Vec<ClipId> = seq.video_tracks[0].clips.iter().map(|c| c.id).collect();
+        let sound = seq.audio_tracks[0].clips[0].id;
+        let mut warm = crate::grade::Grade::default();
+        warm.layer_mut(0).primary.temperature = 300_000;
+        let set = |ids: &[ClipId]| Command::SetGrades {
+            sequence: f.seq,
+            grades: ids.iter().map(|id| (*id, warm.clone())).collect(),
+        };
+        assert!(set(&[sound]).apply(&p).is_err(), "sound has no grade");
+        let p = set(&pictures).apply(&p).unwrap();
+        assert!(
+            p.active().unwrap().video_tracks[0]
+                .clips
+                .iter()
+                .all(|c| c.grade == warm)
+        );
+        let mut bad = warm.clone();
+        bad.layer_mut(0).primary.pivot = 0;
+        let refused = Command::SetGrades {
+            sequence: f.seq,
+            grades: vec![(pictures[0], bad)],
+        };
+        assert!(refused.apply(&p).is_err());
     }
 
     #[test]

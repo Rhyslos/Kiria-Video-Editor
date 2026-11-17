@@ -355,6 +355,10 @@ pub struct Clip {
     /// (`ClipKind::Title`).
     #[serde(default, skip_serializing_if = "crate::defaults::is_default")]
     pub title: Option<Box<crate::titles::Title>>,
+    /// Its grade from the Color page (format 28), applied after its quick
+    /// colour and before its effects; none when missing. Pictures only.
+    #[serde(default, skip_serializing_if = "crate::defaults::is_default")]
+    pub grade: crate::grade::Grade,
 }
 
 /// How a picture mixes with what is below it. Every mode leaves what is
@@ -887,6 +891,7 @@ mod tests {
             mode: Default::default(),
             transition: None,
             title: None,
+            grade: Default::default(),
             id: clip_id,
             media,
             stream: 0,

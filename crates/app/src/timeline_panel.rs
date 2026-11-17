@@ -408,6 +408,7 @@ pub fn drawn(
                     plays_until: plays_until(project, c),
                     transition_in: project::transitions::played(t, c)
                         .map(|(_, start, end)| (end - start).as_secs_f64()),
+                    graded: c.grade.is_graded(),
                 }
             })
             .collect();
@@ -1061,6 +1062,7 @@ mod tests {
             slip_room: None,
             plays_until: None,
             transition_in: None,
+            graded: false,
         }
     }
 

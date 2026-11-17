@@ -402,6 +402,44 @@ fn title_layer(clip: &Clip, frame: (u32, u32), at: Time) -> Option<Layer> {
 /// pixels (of 1080 lines). Grain's pattern follows the moment of the file,
 /// so the same frame always has the same grain, in preview and export.
 fn effects(clip: &Clip, at: Time) -> Vec<render::Effect> {
+    // Its grade first, layer by layer, then its effects.
+    let mut passes: Vec<render::Effect> = clip
+        .grade
+        .applied()
+        .map(|layer| render::Effect::Grade(grade_numbers(&layer.primary)))
+        .collect();
+    passes.extend(effect_passes(clip, at));
+    passes
+}
+
+/// A grade layer's numbers as the shader takes them.
+pub fn grade_numbers(p: &project::Primary) -> render::GradeNumbers {
+    let wheel = |w: project::Wheel| {
+        [
+            fraction(w.red),
+            fraction(w.green),
+            fraction(w.blue),
+            fraction(w.brightness),
+        ]
+    };
+    let balance = Colour::from_sliders(0.0, 0.0, 0.0, fraction(p.temperature), fraction(p.tint)).gains;
+    render::GradeNumbers {
+        shadows_wheel: wheel(p.shadows_wheel),
+        midtones_wheel: wheel(p.midtones_wheel),
+        highlights_wheel: wheel(p.highlights_wheel),
+        overall_wheel: wheel(p.overall_wheel),
+        exposure: fraction(p.exposure),
+        contrast: fraction(p.contrast),
+        pivot: fraction(p.pivot),
+        saturation: fraction(p.saturation),
+        balance,
+        highlights: fraction(p.highlights),
+        shadows: fraction(p.shadows),
+    }
+}
+
+/// A clip's own picture effects, as passes.
+fn effect_passes(clip: &Clip, at: Time) -> Vec<render::Effect> {
     let seed = (clip.source_at(at).as_secs_f64() * 1200.0)
         .round()
         .rem_euclid(f64::from(1 << 24)) as u32;

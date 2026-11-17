@@ -2,6 +2,7 @@
 
 mod audio_ui;
 mod clip_clipboard;
+mod color_ui;
 mod follow;
 mod keyframe_clipboard;
 mod library_ui;
@@ -70,6 +71,8 @@ pub struct Start {
 pub struct Editor {
     /// A box being followed through its clip ("Follow it from here").
     following: Option<follow::FollowJob>,
+    /// The Color page's own state.
+    color_page: crate::color_page::ColorPage,
     /// A clip being analysed for its Stabilise effect.
     steadying: Option<steady::SteadyJob>,
     settings: Settings,
@@ -538,6 +541,7 @@ impl Editor {
             full_screen_asked: None,
             select_first_clip,
             following: None,
+            color_page: Default::default(),
             steadying: None,
             sync_when_ready,
             save_frame_requested: false,
@@ -2929,6 +2933,10 @@ impl Editor {
             self.audio_page_ui(ui);
             return;
         }
+        if self.page == Page::Color && self.document.is_some() {
+            self.color_page_ui(ui);
+            return;
+        }
         if self.page == Page::Export
             && let Some(document) = &self.document
         {
@@ -4041,8 +4049,8 @@ enum Thumbnail {
 }
 
 /// What a page shows when it has nothing to show: its name and one line.
-/// Without a project every page waits for one; with one, only the Color
-/// page, whose tools are still to come.
+/// Without a project every page waits for one; with one, every page draws
+/// itself.
 fn placeholder(page: Page, has_project: bool) -> (&'static str, &'static str) {
     if !has_project {
         return (
@@ -4050,11 +4058,8 @@ fn placeholder(page: Page, has_project: bool) -> (&'static str, &'static str) {
             "Open a project, or start a new one, in the launcher; then import your recordings here.",
         );
     }
-    match page {
-        Page::Color => ("Color", "Colour tools arrive in a later update."),
-        // The other pages always draw themselves when a project is open.
-        _ => (page.label(), ""),
-    }
+    // Every page draws itself when a project is open.
+    (page.label(), "")
 }
 
 /// What the status line says when the choice of what a click moves changes.
@@ -4204,7 +4209,6 @@ mod tests {
             }
             assert!(placeholder(page, false).1.contains("Open a project"));
         }
-        assert!(placeholder(Page::Color, true).1.contains("later update"));
     }
 
     /// The lines tool's hint is about the timeline: a page without one
