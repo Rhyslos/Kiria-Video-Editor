@@ -109,18 +109,26 @@ impl Effect {
     /// and Top keyframes at each, in place of the ones between the first
     /// and the last. Unchanged for an effect without a box, or no places.
     pub fn following(&self, places: &[(Time, (i32, i32))]) -> Effect {
-        let (Some(range), Some(first), Some(last)) =
-            (self.kind.spot_numbers(), places.first(), places.last())
-        else {
+        match self.kind.spot_numbers() {
+            Some(range) => self.keyed_pair(range.start, places),
+            None => self.clone(),
+        }
+    }
+
+    /// The effect with settings `first` and the one after it keyed at
+    /// each of `places` (moments of the file, with the two values), in
+    /// place of their keyframes between the first and the last place.
+    pub fn keyed_pair(&self, first: usize, places: &[(Time, (i32, i32))]) -> Effect {
+        let (Some(start), Some(end)) = (places.first(), places.last()) else {
             return self.clone();
         };
         let mut next = self.clone();
         // Past the last place by a hair, so a keyframe there goes too.
-        let through = (first.0, last.0 + Time::from_i128(1, 1_000_000));
-        for (index, pick) in [(range.start, 0usize), (range.start + 1, 1)] {
+        let through = (start.0, end.0 + Time::from_i128(1, 1_000_000));
+        for (index, pick) in [(first, 0usize), (first + 1, 1)] {
             next.keys.remove(index, through);
-            for (at, (left, top)) in places {
-                let value = if pick == 0 { *left } else { *top };
+            for (at, (a, b)) in places {
+                let value = if pick == 0 { *a } else { *b };
                 next.keys.set(index, *at, (*at, *at), value.clamp(0, ONE));
             }
         }
@@ -155,11 +163,12 @@ pub enum EffectKind {
     Zoom(Zoom),
     Shake(Shake),
     Pan(Pan),
+    Stabilise(Stabilise),
 }
 
 impl EffectKind {
     /// Every kind there is, with its usual settings: what is added.
-    pub const ALL: [EffectKind; 9] = [
+    pub const ALL: [EffectKind; 10] = [
         EffectKind::Vignette(Vignette::USUAL),
         EffectKind::Grain(Grain::USUAL),
         EffectKind::Sharpen(Sharpen::USUAL),
@@ -169,6 +178,7 @@ impl EffectKind {
         EffectKind::Zoom(Zoom::USUAL),
         EffectKind::Shake(Shake::USUAL),
         EffectKind::Pan(Pan::USUAL),
+        EffectKind::Stabilise(Stabilise::USUAL),
     ];
 
     /// Its name, as the interface shows it.
@@ -183,6 +193,7 @@ impl EffectKind {
             EffectKind::Zoom(_) => "Zoom to a point",
             EffectKind::Shake(_) => "Shake",
             EffectKind::Pan(_) => "Smooth pan",
+            EffectKind::Stabilise(_) => "Stabilise",
         }
     }
 
@@ -200,6 +211,7 @@ impl EffectKind {
             EffectKind::Zoom(z) => vec![z.amount, z.x, z.y],
             EffectKind::Shake(s) => vec![s.amount, s.speed],
             EffectKind::Pan(p) => vec![p.zoom, p.from_x, p.from_y, p.to_x, p.to_y],
+            EffectKind::Stabilise(s) => vec![s.smoothing, s.zoom, s.x, s.y],
         }
     }
 
@@ -255,6 +267,12 @@ impl EffectKind {
                 to_x: n[3],
                 to_y: n[4],
             }),
+            EffectKind::Stabilise(_) => EffectKind::Stabilise(Stabilise {
+                smoothing: n[0],
+                zoom: n[1],
+                x: n[2],
+                y: n[3],
+            }),
         }
     }
 
@@ -275,6 +293,7 @@ impl EffectKind {
             EffectKind::Zoom(z) => shares("Zoom to a point", &[z.amount, z.x, z.y]),
             EffectKind::Shake(s) => shares("Shake", &[s.amount, s.speed]),
             EffectKind::Pan(p) => shares("Smooth pan", &[p.from_x, p.from_y, p.to_x, p.to_y, p.zoom]),
+            EffectKind::Stabilise(s) => shares("Stabilise", &[s.smoothing, s.zoom, s.x, s.y]),
         }
     }
 }
@@ -422,6 +441,35 @@ impl Shake {
         amount: ONE * 3 / 10,
         speed: ONE / 2,
     };
+}
+
+/// A steadier picture: the view follows the camera's movement smoothed
+/// out, enlarged so its edges stay out of sight. The correction comes from
+/// analysing the clip (format 27): keyframes on `x` and `y`, the view's
+/// middle at each frame, and the `zoom` that leaves room for them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Stabilise {
+    /// How smooth the camera's path is made: 0 (only jitter taken out) to
+    /// [`ONE`] (nearly still). Used when the clip is analysed.
+    pub smoothing: i32,
+    /// How far in: 0 (not at all) to [`ONE`] (half as large again).
+    pub zoom: i32,
+    /// Where the view's middle is: shares of the picture's width and
+    /// height, the middle at a half. Keyed by the analysis.
+    pub x: i32,
+    pub y: i32,
+}
+
+impl Stabilise {
+    pub const USUAL: Stabilise = Stabilise {
+        smoothing: ONE / 2,
+        zoom: ONE / 10,
+        x: ONE / 2,
+        y: ONE / 2,
+    };
+
+    /// Settings `x` and `y`'s place among its numbers.
+    pub const MIDDLE: usize = 2;
 }
 
 /// The view slides from one part of the picture to another over the

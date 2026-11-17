@@ -41,6 +41,7 @@ pub mod playback;
 pub mod preview;
 pub mod silence;
 pub mod source;
+pub mod steady;
 pub mod sync;
 pub mod thumbnail;
 pub mod timeline;

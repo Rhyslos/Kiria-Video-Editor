@@ -26,7 +26,7 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 /// The format this build writes.
-pub const FORMAT_VERSION: u32 = 26;
+pub const FORMAT_VERSION: u32 = 27;
 
 /// Turns the text of a version `n` file into the text of a version `n + 1` file.
 pub type Migration = fn(&str) -> diag::Result<String>;
@@ -35,7 +35,7 @@ pub type Migration = fn(&str) -> diag::Result<String>;
 pub const MIGRATIONS: &[Migration] = &[
     v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8, v8_to_v9, v9_to_v10, v10_to_v11,
     v11_to_v12, v12_to_v13, v13_to_v14, v14_to_v15, v15_to_v16, v16_to_v17, v17_to_v18, v18_to_v19,
-    v19_to_v20, v20_to_v21, v21_to_v22, v22_to_v23, v23_to_v24, v24_to_v25, v25_to_v26,
+    v19_to_v20, v20_to_v21, v21_to_v22, v22_to_v23, v23_to_v24, v24_to_v25, v25_to_v26, v26_to_v27,
 ];
 
 /// Format 2 adds `info` (the file's streams) to each media entry. The field
@@ -207,6 +207,11 @@ fn v24_to_v25(text: &str) -> diag::Result<String> {
 /// none when missing, as every older clip was.
 fn v25_to_v26(text: &str) -> diag::Result<String> {
     set_format_version(text, 25, 26)
+}
+
+/// Format 27 adds the Stabilise effect. Older files have none.
+fn v26_to_v27(text: &str) -> diag::Result<String> {
+    set_format_version(text, 26, 27)
 }
 
 /// Rewrites the `format_version` number at the top of the file.

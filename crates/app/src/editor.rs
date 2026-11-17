@@ -7,6 +7,7 @@ mod keyframe_clipboard;
 mod library_ui;
 mod region_cuts;
 mod settings_ui;
+mod steady;
 mod timelines;
 mod undo_says;
 
@@ -69,6 +70,8 @@ pub struct Start {
 pub struct Editor {
     /// A box being followed through its clip ("Follow it from here").
     following: Option<follow::FollowJob>,
+    /// A clip being analysed for its Stabilise effect.
+    steadying: Option<steady::SteadyJob>,
     settings: Settings,
     data_dir: PathBuf,
     /// What draws the window: the first-frames check, the question after a
@@ -535,6 +538,7 @@ impl Editor {
             full_screen_asked: None,
             select_first_clip,
             following: None,
+            steadying: None,
             sync_when_ready,
             save_frame_requested: false,
             global_labels,
@@ -2769,6 +2773,11 @@ impl Editor {
         {
             self.errors.push(&err);
         }
+        if let Some((clip, effect)) = self.inspector.steady.take()
+            && let Err(err) = self.start_steady(clip, effect)
+        {
+            self.errors.push(&err);
+        }
         if self.inspector.on_picture != self.settings.picture_handles {
             self.run_action(Action::PictureHandles);
         }
@@ -3769,6 +3778,7 @@ impl eframe::App for Editor {
         }
         self.imports(&ctx);
         self.follow_news(&ctx);
+        self.steady_news(&ctx);
         self.follow_open_timeline();
         if self.select_first_clip
             && self.importer.busy() == 0

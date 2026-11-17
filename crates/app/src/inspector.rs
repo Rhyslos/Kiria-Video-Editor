@@ -83,6 +83,8 @@ pub struct Inspector {
     /// "Follow it from here" on an effect's box: the clip and the effect.
     /// The page takes it and starts following.
     pub follow: Option<(ClipId, project::EffectId)>,
+    /// "Analyse the clip" on a Stabilise effect: the clip and the effect.
+    pub steady: Option<(ClipId, project::EffectId)>,
 }
 
 /// The clip the inspector is about, for what changes its look from outside
@@ -419,6 +421,9 @@ impl Inspector {
             }
             if let Some(effect) = asked.follow {
                 self.follow = Some((clip.id, effect));
+            }
+            if let Some(effect) = asked.steady {
+                self.steady = Some((clip.id, effect));
             }
             if !asked.commands.is_empty() {
                 self.pending_effects = None;
