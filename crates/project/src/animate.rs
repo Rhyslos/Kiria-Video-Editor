@@ -310,6 +310,7 @@ mod tests {
                 lines: Default::default(),
                 effects: Default::default(),
                 mode: Default::default(),
+                transition: None,
                 id: ClipId(0),
                 media,
                 stream: 0,

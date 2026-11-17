@@ -346,6 +346,11 @@ pub struct Clip {
     /// as usual, when missing.
     #[serde(default, skip_serializing_if = "crate::defaults::is_default")]
     pub mode: BlendMode,
+    /// How the picture comes in from the clip that ends where it starts on
+    /// its track (format 25), across the cut; a plain cut when missing.
+    /// Set on pictures only.
+    #[serde(default, skip_serializing_if = "crate::defaults::is_default")]
+    pub transition: Option<crate::transitions::Transition>,
 }
 
 /// How a picture mixes with what is below it. Every mode leaves what is
@@ -848,6 +853,7 @@ mod tests {
             lines: Default::default(),
             effects: Default::default(),
             mode: Default::default(),
+            transition: None,
             id: clip_id,
             media,
             stream: 0,

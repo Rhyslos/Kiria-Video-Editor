@@ -49,6 +49,8 @@ pub enum Picked {
     Run(ui_kit::Action),
     /// Put this effect on the selected picture (the Effects side).
     AddEffect(project::EffectKind),
+    /// Put this transition into the selected picture (the Effects side).
+    AddTransition(project::TransitionKind),
 }
 
 /// What the drawer is told besides the project.
@@ -183,7 +185,10 @@ impl MediaDrawer {
         ui.add_space(6.0);
         if self.tab == DrawerTab::Effects {
             let asked = self.effects.ui(ui, theme, *picture_selected, recent_effects);
-            return asked.map(|crate::effects_drawer::Asked::Add(kind)| Picked::AddEffect(kind));
+            return asked.map(|asked| match asked {
+                crate::effects_drawer::Asked::Add(kind) => Picked::AddEffect(kind),
+                crate::effects_drawer::Asked::AddTransition(kind) => Picked::AddTransition(kind),
+            });
         }
         self.effects.previewing = None;
         let mut ran = None;

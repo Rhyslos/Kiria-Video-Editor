@@ -526,7 +526,7 @@ Phase 9 fills the Effects side of the Edit page's drawer and ships background re
 
 **9.3 Later effects** (after the cheap ones; the owner picks when)
 
-- [ ] Transitions: cross dissolve, dip to black/white, wipe, push, zoom; audio crossfade. (A transition sits on a cut and overlaps two clips: the timeline model, trims and playback change with it.)
+- [x] Transitions: cross dissolve, dip to black/white, wipe, push, zoom; audio crossfade. (Done: cross dissolve, dip to black, wipe, push and zoom through, kept on the clip coming in (`Clip::transition`, format 25) and played centred on its cut; nothing is trimmed or overlapped, each clip is read past its edge where its file goes on and holds its edge frame where it doesn't. Dragged from the drawer onto a cut or added to the selected clip; kind and length in the inspector's Transition in section. Not yet: dip to white, audio crossfade (a fade on each side does it today), transitions on nested timelines and adjustment layers.)
 - [ ] Titles: lower third, centred title, end card; text tool from phase 4.
 - [ ] Stabilise (tracking-based), and the censor box following what it covers (tracked).
 

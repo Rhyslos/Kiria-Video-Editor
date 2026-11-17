@@ -401,6 +401,8 @@ pub fn drawn(
                     line: None,
                     slip_room: slip_room(project, c),
                     plays_until: plays_until(project, c),
+                    transition_in: project::transitions::played(t, c)
+                        .map(|(_, start, end)| (end - start).as_secs_f64()),
                 }
             })
             .collect();
@@ -1053,6 +1055,7 @@ mod tests {
             line: None,
             slip_room: None,
             plays_until: None,
+            transition_in: None,
         }
     }
 

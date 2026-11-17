@@ -84,6 +84,7 @@ mod tests {
                     line: None,
                     slip_room: None,
                     plays_until: None,
+                    transition_in: None,
                 })
                 .collect(),
             muted: false,

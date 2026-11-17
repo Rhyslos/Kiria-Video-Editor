@@ -24,6 +24,9 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 /// One change to a project.
+// A command holding a whole clip is the largest by far; commands are made
+// a few at a time, by hand, so their size costs nothing worth a box.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Command {
     RenameProject {
@@ -492,6 +495,14 @@ pub enum Command {
         sequence: SequenceId,
         clip: ClipId,
         mode: crate::model::BlendMode,
+    },
+    /// How a picture comes in from the clip just before it on its track
+    /// (format 25), or a plain cut (`None`). Refused on sound, on a clip
+    /// with no clip ending where it starts, or longer than either clip.
+    SetTransition {
+        sequence: SequenceId,
+        clip: ClipId,
+        transition: Option<crate::transitions::Transition>,
     },
     /// The mix's compressor and true-peak limiter (format 16).
     SetMasterSound {
@@ -1042,6 +1053,11 @@ impl Command {
             Command::SetBlendMode { sequence, clip, mode } => {
                 picture_for_effects(sequence_mut(&mut p, *sequence)?, *clip)?.mode = *mode;
             }
+            Command::SetTransition {
+                sequence,
+                clip,
+                transition,
+            } => crate::transitions::set(sequence_mut(&mut p, *sequence)?, *clip, *transition)?,
             Command::SetMasterSound { sequence, sound } => {
                 sound.check()?;
                 sequence_mut(&mut p, *sequence)?.master_sound = *sound;
@@ -1366,6 +1382,7 @@ fn place_media(
         lines: Default::default(),
         effects: Default::default(),
         mode: Default::default(),
+        transition: None,
         id: p.allocate_id(),
         media: id,
         stream,
@@ -1502,6 +1519,8 @@ pub(crate) fn halves(clip: &Clip, at: Time, right_id: ClipId, right_link: Option
         keyframes: clip.keyframes.cut_to(cut, clip.source_at(clip.end())),
         // Both halves keep the whole ramp, in its place.
         ramp: clip.ramp.shifted(Time::ZERO - first),
+        // A transition comes in at the start, which stays on the left.
+        transition: None,
         ..clip.clone()
     };
     let left = Clip {
@@ -1883,6 +1902,7 @@ mod tests {
             lines: Default::default(),
             effects: Default::default(),
             mode: Default::default(),
+            transition: None,
             id: ClipId(0),
             media: f.media,
             stream: 0,
@@ -2615,6 +2635,54 @@ mod tests {
             sound: master,
         };
         assert!(over.apply(&f.p).is_err());
+    }
+
+    #[test]
+    fn a_transition_goes_on_a_picture_with_one_just_before_it() {
+        use crate::transitions::{Transition, TransitionKind};
+        let f = fixture();
+        let p = place(&f, &f.p, f.v1, clip(&f, 0, 4, None)).unwrap();
+        let p = place(&f, &p, f.v1, clip(&f, 4, 4, None)).unwrap();
+        let p = place(&f, &p, f.v1, clip(&f, 10, 4, None)).unwrap();
+        let p = place(&f, &p, f.a1, clip(&f, 4, 4, None)).unwrap();
+        let seq = p.active().unwrap();
+        let ids: Vec<ClipId> = seq.video_tracks[0].clips.iter().map(|c| c.id).collect();
+        let sound = seq.audio_tracks[0].clips[0].id;
+        let set = |clip, transition| Command::SetTransition {
+            sequence: f.seq,
+            clip,
+            transition,
+        };
+        let dissolve = Some(Transition::new(TransitionKind::Dissolve));
+        assert!(
+            set(ids[0], dissolve).apply(&p).is_err(),
+            "nothing before the first"
+        );
+        assert!(set(ids[2], dissolve).apply(&p).is_err(), "a gap before the third");
+        assert!(set(sound, dissolve).apply(&p).is_err(), "sound has none");
+        let p = set(ids[1], dissolve).apply(&p).unwrap();
+        assert_eq!(p.active().unwrap().video_tracks[0].clips[1].transition, dissolve);
+        let p = set(ids[1], None).apply(&p).unwrap();
+        assert_eq!(p.active().unwrap().video_tracks[0].clips[1].transition, None);
+    }
+
+    #[test]
+    fn a_split_leaves_the_transition_at_the_start() {
+        use crate::transitions::{Transition, TransitionKind};
+        let f = fixture();
+        let mut second = clip(&f, 4, 4, None);
+        second.transition = Some(Transition::new(TransitionKind::Wipe));
+        let p = place(&f, &f.p, f.v1, clip(&f, 0, 4, None)).unwrap();
+        let p = place(&f, &p, f.v1, second).unwrap();
+        let p = Command::Split {
+            sequence: f.seq,
+            at: Time::seconds(6),
+            clip: None,
+        }
+        .apply(&p)
+        .unwrap();
+        let clips = &p.active().unwrap().video_tracks[0].clips;
+        assert!(clips[1].transition.is_some() && clips[2].transition.is_none());
     }
 
     #[test]

@@ -30,6 +30,7 @@ use ui_kit::keyframe::{KeyClicks, KeyState, Keys};
 
 mod effects;
 mod speed;
+mod transition;
 
 /// A look being set and not yet an undo step: whose, at which moment of
 /// the timeline (where it began), and what.
@@ -396,6 +397,10 @@ impl Inspector {
                     effects: Box::new(effects),
                 });
             }
+        }
+
+        if track.kind == TrackKind::Video {
+            commands.extend(transition::section(ui, theme, sequence, track, clip));
         }
 
         let speed = match adjustment {

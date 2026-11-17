@@ -8,6 +8,8 @@ use project::{
 };
 use render::{Area, Colour, Part, Placement};
 
+mod transition;
+
 /// What to draw for one moment of a timeline.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FrameDescription {
@@ -193,6 +195,15 @@ fn seen(project: &Project, sequence: &Sequence, at: Time, depth: usize) -> (Vec<
     let mut opaque = false;
     // From the top down, stopping at the first layer that hides the rest.
     for track in sequence.video_tracks.iter().rev().filter(|track| !track.hidden) {
+        // Across a transition: both pictures, never hiding what is below.
+        if let Some(across) = project::transitions::across(track, at) {
+            let rate = sequence.settings.frame_rate;
+            let mut both = transition::layers(project, &across, rate, size, at);
+            // Drawn bottom first, gathered top first.
+            both.reverse();
+            nodes.extend(both.into_iter().map(Node::Picture));
+            continue;
+        }
         let Some(clip) = track
             .clips
             .iter()
@@ -314,11 +325,21 @@ fn flatten(nodes: Vec<Node>, layers: &mut Vec<Layer>) -> Vec<Step> {
 
 /// `clip`'s picture at `at`, or nothing when its file has no picture.
 fn layer(clip: &Clip, media: &MediaRef, frame: (u32, u32), at: Time) -> Option<Layer> {
-    let video = media.info.video.as_ref()?;
     // Its look at this moment: keyframes give the numbers that change.
-    let look = clip.look_at(at);
+    layer_seen(clip, media, frame, at, clip.look_at(at), clip.source_at(at))
+}
+
+/// `clip`'s picture at `at` with `look`, showing its file at `source_time`.
+fn layer_seen(
+    clip: &Clip,
+    media: &MediaRef,
+    frame: (u32, u32),
+    at: Time,
+    look: Look,
+    source_time: Time,
+) -> Option<Layer> {
+    let video = media.info.video.as_ref()?;
     let part = shown_part(&look);
-    let source_time = clip.source_at(at);
     Some(Layer {
         clip: clip.id,
         media: clip.media,
@@ -723,6 +744,50 @@ mod tests {
         let frame = describe(&project, project.active().unwrap(), at);
         assert_eq!(frame.layers.len(), 2, "both drawn");
         assert_eq!(frame.layers[1].mode, render::Mode::Screen);
+    }
+
+    #[test]
+    fn a_dissolve_shows_both_pictures_holding_their_edge_frames() {
+        let project = import(
+            &Project::new("T", SequenceSettings::GAME_CLIP),
+            media("a.mkv", (1920, 1080), 0),
+        );
+        let project = import(&project, media("b.mkv", (1920, 1080), 0));
+        let sequence = project.active().unwrap();
+        let (first, second) = (
+            &sequence.video_tracks[0].clips[0],
+            &sequence.video_tracks[0].clips[1],
+        );
+        assert_eq!(second.start, Time::seconds(10));
+        let (first, second) = (first.id, second.id);
+        let project = Command::SetTransition {
+            sequence: project.active_sequence,
+            clip: second,
+            transition: Some(project::Transition {
+                kind: project::TransitionKind::Dissolve,
+                length: Time::seconds(2),
+            }),
+        }
+        .apply(&project)
+        .unwrap();
+        let sequence = project.active().unwrap();
+        let half = Time::from_ratio(1, 2).unwrap();
+        // A quarter through: the next picture, a quarter seen, holds its
+        // first frame (its file has nothing before it).
+        let frame = describe(&project, sequence, Time::seconds(9) + half);
+        let clips: Vec<ClipId> = frame.layers.iter().map(|l| l.clip).collect();
+        assert_eq!(clips, [first, second], "the next one on top");
+        assert!((frame.layers[1].opacity - 0.25).abs() < 1e-6);
+        assert_eq!(frame.layers[1].source_time, Time::ZERO);
+        assert_eq!(frame.layers[0].source_time, Time::seconds(9) + half);
+        // Past the cut the last one holds its last frame.
+        let frame = describe(&project, sequence, Time::seconds(10) + half);
+        let last = Rate::FPS_60.frame_start(599);
+        assert_eq!(frame.layers[0].source_time, last);
+        assert_eq!(frame.layers[1].source_time, half);
+        // Over: one picture.
+        let frame = describe(&project, sequence, Time::seconds(11));
+        assert_eq!(frame.layers.len(), 1);
     }
 
     #[test]

@@ -55,6 +55,7 @@ pub mod time;
 pub mod timelines;
 pub mod track_sound;
 pub mod tracks;
+pub mod transitions;
 pub mod versions;
 
 pub use clip_clipboard::CopiedClips;
@@ -80,6 +81,7 @@ pub use sound::{ClipLines, Sound};
 pub use templates::Template;
 pub use time::{Rate, Speed, Time};
 pub use track_sound::{MasterSound, TrackRole, TrackSound};
+pub use transitions::{Transition, TransitionKind};
 
 /// File extension for project files, without the dot.
 pub const FILE_EXTENSION: &str = brand::PROJECT_FILE_EXTENSION;
