@@ -13,6 +13,7 @@ mod error;
 pub mod logging;
 mod paths;
 pub mod session;
+mod stamp;
 
 pub use error::{AppError, Explain, FixAction, Result};
 pub use paths::AppDirs;

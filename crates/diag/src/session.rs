@@ -20,7 +20,6 @@
 use crate::{AppError, Explain, Result};
 use std::fs::{self, File, TryLockError};
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
 /// The folder of the markers, in the data folder.
 const MARKERS_DIR: &str = "sessions";
@@ -99,11 +98,7 @@ impl Session {
     }
 
     fn write(&self, project: Option<&Path>) -> Result<()> {
-        let mut contents = format!(
-            "pid {}\nstarted {}\n",
-            self.pid,
-            humantime::format_rfc3339_seconds(SystemTime::now())
-        );
+        let mut contents = format!("pid {}\nstarted {}\n", self.pid, crate::stamp::now());
         if let Some(project) = project {
             contents.push_str(&format!("project {}\n", project.display()));
         }

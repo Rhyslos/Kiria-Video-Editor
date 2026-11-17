@@ -11,7 +11,6 @@ use std::io;
 use std::panic::PanicHookInfo;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-use std::time::SystemTime;
 
 /// How many log lines a report includes.
 const LOG_LINES_IN_REPORT: usize = 200;
@@ -83,7 +82,7 @@ pub fn build_report(details: &CrashDetails<'_>) -> String {
         version = details.app_version,
         os = std::env::consts::OS,
         arch = std::env::consts::ARCH,
-        time = humantime::format_rfc3339_seconds(SystemTime::now()),
+        time = crate::stamp::now(),
     );
     report.push_str("\nLast log lines\n--------------\n");
     if details.log_tail.is_empty() {
@@ -103,9 +102,7 @@ pub fn build_report(details: &CrashDetails<'_>) -> String {
 pub fn write_report(dir: &Path, report: &str) -> io::Result<PathBuf> {
     fs::create_dir_all(dir)?;
     // Colons are not allowed in Windows file names.
-    let stamp = humantime::format_rfc3339_seconds(SystemTime::now())
-        .to_string()
-        .replace(':', "-");
+    let stamp = crate::stamp::now().replace(':', "-");
     let mut path = dir.join(format!("crash-{stamp}.txt"));
     let mut n = 1;
     while path.exists() {
