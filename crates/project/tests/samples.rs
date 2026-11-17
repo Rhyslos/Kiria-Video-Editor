@@ -171,7 +171,14 @@ fn rich_project() -> Project {
         y: 200_000,
     }));
     let (effects, _) = effects.with_added(project::EffectKind::ALL[7]);
-    let (effects, _) = effects.with_added(project::EffectKind::ALL[8]);
+    let (mut effects, _) = effects.with_added(project::EffectKind::ALL[8]);
+    // The blurred box moves right over the first two seconds (format 24).
+    let second = Time::from_ratio(1, 1).expect("a second");
+    let near = |at: Time| (at, at + Time::from_ratio(1, 60).expect("a frame"));
+    effects.0[5].keys.set(1, Time::ZERO, near(Time::ZERO), 100_000);
+    effects.0[5]
+        .keys
+        .set(1, second + second, near(second + second), 500_000);
     seq.video_tracks[0].clips.push_back(Clip {
         look,
         keyframes,
@@ -532,6 +539,25 @@ fn version_22_sample_opens_with_every_picture_over() {
                 .all(|t| t.clips.iter().all(|c| c.mode == project::BlendMode::Normal))
         );
     }
+}
+
+#[test]
+fn version_23_sample_opens_with_still_effects() {
+    let project = file::load(&sample_path(23)).expect("the version 23 sample opens");
+    let clip = &project.active().expect("a timeline").video_tracks[0].clips[0];
+    assert!(clip.effects.iter().all(|e| e.keys.is_empty()));
+}
+
+#[test]
+fn the_current_sample_has_a_moving_blur_box() {
+    let project = file::load(&sample_path(FORMAT_VERSION)).expect("the sample opens");
+    let clip = &project.active().expect("a timeline").video_tracks[0].clips[0];
+    let blur = clip
+        .effects
+        .iter()
+        .find(|e| !e.keys.is_empty())
+        .expect("keyframes");
+    assert_eq!(blur.keys.of(1).len(), 2);
 }
 
 #[test]

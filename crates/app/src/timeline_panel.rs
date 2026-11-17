@@ -514,8 +514,9 @@ pub fn label_colour(c: LabelColor) -> egui::Color32 {
 /// timeline frame that holds one, inside the clip, saying which numbers are
 /// keyed there and how they go on to the next.
 /// The frames of the timeline (at `rate`) where `clip` has keyframes: of
-/// its look, and of its speed ramp (kept in timeline time from its start),
-/// in order, each once.
+/// its look, of its effects' settings (both at moments of its file), and of
+/// its speed ramp (kept in timeline time from its start), in order, each
+/// once.
 pub fn all_keyframe_frames(clip: &project::Clip, rate: project::Rate) -> Vec<i64> {
     let (first, end) = (rate.frame_at(clip.start), rate.frame_at(clip.end()));
     let mut frames = clip.keyframe_frames(&project::LookField::ALL, rate);
@@ -526,9 +527,25 @@ pub fn all_keyframe_frames(clip: &project::Clip, rate: project::Rate) -> Vec<i64
             .map(|k| rate.frame_at(clip.start + k.at))
             .filter(|f| (first..end).contains(f)),
     );
+    frames.extend(effect_key_frames(clip, rate).into_iter().map(|(frame, _)| frame));
     frames.sort_unstable();
     frames.dedup();
     frames
+}
+
+/// Each keyframe of `clip`'s effects inside it, as a frame of the timeline
+/// with the effect's name.
+fn effect_key_frames(clip: &project::Clip, rate: project::Rate) -> Vec<(i64, &'static str)> {
+    let (first, end) = (rate.frame_at(clip.start), rate.frame_at(clip.end()));
+    clip.effects
+        .iter()
+        .flat_map(|effect| {
+            let name = effect.kind.name();
+            effect.keys.0.values().flatten().map(move |key| (key.at, name))
+        })
+        .map(|(at, name)| (rate.frame_at(clip.timeline_at(at)), name))
+        .filter(|(frame, _)| (first..end).contains(frame))
+        .collect()
 }
 
 /// The words a mark uses for a speed keyframe.
@@ -542,6 +559,7 @@ pub fn keyframe_marks(clip: &project::Clip, rate: project::Rate) -> Vec<ui_kit::
         .iter()
         .map(|k| rate.frame_at(clip.start + k.at))
         .collect();
+    let effect_frames = effect_key_frames(clip, rate);
     all_keyframe_frames(clip, rate)
         .into_iter()
         .map(|frame| {
@@ -557,6 +575,12 @@ pub fn keyframe_marks(clip: &project::Clip, rate: project::Rate) -> Vec<ui_kit::
             // A speed keyframe there too (set in the inspector's Speed section).
             if speed_frames.contains(&frame) {
                 keyed.push(SPEED_MARK);
+            }
+            // And the effects with a keyframe there, each once.
+            for (_, name) in effect_frames.iter().filter(|(f, _)| *f == frame) {
+                if !keyed.contains(name) {
+                    keyed.push(name);
+                }
             }
             let mut eases = fields
                 .iter()
@@ -884,6 +908,25 @@ mod tests {
         assert_eq!(marks[0].keyed, ["opacity"]);
         assert_eq!(marks[1].keyed, ["size"]);
         assert_eq!(marks[1].ease, Some(0), "linear");
+    }
+
+    #[test]
+    fn an_effects_keyframes_are_marked_with_its_name() {
+        let project = crate::inspector::tests::project_with_a_clip();
+        let mut clip = project.active().unwrap().video_tracks[0].clips[0].clone();
+        let (mut effects, _) = project::Effects::default().with_added(project::EffectKind::ALL[0]);
+        let s = project::Time::seconds;
+        let near = |at: project::Time| clip.frame_in_file(at, project::Rate::FPS_60);
+        effects.0[0].keys.set(0, clip.source_at(s(2)), near(s(2)), 0);
+        effects.0[0]
+            .keys
+            .set(0, clip.source_at(s(4)), near(s(4)), 1_000_000);
+        clip.effects = effects;
+        let marks = keyframe_marks(&clip, project::Rate::FPS_60);
+        let at: Vec<f64> = marks.iter().map(|m| m.at).collect();
+        assert_eq!(at, vec![2.0, 4.0]);
+        assert_eq!(marks[0].keyed, ["Vignette"]);
+        assert_eq!(all_keyframe_frames(&clip, project::Rate::FPS_60), [120, 240]);
     }
 
     #[test]
