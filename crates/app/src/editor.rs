@@ -203,6 +203,11 @@ pub struct Editor {
     full_screen: bool,
     /// Tell the window about a full-screen change on the next frame.
     full_screen_changed: bool,
+    /// Notices when the window stops drawing, and logs the step it was on.
+    heartbeat: crate::heartbeat::Heartbeat,
+    /// When the window was last asked to fill the screen or come back, until
+    /// the first frame after it has been drawn (for the log).
+    full_screen_asked: Option<Instant>,
     /// `--select-first-clip`: still to be done, once there is a clip.
     select_first_clip: bool,
     /// `--sync-by-sound`: still to be done, once the imports are in.
@@ -522,6 +527,8 @@ impl Editor {
             clipboard_text: None,
             full_screen,
             full_screen_changed: full_screen,
+            heartbeat: crate::heartbeat::Heartbeat::start(),
+            full_screen_asked: None,
             select_first_clip,
             sync_when_ready,
             save_frame_requested: false,
@@ -2240,12 +2247,13 @@ impl Editor {
         self.full_screen_changed = true;
     }
 
-    /// The viewer and its transport, filling the window.
+    /// The viewer and its transport, filling the window, with a scrub bar
+    /// for the whole timeline along the bottom.
     fn full_screen_viewer(&mut self, ui: &mut egui::Ui) {
         let Some(document) = &self.document else { return };
         let p = document.project();
         let mut quality = self.settings.preview_quality;
-        let height = ui.available_height() - 28.0;
+        let height = ui.available_height() - 28.0 - FULL_SCREEN_SCRUB;
         // Full screen is for watching: no handles on the picture. A change
         // still being made when it was entered stays on show.
         let being_changed = self.inspector.shown(p);
@@ -2261,9 +2269,36 @@ impl Editor {
             crate::viewer::Stage::default(),
             |_, _, _| {},
         );
+        let seek = p.active().and_then(|seq| self.full_screen_scrub(ui, seq));
         if let Some(command) = command {
             self.run_action(command);
         }
+        if let Some(seconds) = seek {
+            self.seek(seconds);
+        }
+    }
+
+    /// The whole timeline as a scrub bar: the playhead, the region, a tick
+    /// at each cut of the picture; a click or drag moves the playhead.
+    fn full_screen_scrub(&self, ui: &mut egui::Ui, seq: &project::Sequence) -> Option<f64> {
+        let length = seq.length().as_secs_f64();
+        let (row, _) = ui.allocate_exact_size(
+            egui::vec2(ui.available_width(), FULL_SCREEN_SCRUB),
+            egui::Sense::hover(),
+        );
+        let bar = egui::Rect::from_center_size(
+            row.center(),
+            egui::vec2((row.width() - 48.0).max(1.0), ui_kit::scrub::BAR_HEIGHT),
+        );
+        let marks = ui_kit::scrub::Marks {
+            mark_in: seq.region.map(|r| r.start.as_secs_f64()),
+            mark_out: seq.region.map(|r| r.end.as_secs_f64()),
+        };
+        let cuts = picture_cuts(seq);
+        ui_kit::scrub::cuts(ui, &self.theme, bar, length, &cuts);
+        let at = self.viewer.playhead.as_secs_f64();
+        let look = ui_kit::scrub::Look::Bar;
+        ui_kit::scrub::scrub(ui, &self.theme, "full screen", bar, length, at, marks, look)
     }
 
     /// What the Display menu shows as on: the viewer's ways of showing the
@@ -3548,6 +3583,7 @@ impl eframe::App for Editor {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.heartbeat.beat();
         let started = Instant::now();
         let ctx = ui.ctx().clone();
         let now = Instant::now();
@@ -3672,8 +3708,29 @@ impl eframe::App for Editor {
         }
         self.thumbnails();
 
-        if std::mem::take(&mut self.full_screen_changed) {
+        // The frame after the window was asked to fill the screen (or come
+        // back): logged with how long the switch took.
+        let first_after_switch = self.full_screen_asked.take();
+        if let Some(asked) = first_after_switch {
+            self.heartbeat.step(crate::heartbeat::Step::FirstFullScreenFrame);
+            tracing::info!(
+                "Full screen {}: the first frame after the switch began {} ms after asking",
+                if self.full_screen { "on" } else { "off" },
+                asked.elapsed().as_millis()
+            );
+        }
+        let asking_full_screen = std::mem::take(&mut self.full_screen_changed);
+        if asking_full_screen {
+            tracing::info!(
+                "Asking the window to {}",
+                if self.full_screen {
+                    "fill the screen"
+                } else {
+                    "come back from full screen"
+                }
+            );
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.full_screen));
+            self.full_screen_asked = Some(Instant::now());
         }
         if self.full_screen {
             egui::CentralPanel::default()
@@ -3729,6 +3786,16 @@ impl eframe::App for Editor {
         self.automation(&ctx, started.elapsed());
         // Keep the resource readout and autosave ticking without input.
         ctx.request_repaint_after(Duration::from_millis(500));
+        // What comes until the next frame: the switch asked for (so a stop in
+        // it is named), the window put away (no frames are drawn then, and
+        // that is no stop), or the toolkit drawing this frame on screen.
+        use crate::heartbeat::Step;
+        let minimized = ctx.input(|i| i.viewport().minimized == Some(true));
+        self.heartbeat.step(match () {
+            () if asking_full_screen => Step::AskingFullScreen,
+            () if minimized => Step::Minimized,
+            () => Step::BetweenFrames,
+        });
     }
 
     fn on_exit(&mut self) {
@@ -3938,9 +4005,41 @@ fn save_png(image: &egui::ColorImage, path: &Path) -> Result<(), String> {
         .map_err(|e| format!("The screenshot could not be saved: {e}"))
 }
 
+/// The height of the full-screen viewer's scrub bar row.
+const FULL_SCREEN_SCRUB: f32 = 30.0;
+
+/// Where the timeline's picture cuts from one clip to another, in seconds:
+/// every start and end of a clip on a video track, once each, in order.
+fn picture_cuts(seq: &project::Sequence) -> Vec<f64> {
+    let spans = seq
+        .video_tracks
+        .iter()
+        .flat_map(|track| track.clips.iter())
+        .map(|clip| (clip.start, clip.duration));
+    cut_times(spans)
+}
+
+/// The starts and ends of `spans` (start, length), once each, in order.
+fn cut_times(spans: impl Iterator<Item = (Time, Time)>) -> Vec<f64> {
+    let mut cuts: Vec<Time> = spans
+        .flat_map(|(start, length)| [start, start + length])
+        .collect();
+    cuts.sort();
+    cuts.dedup();
+    cuts.into_iter().map(|t| t.as_secs_f64()).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_full_screen_scrub_bar_marks_each_cut_once() {
+        let s = Time::seconds;
+        // Two clips end to end on one track, a third over the join on another.
+        let spans = [(s(0), s(4)), (s(4), s(6)), (s(3), s(2))];
+        assert_eq!(cut_times(spans.into_iter()), [0.0, 3.0, 4.0, 5.0, 10.0]);
+    }
 
     #[test]
     fn empty_pages_say_what_to_do_and_never_name_plan_phases() {

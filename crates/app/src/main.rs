@@ -18,6 +18,7 @@ mod export_page;
 mod fake_pointer;
 mod frame_grab;
 mod global_labels;
+mod heartbeat;
 mod import;
 mod inspector;
 mod label_editor;
