@@ -86,6 +86,7 @@ fn rich_project() -> Project {
         lines: Default::default(),
         effects: Default::default(),
         mode: Default::default(),
+        transition: None,
         id,
         media: video,
         stream,
@@ -261,6 +262,19 @@ fn rich_project() -> Project {
         duration: Time::seconds(4),
         link: None,
         ..clip(inner_clip, 0)
+    });
+    // A second shot dissolving in over a second across its cut (format 25).
+    let second_shot = p.allocate_id();
+    short.video_tracks[0].clips.push_back(Clip {
+        start: Time::seconds(4),
+        source_in: Time::seconds(40),
+        duration: Time::seconds(3),
+        link: None,
+        transition: Some(project::Transition {
+            kind: project::TransitionKind::Dissolve,
+            length: Time::seconds(1),
+        }),
+        ..clip(second_shot, 0)
     });
     let (nested_id, nested_clip, adjustment) = (short.id, p.allocate_id(), p.allocate_id());
     let (mut v2, mut v3) = (
@@ -549,6 +563,31 @@ fn version_23_sample_opens_with_still_effects() {
 }
 
 #[test]
+fn version_24_sample_opens_with_plain_cuts() {
+    let project = file::load(&sample_path(24)).expect("the version 24 sample opens");
+    for seq in project.sequences.iter() {
+        assert!(
+            seq.tracks()
+                .all(|t| t.clips.iter().all(|c| c.transition.is_none()))
+        );
+    }
+}
+
+#[test]
+fn the_current_sample_has_a_dissolve() {
+    let project = file::load(&sample_path(FORMAT_VERSION)).expect("the sample opens");
+    let short = project
+        .sequences
+        .iter()
+        .find(|s| s.name == "Short cut")
+        .expect("the second timeline");
+    let track = &short.video_tracks[0];
+    let across = project::transitions::across(track, Time::seconds(4)).expect("a transition at the cut");
+    assert_eq!(across.kind, project::TransitionKind::Dissolve);
+    assert_eq!(across.done, 0.5);
+}
+
+#[test]
 fn the_current_sample_has_a_moving_blur_box() {
     let project = file::load(&sample_path(FORMAT_VERSION)).expect("the sample opens");
     let clip = &project.active().expect("a timeline").video_tracks[0].clips[0];
@@ -729,6 +768,8 @@ fn the_stored_template_matches_the_model_but_for_what_came_later() {
         clip.effects = project::Effects::default();
         // Blend modes came with 23.
         clip.mode = project::BlendMode::Normal;
+        // Transitions with 25.
+        clip.transition = None;
     }
     for media in expected.media.iter_mut() {
         media.info.stated_length = None;

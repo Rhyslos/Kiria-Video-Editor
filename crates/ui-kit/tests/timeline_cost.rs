@@ -33,6 +33,7 @@ fn tracks(count: usize, clips_each: usize, clip_len: f64) -> Vec<TimelineTrack> 
                     line: None,
                     slip_room: None,
                     plays_until: None,
+                    transition_in: None,
                 })
                 .collect(),
             muted: false,

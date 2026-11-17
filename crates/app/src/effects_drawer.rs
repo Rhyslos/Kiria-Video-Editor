@@ -2,10 +2,47 @@
 //! box, and the ones used last on top. A row is dragged onto a clip on the
 //! timeline (`ui_kit::DraggedEffect`), double-clicked (or its + clicked) to
 //! go onto the selected clip, and previewed on the selected clip while the
-//! pointer rests on it, with no undo step until it is added.
+//! pointer rests on it, with no undo step until it is added. Transitions
+//! are in a group of their own: dragged onto a cut
+//! (`ui_kit::DraggedTransition`), or double-clicked to go into the
+//! selected clip from the one before it.
 
-use project::EffectKind;
-use ui_kit::{DraggedEffect, Theme};
+use project::{EffectKind, TransitionKind};
+use ui_kit::{DraggedEffect, DraggedTransition, Theme};
+
+/// What a transition does, in a line.
+fn transition_line(kind: TransitionKind) -> &'static str {
+    match kind {
+        TransitionKind::Dissolve => "The next shot fades in over the last",
+        TransitionKind::DipToBlack => "Out to black, then in from it",
+        TransitionKind::Wipe => "The next shot is uncovered from the left",
+        TransitionKind::Push => "The next shot slides in and pushes the last out",
+        TransitionKind::Zoom => "The last grows and fades as the next settles in",
+    }
+}
+
+/// One row of the drawer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Item {
+    Effect(EffectKind),
+    Transition(TransitionKind),
+}
+
+impl Item {
+    fn name(self) -> &'static str {
+        match self {
+            Item::Effect(kind) => kind.name(),
+            Item::Transition(kind) => kind.name(),
+        }
+    }
+
+    fn line(self) -> &'static str {
+        match self {
+            Item::Effect(kind) => about(&kind).1,
+            Item::Transition(kind) => transition_line(kind),
+        }
+    }
+}
 
 /// How many effects "Recently used" keeps.
 pub const RECENT: usize = 5;
@@ -33,6 +70,8 @@ fn about(kind: &EffectKind) -> (&'static str, &'static str) {
 pub enum Asked {
     /// Put this effect on the selected picture.
     Add(EffectKind),
+    /// Put this transition into the selected picture.
+    AddTransition(TransitionKind),
 }
 
 /// The Effects side's own state.
@@ -63,6 +102,19 @@ pub fn used(recent: &[String], kind: &EffectKind) -> Vec<String> {
         .collect()
 }
 
+/// A transition by its place in [`TransitionKind::ALL`], as a drag carries it.
+pub fn transition_by_index(index: u32) -> Option<TransitionKind> {
+    TransitionKind::ALL.get(index as usize).copied()
+}
+
+/// Whether a transition matches the words of `find` (its name, its
+/// group's or its line).
+fn transition_matches(kind: TransitionKind, find: &str) -> bool {
+    let text = format!("{} transitions {}", kind.name(), transition_line(kind)).to_lowercase();
+    find.split_whitespace()
+        .all(|word| text.contains(&word.to_lowercase()))
+}
+
 /// Whether `kind` matches the words of `find` (its name, group or line).
 fn matches(kind: &EffectKind, find: &str) -> bool {
     let (group, line) = about(kind);
@@ -90,9 +142,9 @@ impl EffectsDrawer {
         );
         ui.add_space(4.0);
         let hint = if selected {
-            "Drag one onto a clip, or double-click to add it to the selected clip. Rest on one to preview it."
+            "Drag one onto a clip (a transition onto a cut), or double-click to add it to the selected clip. Rest on an effect to preview it."
         } else {
-            "Drag one onto a clip on the timeline, or select a clip to add and preview them here."
+            "Drag one onto a clip on the timeline (a transition onto a cut between two), or select a clip to add and preview them here."
         };
         ui.label(egui::RichText::new(hint).small().color(theme.muted));
         ui.add_space(6.0);
@@ -101,15 +153,29 @@ impl EffectsDrawer {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 let finding = !self.find.trim().is_empty();
-                let recent: Vec<EffectKind> = recent.iter().filter_map(|n| by_name(n)).collect();
+                let recent: Vec<Item> = recent
+                    .iter()
+                    .filter_map(|n| by_name(n))
+                    .map(Item::Effect)
+                    .collect();
                 if !finding && !recent.is_empty() {
                     self.group(ui, theme, "Recently used", &recent, selected, &mut asked);
                 }
                 let mut any = false;
+                let transitions: Vec<Item> = TransitionKind::ALL
+                    .into_iter()
+                    .filter(|k| transition_matches(*k, &self.find))
+                    .map(Item::Transition)
+                    .collect();
+                if !transitions.is_empty() {
+                    any = true;
+                    self.group(ui, theme, "Transitions", &transitions, selected, &mut asked);
+                }
                 for group in GROUPS {
-                    let kinds: Vec<EffectKind> = EffectKind::ALL
+                    let kinds: Vec<Item> = EffectKind::ALL
                         .into_iter()
                         .filter(|k| about(k).0 == group && matches(k, &self.find))
+                        .map(Item::Effect)
                         .collect();
                     if !kinds.is_empty() {
                         any = true;
@@ -117,7 +183,7 @@ impl EffectsDrawer {
                     }
                 }
                 if !any {
-                    ui.label(egui::RichText::new("No effect has those words.").color(theme.muted));
+                    ui.label(egui::RichText::new("Nothing here has those words.").color(theme.muted));
                 }
             });
         asked
@@ -128,47 +194,60 @@ impl EffectsDrawer {
         ui: &mut egui::Ui,
         theme: &Theme,
         title: &str,
-        kinds: &[EffectKind],
+        items: &[Item],
         selected: bool,
         asked: &mut Option<Asked>,
     ) {
         ui.label(egui::RichText::new(title).small().strong().color(theme.muted));
-        for kind in kinds {
-            if let Some(a) = self.row(ui, theme, kind, selected) {
+        for item in items {
+            if let Some(a) = self.row(ui, theme, *item, selected) {
                 *asked = Some(a);
             }
         }
         ui.add_space(8.0);
     }
 
-    /// One effect: its name and line; dragged, double-clicked or + to add.
-    fn row(&mut self, ui: &mut egui::Ui, theme: &Theme, kind: &EffectKind, selected: bool) -> Option<Asked> {
-        let index = EffectKind::ALL.iter().position(|k| k == kind).unwrap_or(0) as u32;
+    /// One effect or transition: its name and line; dragged,
+    /// double-clicked or + to add.
+    fn row(&mut self, ui: &mut egui::Ui, theme: &Theme, item: Item, selected: bool) -> Option<Asked> {
         let (rect, response) = ui.allocate_exact_size(
             egui::vec2(ui.available_width(), ROW_HEIGHT),
             egui::Sense::click_and_drag(),
         );
-        response.dnd_set_drag_payload(DraggedEffect(index));
+        match item {
+            Item::Effect(kind) => {
+                let index = EffectKind::ALL.iter().position(|k| *k == kind).unwrap_or(0) as u32;
+                response.dnd_set_drag_payload(DraggedEffect(index));
+            }
+            Item::Transition(kind) => {
+                let index = TransitionKind::ALL.iter().position(|k| *k == kind).unwrap_or(0) as u32;
+                response.dnd_set_drag_payload(DraggedTransition(index));
+            }
+        }
         let lit = response.hovered() || response.dragged();
         if lit {
             ui.painter().rect_filled(rect, 6.0, theme.line);
         }
-        if response.hovered() && selected && !response.dragged() {
-            self.previewing = Some(*kind);
+        if let Item::Effect(kind) = item
+            && response.hovered()
+            && selected
+            && !response.dragged()
+        {
+            self.previewing = Some(kind);
         }
         let painter = ui.painter_at(rect);
         let text = rect.shrink2(egui::vec2(10.0, 6.0));
         painter.text(
             text.left_top(),
             egui::Align2::LEFT_TOP,
-            kind.name(),
+            item.name(),
             egui::FontId::proportional(14.0),
             theme.text,
         );
         painter.text(
             text.left_bottom(),
             egui::Align2::LEFT_BOTTOM,
-            about(kind).1,
+            item.line(),
             egui::FontId::proportional(11.5),
             theme.muted,
         );
@@ -178,9 +257,13 @@ impl EffectsDrawer {
                 egui::pos2(rect.right() - 18.0, rect.center().y),
                 egui::vec2(24.0, 24.0),
             );
+            let tip = match item {
+                Item::Effect(_) => "Add to the selected clip",
+                Item::Transition(_) => "Put it into the selected clip, from the clip before it",
+            };
             let add = ui
                 .interact(plus, response.id.with("add"), egui::Sense::click())
-                .on_hover_text("Add to the selected clip");
+                .on_hover_text(tip);
             if lit || add.hovered() {
                 let colour = if add.hovered() { theme.text } else { theme.muted };
                 ui.painter().text(
@@ -192,7 +275,10 @@ impl EffectsDrawer {
                 );
             }
             if add.clicked() || response.double_clicked() {
-                asked = Some(Asked::Add(*kind));
+                asked = Some(match item {
+                    Item::Effect(kind) => Asked::Add(kind),
+                    Item::Transition(kind) => Asked::AddTransition(kind),
+                });
             }
         }
         response.on_hover_cursor(egui::CursorIcon::Grab);
@@ -221,6 +307,16 @@ mod tests {
             .collect();
         assert_eq!(censor, ["Blur", "Pixelate"]);
         assert!(!matches(&EffectKind::ALL[0], "nothing like it"));
+    }
+
+    #[test]
+    fn transitions_travel_by_place_and_are_found_by_their_words() {
+        for (i, kind) in TransitionKind::ALL.iter().enumerate() {
+            assert_eq!(transition_by_index(i as u32), Some(*kind));
+            assert!(transition_matches(*kind, "transition"));
+        }
+        assert!(transition_matches(TransitionKind::DipToBlack, "black"));
+        assert!(!transition_matches(TransitionKind::Wipe, "black"));
     }
 
     #[test]

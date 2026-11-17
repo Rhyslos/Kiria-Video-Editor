@@ -72,6 +72,7 @@ mod speed;
 pub use gaps::Gap;
 pub use slip::SlipRoom;
 mod track_views;
+mod transitions;
 
 pub use cache_bar::{CacheBar, CacheRange, CacheState};
 pub use fades::ClipSound;
@@ -129,6 +130,9 @@ pub struct TimelineClip {
     /// before the clip ends (a nested timeline that got shorter): the rest
     /// is hatched.
     pub plays_until: Option<f64>,
+    /// How long the transition into it from the clip before lasts, in
+    /// seconds, when it has one: drawn as a box centred on its start.
+    pub transition_in: Option<f64>,
 }
 
 /// What a clip plays, as the timeline draws it.
@@ -371,6 +375,9 @@ pub enum TimelineEvent {
     },
     /// A dragged effect was let go over a clip.
     DropEffect { effect: u32, clip: u64 },
+    /// A dragged transition was let go by a cut: it goes into `clip`, from
+    /// the clip that ends where it starts.
+    DropTransition { transition: u32, clip: u64 },
     /// "Add a video track" or "Add an audio track" from the menu of the track names.
     AddTrack { audio: bool },
     /// "Remove" from that menu, for a track without clips.
@@ -467,6 +474,11 @@ pub struct DraggedTimeline(pub u64);
 /// the page's list of effects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DraggedEffect(pub u32);
+
+/// A transition being dragged from the media drawer onto a cut: its place
+/// in the page's list of transitions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DraggedTransition(pub u32);
 
 /// One end of a clip.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -691,6 +703,8 @@ pub struct TimelineView {
     file_over: Option<(f64, Option<usize>)>,
     /// The clip a dragged effect is over, and where it is drawn.
     effect_over: Option<Rect>,
+    /// A transition dragged over a cut: the row and where the cut is on screen.
+    transition_over: Option<(Rect, f32)>,
     /// A drag with the middle button that pans the view: the area it began
     /// over (`None`: the ruler or the scroll bar, which only pan time).
     pan_drag: Option<Option<Half>>,
@@ -766,6 +780,7 @@ impl Default for TimelineView {
             rename: None,
             file_over: None,
             effect_over: None,
+            transition_over: None,
             pan_drag: None,
             steps: Vec::new(),
             max_zoom: MAX_ZOOM,
@@ -1644,6 +1659,7 @@ impl TimelineView {
         let audio_rows = self.rows(Half::Audio, &layout, data);
         self.file_over = None;
         self.effect_over = None;
+        self.transition_over = None;
         // While the middle button pans, nothing else reacts to the pointer.
         if !panning {
             self.input(ui, &layout, data, [&video_rows, &audio_rows], &mut events);
@@ -1893,6 +1909,24 @@ impl TimelineView {
                 if let Some(m) = merged {
                     clip_painter.rect_filled(m, 1.0, tiny_fill(theme, colour, audio));
                 }
+                if !audio {
+                    for clip in &track.clips {
+                        if let Some(length) = clip.transition_in {
+                            let (x0, x1) = (
+                                self.x_of(left, clip.start - length / 2.0),
+                                self.x_of(left, clip.start + length / 2.0),
+                            );
+                            transitions::draw(
+                                &clip_painter,
+                                *row,
+                                x0,
+                                x1,
+                                theme.text,
+                                theme.panel.gamma_multiply(0.85),
+                            );
+                        }
+                    }
+                }
                 if let Some(gap) = self.gap.filter(|g| g.track == track.id) {
                     let (x0, x1) = (self.x_of(left, gap.start), self.x_of(left, gap.end));
                     gaps::draw(&clip_painter, *row, x0, x1, theme.accent);
@@ -1963,6 +1997,12 @@ impl TimelineView {
         if !renaming_shown {
             // The track whose name was being typed has left the view, or is gone.
             self.rename = None;
+        }
+        // A transition dragged over a cut: the cut it would go onto.
+        if let Some((row, x)) = self.transition_over {
+            let tracks = Rect::from_min_max(pos2(left, layout.video.top()), layout.audio.max);
+            let mark = ui.visuals().selection.stroke.color;
+            transitions::draw_landing(&ui.painter_at(tracks), row, x, mark);
         }
         // An effect dragged over a clip: the clip it would go onto.
         if let Some(clip) = self.effect_over {
@@ -3099,9 +3139,10 @@ impl TimelineView {
             let file_over = r.dnd_hover_payload::<DraggedMedia>().is_some()
                 || r.dnd_hover_payload::<DraggedTimeline>().is_some();
             let effect_over = r.dnd_hover_payload::<DraggedEffect>().is_some();
+            let transition_over = from_bottom && r.dnd_hover_payload::<DraggedTransition>().is_some();
             let file_at = ui
                 .input(|i| i.pointer.interact_pos())
-                .filter(|_| file_over || effect_over);
+                .filter(|_| file_over || effect_over || transition_over);
             let menu_marks = self.menu_marks(tracks, data.fps);
             let menu_clip = self
                 .menu_at
@@ -3160,6 +3201,24 @@ impl TimelineView {
                     at: t.max(0.0),
                     track: drop_row.and_then(|row| tracks.get(row)).map(|t| t.id),
                 });
+                continue;
+            }
+            if transition_over {
+                // The cut nearest the pointer on the clip under it, lit;
+                // let go there, the transition goes onto it.
+                let under = rows
+                    .at(p.y)
+                    .and_then(|row| Some((tracks.get(row)?, *row_rects.get(row)?)))
+                    .and_then(|(track, band)| Some((transitions::cut_near(track, t)?, band)));
+                self.transition_over = under.map(|((_, cut), band)| (band, self.x_of(left, cut)));
+                if let Some(dragged) = r.dnd_release_payload::<DraggedTransition>()
+                    && let Some(((clip, _), _)) = under
+                {
+                    events.push(TimelineEvent::DropTransition {
+                        transition: dragged.0,
+                        clip,
+                    });
+                }
                 continue;
             }
             if effect_over {
@@ -4413,6 +4472,7 @@ mod tests {
             line: None,
             slip_room: None,
             plays_until: None,
+            transition_in: None,
         }
     }
 
@@ -5889,6 +5949,36 @@ mod tests {
         rig.move_to(at);
         rig.move_to(at);
         rig.button(at, primary, false)
+    }
+
+    #[test]
+    fn a_dropped_transition_goes_onto_the_nearer_cut() {
+        let mut rig = Rig::new(2, 2);
+        // The upper video track: 1 s to 5 s, then 5 s to 7 s.
+        rig.video[1].clips.push(clip(7, 5.0, 2.0));
+        let primary = egui::PointerButton::Primary;
+        let drawer = pos2(60.0, 395.0);
+        let drop = |rig: &mut Rig, at: Pos2| {
+            rig.move_to(drawer);
+            rig.button(drawer, primary, true);
+            egui::DragAndDrop::set_payload(&rig.ctx, DraggedTransition(2));
+            rig.move_to(at);
+            rig.move_to(at);
+            let lit = rig.view.transition_over.is_some();
+            (lit, rig.button(at, primary, false))
+        };
+        assert_eq!(
+            drop(&mut rig, pos2(x_at(4.0), 130.0)),
+            (
+                true,
+                vec![TimelineEvent::DropTransition {
+                    transition: 2,
+                    clip: 7
+                }]
+            )
+        );
+        // The lower track's clip has no cut.
+        assert_eq!(drop(&mut rig, pos2(x_at(3.0), 190.0)), (false, Vec::new()));
     }
 
     #[test]

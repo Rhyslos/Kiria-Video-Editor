@@ -1373,6 +1373,11 @@ impl Editor {
                     self.add_effect(kind, project::ClipId(clip));
                 }
             }
+            E::DropTransition { transition, clip } => {
+                if let Some(kind) = crate::effects_drawer::transition_by_index(transition) {
+                    self.add_transition(kind, project::ClipId(clip));
+                }
+            }
             E::OpenNested { clip } => self.open_nested(project::ClipId(clip)),
             E::FitNested { clip } => self.fit_nested(project::ClipId(clip)),
             E::AddAdjustment { at, track } => {
@@ -2308,6 +2313,27 @@ impl Editor {
         }
     }
 
+    /// Puts a transition of `kind` into `clip` from the clip before it, at
+    /// the usual length (one undo step), and selects the clip so the
+    /// inspector shows it.
+    fn add_transition(&mut self, kind: project::TransitionKind, clip: project::ClipId) {
+        let result = self.with_document(|d| {
+            let sequence = d.project().active_sequence;
+            d.apply(Command::SetTransition {
+                sequence,
+                clip,
+                transition: Some(project::Transition::new(kind)),
+            })
+        });
+        match result {
+            Ok(()) => {
+                self.selected = vec![clip];
+                self.status = format!("{} added: change its length in the inspector", kind.name());
+            }
+            Err(err) => self.errors.push(&err),
+        }
+    }
+
     /// `being_changed` (or the project as it is) with the effect the
     /// pointer rests on in the drawer added to the selected picture, to be
     /// seen before it is added. No undo step.
@@ -2403,7 +2429,8 @@ impl Editor {
         }
         let rect = ui_kit::drawer::drawer_rect(page);
         let dragging_out = egui::DragAndDrop::has_payload_of_type::<ui_kit::DraggedMedia>(&ctx)
-            || egui::DragAndDrop::has_payload_of_type::<ui_kit::DraggedEffect>(&ctx);
+            || egui::DragAndDrop::has_payload_of_type::<ui_kit::DraggedEffect>(&ctx)
+            || egui::DragAndDrop::has_payload_of_type::<ui_kit::DraggedTransition>(&ctx);
         let keep = ui_kit::drawer::keep_while_dragging(rect, tab);
         let named = self.document.as_ref().and_then(|d| {
             self.drawer
@@ -2467,6 +2494,20 @@ impl Editor {
                     None => {
                         self.status =
                             "Select a picture to add the effect to, or drag it onto a clip".to_owned()
+                    }
+                }
+                None
+            }
+            Some(Picked::AddTransition(kind)) => {
+                let target = self
+                    .document
+                    .as_ref()
+                    .and_then(|d| crate::inspector::effects_target(d.project(), &self.selected));
+                match target {
+                    Some(clip) => self.add_transition(kind, clip),
+                    None => {
+                        self.status =
+                            "Select the clip the transition goes into, or drag it onto a cut".to_owned()
                     }
                 }
                 None

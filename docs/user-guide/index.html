@@ -907,11 +907,12 @@ footer p { color: var(--muted); }
 <li>Right-click a file for <strong>Insert</strong> or <strong>Overwrite at the edit point</strong>, its labels, lists and note, and <strong>Build proxy now</strong> or <strong>Delete proxy</strong>.</li>
 <li>The <strong>⋯</strong> menu has <strong>Prune unused media…</strong> and <strong>Package project…</strong>.</li>
 </ul>
-<p><strong>Effects</strong> (the switch at the drawer's top) lists every picture effect under Motion, Blur and censor and Stylise, with the ones you used last under <strong>Recently used</strong>, and a box to find one by its words ("censor", "zoom").</p>
+<p><strong>Effects</strong> (the switch at the drawer's top) lists the transitions and every picture effect under Motion, Blur and censor and Stylise, with the ones you used last under <strong>Recently used</strong>, and a box to find one by its words ("censor", "zoom").</p>
 <ul>
 <li>Drag an effect onto a clip on the timeline: the clip it would go onto is outlined, and letting go adds the effect to it.</li>
 <li>With a clip selected, rest the pointer on an effect to see it on the picture before adding it; double-click it, or click its <strong>+</strong>, to add it.</li>
 <li>Each added effect is one undo step, and is tuned in the inspector's <strong>Effects</strong> section.</li>
+<li><strong>Transitions</strong> (<strong>Cross dissolve</strong>, <strong>Dip to black</strong>, <strong>Wipe</strong>, <strong>Push</strong>, <strong>Zoom through</strong>) go on a cut between two clips that touch on the same track. Drag one over the timeline: the cut it would go onto is lit (the nearer end of the clip under the pointer), and letting go puts it there. Or select the second clip and double-click the transition. It plays half before the cut and half after, half a second at first; the timeline draws it as a small box across the cut. Change its kind and length, or take it away, in the inspector's <strong>Transition in</strong> section on the second clip. Nothing is trimmed for it: where a recording has nothing past a clip's edge, its first or last frame is held. Each change is one undo step.</li>
 <li>Every effect setting can change over the clip, like Transform's: click the diamond at the end of its row to put a keyframe at the playhead, move the playhead and change the setting to add another. To make a blur box follow a name across the picture, key its <strong>Left</strong> and <strong>Top</strong> where the name starts and where it ends. The timeline's keyframe marks on the clip name the effect.</li>
 </ul>
 </section>

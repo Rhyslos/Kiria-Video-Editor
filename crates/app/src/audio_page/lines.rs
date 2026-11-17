@@ -211,6 +211,7 @@ mod tests {
             lines: Default::default(),
             effects: Default::default(),
             mode: Default::default(),
+            transition: None,
         };
         let lines = clip_with(&clip, LineKind::Volume, &[(11.0, -3.0)], Rate::FPS_60);
         assert_eq!(lines.volume[0].at, Time::seconds(101), "a moment of the file");

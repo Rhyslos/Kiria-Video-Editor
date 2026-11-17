@@ -145,6 +145,7 @@ pub fn file_alone(media: &MediaRef) -> Option<Project> {
         lines: Default::default(),
         effects: Default::default(),
         mode: Default::default(),
+        transition: None,
         id,
         media: media.id,
         stream: video.index,

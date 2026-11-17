@@ -41,9 +41,9 @@ pub use shortcuts::{Action, Context, Shortcut, ShortcutTable};
 pub use theme::{Theme, ThemeName, status};
 pub use timeline::{
     ClickMoves, ClipEdge, ClipPictures, ClipShows, ClipSound, ClipWaveform, DraggedEffect, DraggedMedia,
-    DraggedTimeline, KeyframeMark, LineKind, LineOwner, LinesShown, RegionCut, SlipRoom, SourceMap,
-    SpeedCurve, TimelineClip, TimelineData, TimelineEvent, TimelineMarker, TimelineSpan, TimelineTrack,
-    TimelineView, Tool, ViewStep,
+    DraggedTimeline, DraggedTransition, KeyframeMark, LineKind, LineOwner, LinesShown, RegionCut, SlipRoom,
+    SourceMap, SpeedCurve, TimelineClip, TimelineData, TimelineEvent, TimelineMarker, TimelineSpan,
+    TimelineTrack, TimelineView, Tool, ViewStep,
 };
 pub use top_bar::{TitleBar, TopBar, TopBarClicks, logo_mark, with_keys};
 pub use transport::TransportClick;

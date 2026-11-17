@@ -309,6 +309,7 @@ fn command_for(action: &Action, p: &Project, media: MediaId, recording: MediaId)
                     lines: Default::default(),
                     effects: Default::default(),
                     mode: Default::default(),
+                    transition: None,
                     id: ClipId(0),
                     media,
                     stream: 0,
