@@ -450,7 +450,7 @@ footer p { color: var(--muted); }
 <div class="note">
 <p>The keys in this guide are the usual ones. You can change any of them on the <a href="#shortcuts-page">keyboard shortcuts page</a>; menus and tooltips in the app always show the keys you use now. On keyboards other than US English, a few keys print a different character in the app (Kiria writes them the way your keyboard prints them), but they sit in the same place.</p>
 </div>
-<p>The Color page and effects are still being built, so they are not in this guide yet.</p>
+<p>The Color page is still being built: this guide covers what is there so far.</p>
 
 <h3 id="the-short-version">The short version<a class="anchor" href="#the-short-version" aria-label="Link to this section">#</a></h3>
 <ol class="steps">
@@ -982,6 +982,46 @@ footer p { color: var(--muted); }
 <section id="timeline-settings">
 <h3>Timeline settings<a class="anchor" href="#timeline-settings" aria-label="Link to this section">#</a></h3>
 <p>Click <strong>Timeline settings…</strong> above the viewer (or right-click a timeline tab › <strong>Settings…</strong>) to set the open timeline's picture size, frame rate and sound rate. Choose <strong>Automatic</strong> (set by the first video imported), a template, or the same as one of the project's videos. Clips that don't match are fitted inside the frame, never stretched.</p>
+</section>
+</section>
+
+<section class="chapter" id="color">
+<h2>Color page<a class="anchor" href="#color" aria-label="Link to this section">#</a></h2>
+<p class="lead">The Color page is for each shot's colour: warm up a cold facecam, bring down a blown-out sky, or give every clip of a match the same look.</p>
+
+<section id="color-layout">
+<h3>How the page is laid out<a class="anchor" href="#color-layout" aria-label="Link to this section">#</a></h3>
+<ul>
+<li>The picture, large, with the transport, on the left; on the right, the clip being graded with <strong>Apply</strong>, <strong>Copy grade</strong>, <strong>Paste</strong> and <strong>Reset</strong>.</li>
+<li>Under them, one tool at a time: <strong>Basic</strong> or <strong>Wheels</strong>. Next to the switcher is the layer dropdown (a grade can have several layers, applied in order; <strong>+ Add a layer</strong> adds one, and <strong>On</strong> switches one off to compare) and, for the wheels, <strong>Simple</strong> or <strong>Advanced</strong>.</li>
+<li>The timeline at the bottom, with the sound folded into the clips. Graded clips have a small dot in their bottom left corner.</li>
+</ul>
+<p>The clip being graded is the selected one, or, with nothing selected, the top one under the playhead. Every change is one undo step; a slider or wheel being dragged shows in the picture at once and becomes one step when you let go.</p>
+</section>
+
+<section id="color-basic">
+<h3>Basic<a class="anchor" href="#color-basic" aria-label="Link to this section">#</a></h3>
+<ul>
+<li><strong>Temperature</strong> and <strong>Tint</strong>: warmer or cooler, greener or more magenta.</li>
+<li><strong>Exposure</strong>: brighter or darker, in stops (one stop doubles or halves the light). <strong>Highlights</strong> and <strong>Shadows</strong>: the brightest and darkest parts alone.</li>
+<li><strong>Contrast</strong> around the <strong>Pivot</strong> (the light level that stays where it is), and <strong>Saturation</strong>.</li>
+</ul>
+<p>Double-click a slider to put it back.</p>
+</section>
+
+<section id="color-wheels">
+<h3>Wheels<a class="anchor" href="#color-wheels" aria-label="Link to this section">#</a></h3>
+<p><strong>Shadows</strong>, <strong>Midtones</strong>, <strong>Highlights</strong> and <strong>Overall</strong>. Drag a wheel's dot towards a colour to push that part of the picture that way; the further out, the stronger. The slider under each makes that part brighter or darker. Double-click a wheel to put its colour back. <strong>Advanced</strong> draws the wheels larger with their red, green, blue and brightness as numbers you can type.</p>
+</section>
+
+<section id="color-apply">
+<h3>One grade on many clips<a class="anchor" href="#color-apply" aria-label="Link to this section">#</a></h3>
+<ul>
+<li><strong>Apply</strong> puts the clip's grade on <strong>Every clip</strong>, the <strong>Clips of this file</strong>, or the clips whose file has a label you choose, in one undo step.</li>
+<li><strong>Copy grade</strong>, then select clips and <strong>Paste</strong>.</li>
+<li><strong>Reset</strong> takes the clip's grade away.</li>
+</ul>
+<p>A grade comes after the clip's Quick color and before its effects, and looks the same in the export as in the viewer.</p>
 </section>
 </section>
 

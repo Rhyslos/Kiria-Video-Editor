@@ -153,6 +153,7 @@ pub fn file_alone(media: &MediaRef) -> Option<Project> {
         mode: Default::default(),
         transition: None,
         title: None,
+        grade: Default::default(),
         id,
         media: media.id,
         stream: video.index,

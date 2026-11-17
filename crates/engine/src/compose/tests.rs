@@ -142,3 +142,48 @@ fn a_clips_effects_change_its_own_picture_before_it_is_placed() {
     assert!(at(28, 32) > 0.99, "near its middle: {}", at(28, 32));
     assert!(at(17, 32) < 0.01, "at its left edge: {}", at(17, 32));
 }
+
+#[test]
+fn a_grade_changes_the_light_of_the_picture() {
+    let Some(mut composer) = composer() else {
+        eprintln!("no graphics device here: grades aren't checked");
+        return;
+    };
+    let size = (16, 16);
+    let shown_with = |composer: &mut Composer, grade: render::GradeNumbers| {
+        let whole = FrameDescription {
+            size,
+            layers: vec![layer(
+                Area::fitted(size, size),
+                vec![render::Effect::Grade(grade)],
+            )],
+            steps: vec![Step::Picture(0)],
+        };
+        let composed = composer.compose(&whole, vec![(0, white(size), None)]).unwrap();
+        light(composer, &composed)[8 * 16 + 8]
+    };
+    let plain = shown_with(&mut composer, render::GradeNumbers::PLAIN);
+    assert!((plain - 1.0).abs() < 0.01, "a plain grade leaves it: {plain}");
+    let darker = render::GradeNumbers {
+        exposure: -1.0,
+        ..render::GradeNumbers::PLAIN
+    };
+    let half = shown_with(&mut composer, darker);
+    assert!((half - 0.5).abs() < 0.01, "a stop down halves the light: {half}");
+    let lifted = render::GradeNumbers {
+        exposure: -3.0,
+        shadows_wheel: [0.0, 0.0, 0.0, 0.5],
+        ..render::GradeNumbers::PLAIN
+    };
+    let dark = shown_with(
+        &mut composer,
+        render::GradeNumbers {
+            exposure: -3.0,
+            ..render::GradeNumbers::PLAIN
+        },
+    );
+    assert!(
+        shown_with(&mut composer, lifted) > dark,
+        "the shadows wheel lifts the dark"
+    );
+}

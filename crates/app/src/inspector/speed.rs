@@ -354,6 +354,7 @@ mod tests {
             mode: Default::default(),
             transition: None,
             title: None,
+            grade: Default::default(),
             id: ClipId(7),
             media: project::MediaId(1),
             stream: 0,

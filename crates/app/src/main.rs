@@ -11,6 +11,7 @@ mod cache_cleanup;
 mod cheat_sheet;
 mod clip_pictures;
 mod close_prompt;
+mod color_page;
 mod device_decoding;
 mod display;
 mod editor;

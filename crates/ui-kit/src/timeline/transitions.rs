@@ -87,6 +87,7 @@ mod tests {
                     slip_room: None,
                     plays_until: None,
                     transition_in: None,
+                    graded: false,
                 })
                 .collect(),
             muted: false,

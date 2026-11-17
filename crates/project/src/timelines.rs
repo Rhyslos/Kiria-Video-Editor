@@ -330,6 +330,7 @@ fn unfilled(kind: ClipKind, at: Time, length: Time) -> Clip {
         mode: Default::default(),
         transition: None,
         title: None,
+        grade: Default::default(),
         id: ClipId(0),
         media: MediaId::NONE,
         stream: 0,

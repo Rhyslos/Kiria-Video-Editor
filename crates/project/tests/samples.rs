@@ -88,6 +88,7 @@ fn rich_project() -> Project {
         mode: Default::default(),
         transition: None,
         title: None,
+        grade: Default::default(),
         id,
         media: video,
         stream,
@@ -181,7 +182,20 @@ fn rich_project() -> Project {
     effects.0[5]
         .keys
         .set(1, second + second, near(second + second), 500_000);
+    // Graded on the Color page: warmer and a stop down, its shadows
+    // lifted a little towards blue (format 28).
+    let mut grade = project::Grade::default();
+    let base = &mut grade.layer_mut(0).primary;
+    base.exposure = -1_000_000;
+    base.temperature = 200_000;
+    base.shadows_wheel = project::Wheel {
+        red: 0,
+        green: 0,
+        blue: 100_000,
+        brightness: 50_000,
+    };
     seq.video_tracks[0].clips.push_back(Clip {
+        grade,
         look,
         keyframes,
         ramp: ramp.clone(),
@@ -644,6 +658,23 @@ fn the_current_sample_has_a_steadied_shot() {
 }
 
 #[test]
+fn version_27_sample_opens_ungraded() {
+    let project = file::load(&sample_path(27)).expect("the version 27 sample opens");
+    for seq in project.sequences.iter() {
+        assert!(seq.tracks().all(|t| t.clips.iter().all(|c| !c.grade.is_graded())));
+    }
+}
+
+#[test]
+fn the_current_sample_has_a_graded_picture() {
+    let project = file::load(&sample_path(FORMAT_VERSION)).expect("the sample opens");
+    let clip = &project.active().expect("a timeline").video_tracks[0].clips[0];
+    assert!(clip.grade.is_graded());
+    assert_eq!(clip.grade.0[0].primary.exposure, -1_000_000);
+    assert!(clip.grade.check().is_ok());
+}
+
+#[test]
 fn the_current_sample_has_a_lower_third() {
     let project = file::load(&sample_path(FORMAT_VERSION)).expect("the sample opens");
     let seq = project.active().expect("a timeline");
@@ -851,8 +882,9 @@ fn the_stored_template_matches_the_model_but_for_what_came_later() {
         clip.effects = project::Effects::default();
         // Blend modes came with 23.
         clip.mode = project::BlendMode::Normal;
-        // Transitions with 25.
+        // Transitions with 25, grades with 28.
         clip.transition = None;
+        clip.grade = project::Grade::default();
     }
     for media in expected.media.iter_mut() {
         media.info.stated_length = None;

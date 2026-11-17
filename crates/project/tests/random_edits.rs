@@ -311,6 +311,7 @@ fn command_for(action: &Action, p: &Project, media: MediaId, recording: MediaId)
                     mode: Default::default(),
                     transition: None,
                     title: None,
+                    grade: Default::default(),
                     id: ClipId(0),
                     media,
                     stream: 0,

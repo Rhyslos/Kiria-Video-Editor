@@ -15,6 +15,11 @@ struct Pass {
     // blur and pixelate apply (the whole picture is 0, 0, 1, 1). For a
     // move: its turn in radians (x) and shift (yz).
     spot: vec4<f32>,
+    // A grade's numbers (pass 10): its wheels (shadows, midtones,
+    // highlights, overall: red, green, blue, brightness), then exposure,
+    // contrast, pivot and saturation, then the white balance's gains and
+    // highlights, then shadows.
+    grade: array<vec4<f32>, 7>,
 };
 
 @group(0) @binding(0) var<uniform> it: Pass;
@@ -194,6 +199,46 @@ fn add(p: vec4<f32>, at: vec2<f32>) -> vec3<f32> {
     return p.rgb + glow.rgb * glow.a * it.kind_numbers.y;
 }
 
+// How bright, by BT.709's weights.
+fn luma(rgb: vec3<f32>) -> f32 {
+    return dot(rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
+}
+
+// 10: a grade's primary corrections, on light. Exposure and white balance
+// as gains; highlights and shadows as stops by how bright a pixel is;
+// contrast around the pivot; the wheels on display-like values (light to
+// the power 1/2.4), where a wheel's push is even across the range it
+// works on: shadows lift the dark end, highlights scale the bright end,
+// midtones bend the middle and overall moves everything; then saturation.
+fn graded(light: vec3<f32>) -> vec3<f32> {
+    let shadows_w = it.grade[0];
+    let midtones_w = it.grade[1];
+    let highlights_w = it.grade[2];
+    let overall_w = it.grade[3];
+    let tone = it.grade[4];
+    let balance = it.grade[5];
+    let more = it.grade[6];
+    var rgb = max(light, vec3<f32>(0.0)) * exp2(tone.x) * balance.rgb;
+    let y = luma(rgb);
+    let bright_part = smoothstep(0.18, 1.0, y);
+    let dark_part = 1.0 - smoothstep(0.0, 0.18, y);
+    rgb = rgb * exp2(balance.w * bright_part + more.x * dark_part);
+    // Contrast: 0 leaves it, 1 is twice as hard, -1 half.
+    let pivot = max(tone.z, 0.0001);
+    rgb = pivot * pow(max(rgb, vec3<f32>(0.0)) / pivot, vec3<f32>(exp2(tone.y)));
+    var v = pow(max(rgb, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.4));
+    let lift = (shadows_w.rgb + shadows_w.w) * 0.25;
+    let gain = vec3<f32>(1.0) + (highlights_w.rgb + highlights_w.w) * 0.5;
+    let gamma = exp2(-(midtones_w.rgb + midtones_w.w));
+    let offset = (overall_w.rgb + overall_w.w) * 0.25;
+    v = v * gain + lift * (vec3<f32>(1.0) - v);
+    v = pow(max(v, vec3<f32>(0.0)), gamma);
+    v = v + offset;
+    rgb = pow(max(v, vec3<f32>(0.0)), vec3<f32>(2.4));
+    let grey = luma(rgb);
+    return max(mix(vec3<f32>(grey), rgb, tone.w), vec3<f32>(0.0));
+}
+
 @fragment
 fn effect(in: Corner) -> @location(0) vec4<f32> {
     let kind = i32(round(it.kind_numbers.x));
@@ -219,6 +264,7 @@ fn effect(in: Corner) -> @location(0) vec4<f32> {
         case 2: { rgb = sharpen(p, in.at); }
         case 3: { rgb = bright(p); }
         case 6: { rgb = add(p, in.at); }
+        case 10: { rgb = graded(p.rgb); }
         default: {}
     }
     return stored(rgb, p.a);
