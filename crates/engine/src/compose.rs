@@ -167,6 +167,77 @@ impl Composer {
         Ok(Composed { frame, on_device })
     }
 
+    /// `composed` drawn at about `width` pixels across and read back as
+    /// display values, for the scopes. Waits for the graphics card: on the
+    /// preview's worker only. `None` when it couldn't be read.
+    pub fn sample(&mut self, composed: &Composed, width: u32) -> Option<crate::scope::Sampled> {
+        let (device, queue) = (&self.composing.device, &self.composing.queue);
+        let (fw, fh) = composed.size();
+        let w = width.min(fw).max(1);
+        let h = ((u64::from(fh) * u64::from(w)) / u64::from(fw.max(1))).max(1) as u32;
+        let mut small = self.compositor.frame(device, (w, h));
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("a small copy for the scopes"),
+        });
+        let whole = Area::fitted((w, h), (w, h));
+        let drawn = [made(&composed.frame, whole, Part::WHOLE, 1.0, Colour::NEUTRAL)];
+        self.compositor
+            .draw(device, queue, &mut encoder, &mut small, &drawn);
+        let linear = small.working() == Working::Linear;
+        let bytes = if linear { 8 } else { 4 };
+        let row = (w * bytes).div_ceil(256) * 256;
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("scope read back"),
+            size: u64::from(row * h),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        encoder.copy_texture_to_buffer(
+            small.texture().as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(row),
+                    rows_per_image: Some(h),
+                },
+            },
+            wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+        );
+        queue.submit([encoder.finish()]);
+        let (sender, ready) = std::sync::mpsc::channel();
+        buffer.map_async(wgpu::MapMode::Read, .., move |result| {
+            let _ = sender.send(result.is_ok());
+        });
+        device.poll(wgpu::PollType::wait_indefinitely()).ok()?;
+        if !ready.recv().unwrap_or(false) {
+            return None;
+        }
+        let mapped = buffer.get_mapped_range(..).ok()?;
+        let mut rgb = Vec::with_capacity((w * h) as usize);
+        for line in mapped.chunks(row as usize) {
+            for p in line[..(w * bytes) as usize].chunks(bytes as usize) {
+                rgb.push(match linear {
+                    true => {
+                        let channel = |k: usize| half(u16::from_le_bytes([p[2 * k], p[2 * k + 1]]));
+                        let alpha = channel(3).max(1e-5);
+                        [0, 1, 2].map(|k| (channel(k) / alpha).clamp(0.0, 1.0).powf(1.0 / 2.4))
+                    }
+                    false => [0, 1, 2].map(|k| f32::from(p[k]) / 255.0),
+                });
+            }
+        }
+        Some(crate::scope::Sampled {
+            width: w as usize,
+            height: h as usize,
+            rgb,
+        })
+    }
+
     /// One decoded picture as textures on the device, written into upload
     /// slot `slot` when it is in memory: the textures, the rows that turn
     /// its samples into RGB, and its turn.
@@ -591,3 +662,15 @@ impl Views {
 
 #[cfg(test)]
 mod tests;
+
+/// A 16-bit float as an f32.
+fn half(bits: u16) -> f32 {
+    let sign = if bits >> 15 == 1 { -1.0 } else { 1.0 };
+    let exponent = i32::from((bits >> 10) & 0x1f);
+    let fraction = f32::from(bits & 0x3ff) / 1024.0;
+    match exponent {
+        0 => sign * fraction * 2f32.powi(-14),
+        31 => sign * f32::INFINITY,
+        _ => sign * (1.0 + fraction) * 2f32.powi(exponent - 15),
+    }
+}

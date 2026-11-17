@@ -39,6 +39,7 @@ pub mod offline;
 pub mod output;
 pub mod playback;
 pub mod preview;
+pub mod scope;
 pub mod silence;
 pub mod source;
 pub mod steady;

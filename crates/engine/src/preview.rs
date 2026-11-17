@@ -154,6 +154,9 @@ pub struct Picture {
     /// when the worker was started with one ([`Preview::start_composing`]).
     /// `None` in a gap (black) or when nothing could be decoded.
     pub composed: Option<Composed>,
+    /// A small copy of `composed` as display values, for the scopes, when
+    /// they were asked for ([`Preview::set_scope`]).
+    pub sampled: Option<Arc<crate::scope::Sampled>>,
     /// The renderer could not take a picture decoded on the window's device:
     /// whoever started the worker starts one that decodes the usual way.
     pub refused: bool,
@@ -184,6 +187,8 @@ struct Request {
     playing: bool,
     /// A file without a proxy may show the key frame before the moment first.
     key_frame_first: bool,
+    /// A small copy of the picture is read back for the scopes.
+    scope: bool,
 }
 
 pub struct Preview {
@@ -194,6 +199,8 @@ pub struct Preview {
     playing: bool,
     /// Handed along with every request: see [`Preview::set_key_frame_first`].
     key_frame_first: bool,
+    /// Handed along with every request: see [`Preview::set_scope`].
+    scope: bool,
     pictures: Receiver<Picture>,
     /// Disconnects when the worker thread has ended.
     ended: Receiver<()>,
@@ -266,6 +273,7 @@ impl Preview {
             proxies: None,
             playing: false,
             key_frame_first: true,
+            scope: false,
             pictures,
             ended,
         }
@@ -283,6 +291,12 @@ impl Preview {
     /// for the exact frame (off). Proxy frames shown first are not affected.
     pub fn set_key_frame_first(&mut self, on: bool) {
         self.key_frame_first = on;
+    }
+
+    /// Whether pictures come with a small copy read back for the scopes
+    /// (`Picture::sampled`): only while a scope is shown.
+    pub fn set_scope(&mut self, on: bool) {
+        self.scope = on;
     }
 
     /// The timeline is playing (or not): while it plays, pictures are
@@ -324,6 +338,7 @@ impl Preview {
             proxies: self.proxies.clone(),
             playing: self.playing,
             key_frame_first: self.key_frame_first,
+            scope: self.scope,
         });
     }
 
@@ -970,7 +985,12 @@ impl Worker {
         let composing = self.composing.clone()?;
         let composer = self.composer.get_or_insert_with(|| Composer::new(composing));
         match composer.compose(&description, pictures) {
-            Ok(composed) => out.composed = Some(composed),
+            Ok(composed) => {
+                if r.scope {
+                    out.sampled = composer.sample(&composed, SCOPE_WIDTH).map(Arc::new);
+                }
+                out.composed = Some(composed);
+            }
             Err(_) => out.refused = true,
         }
         out.took = started.elapsed();
@@ -1543,6 +1563,7 @@ impl Picture {
             at,
             frame: None,
             composed: None,
+            sampled: None,
             refused: false,
             converted_on_cpu: false,
             error: None,
@@ -1585,6 +1606,9 @@ fn pixels_needed(layer: &frame::Layer) -> (u32, u32) {
     let whole = |shown: f32, part: f32| (shown / part.clamp(0.01, 1.0)).ceil().clamp(2.0, 16_384.0) as u32;
     (whole(w, layer.part.width), whole(h, layer.part.height))
 }
+
+/// How wide the copy read back for the scopes is.
+const SCOPE_WIDTH: u32 = 320;
 
 /// How many drawn titles are kept.
 const TITLES_KEPT: usize = 4;
@@ -2050,6 +2074,7 @@ mod tests {
             proxies: None,
             playing: false,
             key_frame_first: true,
+            scope: false,
         }
     }
 

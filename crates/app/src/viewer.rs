@@ -123,6 +123,10 @@ const SPLIT_GAP: f32 = 8.0;
 
 pub struct Viewer {
     preview: Preview,
+    /// Pictures come with a small copy for the scopes (the Color page).
+    scope: bool,
+    /// The newest such copy.
+    pub sampled: Option<Arc<engine::scope::Sampled>>,
     /// Which picture slot it draws from: the viewer's, or the Source's.
     slot: Slot,
     ctx: egui::Context,
@@ -202,6 +206,8 @@ impl Viewer {
             frame_interval: None,
             proxies: None,
             key_frame_first: true,
+            scope: false,
+            sampled: None,
             zoom: ui_kit::viewer::Zoom::FIT,
             zoom_place: None,
             zoom_waiting: None,
@@ -254,6 +260,20 @@ impl Viewer {
         }
     }
 
+    /// Whether pictures come with a small copy for the scopes. Turning it
+    /// on asks for the picture again, so the scope fills at once.
+    pub fn set_scope(&mut self, on: bool) {
+        if self.scope != on {
+            self.scope = on;
+            self.preview.set_scope(on);
+            if on {
+                self.requested = None;
+            } else {
+                self.sampled = None;
+            }
+        }
+    }
+
     /// A second viewer beside this one, with a worker of its own on the
     /// same devices, drawing from `slot`: the split view's Source. Its
     /// worker keeps a quarter of the frames this one's may keep on the card.
@@ -299,6 +319,9 @@ impl Viewer {
         // the exact one is still coming.
         if !picture.stand_in {
             self.answered = Some(picture.at);
+        }
+        if let Some(sampled) = &picture.sampled {
+            self.sampled = Some(sampled.clone());
         }
         if picture.frame.is_some() || picture.composed.is_some() {
             self.slow.note(
@@ -482,6 +505,7 @@ impl Viewer {
         self.preview = start_preview(&self.ctx, self.convert, None, self.renderer.as_ref());
         self.preview.set_proxies(self.proxies.clone());
         self.preview.set_key_frame_first(self.key_frame_first);
+        self.preview.set_scope(self.scope);
         self.preview.set_playing(self.frame_interval.is_some());
         self.requested = None;
         self.ctx.request_repaint();

@@ -2921,6 +2921,9 @@ impl Editor {
             }
             ui.add_space(8.0);
         }
+        // The scopes read a small copy of the picture, only while shown.
+        self.viewer
+            .set_scope(self.page == Page::Color && self.document.is_some());
         if self.page == Page::Edit && self.document.is_some() {
             self.edit_page(ui);
             return;
