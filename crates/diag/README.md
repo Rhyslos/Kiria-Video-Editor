@@ -40,6 +40,7 @@ std::fs::read(&path).or_explain(|| {
 | `src/paths.rs` | `AppDirs`: the app's data, logs and crash-reports folders, and its cache folder (proxies; under `~/.cache` on Linux, `cache` in the data folder on Windows) |
 | `src/logging.rs` | Daily log files, 7 days kept; warnings also go to the terminal. `RUST_LOG` changes the level |
 | `src/crash.rs` | Panic hook that writes `crash-<time>.txt`: message, place, version, system, graphics card, last 200 log lines, backtrace |
+| `src/stamp.rs` | `now`, `at`: a moment as reports and markers write it, UTC to the second (`2026-11-17T11:08:57Z`), with the `time` crate the logging already brings |
 | `src/session.rs` | A marker file per running process (`sessions/<process id>.running` in the data folder) that reveals a run which did not close cleanly (crash, forced quit, power cut), with a lock file beside it that the run holds while it lasts (the system lets go of it however the process ends): at start, a marker whose lock is free is a crash, reported once; markers of runs still going are left alone, so several editors can run at once. It names the process and the open project (`note_open_project`), so the launcher can read them (`unfinished_runs`), offer recovery and clear those of crashed runs (`forget_unfinished_runs`). The one marker older versions wrote (`session.running`) is still read |
 | `tests/logging_and_crash.rs` | Logging and a real panic in one test binary, because both are process-wide |
 
