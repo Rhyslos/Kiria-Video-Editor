@@ -30,6 +30,8 @@ pub struct Asked {
     pub busy: bool,
     /// Where the playhead was asked to go (an arrow beside a keyframe).
     pub seek: Option<Time>,
+    /// The effect whose box is to follow what it covers from the playhead.
+    pub follow: Option<project::EffectId>,
 }
 
 /// Where the playhead is, for the settings shown and the keyframe controls.
@@ -126,6 +128,7 @@ pub fn section(ui: &mut egui::Ui, theme: &Theme, sequence: SequenceId, at: At<'_
     let mut clicked: Option<Effects> = None;
     let mut add: Option<EffectKind> = None;
     let mut seek = None;
+    let mut follow = None;
     let clicks = inspector::section(ui, theme, "Effects", &summary(shown), !shown.is_empty(), |ui| {
         let count = shown.0.len();
         for i in 0..count {
@@ -184,6 +187,7 @@ pub fn section(ui: &mut egui::Ui, theme: &Theme, sequence: SequenceId, at: At<'_
                         touched = touched.and(t);
                     }
                     Row::Seek(to) => seek = Some(to),
+                    Row::Follow(id) => follow = Some(id),
                     Row::Still => {}
                 }
             });
@@ -211,6 +215,7 @@ pub fn section(ui: &mut egui::Ui, theme: &Theme, sequence: SequenceId, at: At<'_
         effects: Box::new(effects),
     };
     asked.seek = seek;
+    asked.follow = follow;
     if clicks.reset {
         asked.commands.push(set(Effects::default()));
     } else if let Some(next) = clicked {
@@ -234,6 +239,8 @@ enum Row {
     Clicked(project::Effect),
     /// An arrow beside a keyframe: the playhead goes there.
     Seek(Time),
+    /// "Follow it from here": this effect's box is to follow what it covers.
+    Follow(project::EffectId),
 }
 
 /// The settings of one effect at the playhead, each with its keyframe
@@ -281,6 +288,18 @@ fn settings(ui: &mut egui::Ui, theme: &Theme, at: At<'_>, effect: &project::Effe
                 next.kind = next.kind.with_numbers(&numbers);
                 next.keys.clear(range.clone());
                 return Row::Clicked(next);
+            }
+            if !whole
+                && clip.is_file()
+                && on_clip
+                && ui
+                    .button("Follow it from here")
+                    .on_hover_text(
+                        "Moves the box with what it covers, from the playhead to the clip's end: Left and Top keyframes",
+                    )
+                    .clicked()
+            {
+                return Row::Follow(effect.id);
             }
         }
         if whole && spot.as_ref().is_some_and(|r| r.contains(&index)) {

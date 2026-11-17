@@ -2,6 +2,7 @@
 
 mod audio_ui;
 mod clip_clipboard;
+mod follow;
 mod keyframe_clipboard;
 mod library_ui;
 mod region_cuts;
@@ -66,6 +67,8 @@ pub struct Start {
 }
 
 pub struct Editor {
+    /// A box being followed through its clip ("Follow it from here").
+    following: Option<follow::FollowJob>,
     settings: Settings,
     data_dir: PathBuf,
     /// What draws the window: the first-frames check, the question after a
@@ -531,6 +534,7 @@ impl Editor {
             heartbeat: crate::heartbeat::Heartbeat::start(),
             full_screen_asked: None,
             select_first_clip,
+            following: None,
             sync_when_ready,
             save_frame_requested: false,
             global_labels,
@@ -2760,6 +2764,11 @@ impl Editor {
         if let Some(at) = self.inspector.seek.take() {
             self.go_to(at);
         }
+        if let Some((clip, effect)) = self.inspector.follow.take()
+            && let Err(err) = self.start_follow(clip, effect)
+        {
+            self.errors.push(&err);
+        }
         if self.inspector.on_picture != self.settings.picture_handles {
             self.run_action(Action::PictureHandles);
         }
@@ -3759,6 +3768,7 @@ impl eframe::App for Editor {
             ctx.copy_text(text);
         }
         self.imports(&ctx);
+        self.follow_news(&ctx);
         self.follow_open_timeline();
         if self.select_first_clip
             && self.importer.busy() == 0

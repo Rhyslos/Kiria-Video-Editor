@@ -104,6 +104,29 @@ impl EffectKeys {
 }
 
 impl Effect {
+    /// The effect with its box following `places` (moments of the file,
+    /// with the box's left and top in millionths of the picture): Left
+    /// and Top keyframes at each, in place of the ones between the first
+    /// and the last. Unchanged for an effect without a box, or no places.
+    pub fn following(&self, places: &[(Time, (i32, i32))]) -> Effect {
+        let (Some(range), Some(first), Some(last)) =
+            (self.kind.spot_numbers(), places.first(), places.last())
+        else {
+            return self.clone();
+        };
+        let mut next = self.clone();
+        // Past the last place by a hair, so a keyframe there goes too.
+        let through = (first.0, last.0 + Time::from_i128(1, 1_000_000));
+        for (index, pick) in [(range.start, 0usize), (range.start + 1, 1)] {
+            next.keys.remove(index, through);
+            for (at, (left, top)) in places {
+                let value = if pick == 0 { *left } else { *top };
+                next.keys.set(index, *at, (*at, *at), value.clamp(0, ONE));
+            }
+        }
+        next
+    }
+
     /// Its settings at `at` (a moment of the clip's file): the keyframes'
     /// values where a setting has them, kept within the effect's limits.
     pub fn kind_at(&self, at: Time) -> EffectKind {
@@ -562,6 +585,40 @@ fn out_of_range(effect: &str) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_followed_box_gets_left_and_top_keyframes_over_its_stretch() {
+        let (effects, id) = Effects::default().with_added(EffectKind::Blur(Blur {
+            radius: 500_000,
+            spot: Spot::MIDDLE,
+        }));
+        let mut blur = effects.get(id).expect("added").clone();
+        // A keyframe inside the stretch is replaced; one after it stays.
+        blur.keys
+            .set(1, Time::seconds(1), (Time::seconds(1), Time::seconds(1)), 1);
+        blur.keys
+            .set(1, Time::seconds(9), (Time::seconds(9), Time::seconds(9)), 2);
+        let places = [
+            (Time::ZERO, (100_000, 200_000)),
+            (Time::seconds(2), (300_000, 250_000)),
+        ];
+        let followed = blur.following(&places);
+        let left: Vec<(Time, i32)> = followed.keys.of(1).iter().map(|k| (k.at, k.value)).collect();
+        assert_eq!(
+            left,
+            [
+                (Time::ZERO, 100_000),
+                (Time::seconds(2), 300_000),
+                (Time::seconds(9), 2)
+            ]
+        );
+        assert_eq!(followed.keys.of(2).len(), 2);
+        assert_eq!(followed.kind_at(Time::seconds(1)).spot_numbers(), Some(1..5));
+        // No box, nothing to follow.
+        let (plain, id) = Effects::default().with_added(EffectKind::ALL[0]);
+        let vignette = plain.get(id).expect("added");
+        assert_eq!(&vignette.following(&places), vignette);
+    }
 
     #[test]
     fn effects_get_numbers_of_their_own_and_are_checked() {
