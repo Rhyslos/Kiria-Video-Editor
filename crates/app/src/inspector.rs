@@ -80,6 +80,9 @@ pub struct Inspector {
     /// Where the playhead was asked to go (an arrow beside a keyframe
     /// diamond). The page takes it.
     pub seek: Option<Time>,
+    /// "Follow it from here" on an effect's box: the clip and the effect.
+    /// The page takes it and starts following.
+    pub follow: Option<(ClipId, project::EffectId)>,
 }
 
 /// The clip the inspector is about, for what changes its look from outside
@@ -413,6 +416,9 @@ impl Inspector {
             let asked = effects::section(ui, theme, sequence, at, &shown);
             if let Some(to) = asked.seek {
                 self.seek = Some(to);
+            }
+            if let Some(effect) = asked.follow {
+                self.follow = Some((clip.id, effect));
             }
             if !asked.commands.is_empty() {
                 self.pending_effects = None;
