@@ -55,6 +55,19 @@ pub struct ColorPage {
     pub copied: Option<Grade>,
     /// A grade being dragged, not yet an undo step.
     changing: Option<(ClipId, Grade)>,
+    /// The scope shown.
+    pub scope: engine::scope::ScopeKind,
+    /// The scope's picture on the card, and what it was made from.
+    scope_picture: Option<ScopePicture>,
+}
+
+/// A scope's picture on the card: what it was made from, and the texture.
+struct ScopePicture(usize, engine::scope::ScopeKind, egui::TextureHandle);
+
+impl std::fmt::Debug for ScopePicture {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ScopePicture({:?})", self.1)
+    }
 }
 
 /// What the page's controls asked for, once drawing is done.
@@ -206,6 +219,60 @@ impl ColorPage {
             });
         }
         asked
+    }
+
+    /// The scope chosen, of `sampled` (the newest small copy of the
+    /// picture), with its line in plain words.
+    pub fn scope_ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        theme: &Theme,
+        sampled: Option<&std::sync::Arc<engine::scope::Sampled>>,
+    ) {
+        use engine::scope::ScopeKind;
+        ui.horizontal(|ui| {
+            egui::ComboBox::from_id_salt("scope")
+                .selected_text(self.scope.name())
+                .show_ui(ui, |ui| {
+                    for kind in ScopeKind::ALL {
+                        ui.selectable_value(&mut self.scope, kind, kind.name());
+                    }
+                });
+        });
+        let Some(sampled) = sampled else {
+            ui.label(egui::RichText::new("The scope shows once the picture is ready.").color(theme.muted));
+            return;
+        };
+        let key = std::sync::Arc::as_ptr(sampled) as usize;
+        let fresh = self
+            .scope_picture
+            .as_ref()
+            .is_none_or(|ScopePicture(k, kind, _)| *k != key || *kind != self.scope);
+        if fresh {
+            let image = sampled.image(self.scope);
+            let colour = egui::ColorImage::from_rgba_unmultiplied([image.width, image.height], &image.rgba);
+            let texture = ui
+                .ctx()
+                .load_texture("scope", colour, egui::TextureOptions::LINEAR);
+            self.scope_picture = Some(ScopePicture(key, self.scope, texture));
+        }
+        if let Some(ScopePicture(_, _, texture)) = &self.scope_picture {
+            let width = ui.available_width();
+            let height = match self.scope {
+                ScopeKind::Vectorscope => width.min(ui.available_height() - 24.0).max(40.0),
+                _ => (width * 0.55).min(ui.available_height() - 24.0).max(40.0),
+            };
+            let size = match self.scope {
+                ScopeKind::Vectorscope => egui::vec2(height, height),
+                _ => egui::vec2(width, height),
+            };
+            ui.add(egui::Image::new(texture).fit_to_exact_size(size).corner_radius(4));
+        }
+        ui.label(
+            egui::RichText::new(sampled.reading())
+                .color(theme.muted)
+                .size(12.0),
+        );
     }
 
     /// The bar over the tools: what is being graded, and what can be done

@@ -92,6 +92,10 @@ impl Editor {
                     );
                 }
             }
+            ui.add_space(10.0);
+            ui.separator();
+            self.color_page
+                .scope_ui(ui, &self.theme, self.viewer.sampled.as_ref());
         });
         let mut under = panel(ui, tools);
         frame.show(&mut under, |ui| {

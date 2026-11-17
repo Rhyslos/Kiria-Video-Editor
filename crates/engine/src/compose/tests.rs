@@ -187,3 +187,22 @@ fn a_grade_changes_the_light_of_the_picture() {
         "the shadows wheel lifts the dark"
     );
 }
+
+#[test]
+fn a_small_copy_for_the_scopes_reads_the_picture_back() {
+    let Some(mut composer) = composer() else {
+        eprintln!("no graphics device here: the scopes' copy isn't checked");
+        return;
+    };
+    let size = (64, 36);
+    let whole = FrameDescription {
+        size,
+        layers: vec![layer(Area::fitted(size, size), Vec::new())],
+        steps: vec![Step::Picture(0)],
+    };
+    let composed = composer.compose(&whole, vec![(0, white(size), None)]).unwrap();
+    let sampled = composer.sample(&composed, 32).expect("read back");
+    assert_eq!((sampled.width, sampled.height), (32, 18));
+    assert!(sampled.rgb.iter().all(|p| p.iter().all(|v| *v > 0.98)), "white");
+    assert_eq!(sampled.reading(), "100 % of the picture is clipped at white");
+}

@@ -547,7 +547,7 @@ Phase 7 builds the grading pipeline and the Color page from the mockup: one tool
 - [ ] 32-bit float, linear light, on the GPU; input transform per clip (Rec.709, sRGB), output Rec.709.
 - [x] A grade = an ordered list of nodes (layers) per clip, stored in the project, cached in the render cache. (Done: `project::Grade`, layers of primary corrections, format 28, set by `SetGrades`; applied on the GPU as passes before the clip's effects (`render::Effect::Grade`), so the frames kept by the preview hold it like any other. Not yet: a cache of graded frames of its own.)
 - [ ] Operations: exposure, contrast + pivot, temperature / tint, lift / gamma / gain / offset, saturation, highlights, shadows; curves (RGB, per channel, hue vs hue, hue vs saturation, luma vs saturation); HSL qualifier with soft edges; ellipse, rectangle and freehand masks; .cube LUTs with an intensity slider.
-- [ ] Scopes computed on the GPU from the real output: waveform, RGB parade, vectorscope, histogram, plus a one-line plain reading ("nothing is clipped").
+- [x] Scopes computed on the GPU from the real output: waveform, RGB parade, vectorscope, histogram, plus a one-line plain reading ("nothing is clipped"). (Done: the preview draws the frame it put together small (320 across) on the graphics card and reads it back while the Color page shows (`Composer::sample`); `engine::scope` counts it into the four scopes and the reading.)
 
 **7.2 Auto white balance** (research workflow)
 
@@ -557,7 +557,7 @@ Phase 7 builds the grading pipeline and the Color page from the mockup: one tool
 
 **7.3 Page (as in the mockup)**
 
-- [ ] Large viewport with Compare and Display menus; one scope on the right with a dropdown. (The viewport is in, with the shared viewer's Display menu; the scope and Compare are next.)
+- [ ] Large viewport with Compare and Display menus; one scope on the right with a dropdown. (The viewport is in, with the shared viewer's Display menu, and one scope on the right with its dropdown; Compare is next.)
 - [ ] Tool switcher under the picture: Basic, Wheels, Curves, Color range, Masks, Looks; only one shown. (Basic and Wheels are in: white balance, exposure, highlights, shadows, contrast and pivot, saturation; the four wheels with their brightness.)
 - [x] Layer dropdown; Simple / Advanced toggle next to it.
 - [x] Simple wheels: white balance left, four wheels (Shadows, Midtones, Highlights, Overall) with brightness sliders, tone right. Advanced: large wheels with typed R, G, B and brightness values. (Done as two tools: white balance and tone are on Basic, the wheels on Wheels.)
