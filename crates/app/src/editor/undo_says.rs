@@ -5,6 +5,7 @@
 
 use super::Editor;
 use project::{Project, Sequence, SequenceId};
+use std::collections::HashSet;
 
 /// One step of the history as the person sees it.
 #[derive(Debug, PartialEq)]
@@ -89,8 +90,9 @@ fn in_timeline(before: &Sequence, after: &Sequence) -> String {
         s.tracks()
             .flat_map(|t| t.clips.iter())
             .map(|c| c.id)
-            .collect::<Vec<_>>()
+            .collect::<HashSet<_>>()
     };
+    // Sets: an undo on a timeline of thousands of clips stays quick.
     let (old, new) = (ids(before), ids(after));
     let added = new.iter().filter(|c| !old.contains(c)).count();
     let removed = old.iter().filter(|c| !new.contains(c)).count();
@@ -158,7 +160,7 @@ impl Editor {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use project::Command;
 
@@ -191,5 +193,63 @@ mod tests {
         assert_eq!(s.timeline, Some(alt), "the timeline to open");
         assert!(s.says.starts_with("removed "), "{}", s.says);
         assert!(s.says.ends_with("in Alt cut"), "{}", s.says);
+    }
+
+    /// The open timeline of `project_with_a_clip`, its one clip copied to
+    /// `n` clips one after another, with the ids `first..first + n`.
+    pub(crate) fn many_clips(first: u64, n: u64) -> Sequence {
+        let p = crate::inspector::tests::project_with_a_clip();
+        let mut seq = p.active().unwrap().clone();
+        let clip = seq.video_tracks[0].clips[0].clone();
+        let mut at = clip.start;
+        seq.video_tracks[0].clips = (first..first + n)
+            .map(|id| {
+                let mut c = clip.clone();
+                c.id = project::ClipId(id);
+                c.start = at;
+                at = c.end();
+                c
+            })
+            .collect();
+        seq
+    }
+
+    #[test]
+    fn many_clips_added_or_removed_are_counted() {
+        let before = many_clips(1000, 5000);
+        let more = many_clips(1000, 5003);
+        assert_eq!(in_timeline(&before, &more), "added 3 clips");
+        assert_eq!(in_timeline(&more, &before), "removed 3 clips");
+        let shifted = many_clips(1002, 5000);
+        assert_eq!(in_timeline(&before, &shifted), "changed clips");
+        let one_less = many_clips(1000, 4999);
+        assert_eq!(in_timeline(&before, &one_less), "removed 1 clip");
+        assert_eq!(in_timeline(&before, &before), "changed clips");
+    }
+
+    /// Prints how long saying what an undo changed takes on a timeline of
+    /// 5 000 clips, against the list-scanning way it was counted before.
+    #[test]
+    #[ignore = "a measurement: cargo test -p app -- --ignored --nocapture undo_says"]
+    fn undo_says_on_five_thousand_clips_is_quick() {
+        let before = many_clips(1000, 5000);
+        let after = many_clips(1003, 5000);
+        let start = std::time::Instant::now();
+        let says = in_timeline(&before, &after);
+        let now = start.elapsed();
+        let ids = |s: &Sequence| {
+            s.tracks()
+                .flat_map(|t| t.clips.iter())
+                .map(|c| c.id)
+                .collect::<Vec<_>>()
+        };
+        let start = std::time::Instant::now();
+        let (old, new) = (ids(&before), ids(&after));
+        let added = new.iter().filter(|c| !old.contains(c)).count();
+        let removed = old.iter().filter(|c| !new.contains(c)).count();
+        let scanning = start.elapsed();
+        assert_eq!((added, removed), (3, 3));
+        assert_eq!(says, "changed clips");
+        println!("undo says, 5 000 clips: sets {now:?}, list scans {scanning:?}");
     }
 }

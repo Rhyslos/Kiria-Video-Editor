@@ -10,6 +10,7 @@
 
 use super::Editor;
 use project::{ClipId, Command, CopiedClips};
+use std::collections::HashSet;
 
 /// What the status line says after pasting `copied`, `left_out` of them
 /// left out, at `place` ("the edit needle", "the playhead").
@@ -116,7 +117,7 @@ impl Editor {
             })
         })?;
         if let Some(p) = self.document.as_ref().map(|d| d.project()) {
-            self.selected = all_clips(p).into_iter().filter(|c| !before.contains(c)).collect();
+            self.selected = added_clips(&before, all_clips(p));
         }
         self.status = pasted_says(&copied, left_out, place);
         Ok(())
@@ -190,6 +191,13 @@ impl Editor {
 }
 
 /// Every clip of the open timeline.
+/// The clips in `after` that are not in `before`, in `after`'s order; a
+/// set, so a paste on a timeline of thousands of clips stays quick.
+fn added_clips(before: &[ClipId], after: Vec<ClipId>) -> Vec<ClipId> {
+    let before: HashSet<ClipId> = before.iter().copied().collect();
+    after.into_iter().filter(|c| !before.contains(c)).collect()
+}
+
 fn all_clips(p: &project::Project) -> Vec<ClipId> {
     p.active()
         .map(|s| s.tracks().flat_map(|t| t.clips.iter().map(|c| c.id)).collect())
@@ -212,5 +220,31 @@ mod tests {
         let some = pasted_says(&copied, 1, "the playhead");
         assert!(some.contains(&format!("{} of", n - 1)), "{some}");
         assert!(some.contains("1 was left out"), "{some}");
+    }
+
+    #[test]
+    fn the_pasted_clips_are_the_new_ones_in_timeline_order() {
+        let before: Vec<ClipId> = [1, 2, 3].map(ClipId).to_vec();
+        let after: Vec<ClipId> = [7, 1, 5, 2, 3, 6].map(ClipId).to_vec();
+        assert_eq!(added_clips(&before, after), [7, 5, 6].map(ClipId).to_vec());
+        assert!(added_clips(&before, before.clone()).is_empty());
+        assert_eq!(added_clips(&[], vec![ClipId(4)]), vec![ClipId(4)]);
+    }
+
+    /// Prints how long finding the pasted clips takes on a timeline of
+    /// 5 000 clips, against the list-scanning way it was found before.
+    #[test]
+    #[ignore = "a measurement: cargo test -p app -- --ignored --nocapture pasted_clips"]
+    fn finding_pasted_clips_among_five_thousand_is_quick() {
+        let before: Vec<ClipId> = (0..5000).map(ClipId).collect();
+        let after: Vec<ClipId> = (0..5010).map(ClipId).collect();
+        let start = std::time::Instant::now();
+        let found = added_clips(&before, after.clone());
+        let now = start.elapsed();
+        let start = std::time::Instant::now();
+        let scanned: Vec<ClipId> = after.into_iter().filter(|c| !before.contains(c)).collect();
+        let scanning = start.elapsed();
+        assert_eq!(found, scanned);
+        println!("pasted clips, 5 000 clips: set {now:?}, list scan {scanning:?}");
     }
 }
