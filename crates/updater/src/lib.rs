@@ -23,6 +23,8 @@ pub mod lock;
 pub mod manifest;
 pub mod prefs;
 pub mod release;
+#[cfg(test)]
+mod test_server;
 
 pub use download::Progress;
 pub use fetch::{ReadyUpdate, fetch, fetch_with_progress};
