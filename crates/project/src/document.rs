@@ -26,6 +26,35 @@
 //! journal. With [`Recovery::OpenLastSave`] the journal is set aside under a
 //! name of its own (never deleted, never replaced) and a new session starts
 //! from the file.
+//!
+//! **When the journal can't be written.** The journal on disk is always a
+//! readable prefix of the history: its lines, in order, are the first
+//! changes of the session, each whole. A change is made on screen first and
+//! keeps its number whatever happens to its line, so numbers never repeat.
+//! If writing a line fails (part way or not at all), the journal is marked
+//! broken and nothing more is added to it, so a torn line can only ever be
+//! the last one, and no later line can follow a missing one. The person is
+//! told once ([`Document::take_journal_problem`]); the edit stays on screen
+//! and the next edits work as usual. While the journal is broken, changes
+//! are kept by full saves alone: one is due at once, and a save made while
+//! broken also starts a new session on its worker (the saved file becomes
+//! the start, the journal is emptied). The document writes to that new
+//! journal only when the save held every change made so far; otherwise the
+//! next save tries again. A crash before then recovers the journal's
+//! prefix, or the newer project file, never anything out of order.
+//!
+//! A failed sync (the system could not confirm the journal is on the disk)
+//! breaks nothing: the line was written whole, so a crash of the app keeps
+//! it and only a power cut could lose it. The person is told, and the
+//! journal goes on.
+//!
+//! **Reading it back** stops at the first line that can't be read or doesn't
+//! carry the next number. Each change works on the state the changes before
+//! it left (new ids come from the project's counter, an undo steps back over
+//! the change before it), so replaying past a missing one would apply later
+//! changes to a different project: ids could name other clips and an undo
+//! could take back the wrong change. Since nothing is written after a failed
+//! line, stopping there loses no line that reached the disk whole.
 
 use crate::command::Command;
 use crate::disk;
@@ -100,7 +129,22 @@ pub fn changes_text(changes: usize) -> String {
 /// newest journal entry written, so an older snapshot never replaces it.
 #[derive(Debug)]
 struct SaveGate {
-    written: Mutex<u64>,
+    /// Held while a save writes.
+    written: Mutex<Written>,
+    /// A new session's journal, started by a save while the journal was
+    /// broken, with the number of the change its start holds. Locked only
+    /// for a moment, so the interface never waits for a save to take it.
+    fresh: Mutex<Option<(u64, File)>>,
+}
+
+#[derive(Debug)]
+struct Written {
+    /// The newest journal entry in the project file.
+    seq: u64,
+    /// The journal entry the journal's start holds: a session is started
+    /// again only from a newer save, so two saves of the same snapshot
+    /// never empty a journal the document has already gone on writing to.
+    session: u64,
 }
 
 /// A full save, ready to run on a worker thread. Holds its own snapshot.
@@ -110,6 +154,9 @@ pub struct SaveJob {
     path: PathBuf,
     journal_seq: u64,
     gate: Arc<SaveGate>,
+    /// The journal was broken when this was prepared: after writing the
+    /// file, start a new session from it.
+    new_session: bool,
 }
 
 impl SaveJob {
@@ -117,13 +164,22 @@ impl SaveJob {
     /// document wait for each other here. A job whose snapshot is older
     /// than the one already written leaves the file alone (and succeeds:
     /// what it holds is on disk).
+    ///
+    /// Prepared while the journal was broken, it then starts a new session
+    /// from the file it wrote (see the module's notes); the document takes
+    /// the new journal in [`Document::finish_save`].
     pub fn run(&self) -> diag::Result<()> {
-        let mut written = self.gate.written.lock().unwrap_or_else(|p| p.into_inner());
-        if self.journal_seq < *written {
+        let mut written = lock(&self.gate.written);
+        if self.journal_seq < written.seq {
             return Ok(());
         }
         file::save_with_journal_seq(&self.project, &self.path, self.journal_seq)?;
-        *written = self.journal_seq;
+        written.seq = self.journal_seq;
+        if self.new_session && self.journal_seq > written.session {
+            let journal = start_session(&self.path)?;
+            written.session = self.journal_seq;
+            *lock(&self.gate.fresh) = Some((self.journal_seq, journal));
+        }
         Ok(())
     }
 
@@ -151,6 +207,14 @@ pub struct Document {
     saves_in_flight: usize,
     gate: Arc<SaveGate>,
     opened: Opened,
+    /// A line could not be written: nothing more is added to the journal
+    /// until a save starts a new session (see the module's notes).
+    journal_broken: bool,
+    /// What went wrong with the journal, not yet told to the person.
+    journal_problem: Option<AppError>,
+    /// Tests: the next line written stops after this many bytes and fails.
+    #[cfg(test)]
+    fail_write_after: Option<usize>,
 }
 
 impl Document {
@@ -165,9 +229,17 @@ impl Document {
             unsaved_since: None,
             saves_in_flight: 0,
             gate: Arc::new(SaveGate {
-                written: Mutex::new(saved_seq),
+                written: Mutex::new(Written {
+                    seq: saved_seq,
+                    session: seq,
+                }),
+                fresh: Mutex::new(None),
             }),
             opened: Opened::AsSaved,
+            journal_broken: false,
+            journal_problem: None,
+            #[cfg(test)]
+            fail_write_after: None,
         }
     }
 
@@ -183,7 +255,7 @@ impl Document {
         let saved = file::read_journal_seq(path)?;
         let entries = read_journal(&journal_path(path))?;
         Ok(OpenCheck {
-            unsaved_changes: entries.iter().filter(|(seq, _)| *seq > saved).count(),
+            unsaved_changes: unsaved(&entries, saved).len(),
         })
     }
 
@@ -206,7 +278,7 @@ impl Document {
         let (project, saved_seq) = load_resolved(path)?;
         let journal_file = journal_path(path);
         let entries = read_journal(&journal_file)?;
-        let changes = entries.iter().filter(|(seq, _)| *seq > saved_seq).count();
+        let changes = unsaved(&entries, saved_seq).len();
         if changes > 0 && recovery == Recovery::Recover {
             let last_save = Box::new(project.clone());
             let (history, seq) = recover(path, project, saved_seq, &entries)?;
@@ -255,7 +327,9 @@ impl Document {
         Ok(())
     }
 
-    /// Applies a change and records it in the journal.
+    /// Applies a change and records it in the journal. Once applied, the
+    /// change stays even when the journal can't be written: that is told by
+    /// [`Document::take_journal_problem`], not by an error here.
     pub fn apply(&mut self, command: Command) -> diag::Result<()> {
         self.refuse_if_read_only()?;
         self.history.apply(&command)?;
@@ -288,6 +362,12 @@ impl Document {
         Ok(true)
     }
 
+    /// What went wrong with the autosave journal since last asked, to tell
+    /// the person once. The work on screen is kept either way.
+    pub fn take_journal_problem(&mut self) -> Option<AppError> {
+        self.journal_problem.take()
+    }
+
     /// True when there are changes not yet in the project file (they are in the journal).
     pub fn has_unsaved_changes(&self) -> bool {
         self.unsaved_since.is_some()
@@ -300,11 +380,12 @@ impl Document {
 
     /// Call regularly, with `idle = true` when nobody is using the app. Returns
     /// a save to run on a worker when changes are 30 seconds old or the app is
-    /// idle, and no other save is running.
+    /// idle, and no other save is running; at once while the journal is
+    /// broken, since saves alone keep the changes then.
     pub fn tick(&mut self, now: Instant, idle: bool) -> Option<SaveJob> {
-        let due = self
-            .unsaved_since
-            .is_some_and(|since| idle || now.duration_since(since) >= FULL_SAVE_INTERVAL);
+        let due = self.unsaved_since.is_some_and(|since| {
+            idle || self.journal_broken || now.duration_since(since) >= FULL_SAVE_INTERVAL
+        });
         (due && !self.is_saving() && !self.is_read_only()).then(|| self.prepare_save())
     }
 
@@ -318,6 +399,7 @@ impl Document {
             path: self.path.clone(),
             journal_seq: self.seq,
             gate: Arc::clone(&self.gate),
+            new_session: self.journal_broken,
         }
     }
 
@@ -328,6 +410,9 @@ impl Document {
         self.saves_in_flight = self.saves_in_flight.saturating_sub(1);
         result?;
         self.saved_seq = self.saved_seq.max(journal_seq);
+        if self.journal_broken {
+            self.take_fresh_journal();
+        }
         if self.saved_seq >= self.seq {
             self.unsaved_since = None;
         } else {
@@ -345,24 +430,105 @@ impl Document {
         self.finish_save(job.journal_seq, result)
     }
 
+    /// Takes the journal a save started while the journal was broken, when
+    /// that save held every change made so far.
+    fn take_fresh_journal(&mut self) {
+        // One started by a save that changes came after is left: the next
+        // save starts the journal again.
+        let fresh = lock(&self.gate.fresh).take();
+        if let Some((seq, journal)) = fresh
+            && seq == self.seq
+        {
+            self.journal = Some(journal);
+            self.journal_broken = false;
+            tracing::info!("the autosave journal started again after a failed write");
+        }
+    }
+
+    /// Writes a change, already made in the history, to the journal. Its
+    /// number is used whatever happens, and a failure is kept for
+    /// [`Document::take_journal_problem`]: the change stays.
     fn record(&mut self, entry: JournalEntry) -> diag::Result<()> {
+        if self.journal.is_none() {
+            return Err(read_only());
+        }
         let seq = self.seq + 1;
-        let line = ron::to_string(&(seq, entry)).or_explain(|| {
-            AppError::new("A change could not be written to the autosave journal")
-                .why("It could not be turned into text.")
-                .fix("Save the project now; this is a bug worth reporting.")
-        })?;
-        let explain = || {
-            AppError::new("Autosave can't keep up")
-                .why("Writing to the autosave journal failed.")
-                .fix("Check that the disk is not full, then save the project.")
-        };
-        let journal = self.journal.as_mut().ok_or_else(read_only)?;
-        writeln!(journal, "{line}").or_explain(explain)?;
-        self.sync.request(journal).or_explain(explain)?;
         self.seq = seq;
         self.unsaved_since.get_or_insert_with(Instant::now);
+        if self.journal_broken {
+            return Ok(());
+        }
+        let written = ron::to_string(&(seq, &entry))
+            .map_err(std::io::Error::other)
+            .and_then(|mut line| {
+                line.push('\n');
+                self.write_line(&line)
+            });
+        match written {
+            Ok(()) => {
+                if let Some(journal) = &self.journal
+                    && let Err(err) = self.sync.request(journal)
+                {
+                    tracing::warn!("the autosave journal could not be put on the disk: {err}");
+                    self.journal_problem = Some(
+                        AppError::new("Autosave could not put its journal on the disk")
+                            .why(
+                                "The system could not confirm that the newest changes are stored. \
+                                 They are kept if the app closes, but a power cut could lose them.",
+                            )
+                            .fix("Check that the disk is working and not full, then save the project.")
+                            .source(err),
+                    );
+                }
+            }
+            Err(err) => {
+                tracing::warn!("a line could not be written to the autosave journal: {err}");
+                self.journal_broken = true;
+                self.journal_problem = Some(
+                    AppError::new("Autosave can't write its journal")
+                        .why(format!(
+                            "Writing to {} failed. Your work on screen is kept; until the journal \
+                             can start again, changes are kept by full saves only.",
+                            journal_path(&self.path).display()
+                        ))
+                        .fix("Check that the disk is not full, then save the project.")
+                        .source(err),
+                );
+            }
+        }
         Ok(())
+    }
+
+    /// Appends one whole line to the journal in a single write.
+    fn write_line(&mut self, line: &str) -> std::io::Result<()> {
+        let journal = self
+            .journal
+            .as_mut()
+            .ok_or_else(|| std::io::Error::other("the project is open read-only"))?;
+        #[cfg(test)]
+        if let Some(bytes) = self.fail_write_after.take() {
+            journal.write_all(&line.as_bytes()[..bytes.min(line.len())])?;
+            return Err(std::io::Error::other("the disk failed part way through the line"));
+        }
+        journal.write_all(line.as_bytes())
+    }
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// The entries after the project file's `saved_seq`, when they carry on
+/// from it one by one; none when the first is missing (they could only
+/// replay out of order).
+fn unsaved(entries: &[(u64, JournalEntry)], saved_seq: u64) -> &[(u64, JournalEntry)] {
+    let after = &entries[entries.partition_point(|(seq, _)| *seq <= saved_seq)..];
+    match after.first() {
+        Some((seq, _)) if *seq != saved_seq + 1 => {
+            tracing::warn!("the autosave journal skips changes after the last save; nothing is replayed");
+            &[]
+        }
+        _ => after,
     }
 }
 
@@ -434,10 +600,7 @@ fn recover(
         Some(project) => (History::new(project), entries.iter().collect()),
         None => {
             disk::copy_atomic(path, &start).or_explain(explain)?;
-            (
-                History::new(saved),
-                entries.iter().filter(|(seq, _)| *seq > saved_seq).collect(),
-            )
+            (History::new(saved), unsaved(entries, saved_seq).iter().collect())
         }
     };
     replay(&mut history, kept.iter().map(|(_, entry)| entry));
@@ -588,8 +751,10 @@ fn replay<'a>(history: &mut History, entries: impl Iterator<Item = &'a JournalEn
     }
 }
 
-/// Reads every complete, numbered entry. A crash can leave a half-written
-/// last line; it is ignored.
+/// Reads the complete, numbered entries in order, up to the first line that
+/// can't be read or doesn't carry the next number (see the module's notes:
+/// what follows could only replay out of order). A crash or a failed write
+/// can leave a half-written last line; it is ignored.
 fn read_journal(path: &Path) -> diag::Result<Vec<(u64, JournalEntry)>> {
     let file = match File::open(path) {
         Ok(file) => file,
@@ -606,10 +771,21 @@ fn read_journal(path: &Path) -> diag::Result<Vec<(u64, JournalEntry)>> {
         if line.trim().is_empty() {
             continue;
         }
-        match ron::from_str(&line) {
-            Ok(entry) => entries.push(entry),
+        match ron::from_str::<(u64, JournalEntry)>(&line) {
+            Ok(entry) => {
+                if let Some((last, _)) = entries.last()
+                    && entry.0 != last + 1
+                {
+                    tracing::warn!(
+                        "the autosave journal goes from change {last} to {}; read up to {last}",
+                        entry.0
+                    );
+                    break;
+                }
+                entries.push(entry);
+            }
             Err(_) => {
-                tracing::warn!("ignored an unreadable autosave journal line");
+                tracing::warn!("stopped reading the autosave journal at an unreadable line");
                 break;
             }
         }
@@ -1021,6 +1197,135 @@ mod tests {
 
         let doc = Document::open(&path, Recovery::Recover).unwrap();
         assert_eq!(doc.project().name, "Kept");
+    }
+
+    fn line(seq: u64, name: &str) -> String {
+        ron::to_string(&(seq, JournalEntry::Do(Box::new(rename(name))))).unwrap()
+    }
+
+    #[test]
+    fn a_line_failing_part_way_leaves_a_readable_journal_and_the_edit_on_screen() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("p.project");
+        let mut doc = new_doc(tmp.path());
+        doc.apply(rename("A")).unwrap();
+        doc.fail_write_after = Some(10);
+        doc.apply(rename("B")).unwrap();
+        assert_eq!(doc.project().name, "B", "the edit stays");
+        let problem = doc.take_journal_problem().expect("the person is told");
+        assert!(problem.what().contains("journal"), "{}", problem.what());
+        doc.apply(rename("C")).unwrap();
+        assert!(doc.take_journal_problem().is_none(), "told once");
+        let text = fs::read_to_string(journal_path(&path)).unwrap();
+        assert_eq!(
+            text.lines().count(),
+            2,
+            "nothing is added after the torn line: {text}"
+        );
+        let job = doc.tick(Instant::now(), false).expect("a save is due at once");
+        drop(job);
+        drop(doc); // crash before the save ran
+
+        assert_eq!(Document::check(&path).unwrap().unsaved_changes, 1);
+        let doc = Document::open(&path, Recovery::Recover).unwrap();
+        assert_eq!(doc.project().name, "A", "what reached the disk whole");
+    }
+
+    #[test]
+    fn a_save_starts_the_journal_again_once_it_holds_every_change() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("p.project");
+        let mut doc = new_doc(tmp.path());
+        doc.apply(rename("A")).unwrap();
+        doc.fail_write_after = Some(3);
+        doc.apply(rename("B")).unwrap();
+        doc.apply(rename("C")).unwrap();
+        let job = doc.tick(Instant::now(), false).unwrap();
+        doc.apply(rename("D")).unwrap(); // while that save runs
+        run(&mut doc, job);
+        assert!(doc.has_unsaved_changes(), "D still needs saving");
+        let job = doc.tick(Instant::now(), false).expect("tried again at once");
+        run(&mut doc, job);
+        assert!(!doc.has_unsaved_changes());
+        // The journal goes on from the save.
+        doc.apply(rename("E")).unwrap();
+        assert!(doc.undo().unwrap());
+        doc.apply(rename("F")).unwrap();
+        let expected = doc.project().clone();
+        assert!(doc.take_journal_problem().is_some());
+        assert!(doc.take_journal_problem().is_none());
+        drop(doc); // crash
+
+        let text = fs::read_to_string(journal_path(&path)).unwrap();
+        assert!(
+            text.lines()
+                .all(|l| ron::from_str::<(u64, JournalEntry)>(l).is_ok()),
+            "{text}"
+        );
+        assert_eq!(Document::check(&path).unwrap().unsaved_changes, 3);
+        let mut doc = Document::open(&path, Recovery::Recover).unwrap();
+        assert_eq!(doc.project(), &expected);
+        // The history goes back to the save that started the journal again.
+        assert!(doc.undo().unwrap());
+        assert_eq!(doc.project().name, "D");
+        assert!(!doc.history().can_undo());
+    }
+
+    #[test]
+    fn a_sync_failure_is_told_and_never_reuses_a_number() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("p.project");
+        let mut doc = new_doc(tmp.path());
+        doc.apply(rename("A")).unwrap();
+        doc.sync.fail_next();
+        doc.apply(rename("B")).unwrap();
+        assert_eq!(doc.project().name, "B");
+        let problem = doc.take_journal_problem().expect("the person is told");
+        assert!(problem.what().contains("disk"), "{}", problem.what());
+        doc.apply(rename("C")).unwrap();
+        assert!(doc.take_journal_problem().is_none());
+        drop(doc); // crash
+
+        let text = fs::read_to_string(journal_path(&path)).unwrap();
+        let numbers: Vec<u64> = text
+            .lines()
+            .map(|l| ron::from_str::<(u64, JournalEntry)>(l).unwrap().0)
+            .collect();
+        assert_eq!(numbers, [1, 2, 3]);
+        let mut doc = Document::open(&path, Recovery::Recover).unwrap();
+        assert_eq!(doc.project().name, "C");
+        for name in ["B", "A", "Start"] {
+            assert!(doc.undo().unwrap());
+            assert_eq!(doc.project().name, name, "the whole history came back");
+        }
+    }
+
+    #[test]
+    fn recovery_stops_where_the_journal_breaks_off() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("p.project");
+        drop(new_doc(tmp.path()));
+        // A number used twice (as an older version could write after a
+        // failed sync), then a torn line in the middle: nothing after
+        // either is replayed, so nothing lands out of order.
+        let repeated = [line(1, "A"), line(2, "B"), line(2, "C"), line(3, "D")].join("\n");
+        fs::write(journal_path(&path), format!("{repeated}\n")).unwrap();
+        assert_eq!(Document::check(&path).unwrap().unsaved_changes, 2);
+        let mut doc = Document::open(&path, Recovery::Recover).unwrap();
+        assert_eq!(doc.project().name, "B");
+        assert!(doc.undo().unwrap());
+        assert!(doc.undo().unwrap());
+        assert_eq!(doc.project().name, "Start");
+        drop(doc);
+
+        let path = tmp.path().join("q.project");
+        drop(Document::create(&path, Project::new("Start", SequenceSettings::GAME_CLIP)).unwrap());
+        let torn = [line(1, "A"), "(2, Do(Rena".to_owned(), line(3, "C")].join("\n");
+        fs::write(journal_path(&path), format!("{torn}\n")).unwrap();
+        assert_eq!(
+            Document::open(&path, Recovery::Recover).unwrap().project().name,
+            "A"
+        );
     }
 
     fn run(doc: &mut Document, job: SaveJob) {
