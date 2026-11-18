@@ -25,11 +25,7 @@ pub struct Gap {
 /// start of the timeline) to the start of the clip after. `None` where
 /// there is a clip, or nothing after (the open end of the track).
 pub fn gap_at(track: &TimelineTrack, t: f64) -> Option<Gap> {
-    if track
-        .clips
-        .iter()
-        .any(|c| c.start <= t && t < c.start + c.duration)
-    {
+    if track.clip_at(t).is_some() {
         return None;
     }
     let before = track

@@ -3245,30 +3245,12 @@ impl Editor {
                 least_viewer,
                 least_timeline,
             );
-            let tip = |a: Action| self.shortcuts.tip(a);
-            let tips = [
-                tip(Action::SelectTool),
-                tip(Action::BladeTool),
-                tip(Action::RippleTool),
-                tip(Action::RollTool),
-                tip(Action::SlipTool),
-                tip(Action::SlideTool),
-                tip(Action::ToggleSnapping),
-                tip(Action::ZoomToFit),
-                tip(Action::RoughCut),
-            ];
             let new_tip = self.shortcuts.tip(Action::NewTimeline);
             let shown_tabs = timelines::tabs(p);
             ui.horizontal(|ui| {
-                toolbar_click = ui_kit::timeline::toolbar(
-                    ui,
-                    &self.theme,
-                    &self.timeline,
-                    [
-                        &tips[0], &tips[1], &tips[2], &tips[3], &tips[4], &tips[5], &tips[6], &tips[7],
-                        &tips[8],
-                    ],
-                );
+                toolbar_click = ui_kit::timeline::toolbar(ui, &self.theme, &self.timeline, |click| {
+                    self.shortcuts.tip(toolbar_action(click))
+                });
                 if self.lines_on {
                     ui.add_space(8.0);
                     if ui_kit::timeline::lines_chip(
@@ -3394,17 +3376,7 @@ impl Editor {
             self.run_action(Action::VolumeLines);
         }
         if let Some(click) = toolbar_click {
-            self.run_action(match click {
-                ui_kit::timeline::ToolbarClick::Tool(ui_kit::Tool::Select) => Action::SelectTool,
-                ui_kit::timeline::ToolbarClick::Tool(ui_kit::Tool::Blade) => Action::BladeTool,
-                ui_kit::timeline::ToolbarClick::Tool(ui_kit::Tool::Ripple) => Action::RippleTool,
-                ui_kit::timeline::ToolbarClick::Tool(ui_kit::Tool::Roll) => Action::RollTool,
-                ui_kit::timeline::ToolbarClick::Tool(ui_kit::Tool::Slip) => Action::SlipTool,
-                ui_kit::timeline::ToolbarClick::Tool(ui_kit::Tool::Slide) => Action::SlideTool,
-                ui_kit::timeline::ToolbarClick::Snapping => Action::ToggleSnapping,
-                ui_kit::timeline::ToolbarClick::Fit => Action::ZoomToFit,
-                ui_kit::timeline::ToolbarClick::RoughCut => Action::RoughCut,
-            });
+            self.run_action(toolbar_action(click));
         }
         if let Some(command) = viewer_command {
             self.run_action(command);
@@ -4075,6 +4047,23 @@ const AUDIO_ENDS_WITHIN: Duration = Duration::from_secs(2);
 /// How long closing the app waits for the launcher's picture being
 /// written (one small frame).
 const THUMBNAIL_ENDS_WITHIN: Duration = Duration::from_secs(5);
+
+/// The command a button of the timeline's toolbar runs (and whose
+/// shortcut its tooltip names).
+fn toolbar_action(click: ui_kit::timeline::ToolbarClick) -> Action {
+    use ui_kit::timeline::ToolbarClick as C;
+    match click {
+        C::Tool(ui_kit::Tool::Select) => Action::SelectTool,
+        C::Tool(ui_kit::Tool::Blade) => Action::BladeTool,
+        C::Tool(ui_kit::Tool::Ripple) => Action::RippleTool,
+        C::Tool(ui_kit::Tool::Roll) => Action::RollTool,
+        C::Tool(ui_kit::Tool::Slip) => Action::SlipTool,
+        C::Tool(ui_kit::Tool::Slide) => Action::SlideTool,
+        C::Snapping => Action::ToggleSnapping,
+        C::Fit => Action::ZoomToFit,
+        C::RoughCut => Action::RoughCut,
+    }
+}
 
 /// Records what a finished job writing the launcher's picture means for
 /// `shows`, what the picture is known to show: after a failure, nothing.

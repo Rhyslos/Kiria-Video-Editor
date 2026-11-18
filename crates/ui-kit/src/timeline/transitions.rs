@@ -13,10 +13,7 @@ const MEETS: f64 = 1e-6;
 /// at its end. The clip coming in across it and the cut's time; `None`
 /// when no clip meets another there.
 pub fn cut_near(track: &TimelineTrack, t: f64) -> Option<(u64, f64)> {
-    let under = track
-        .clips
-        .iter()
-        .find(|c| c.start <= t && t < c.start + c.duration)?;
+    let under = track.clip_at(t)?;
     let end = under.start + under.duration;
     let starts_at = |at: f64| track.clips.iter().find(|c| (c.start - at).abs() < MEETS);
     let ends_at = |at: f64| {
