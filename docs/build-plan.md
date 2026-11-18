@@ -553,16 +553,16 @@ Phase 7 builds the grading pipeline and the Color page from the mockup: one tool
 
 - [ ] Compare at least two statistical methods and one small learned model on facecam and game clips. (Two statistical methods and their combination compared on made-up pictures; the owner's clips and a learned model are still to do.)
 - [x] Chosen method: several frames across the clip, linear light, ignores clipped, near-black and strongly saturated pixels. (Done, preliminary: grey world and white patch combined in three passes, `engine::white_balance`; see `docs/research/auto-white-balance.md`.)
-- [ ] Writes into the temperature and tint sliders; strength slider; the "pick something white" eyedropper overrides it; never runs on its own. (Done but the eyedropper: Auto by White balance on Basic, with its strength beside it.)
+- [ ] Writes into the temperature and tint sliders; strength slider; the "pick something white" eyedropper overrides it; never runs on its own. (Done: Auto by White balance on Basic, with its strength beside it, and Pick white: a click on something white or grey on the picture moves Temperature and Tint from where they are.)
 
 **7.3 Page (as in the mockup)**
 
-- [ ] Large viewport with Compare and Display menus; one scope on the right with a dropdown. (The viewport is in, with the shared viewer's Display menu, and one scope on the right with its dropdown; Compare is next.)
+- [ ] Large viewport with Compare and Display menus; one scope on the right with a dropdown. (Done but a split or wipe Compare: the viewport has the shared viewer's Display menu, one scope on the right with its dropdown, and Before to see the clip without its grade.)
 - [ ] Tool switcher under the picture: Basic, Wheels, Curves, Color range, Masks, Looks; only one shown. (Basic and Wheels are in: white balance, exposure, highlights, shadows, contrast and pivot, saturation; the four wheels with their brightness.)
 - [x] Layer dropdown; Simple / Advanced toggle next to it.
 - [x] Simple wheels: white balance left, four wheels (Shadows, Midtones, Highlights, Overall) with brightness sliders, tone right. Advanced: large wheels with typed R, G, B and brightness values. (Done as two tools: white balance and tone are on Basic, the wheels on Wheels.)
 - [ ] Timeline: video clips with a dot on graded ones, all audio as one view-only bar; Apply to (this clip, all clips with a label, whole timeline), Copy grade, Paste, Match to, Reset. (Done but Match to: the sound is folded into the clips as in the rough cut view.)
-- [ ] Transport steps clip by clip as well as frame by frame; shared playhead, edit needle, region and labels from phase 4.
+- [x] Transport steps clip by clip as well as frame by frame; shared playhead, edit needle, region and labels from phase 4. (Done: Up and Down go to the cut before and after on every page (`Action::PreviousCut` / `NextCut`), and on the Color page select the clip there.)
 
 **Gate 7**
 

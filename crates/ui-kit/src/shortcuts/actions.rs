@@ -109,6 +109,8 @@ actions! {
     GoToEnd, Viewer, "Go to the end";
     PreviousKeyframe, Viewer, "Back to the selected clip's previous keyframe";
     NextKeyframe, Viewer, "On to the selected clip's next keyframe";
+    PreviousCut, Viewer, "Back to the previous cut between pictures (on the Color page, the clip before, selected)";
+    NextCut, Viewer, "On to the next cut between pictures (on the Color page, the next clip, selected)";
     ToggleLoop, Viewer, "Loop playback inside the region";
     MarkIn, Viewer, "Mark in: where the region begins (Edit page), or where the part of a file to add begins (Library)";
     MarkOut, Viewer, "Mark out: where the region ends (Edit page), or where the part of a file to add ends (Library)";

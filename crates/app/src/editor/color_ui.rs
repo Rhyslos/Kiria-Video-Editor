@@ -21,7 +21,8 @@ impl Editor {
         };
         let p = &p;
         let Some(seq) = p.active() else { return };
-        let shown = self.color_page.shown(p);
+        let graded_id = color_page::graded_clip(seq, &self.selected, self.viewer.playhead);
+        let shown = self.color_page.shown(p, graded_id);
         let shown_p = shown.as_ref().unwrap_or(p);
         let tools_h = if self.color_page.advanced && self.color_page.tool == color_page::Tool::Wheels {
             290.0
@@ -39,6 +40,8 @@ impl Editor {
         );
         let timeline = egui::Rect::from_min_max(egui::pos2(page.left(), tools.bottom() + GAP), page.max);
 
+        let picking = self.color_page.picking_white;
+        let mut picked: Option<(f32, f32)> = None;
         // The picture, as it is graded (with what is being dragged).
         let needle = (!self.settings.edit_at_playhead).then_some(seq.edit_needle);
         let display_state = self.display_state(false);
@@ -58,16 +61,35 @@ impl Editor {
             &self.shortcuts,
             display_state,
             crate::viewer::Stage { source: None, away },
-            |_, _, _| {},
+            |ui, frame, response| {
+                // "Pick white": a click on the picture says where.
+                if picking {
+                    let hovered = ui.rect_contains_pointer(frame);
+                    if hovered {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+                    }
+                    if response.clicked()
+                        && let Some(at) = response.interact_pointer_pos().filter(|at| frame.contains(*at))
+                    {
+                        picked = Some((
+                            (at.x - frame.left()) / frame.width(),
+                            (at.y - frame.top()) / frame.height(),
+                        ));
+                    }
+                }
+            },
         );
 
-        let graded = color_page::graded_clip(seq, &self.selected, self.viewer.playhead).and_then(|id| {
+        let graded = graded_id.and_then(|id| {
             seq.video_tracks
                 .iter()
                 .flat_map(|t| t.clips.iter())
                 .find(|c| c.id == id)
         });
         let mut asked = Vec::new();
+        if let (Some(at), Some(clip), Some(sampled)) = (picked, graded, self.viewer.sampled.clone()) {
+            asked.push(self.color_page.pick_white(seq.id, clip, &sampled, at));
+        }
         let panel = |ui: &mut egui::Ui, rect: egui::Rect| {
             ui.new_child(
                 egui::UiBuilder::new()

@@ -951,6 +951,10 @@ impl Editor {
                 self.jump_to_keyframe(action == Action::NextKeyframe);
                 Ok(())
             }
+            Action::PreviousCut | Action::NextCut => {
+                self.jump_to_cut(action == Action::NextCut);
+                Ok(())
+            }
             Action::Copy => self.copy(),
             Action::Cut => self.cut(),
             Action::Paste => self.paste(),
@@ -1097,6 +1101,24 @@ impl Editor {
     fn seek(&mut self, seconds: f64) {
         let at = Time::from_ratio((seconds * 1_000_000.0).round() as i64, 1_000_000).unwrap_or(Time::ZERO);
         self.go_to(at);
+    }
+
+    /// Moves the playhead to the next (or previous) cut between pictures.
+    /// On the Color page the picture there is selected, so it is graded.
+    fn jump_to_cut(&mut self, next: bool) {
+        let Some(seq) = self.document.as_ref().and_then(|d| d.project().active().cloned()) else {
+            return;
+        };
+        let Some(at) = cut_beside(&seq, self.viewer.playhead, next) else {
+            self.status = "No cut that way: this is the end of the timeline".into();
+            return;
+        };
+        self.go_to(at);
+        if self.page == Page::Color {
+            self.selected = crate::color_page::graded_clip(&seq, &[], at)
+                .into_iter()
+                .collect();
+        }
     }
 
     /// Moves the playhead to the selected clip's next (or previous)
@@ -4180,6 +4202,22 @@ fn picture_cuts(seq: &project::Sequence) -> Vec<f64> {
     cut_times(spans)
 }
 
+/// The cut between pictures nearest `at` on one side: the first after it
+/// (`later`) or the last before it, on any video track; the timeline's
+/// start counts as one.
+fn cut_beside(seq: &project::Sequence, at: Time, later: bool) -> Option<Time> {
+    let cuts = seq
+        .video_tracks
+        .iter()
+        .flat_map(|track| track.clips.iter())
+        .flat_map(|clip| [clip.start, clip.end()])
+        .chain(std::iter::once(Time::ZERO));
+    match later {
+        true => cuts.filter(|t| *t > at).min(),
+        false => cuts.filter(|t| *t < at).max(),
+    }
+}
+
 /// The starts and ends of `spans` (start, length), once each, in order.
 fn cut_times(spans: impl Iterator<Item = (Time, Time)>) -> Vec<f64> {
     let mut cuts: Vec<Time> = spans
@@ -4193,6 +4231,28 @@ fn cut_times(spans: impl Iterator<Item = (Time, Time)>) -> Vec<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn up_and_down_go_to_the_cut_before_and_after() {
+        let mut p = project::Project::new("T", project::SequenceSettings::GAME_CLIP);
+        for (start, length) in [(2, 3), (5, 4)] {
+            p = Command::AddAdjustment {
+                sequence: p.active_sequence,
+                at: Time::seconds(start),
+                length: Time::seconds(length),
+                track: None,
+            }
+            .apply(&p)
+            .expect("added");
+        }
+        let seq = p.active().expect("a timeline");
+        let at = |s: i64| Time::seconds(s);
+        assert_eq!(cut_beside(seq, at(3), true), Some(at(5)));
+        assert_eq!(cut_beside(seq, at(5), true), Some(at(9)));
+        assert_eq!(cut_beside(seq, at(9), true), None, "past the last");
+        assert_eq!(cut_beside(seq, at(5), false), Some(at(2)));
+        assert_eq!(cut_beside(seq, at(1), false), Some(Time::ZERO));
+    }
 
     #[test]
     fn the_full_screen_scrub_bar_marks_each_cut_once() {
