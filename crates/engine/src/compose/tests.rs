@@ -232,3 +232,50 @@ fn a_grade_curve_bends_the_light() {
     let expected = 0.5f32.powf(2.4);
     assert!((shown - expected).abs() < 0.02, "{shown} against {expected}");
 }
+
+#[test]
+fn a_grade_keeps_to_its_mask_and_its_colour_range() {
+    let Some(mut composer) = composer() else {
+        eprintln!("no graphics device here: masks and ranges aren't checked");
+        return;
+    };
+    let size = (16, 16);
+    let mut shown_with = |grade: &project::GradeLayer| {
+        let whole = FrameDescription {
+            size,
+            layers: vec![layer(
+                Area::fitted(size, size),
+                vec![render::Effect::Grade(crate::frame::grade_numbers(grade))],
+            )],
+            steps: vec![Step::Picture(0)],
+        };
+        let composed = composer.compose(&whole, vec![(0, white(size), None)]).unwrap();
+        light(&composer, &composed)
+    };
+    let mut darker = project::GradeLayer::new("Left");
+    darker.primary.exposure = -1_000_000;
+    darker.mask = Some(project::Mask {
+        shape: project::MaskShape::Rectangle,
+        x: 250_000,
+        y: 500_000,
+        width: 500_000,
+        height: 1_000_000,
+        turn: 0,
+        feather: 10_000,
+        invert: false,
+    });
+    let masked = shown_with(&darker);
+    let (left, right) = (masked[8 * 16 + 2], masked[8 * 16 + 13]);
+    assert!((left - 0.5).abs() < 0.02, "inside, a stop down: {left}");
+    assert!((right - 1.0).abs() < 0.02, "outside, left alone: {right}");
+    if let Some(mask) = darker.mask.as_mut() {
+        mask.invert = true;
+    }
+    let inverted = shown_with(&darker);
+    assert!(inverted[8 * 16 + 2] > 0.98 && inverted[8 * 16 + 13] < 0.52);
+    // White has no colour, so a range on skin leaves it.
+    darker.mask = None;
+    darker.range = Some(project::ColorRange::SKIN);
+    let ranged = shown_with(&darker)[8 * 16 + 8];
+    assert!((ranged - 1.0).abs() < 0.02, "white isn't skin: {ranged}");
+}
