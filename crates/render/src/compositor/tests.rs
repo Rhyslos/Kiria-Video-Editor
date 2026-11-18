@@ -576,6 +576,45 @@ fn rows_come_back_without_the_padding_the_card_adds() {
 }
 
 #[test]
+fn a_reader_that_gave_up_waiting_reads_again() {
+    let Some(gpu) = gpu() else { return };
+    let (device, queue) = &gpu;
+    let size = (64, 36);
+    let grey = Planes::flat(&gpu, size, GREY);
+    let compositor = Compositor::new(device, Working::Linear);
+    let mut frame = compositor.frame(device, size);
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    compositor.draw(
+        device,
+        queue,
+        &mut encoder,
+        &mut frame,
+        &[whole(grey.two(), size)],
+    );
+    queue.submit([encoder.finish()]);
+    let mut reader = crate::Reader::new(device, size);
+    let mut out = Vec::new();
+    // No patience at all: it gives up before the card answers, and lets go
+    // of both buffers, which would otherwise still be waited for and make
+    // the next read a graphics error.
+    let gave_up = reader.read_within(
+        device,
+        queue,
+        frame.view(),
+        Working::Linear,
+        &mut out,
+        std::time::Duration::ZERO,
+    );
+    assert_eq!(gave_up, Err(crate::ReadError::TimedOut));
+    for _ in 0..2 {
+        reader
+            .read(device, queue, frame.view(), Working::Linear, &mut out)
+            .unwrap();
+        assert_eq!(out[100], 126);
+    }
+}
+
+#[test]
 fn a_frame_is_reused_for_the_next_picture() {
     let Some(gpu) = gpu() else { return };
     let (device, queue) = &gpu;

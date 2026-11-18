@@ -437,6 +437,9 @@ impl Editor {
         if !imports.is_empty() {
             importer.read(&jobs, &cc.egui_ctx, imports);
         }
+        if let Some(state) = cc.wgpu_render_state.as_ref() {
+            crate::viewer::log_graphics_errors(&state.device);
+        }
         let mut viewer = Viewer::new(
             &cc.egui_ctx,
             start_at,
