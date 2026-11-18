@@ -11,8 +11,9 @@
 //!
 //! - [`health`] notices a version that fails to start and rolls back to the
 //!   previous one, which it never offers again.
-//! - [`lock::UpdateLock`] lets one launcher at a time download, install or
-//!   check a start; another skips updating that time.
+//! - [`lock::UpdateLock`] lets one launcher at a time download or install;
+//!   another skips updating that time. [`lock::StartCheckLock`] lets one at
+//!   a time record how an editor's start went, waiting a moment for it.
 //! - [`state_file`] writes the small state files whole or not at all and
 //!   keeps an unreadable one aside.
 
@@ -32,7 +33,7 @@ mod test_server;
 pub use download::Progress;
 pub use fetch::{ReadyUpdate, fetch, fetch_with_progress};
 pub use install::Layout;
-pub use lock::{ChoicesLock, UpdateLock};
+pub use lock::{ChoicesLock, StartCheckLock, UpdateLock};
 pub use manifest::{Channel, Manifest, ManifestFile, RELEASE_PUBLIC_KEY};
 pub use prefs::UpdatePrefs;
 pub use release::{CheckResult, Release};

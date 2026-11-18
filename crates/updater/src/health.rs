@@ -178,18 +178,32 @@ fn installed_versions(layout: &Layout) -> Vec<Version> {
 
 /// Records how the start of `version` went, and rolls back after repeated
 /// failures. Returns the notice if it rolled back.
+///
+/// The record and the rollback are made under [`crate::StartCheckLock`]
+/// (waited for a few seconds), so they happen even while another launcher
+/// downloads. Removing old versions after a good start happens only with
+/// `update`, this launcher's [`crate::UpdateLock`]: without it another
+/// launcher may be installing, and a later good start removes them.
 pub fn after_start(
     data_dir: &Path,
     layout: &Layout,
     version: &str,
     outcome: StartOutcome,
+    update: Option<&crate::UpdateLock>,
 ) -> diag::Result<Option<RollbackNotice>> {
+    let check = crate::StartCheckLock::wait(data_dir);
     let mut health = Health::load(data_dir);
     let failures = health.record(version, outcome);
     health.save(data_dir)?;
     match outcome {
         StartOutcome::Started => {
-            prune_after_good_start(layout, version);
+            // Removing folders can take a while: other launchers needn't wait for it.
+            drop(check);
+            if update.is_some() {
+                prune_after_good_start(layout, version);
+            } else {
+                tracing::info!("another launcher is updating: old versions are removed after a later start");
+            }
             Ok(None)
         }
         StartOutcome::Failed if failures >= FAILURES_BEFORE_ROLLBACK => {
@@ -278,7 +292,7 @@ mod tests {
         crate::apply::set_current(&layout, "0.2.0").unwrap();
 
         assert_eq!(
-            after_start(&data, &layout, "0.2.0", StartOutcome::Failed).unwrap(),
+            after_start(&data, &layout, "0.2.0", StartOutcome::Failed, None).unwrap(),
             None
         );
         assert_eq!(
@@ -287,7 +301,7 @@ mod tests {
             "one failure is not enough"
         );
 
-        let notice = after_start(&data, &layout, "0.2.0", StartOutcome::Failed)
+        let notice = after_start(&data, &layout, "0.2.0", StartOutcome::Failed, None)
             .unwrap()
             .unwrap();
         assert_eq!(notice.failed, "0.2.0");
@@ -296,6 +310,40 @@ mod tests {
         assert_eq!(UpdatePrefs::load(&data).bad_versions, ["0.2.0"]);
         assert_eq!(RollbackNotice::take(&data), Some(notice));
         assert_eq!(RollbackNotice::take(&data), None, "shown once");
+    }
+
+    #[test]
+    fn starts_are_recorded_while_another_launcher_downloads() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (data, root) = (tmp.path().join("data"), tmp.path().join("app"));
+        std::fs::create_dir_all(&data).unwrap();
+        let layout = Layout::at(&root);
+        install(&layout, &["0.1.0", "0.1.1", "0.1.2", "0.2.0"]);
+        crate::apply::set_current(&layout, "0.2.0").unwrap();
+        // Another launcher holds the update lock for its download.
+        let downloading = crate::UpdateLock::try_take(&data).unwrap().unwrap();
+
+        // A good start is counted, but nothing another launcher may be installing is removed.
+        after_start(&data, &layout, "0.2.0", StartOutcome::Failed, None).unwrap();
+        assert_eq!(
+            after_start(&data, &layout, "0.2.0", StartOutcome::Started, None).unwrap(),
+            None
+        );
+        assert_eq!(Health::load(&data).record("0.2.0", StartOutcome::Unknown), 0);
+        assert_eq!(installed(&layout), ["0.1.0", "0.1.1", "0.1.2", "0.2.0"]);
+
+        // Two failures in a row still roll back.
+        after_start(&data, &layout, "0.2.0", StartOutcome::Failed, None).unwrap();
+        let notice = after_start(&data, &layout, "0.2.0", StartOutcome::Failed, None).unwrap();
+        assert_eq!(notice.map(|n| n.restored).as_deref(), Some("0.1.2"));
+        assert_eq!(layout.current_version().as_deref(), Some("0.1.2"));
+        assert_eq!(UpdatePrefs::load(&data).bad_versions, ["0.2.0"]);
+
+        // With the update lock, a good start removes what is no longer kept.
+        drop(downloading);
+        let lock = crate::UpdateLock::try_take(&data).unwrap().unwrap();
+        after_start(&data, &layout, "0.1.2", StartOutcome::Started, Some(&lock)).unwrap();
+        assert_eq!(installed(&layout), ["0.1.0", "0.1.1", "0.1.2"]);
     }
 
     #[test]
@@ -321,9 +369,9 @@ mod tests {
         }
         .save(&data)
         .unwrap();
-        after_start(&data, &layout, "0.2.0", StartOutcome::Failed).unwrap();
+        after_start(&data, &layout, "0.2.0", StartOutcome::Failed, None).unwrap();
         assert_eq!(
-            after_start(&data, &layout, "0.2.0", StartOutcome::Failed).unwrap(),
+            after_start(&data, &layout, "0.2.0", StartOutcome::Failed, None).unwrap(),
             None
         );
         assert_eq!(layout.current_version().as_deref(), Some("0.2.0"));
