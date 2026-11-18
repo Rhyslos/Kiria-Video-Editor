@@ -211,8 +211,11 @@ impl ColorPage {
         let (temperature, tint) = engine::white_balance::sliders(light);
         let mut grade = clip.grade.clone();
         let primary = &mut grade.layer_mut(self.layer).primary;
-        let moved =
-            |value: i32, by: f32| (value + (by * 1_000_000.0).round() as i32).clamp(-1_000_000, 1_000_000);
+        let moved = |value: i32, by: f32| {
+            value
+                .saturating_add((by * 1_000_000.0).round() as i32)
+                .clamp(-1_000_000, 1_000_000)
+        };
         primary.temperature = moved(primary.temperature, temperature);
         primary.tint = moved(primary.tint, tint);
         asked.status =
@@ -741,6 +744,30 @@ mod tests {
             "{}",
             primary.temperature
         );
+    }
+
+    #[test]
+    fn picking_white_on_values_at_the_ends_of_the_numbers_neither_wraps_nor_panics() {
+        let p = project_with_two_files();
+        let mut clip = p.active().expect("a timeline").video_tracks[0].clips[0].clone();
+        // Values no slider makes, as a file or a paste could hold them.
+        let primary = &mut clip.grade.layer_mut(0).primary;
+        primary.temperature = i32::MIN;
+        primary.tint = i32::MAX;
+        let warm = [0.6f32, 0.5, 0.4].map(|light| light.powf(1.0 / 2.4));
+        let sampled = engine::scope::Sampled {
+            width: 4,
+            height: 4,
+            rgb: vec![warm; 16],
+        };
+        let mut page = ColorPage::default();
+        let asked = page.pick_white(p.active_sequence, &clip, &sampled, (0.5, 0.5));
+        let Some(Command::SetGrades { grades, .. }) = asked.commands.first() else {
+            panic!("a grade set");
+        };
+        let primary = grades[0].1.0[0].primary;
+        assert_eq!(primary.temperature, -1_000_000, "cooled further: held at the end");
+        assert_eq!(primary.tint, 1_000_000, "held at the other end");
     }
 
     #[test]

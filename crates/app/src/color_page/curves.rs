@@ -51,7 +51,8 @@ impl Channel {
 /// How near (points on screen) a click must be to take a point.
 const NEAR: f32 = 9.0;
 
-/// The points of `curve` with its ends made when missing, as shares of one.
+/// The points of `curve` with its ends made when missing, as shares of one,
+/// in order along (a curve from a file or a paste may not be).
 fn points(curve: &Curve) -> Vec<(f64, f64)> {
     let one = f64::from(ONE);
     let mut points: Vec<(f64, f64)> = curve
@@ -59,6 +60,7 @@ fn points(curve: &Curve) -> Vec<(f64, f64)> {
         .iter()
         .map(|(x, y)| (f64::from(*x) / one, f64::from(*y) / one))
         .collect();
+    points.sort_by(|a, b| a.0.total_cmp(&b.0));
     if points.first().is_none_or(|(x, _)| *x > 0.0) {
         points.insert(0, (0.0, 0.0));
     }
@@ -93,7 +95,8 @@ pub fn add(curve: &Curve, x: f64, y: f64) -> Option<(Curve, usize)> {
 }
 
 /// Moves point `index` to (`x`, `y`): between its neighbours, the ends
-/// only up and down.
+/// only up and down. Neighbours too close to keep it a hundredth from
+/// each (as a file or a paste may hold them) leave it halfway between.
 pub fn moved(curve: &Curve, index: usize, x: f64, y: f64) -> Curve {
     let mut p = points(curve);
     let last = p.len() - 1;
@@ -103,7 +106,15 @@ pub fn moved(curve: &Curve, index: usize, x: f64, y: f64) -> Curve {
     let x = match index {
         0 => 0.0,
         i if i == last => 1.0,
-        i => x.clamp(p[i - 1].0 + 0.01, p[i + 1].0 - 0.01),
+        i => {
+            let (before, after) = (p[i - 1].0, p[i + 1].0);
+            let (lo, hi) = (before + 0.01, after - 0.01);
+            if lo <= hi {
+                x.clamp(lo, hi)
+            } else {
+                (before + after) / 2.0
+            }
+        }
     };
     p[index] = (x, y.clamp(0.0, 1.0));
     kept(&p)
@@ -259,5 +270,55 @@ mod tests {
             "straight again: kept as none"
         );
         assert_eq!(removed(&bent, 0), bent, "never an end");
+    }
+
+    /// Every point of `curve` moved every way, as a drag could: none panics.
+    fn drag_every_point(curve: &Curve) -> Vec<Curve> {
+        let mut out = Vec::new();
+        for i in 0..points(curve).len() + 1 {
+            for (x, y) in [(0.0, 0.0), (0.5, 0.5), (1.0, 1.0), (-3.0, 7.0), (0.3, 0.9)] {
+                out.push(moved(curve, i, x, y));
+            }
+            out.push(removed(curve, i));
+        }
+        out.extend(add(curve, 0.42, 0.6).map(|(c, _)| c));
+        out
+    }
+
+    #[test]
+    fn odd_curves_from_a_file_or_a_paste_never_panic_when_dragged() {
+        let odd = [
+            // Closer than 0.02: no room for a hundredth either side.
+            Curve(vec![(500_000, 400_000), (505_000, 600_000), (510_000, 700_000)]),
+            // Two at the same place.
+            Curve(vec![(300_000, 200_000), (300_000, 800_000)]),
+            // Out of order.
+            Curve(vec![(800_000, 100_000), (200_000, 900_000), (500_000, 500_000)]),
+            // At the extremes, and past them.
+            Curve(vec![(0, ONE), (ONE, 0)]),
+            Curve(vec![(i32::MIN, i32::MIN), (i32::MAX, i32::MAX)]),
+            Curve(vec![(i32::MAX, i32::MIN), (i32::MIN, i32::MAX), (0, 0)]),
+            Curve(vec![(i32::MAX, i32::MAX); 20]),
+        ];
+        for (n, curve) in odd.iter().enumerate() {
+            for dragged in drag_every_point(curve) {
+                // Points from 0 to 1, however close or muddled, are kept in
+                // order when changed; past the ends it is enough not to panic.
+                assert!(
+                    n > 3 || dragged == *curve || dragged.0.windows(2).all(|w| w[0].0 <= w[1].0),
+                    "{curve:?} became {dragged:?}"
+                );
+            }
+        }
+        // A middle point with no room stays between its neighbours.
+        let tight = &odd[0];
+        let held = moved(tight, 2, 0.9, 0.5);
+        assert_eq!(held.0[2], (505_000, 500_000), "halfway between, not past one");
+        // Out of order: the page shows and moves them in order along.
+        let sorted = moved(&odd[2], 2, 0.5, 0.5);
+        assert_eq!(
+            sorted.0.iter().map(|(x, _)| *x).collect::<Vec<_>>(),
+            vec![0, 200_000, 500_000, 800_000, ONE]
+        );
     }
 }
