@@ -138,8 +138,9 @@ struct Clock {
     meters: Mutex<Vec<(TrackId, Arc<TrackReadout>)>>,
     /// What the EQ's analyser shows, once the mixer is made.
     spectrum: OnceLock<Arc<Spectrum>>,
-    /// This playback's audio thread while it lives (one at most), so a
-    /// test can wait for its own thread while others' run too.
+    /// This playback's audio threads while they live (the audio thread, the
+    /// paced thread standing in for the sound card, a sound card being let
+    /// go), so a test can wait for its own threads while others' run too.
     threads: AtomicUsize,
 }
 
@@ -702,8 +703,11 @@ fn play(
 
 /// Runs `output` at real-time pace on a thread of its own, unheard, and
 /// has the clock follow it (or time itself, when the thread won't start).
-fn play_unheard(output: Output, shape: (u32, usize), clock: &Clock) {
-    match crate::output::Paced::new(output, shape).run(Arc::clone(&clock.output)) {
+/// That thread counts as an audio thread until it ends ([`Running`]), so
+/// closing the app waits for it as for the audio thread.
+fn play_unheard(output: Output, shape: (u32, usize), clock: &Arc<Clock>) {
+    let running = Running::new(Arc::clone(clock));
+    match crate::output::Paced::new(output, shape).run(Arc::clone(&clock.output), running) {
         Ok(_thread) => clock.follow_paced(),
         Err(err) => {
             tracing::warn!("{}", err.report());

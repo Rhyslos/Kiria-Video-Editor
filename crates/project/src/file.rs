@@ -20,7 +20,9 @@
 use crate::model::{Project, SequenceSettings};
 use crate::time::Time;
 use diag::{AppError, Explain};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -575,39 +577,101 @@ pub fn from_str_with(text: &str, current: u32, migrations: &[Migration]) -> diag
 
 /// The project in `text`, whose header says it is in format `version`.
 fn project_from(text: &str, version: u32, current: u32, migrations: &[Migration]) -> diag::Result<Project> {
-    if version > current {
-        return Err(AppError::new("This project was saved by a newer version")
-            .why(format!(
-                "It uses file format {version}; this version reads up to format {current}."
-            ))
-            .fix("Update the app, then open the project again."));
-    }
-    let file: FileIn = if version == current {
-        ron::from_str(text).or_explain(damaged)?
-    } else {
-        let upgraded = migrate(text, version, current, migrations)?;
-        ron::from_str(&upgraded).or_explain(damaged)?
-    };
+    let file: FileIn = versioned_from(text, version, current, migrations, &PROJECT)?;
     file.project.validate()?;
     Ok(file.project)
 }
 
 /// Runs migrations from `from` up to `to`, one version at a time.
 pub fn migrate(text: &str, from: u32, to: u32, migrations: &[Migration]) -> diag::Result<String> {
-    let mut text = text.to_owned();
+    upgraded(text, from, to, migrations, &PROJECT).map(Cow::into_owned)
+}
+
+/// How one kind of versioned file (a project, a template, the labels for
+/// every project) is named when it is refused: each keeps its own words.
+pub(crate) struct FileKind {
+    /// A file in format `version`, newer than `current`, the newest read.
+    pub newer: fn(version: u32, current: u32) -> AppError,
+    /// A file that can't be read as this kind.
+    pub damaged: fn() -> AppError,
+    /// No migration goes from format `version` to the next.
+    pub no_step: fn(version: u32) -> AppError,
+}
+
+const PROJECT: FileKind = FileKind {
+    newer: |version, current| {
+        AppError::new("This project was saved by a newer version")
+            .why(format!(
+                "It uses file format {version}; this version reads up to format {current}."
+            ))
+            .fix("Update the app, then open the project again.")
+    },
+    damaged,
+    no_step: |version| {
+        AppError::new("This project can't be upgraded")
+            .why(format!(
+                "There is no upgrade from file format {version} to {}.",
+                version + 1
+            ))
+            .fix("This is a bug in the app; please report it with the project file.")
+    },
+};
+
+/// The format version every versioned file starts with.
+#[derive(Deserialize)]
+struct VersionHeader {
+    format_version: u32,
+}
+
+/// Reads a versioned file of `kind` (a header with its `format_version`,
+/// then its contents): refused when it is newer than `current`, upgraded
+/// through `migrations` (`migrations[i]` takes format `i + 1` to `i + 2`)
+/// when it is older, then read as `T`. Templates and the labels for every
+/// project read their files with this; projects read their header their own
+/// faster way, then go through [`versioned_from`] as well.
+pub(crate) fn versioned_from_str<T: DeserializeOwned>(
+    text: &str,
+    current: u32,
+    migrations: &[Migration],
+    kind: &FileKind,
+) -> diag::Result<T> {
+    let version = ron::from_str::<VersionHeader>(text)
+        .or_explain(kind.damaged)?
+        .format_version;
+    versioned_from(text, version, current, migrations, kind)
+}
+
+/// [`versioned_from_str`] for a file whose header says it is in format `version`.
+fn versioned_from<T: DeserializeOwned>(
+    text: &str,
+    version: u32,
+    current: u32,
+    migrations: &[Migration],
+    kind: &FileKind,
+) -> diag::Result<T> {
+    if version > current {
+        return Err((kind.newer)(version, current));
+    }
+    let text = upgraded(text, version, current, migrations, kind)?;
+    ron::from_str(&text).or_explain(kind.damaged)
+}
+
+/// `text` taken from format `from` up to `to`, one version at a time (as
+/// it is when they are the same).
+fn upgraded<'a>(
+    text: &'a str,
+    from: u32,
+    to: u32,
+    migrations: &[Migration],
+    kind: &FileKind,
+) -> diag::Result<Cow<'a, str>> {
+    let mut text = Cow::Borrowed(text);
     for version in from..to {
         let step = version
             .checked_sub(1)
             .and_then(|i| migrations.get(i as usize))
-            .ok_or_else(|| {
-                AppError::new("This project can't be upgraded")
-                    .why(format!(
-                        "There is no upgrade from file format {version} to {}.",
-                        version + 1
-                    ))
-                    .fix("This is a bug in the app; please report it with the project file.")
-            })?;
-        text = step(&text)?;
+            .ok_or_else(|| (kind.no_step)(version))?;
+        text = Cow::Owned(step(&text)?);
     }
     Ok(text)
 }
@@ -905,5 +969,60 @@ mod tests {
 
         let missing = from_str_with(&text, 3, &[v1_to_v2]).unwrap_err();
         assert!(missing.what().contains("can't be upgraded"));
+    }
+
+    /// Projects, templates and the labels for every project read through
+    /// one loader, and each is still refused in its own words.
+    #[test]
+    fn every_kind_of_versioned_file_keeps_its_own_refusals() {
+        let newer = |kind: &FileKind| {
+            versioned_from_str::<VersionHeader>("(format_version: 9)", 2, &[], kind)
+                .err()
+                .unwrap()
+                .what()
+                .to_owned()
+        };
+        let damaged = |kind: &FileKind| {
+            versioned_from_str::<VersionHeader>("nonsense", 2, &[], kind)
+                .err()
+                .unwrap()
+                .what()
+                .to_owned()
+        };
+        let no_step = |kind: &FileKind| {
+            versioned_from_str::<VersionHeader>("(format_version: 1)", 2, &[], kind)
+                .err()
+                .unwrap()
+                .what()
+                .to_owned()
+        };
+        assert_eq!(newer(&PROJECT), "This project was saved by a newer version");
+        assert_eq!(damaged(&PROJECT), "This file is not a project, or it is damaged");
+        assert_eq!(no_step(&PROJECT), "This project can't be upgraded");
+
+        let template = crate::templates::from_str_with("(format_version: 9)", 2, &[]).unwrap_err();
+        assert_eq!(template.what(), "This template was saved by a newer version");
+        assert!(
+            template.report().contains("template format 9"),
+            "{}",
+            template.report()
+        );
+        let template = crate::templates::from_str_with("(format_version: 1)", 2, &[]).unwrap_err();
+        assert_eq!(template.what(), "This file is not a template, or it is damaged");
+
+        let labels = crate::GlobalLabels::parse("(format_version: 2, labels: [])").unwrap_err();
+        assert_eq!(
+            labels.what(),
+            "Labels for every project were saved by a newer version"
+        );
+        assert!(labels.report().contains("up to format 1"), "{}", labels.report());
+        assert!(crate::GlobalLabels::parse("nonsense").is_err());
+        assert!(crate::GlobalLabels::parse("(format_version: 1, labels: [])").is_ok());
+    }
+
+    #[test]
+    fn a_version_that_needs_no_upgrade_is_read_as_it_is() {
+        let read: VersionHeader = versioned_from_str("(format_version: 2)", 2, &[], &PROJECT).unwrap();
+        assert_eq!(read.format_version, 2);
     }
 }

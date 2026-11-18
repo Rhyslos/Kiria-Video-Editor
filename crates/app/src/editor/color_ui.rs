@@ -6,7 +6,6 @@
 use super::Editor;
 use crate::color_page;
 use crate::timeline_panel;
-use project::Time;
 
 /// The right column's width.
 const BAR_WIDTH: f32 = 300.0;
@@ -180,25 +179,14 @@ impl Editor {
             self.fitted = true;
         }
         let roles = crate::audio_page::roles::offered();
-        let data = ui_kit::TimelineData {
-            video: &drawn.video,
-            audio: &drawn.audio,
-            length,
-            fps: seq.settings.frame_rate.as_f64(),
-            playhead: self.viewer.playhead.as_secs_f64(),
-            needle: needle.map(Time::as_secs_f64),
-            region: seq.region.map(|r| (r.start.as_secs_f64(), r.end.as_secs_f64())),
-            markers: &drawn.markers,
-            highlights: &[],
-            spans: &[],
-            follow: self.playback.is_some(),
-            cache: ui_kit::timeline::CacheBar {
-                ranges: &drawn.cache,
-                about: timeline_panel::CACHE_BAR_ABOUT,
-            },
-            keyframe_eases: &timeline_panel::EASES,
-            roles: &roles,
-        };
+        let data = timeline_panel::data(
+            seq,
+            &drawn,
+            self.viewer.playhead,
+            needle,
+            self.playback.is_some(),
+            &roles,
+        );
         let mut bottom = panel(ui, timeline);
         let events = self
             .timeline

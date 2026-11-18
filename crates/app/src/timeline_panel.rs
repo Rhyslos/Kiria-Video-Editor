@@ -27,6 +27,42 @@ pub struct Drawn {
 /// pre-rendered stretches will be marked here when they are built.
 pub const CACHE_BAR_ABOUT: &str = "Right now this follows the reading of waveforms and clip pictures: marked stretches are still being read. Pictures for playback are decoded as they are needed, so nothing is marked as prepared yet.";
 
+/// What the timeline widget is handed, the same on every page that shows
+/// the open timeline (`seq`): `drawn`'s tracks, markers and cache bar, the
+/// playhead, the edit needle (when it is apart from the playhead), the
+/// region, whether the view follows playback, the eases and the `roles` a
+/// track can take. Nothing is highlighted and no stretches are coloured; a
+/// page that shows those, or other tracks than `drawn`'s, puts its own in
+/// with `..` after this.
+pub fn data<'a>(
+    seq: &Sequence,
+    drawn: &'a Drawn,
+    playhead: project::Time,
+    needle: Option<project::Time>,
+    follow: bool,
+    roles: &'a [(&'a str, egui::Color32)],
+) -> ui_kit::TimelineData<'a> {
+    ui_kit::TimelineData {
+        video: &drawn.video,
+        audio: &drawn.audio,
+        length: seq.length().as_secs_f64(),
+        fps: seq.settings.frame_rate.as_f64(),
+        playhead: playhead.as_secs_f64(),
+        needle: needle.map(project::Time::as_secs_f64),
+        region: seq.region.map(|r| (r.start.as_secs_f64(), r.end.as_secs_f64())),
+        markers: &drawn.markers,
+        highlights: &[],
+        spans: &[],
+        follow,
+        cache: ui_kit::timeline::CacheBar {
+            ranges: &drawn.cache,
+            about: CACHE_BAR_ABOUT,
+        },
+        keyframe_eases: &EASES,
+        roles,
+    }
+}
+
 /// The stretch of a clip (on the timeline from `start`, `length` seconds
 /// long) that is not ready to draw yet, when the share `ready` of it is and
 /// its reading is in `state`. Nothing for clips that are done or failed.
@@ -506,18 +542,19 @@ pub fn fold_sound(drawn: &mut Drawn) {
     drawn.audio.retain(|t| !t.clips.is_empty());
 }
 
-/// The colour each timeline-label colour is drawn in.
+/// The colour each label colour is drawn in (the theme's
+/// `ui_kit::theme::labels`).
 pub fn label_colour(c: LabelColor) -> egui::Color32 {
-    use egui::Color32 as C;
+    use ui_kit::theme::labels;
     match c {
-        LabelColor::Blue => C::from_rgb(0x4F, 0x8C, 0xE0),
-        LabelColor::Green => C::from_rgb(0x5D, 0xBB, 0x7A),
-        LabelColor::Pink => C::from_rgb(0xE0, 0x6F, 0xB4),
-        LabelColor::Yellow => C::from_rgb(0xE6, 0xC3, 0x5C),
-        LabelColor::Orange => C::from_rgb(0xE8, 0x8A, 0x3C),
-        LabelColor::Purple => C::from_rgb(0x9A, 0x6C, 0xD8),
-        LabelColor::Red => C::from_rgb(0xE5, 0x48, 0x4D),
-        LabelColor::Grey => C::from_rgb(0x8A, 0x8F, 0x96),
+        LabelColor::Blue => labels::BLUE,
+        LabelColor::Green => labels::GREEN,
+        LabelColor::Pink => labels::PINK,
+        LabelColor::Yellow => labels::YELLOW,
+        LabelColor::Orange => labels::ORANGE,
+        LabelColor::Purple => labels::PURPLE,
+        LabelColor::Red => labels::RED,
+        LabelColor::Grey => labels::GREY,
     }
 }
 
@@ -890,6 +927,51 @@ pub fn keep_existing(selected: &mut Vec<ClipId>, seq: &Sequence) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn every_page_hands_the_timeline_the_same_times_and_marks() {
+        let mut project = crate::inspector::tests::project_with_a_clip();
+        let id = project.active_sequence;
+        if let Some(seq) = project.sequences.iter_mut().find(|s| s.id == id) {
+            seq.region = Some(project::Region {
+                start: project::Time::seconds(1),
+                end: project::Time::seconds(3),
+            });
+        }
+        let seq = project.active().unwrap();
+        let drawn = super::drawn(
+            &project,
+            seq,
+            &[],
+            &[],
+            |_, _| crate::waveforms::Look {
+                peaks: None,
+                read_secs: 0.0,
+                state: None,
+            },
+            |_, _| (None, None),
+        );
+        let roles = crate::audio_page::roles::offered();
+        let data = super::data(
+            seq,
+            &drawn,
+            project::Time::seconds(2),
+            Some(project::Time::seconds(4)),
+            true,
+            &roles,
+        );
+        assert_eq!(data.video.len(), drawn.video.len());
+        assert_eq!(data.audio.len(), drawn.audio.len());
+        assert_eq!(data.length, seq.length().as_secs_f64());
+        assert_eq!(data.fps, seq.settings.frame_rate.as_f64());
+        assert_eq!((data.playhead, data.needle), (2.0, Some(4.0)));
+        assert_eq!(data.region, Some((1.0, 3.0)));
+        assert!(data.follow);
+        assert!(data.highlights.is_empty() && data.spans.is_empty());
+        assert_eq!(data.keyframe_eases, super::EASES);
+        assert_eq!(data.roles.len(), roles.len());
+        assert_eq!(data.cache.about, super::CACHE_BAR_ABOUT);
+    }
+
     #[test]
     fn keyframe_marks_are_the_frames_that_hold_one_inside_the_clip() {
         let project = crate::inspector::tests::project_with_a_clip();

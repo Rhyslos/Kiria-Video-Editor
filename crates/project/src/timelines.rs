@@ -407,7 +407,7 @@ pub(crate) fn place(
         );
     }
     let picture_on = match picture {
-        true => crate::command::picture_track(outer, track)?,
+        true => crate::clip_edits::picture_track(outer, track)?,
         false => None,
     };
     if let Some(on) = picture_on.and_then(|id| outer.track(id))

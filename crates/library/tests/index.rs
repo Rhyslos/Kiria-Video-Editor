@@ -217,6 +217,7 @@ fn syncs_follow_edits_and_undo() {
         (0, 1, 0),
         "only the labelled file is rewritten"
     );
+    assert_eq!(done.rebuilt, 1, "files without a label are not worked out again");
     assert_eq!(index.search(&Query::text("aerial")).unwrap(), [s.drone_clip]);
     assert!(index.search(&Query::text("drone")).unwrap().is_empty());
     // Undo is the earlier snapshot synced again.
@@ -231,6 +232,86 @@ fn syncs_follow_edits_and_undo() {
     assert_eq!(same, [s.music]);
     let none = index.sync(&s.project).unwrap();
     assert_eq!((none.added, none.changed, none.removed), (0, 0, 0));
+    assert_eq!(none.rebuilt, 0);
+}
+
+#[test]
+fn a_sync_after_one_change_rebuilds_only_that_file() {
+    let s = sample();
+    let mut index = synced(&s.project);
+    let sequence = s.project.active_sequence;
+    // Placing a file changes its use, so only its row is rebuilt.
+    let placed = Command::PlaceMedia {
+        sequence,
+        media: s.drone_clip,
+    }
+    .apply(&s.project)
+    .unwrap();
+    let done = index.sync(&placed).unwrap();
+    assert_eq!(
+        (done.added, done.changed, done.removed, done.rebuilt),
+        (0, 1, 0, 1)
+    );
+    assert_eq!(
+        index
+            .search(&Query {
+                usage: Usage::Used,
+                ..Query::default()
+            })
+            .unwrap(),
+        [s.drone_clip, s.interview]
+    );
+    // Moving a clip on its timeline changes no file's row.
+    let clip = placed
+        .sequences
+        .iter()
+        .find(|q| q.id == sequence)
+        .and_then(|q| {
+            q.tracks()
+                .flat_map(|t| t.clips.iter())
+                .find(|c| c.media == s.drone_clip)
+        })
+        .unwrap()
+        .id;
+    let moved = Command::MoveClips {
+        sequence,
+        clips: vec![clip],
+        by: Time::seconds(1),
+    }
+    .apply(&placed)
+    .unwrap();
+    let done = index.sync(&moved).unwrap();
+    assert_eq!(
+        (done.added, done.changed, done.removed, done.rebuilt),
+        (0, 0, 0, 0)
+    );
+    // A note on one file rebuilds that file, and search finds it.
+    let noted = Command::SetMediaNote {
+        media: s.still,
+        note: "the route we took".into(),
+    }
+    .apply(&moved)
+    .unwrap();
+    let done = index.sync(&noted).unwrap();
+    assert_eq!(
+        (done.added, done.changed, done.removed, done.rebuilt),
+        (0, 1, 0, 1)
+    );
+    assert_eq!(index.search(&Query::text("route")).unwrap(), [s.still]);
+    let usage = index.usage(s.drone_clip);
+    assert_eq!(usage.len(), 1);
+    assert_eq!(usage[0].1, 1);
+    // Removing a file takes its row out; undo brings it back.
+    let fewer = Command::RemoveMedia { media: vec![s.music] }
+        .apply(&noted)
+        .unwrap();
+    let done = index.sync(&fewer).unwrap();
+    assert_eq!((done.removed, done.rebuilt), (1, 0));
+    assert!(index.search(&Query::text("theme")).unwrap().is_empty());
+    let done = index.sync(&noted).unwrap();
+    assert_eq!((done.added, done.rebuilt), (1, 1));
+    assert_eq!(index.search(&Query::text("theme")).unwrap(), [s.music]);
+    assert_eq!(index.search(&Query::text("mp3")).unwrap(), [s.music]);
 }
 
 #[test]
@@ -396,7 +477,40 @@ fn ten_thousand_files(limit: Duration) {
     let started = Instant::now();
     let done = index.sync(&one).unwrap();
     eprintln!("one changed file synced in {:?}", started.elapsed());
-    assert_eq!((done.added, done.changed, done.removed), (0, 1, 0));
+    assert_eq!(
+        (done.added, done.changed, done.removed, done.rebuilt),
+        (0, 1, 0, 1)
+    );
+    // Moving one clip changes no file's row.
+    let sequence = one.active_sequence;
+    let placed = Command::PlaceMedia {
+        sequence,
+        media: ids[9],
+    }
+    .apply(&one)
+    .unwrap();
+    index.sync(&placed).unwrap();
+    let clip = placed
+        .sequences
+        .iter()
+        .find(|s| s.id == sequence)
+        .and_then(|s| s.tracks().flat_map(|t| t.clips.iter()).next())
+        .unwrap()
+        .id;
+    let moved = Command::MoveClips {
+        sequence,
+        clips: vec![clip],
+        by: Time::seconds(1),
+    }
+    .apply(&placed)
+    .unwrap();
+    let started = Instant::now();
+    let done = index.sync(&moved).unwrap();
+    eprintln!("one moved clip synced in {:?}", started.elapsed());
+    assert_eq!(
+        (done.added, done.changed, done.removed, done.rebuilt),
+        (0, 0, 0, 0)
+    );
 }
 
 /// The phase 5 gate on a real project: `GATE_PROJECT=<project file> cargo

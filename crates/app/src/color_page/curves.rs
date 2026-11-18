@@ -32,9 +32,9 @@ impl Channel {
     fn colour(self, theme: &Theme) -> egui::Color32 {
         match self {
             Channel::Master => theme.text,
-            Channel::Red => egui::Color32::from_rgb(235, 90, 90),
-            Channel::Green => egui::Color32::from_rgb(90, 200, 110),
-            Channel::Blue => egui::Color32::from_rgb(90, 140, 240),
+            Channel::Red => ui_kit::theme::channels::RED,
+            Channel::Green => ui_kit::theme::channels::GREEN,
+            Channel::Blue => ui_kit::theme::channels::BLUE,
         }
     }
 
