@@ -77,14 +77,16 @@ impl ErrorCenter {
     /// How many errors the list keeps; the oldest go first.
     pub const KEPT: usize = 200;
 
-    /// How long an error must have been quiet for a repeat of it to show
-    /// again once dismissed. A repeat sooner only adds to its count.
-    pub const QUIET: Duration = Duration::from_secs(10);
+    /// How long after its last time an error must come again to show again
+    /// once dismissed. A repeat sooner (something failing every frame) only
+    /// adds to its count; a repeat after a pause is the person trying again
+    /// (or a fix that failed the same way), and must not fail silently.
+    pub const QUIET: Duration = Duration::from_secs(1);
 
     /// Records an error, logs it, and shows it inline until dismissed. An
     /// error equal to one listed already is counted on that one, which
-    /// becomes the newest; dismissed, it shows again only after
-    /// [`ErrorCenter::QUIET`] without it.
+    /// becomes the newest; dismissed, it shows again when it comes at least
+    /// [`ErrorCenter::QUIET`] after its last time.
     pub fn push(&mut self, err: &AppError) {
         if self.record(ShownError::from(err)) {
             tracing::warn!("{}", err.report());
@@ -94,7 +96,8 @@ impl ErrorCenter {
     }
 
     /// Adds `shown`, or folds it into the same error listed already. True
-    /// when it is new, or a repeat after a quiet spell.
+    /// when it is new, or a repeat [`ErrorCenter::QUIET`] or more after its
+    /// last time.
     fn record(&mut self, mut shown: ShownError) -> bool {
         let fresh = match self.errors.iter().rposition(|e| e.same_as(&shown)) {
             Some(index) => {
@@ -167,9 +170,14 @@ impl ErrorCenter {
         response
     }
 
+    /// The error the strip shows: the newest one not yet dismissed.
+    fn showing(&mut self) -> Option<&mut ShownError> {
+        self.errors.iter_mut().rev().find(|e| !e.dismissed)
+    }
+
     /// The newest error not yet dismissed, as a strip across the page.
     pub fn show_inline(&mut self, ui: &mut egui::Ui, theme: &Theme) -> Option<ErrorResponse> {
-        let error = self.errors.iter_mut().rev().find(|e| !e.dismissed)?;
+        let error = self.showing()?;
         let mut response = None;
         Frame::new()
             .fill(theme.raised)
@@ -382,24 +390,57 @@ mod tests {
         );
     }
 
-    /// A dismissed error happening again every frame stays dismissed; after
-    /// a quiet spell it shows again.
+    fn at_ms(err: &AppError, millis: u64) -> ShownError {
+        ShownError {
+            at: SystemTime::UNIX_EPOCH + Duration::from_millis(millis),
+            ..ShownError::from(err)
+        }
+    }
+
+    /// A dismissed error happening again every frame stays dismissed, for
+    /// as long as it keeps happening; after a pause it shows again.
     #[test]
     fn a_quick_repeat_does_not_show_a_dismissed_error_again() {
         let mut center = ErrorCenter::default();
         let err = AppError::new("The preview can't be drawn").fix("Restart");
-        assert!(center.record(at(&err, 100)));
+        assert!(center.record(at_ms(&err, 100_000)));
         center.errors[0].dismissed = true;
-        for secs in 101..110 {
-            assert!(!center.record(at(&err, secs)), "only counted");
+        // Every frame at 60 a second, for 20 seconds.
+        let frames = 20 * 60;
+        for frame in 1..=frames {
+            assert!(
+                !center.record(at_ms(&err, 100_000 + frame * 1000 / 60)),
+                "only counted"
+            );
             assert!(center.all()[0].dismissed);
         }
+        let last = 100_000 + frames * 1000 / 60;
         assert!(
-            center.record(at(&err, 109 + ErrorCenter::QUIET.as_secs())),
+            center.record(at_ms(&err, last + ErrorCenter::QUIET.as_millis() as u64)),
             "shown anew"
         );
         assert!(!center.all()[0].dismissed);
-        assert_eq!(center.all()[0].count, 11);
+        assert_eq!(center.all()[0].count as u64, frames + 2);
+    }
+
+    /// The person dismisses an error, tries again a few seconds later and
+    /// it fails the same way: the strip shows it again rather than nothing.
+    #[test]
+    fn a_dismissed_error_tried_again_later_shows_again() {
+        let mut center = ErrorCenter::default();
+        let other = AppError::new("Couldn't save").fix("Save elsewhere");
+        let clash = AppError::new("There is already a clip there").fix("Move it elsewhere.");
+        assert!(center.record(at(&other, 0)));
+        assert!(center.record(at(&clash, 10)));
+        center.errors[1].dismissed = true;
+        assert!(center.record(at(&clash, 13)), "a retry is not silent");
+        assert!(!center.all()[1].dismissed);
+        assert_eq!(center.all()[1].count, 2);
+        assert_eq!(
+            center.showing().map(|e| e.what.clone()).as_deref(),
+            Some("There is already a clip there"),
+            "the strip shows the retry, not the older error"
+        );
     }
 
     /// Only the rows in sight are laid out: the window's cost stays put.
