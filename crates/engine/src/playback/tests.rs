@@ -248,6 +248,52 @@ fn without_a_sound_card_a_jump_restarts_the_wall_clock() {
     );
 }
 
+/// The sound card's mix couldn't be taken back (its driver stuck letting
+/// go of it): time takes over from where the sound had got to, not from
+/// where playback started, and a jump afterwards runs from its own place.
+#[test]
+fn when_time_takes_over_from_the_sound_the_playhead_goes_on() {
+    let mut playback = quiet_playback(Time::seconds(2), |clock| {
+        clock.rate.store(48_000, Ordering::Release);
+        // Two seconds past the start.
+        clock.output.heard.store(4 * 48_000, Ordering::Release);
+        clock.follow_sound();
+        clock.follow_time_from(Time::seconds(2));
+    });
+    poll(|| playback.unheard().then_some(()));
+    let at = playback.position();
+    assert!(at >= Time::seconds(4), "back to the start: {at:?}");
+    playback.jump(Time::seconds(10));
+    let at = playback.position();
+    let wall_from = playback.clock.wall_from.load(Ordering::Acquire);
+    let since = Time::from_ratio((playback.clock.now_us() - wall_from) as i64, 1_000_000).unwrap();
+    assert!(
+        at >= Time::seconds(10) && at <= Time::seconds(10) + since,
+        "from the jump: {at:?}, {since:?} after it"
+    );
+}
+
+/// A jump the sound hadn't taken when time took over runs from the place
+/// jumped to, without the time the sound had played before it.
+#[test]
+fn when_time_takes_over_a_jump_not_taken_runs_from_its_own_place() {
+    let clock = Clock::new();
+    clock.rate.store(48_000, Ordering::Release);
+    clock.output.heard.store(4 * 48_000, Ordering::Release);
+    clock.follow_paced();
+    // Jump 1 (to 10 s) was sent; the mix last took the start, at 2 s.
+    clock.follow_time_from(Time::seconds(2));
+    let at = clock.position(Time::seconds(10), 1);
+    let wall_from = clock.wall_from.load(Ordering::Acquire);
+    let since = Time::from_ratio((clock.now_us() - wall_from) as i64, 1_000_000).unwrap();
+    assert!(
+        at >= Time::seconds(10) && at <= Time::seconds(10) + since,
+        "{at:?}, {since:?} after time took over"
+    );
+    // The place the sound had got to still holds for the start.
+    assert!(clock.position(Time::seconds(2), 0) >= Time::seconds(4));
+}
+
 #[test]
 fn closing_waits_for_stopped_audio_threads_to_end() {
     let (let_go, letting_go) = channel::<()>();
@@ -281,7 +327,7 @@ fn closing_waits_for_the_paced_thread_of_an_unheard_playback() {
     let output = fake(&recording(), Time::ZERO).output;
     let (returned, audio_returned) = channel::<()>();
     let playback = quiet_playback(Time::ZERO, move |clock| {
-        play_unheard(output, (RATE, 2), clock);
+        play_unheard(output, (RATE, 2), clock, Time::ZERO);
         let _ = returned.send(());
     });
     audio_returned.recv_timeout(Duration::from_secs(30)).unwrap();
@@ -885,7 +931,7 @@ fn a_newer_jump_replaces_one_the_sound_card_went_away_during() {
     // The mix is taken back and plays on unheard; a second jump came in
     // meanwhile.
     session.card = false;
-    play_unheard(output, (RATE, 2), &clock);
+    play_unheard(output, (RATE, 2), &clock, session.taken);
     send.send(Message::Jump {
         at: Time::seconds(2),
         number: 2,

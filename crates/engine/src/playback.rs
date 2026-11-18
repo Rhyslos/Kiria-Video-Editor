@@ -12,7 +12,8 @@
 //! while playing (unplugged, turned off, its stream no longer valid, or its
 //! callback simply no longer called for [`QUIET_LIMIT`]): the mix is taken
 //! back from the callback and played on unheard, from where it was. Only
-//! when even the mix can't be made does a steady wall clock take over.
+//! when even the mix can't be made (or taken back) does a steady wall
+//! clock take over, from where the sound had got to.
 //!
 //! Two threads per playback:
 //!
@@ -146,9 +147,11 @@ struct Clock {
     /// The number of the last jump whose sound is ready (0: the start).
     jumped: AtomicU64,
     created: Instant,
-    /// When the wall clock last started from the target, in microseconds
-    /// after `created`.
+    /// When the wall clock last started, in microseconds after `created`.
     wall_from: AtomicU64,
+    /// How far past the target the wall clock started, in microseconds:
+    /// where the sound had got to when it took over (0 after a jump).
+    wall_ahead: AtomicU64,
     /// The master's meter, once the mixer is made.
     readout: OnceLock<Arc<MasterReadout>>,
     /// Each track's meter, as the feeder last added and removed tracks
@@ -171,6 +174,7 @@ impl Clock {
             jumped: AtomicU64::new(0),
             created: Instant::now(),
             wall_from: AtomicU64::new(0),
+            wall_ahead: AtomicU64::new(0),
             readout: OnceLock::new(),
             meters: Mutex::new(Vec::new()),
             spectrum: OnceLock::new(),
@@ -194,7 +198,32 @@ impl Clock {
     }
 
     /// From now on the position follows time itself: there is no sound.
+    /// Before any sound was played: time runs from the target.
     fn follow_time(&self) {
+        self.follow_time_ahead(0);
+    }
+
+    /// As [`Clock::follow_time`], going on from where the sound (or the
+    /// paced mix) had got to, so the playhead doesn't jump back. `taken`
+    /// is the place the audio thread last started from or took a jump to.
+    /// A jump sent but not taken yet runs from its own place instead.
+    fn follow_time_from(&self, taken: Time) {
+        let ahead = match self.source.load(Ordering::Acquire) {
+            SOUND | PACED => {
+                let jump = self.jumped.load(Ordering::Acquire);
+                let at = self.position(taken, jump);
+                let ahead = (at - taken).max(Time::ZERO);
+                // Whole microseconds, rounded down: never ahead of the sound.
+                let us = i128::from(ahead.num()) * 1_000_000 / i128::from(ahead.den().max(1));
+                u64::try_from(us).unwrap_or(0)
+            }
+            _ => 0,
+        };
+        self.follow_time_ahead(ahead);
+    }
+
+    fn follow_time_ahead(&self, ahead_us: u64) {
+        self.wall_ahead.store(ahead_us, Ordering::Release);
         self.wall_from.store(self.now_us(), Ordering::Release);
         self.source.store(WALL, Ordering::Release);
     }
@@ -217,9 +246,14 @@ impl Clock {
                 heard.max(target)
             }
             WALL => {
-                let us = self
+                let mut us = self
                     .now_us()
                     .saturating_sub(self.wall_from.load(Ordering::Acquire));
+                // Where the sound had got to counts only from the place it
+                // played from: a jump it hadn't taken runs from its own.
+                if self.jumped.load(Ordering::Acquire) >= jump {
+                    us = us.saturating_add(self.wall_ahead.load(Ordering::Acquire));
+                }
                 target + Time::from_ratio(us as i64, 1_000_000).unwrap_or(Time::ZERO)
             }
             _ => target,
@@ -340,6 +374,7 @@ impl Playback {
         self.jumps += 1;
         self.from = at;
         if self.clock.source.load(Ordering::Acquire) == WALL {
+            self.clock.wall_ahead.store(0, Ordering::Release);
             self.clock.wall_from.store(self.clock.now_us(), Ordering::Release);
             self.clock.jumped.store(self.jumps, Ordering::Release);
             return;
@@ -455,6 +490,9 @@ struct Session {
     /// A jump the sound card went away during, made again once the mix
     /// plays on unheard.
     pending: Option<(Time, u64)>,
+    /// Where the mix last started from or took a jump to: what the sound
+    /// card's position counts from, should time have to take over.
+    taken: Time,
     /// How long it waits on the sound card.
     limits: Limits,
 }
@@ -514,6 +552,7 @@ fn prepare(
             analysed: None,
             card: false,
             pending: None,
+            taken: from,
             limits: Limits::PLAYING,
         },
         output,
@@ -616,6 +655,7 @@ impl Session {
         self.feeder.jump(sample, at.as_secs_f64());
         let prime = (f64::from(rate) * PRIME).ceil() as usize;
         self.feeder.prime(prime, &|| !clock.stopped());
+        self.taken = at;
         clock.jumped.store(number, Ordering::Release);
         out.primed.store(true, Ordering::Release);
     }
@@ -675,7 +715,7 @@ fn audio_thread(
     }
     if let Some(output) = output {
         tracing::info!("no sound output: mixing unheard, so the meters still work");
-        play_unheard(output, shape, clock);
+        play_unheard(output, shape, clock, from);
     } else if heard.is_none() {
         clock.follow_time();
     }
@@ -699,12 +739,14 @@ fn play(
             if let Some(card) = heard.take() {
                 tracing::warn!("the sound output went away: playing on unheard, so the meters still work");
                 match card.give_back(clock) {
-                    Some(output) => play_unheard(output, shape, clock),
+                    Some(output) => play_unheard(output, shape, clock, session.taken),
                     None => {
                         tracing::warn!(
                             "the mix didn't come back from the sound output; the clock goes by time"
                         );
-                        clock.follow_time();
+                        // On from where the sound had got to, not from
+                        // where playback started.
+                        clock.follow_time_from(session.taken);
                         break;
                     }
                 }
@@ -726,16 +768,17 @@ fn play(
 }
 
 /// Runs `output` at real-time pace on a thread of its own, unheard, and
-/// has the clock follow it (or time itself, when the thread won't start).
-/// That thread counts as an audio thread until it ends ([`Running`]), so
+/// has the clock follow it (or time itself, when the thread won't start,
+/// going on from where the sound had got to from `taken`, the place the
+/// mix last started from or took a jump to). That thread counts as an audio thread until it ends ([`Running`]), so
 /// closing the app waits for it as for the audio thread.
-fn play_unheard(output: Output, shape: (u32, usize), clock: &Arc<Clock>) {
+fn play_unheard(output: Output, shape: (u32, usize), clock: &Arc<Clock>, taken: Time) {
     let running = Running::new(Arc::clone(clock));
     match crate::output::Paced::new(output, shape).run(Arc::clone(&clock.output), running) {
         Ok(_thread) => clock.follow_paced(),
         Err(err) => {
             tracing::warn!("{}", err.report());
-            clock.follow_time();
+            clock.follow_time_from(taken);
         }
     }
 }
