@@ -41,7 +41,17 @@
 //! the start, the journal is emptied). The document writes to that new
 //! journal only when the save held every change made so far; otherwise the
 //! next save tries again. A crash before then recovers the journal's
-//! prefix, or the newer project file, never anything out of order.
+//! prefix, or the newer project file, never anything out of order. A save
+//! that wrote the file but could not start the new session still counts as
+//! saved: the failure is told as a journal problem, the journal stays
+//! broken, and the next save tries the new session again.
+//!
+//! **After a failed save** the next one the document hands out waits
+//! ([`retry_pause`]: 5 seconds, doubling with each failure in a row up to a
+//! minute), counted from the first [`Document::tick`] after the failure, so
+//! a full disk is not written to on every update. A save asked for
+//! ([`Document::prepare_save`]) never waits; any save that succeeds ends
+//! the pause.
 //!
 //! A failed sync (the system could not confirm the journal is on the disk)
 //! breaks nothing: the line was written whole, so a crash of the app keeps
@@ -72,6 +82,16 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Changes older than this are written into the project file at the next [`Document::tick`].
 pub const FULL_SAVE_INTERVAL: Duration = Duration::from_secs(30);
+
+/// How long [`Document::tick`] waits before handing out a save after
+/// `failures` failed saves in a row (at least one): 5 seconds, doubling
+/// with each failure, at most a minute.
+pub fn retry_pause(failures: u32) -> Duration {
+    const FIRST: Duration = Duration::from_secs(5);
+    const LONGEST: Duration = Duration::from_secs(60);
+    let doublings = failures.saturating_sub(1).min(4);
+    (FIRST * 2u32.pow(doublings)).min(LONGEST)
+}
 
 /// One change as recorded in the journal.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -132,9 +152,10 @@ struct SaveGate {
     /// Held while a save writes.
     written: Mutex<Written>,
     /// A new session's journal, started by a save while the journal was
-    /// broken, with the number of the change its start holds. Locked only
-    /// for a moment, so the interface never waits for a save to take it.
-    fresh: Mutex<Option<(u64, File)>>,
+    /// broken, with the number of the change its start holds, or why it
+    /// could not be started (the save itself was written). Locked only for
+    /// a moment, so the interface never waits for a save to take it.
+    fresh: Mutex<Option<(u64, diag::Result<File>)>>,
 }
 
 #[derive(Debug)]
@@ -167,7 +188,9 @@ impl SaveJob {
     ///
     /// Prepared while the journal was broken, it then starts a new session
     /// from the file it wrote (see the module's notes); the document takes
-    /// the new journal in [`Document::finish_save`].
+    /// the new journal in [`Document::finish_save`]. A session that can't
+    /// be started leaves the save a success: the file holds the changes,
+    /// and the document tells the failure as a journal problem.
     pub fn run(&self) -> diag::Result<()> {
         let mut written = lock(&self.gate.written);
         if self.journal_seq < written.seq {
@@ -176,8 +199,10 @@ impl SaveJob {
         file::save_with_journal_seq(&self.project, &self.path, self.journal_seq)?;
         written.seq = self.journal_seq;
         if self.new_session && self.journal_seq > written.session {
-            let journal = start_session(&self.path)?;
-            written.session = self.journal_seq;
+            let journal = start_session(&self.path);
+            if journal.is_ok() {
+                written.session = self.journal_seq;
+            }
             *lock(&self.gate.fresh) = Some((self.journal_seq, journal));
         }
         Ok(())
@@ -212,6 +237,14 @@ pub struct Document {
     journal_broken: bool,
     /// What went wrong with the journal, not yet told to the person.
     journal_problem: Option<AppError>,
+    /// A save could not start the journal again since it broke, and the
+    /// person was told: later such failures are only logged.
+    restart_failure_told: bool,
+    /// Failed saves in a row: the next save [`Document::tick`] hands out
+    /// waits [`retry_pause`] for them.
+    failed_saves: u32,
+    /// When that wait ends: set by the first tick after the failure.
+    retry_at: Option<Instant>,
     /// Tests: the next line written stops after this many bytes and fails.
     #[cfg(test)]
     fail_write_after: Option<usize>,
@@ -238,6 +271,9 @@ impl Document {
             opened: Opened::AsSaved,
             journal_broken: false,
             journal_problem: None,
+            restart_failure_told: false,
+            failed_saves: 0,
+            retry_at: None,
             #[cfg(test)]
             fail_write_after: None,
         }
@@ -384,12 +420,24 @@ impl Document {
     /// Call regularly, with `idle = true` when nobody is using the app. Returns
     /// a save to run on a worker when changes are 30 seconds old or the app is
     /// idle, and no other save is running; at once while the journal is
-    /// broken, since saves alone keep the changes then.
+    /// broken, since saves alone keep the changes then. After a failed save
+    /// the next waits [`retry_pause`], counted from this call's `now` on the
+    /// first call after the failure.
     pub fn tick(&mut self, now: Instant, idle: bool) -> Option<SaveJob> {
         let due = self.unsaved_since.is_some_and(|since| {
             idle || self.journal_broken || now.duration_since(since) >= FULL_SAVE_INTERVAL
         });
-        (due && !self.is_saving() && !self.is_read_only()).then(|| self.prepare_save())
+        if !due || self.is_saving() || self.is_read_only() {
+            return None;
+        }
+        if self.failed_saves > 0 {
+            let failures = self.failed_saves;
+            let retry_at = *self.retry_at.get_or_insert_with(|| now + retry_pause(failures));
+            if now < retry_at {
+                return None;
+            }
+        }
+        Some(self.prepare_save())
     }
 
     /// Takes a snapshot for a full save, even while another save runs (they
@@ -408,10 +456,17 @@ impl Document {
 
     /// Records how a [`SaveJob`] went. On success the project counts as
     /// saved if nothing changed after the newest save on disk; on failure
-    /// the changes stay unsaved (they are in the journal).
+    /// the changes stay unsaved (they are in the journal) and the next save
+    /// [`Document::tick`] hands out waits (see [`retry_pause`]).
     pub fn finish_save(&mut self, journal_seq: u64, result: diag::Result<()>) -> diag::Result<()> {
         self.saves_in_flight = self.saves_in_flight.saturating_sub(1);
-        result?;
+        // The pause, if any, is counted again from the next tick.
+        self.retry_at = None;
+        if let Err(err) = result {
+            self.failed_saves = self.failed_saves.saturating_add(1);
+            return Err(err);
+        }
+        self.failed_saves = 0;
         self.saved_seq = self.saved_seq.max(journal_seq);
         if self.journal_broken {
             self.take_fresh_journal();
@@ -434,17 +489,39 @@ impl Document {
     }
 
     /// Takes the journal a save started while the journal was broken, when
-    /// that save held every change made so far.
+    /// that save held every change made so far; a session that could not be
+    /// started is told as a journal problem (once until the journal works
+    /// again), and the next save tries again.
     fn take_fresh_journal(&mut self) {
         // One started by a save that changes came after is left: the next
         // save starts the journal again.
         let fresh = lock(&self.gate.fresh).take();
-        if let Some((seq, journal)) = fresh
-            && seq == self.seq
-        {
-            self.journal = Some(journal);
-            self.journal_broken = false;
-            tracing::info!("the autosave journal started again after a failed write");
+        match fresh {
+            Some((seq, Ok(journal))) if seq == self.seq => {
+                self.journal = Some(journal);
+                self.journal_broken = false;
+                self.restart_failure_told = false;
+                tracing::info!("the autosave journal started again after a failed write");
+            }
+            Some((_, Err(err))) => {
+                tracing::warn!(
+                    "the project was saved, but its autosave journal could not start again: {}",
+                    err.report()
+                );
+                if !self.restart_failure_told {
+                    self.restart_failure_told = true;
+                    self.journal_problem = Some(
+                        AppError::new("Autosave can't start its journal again")
+                            .why(
+                                "The project was saved, but a new journal could not be started from it. \
+                                 Until it can, changes are kept by full saves only.",
+                            )
+                            .fix("Check that the disk is not full and that you can write to the project's folder.")
+                            .source(err),
+                    );
+                }
+            }
+            _ => {}
         }
     }
 
@@ -1331,6 +1408,89 @@ mod tests {
         assert!(doc.undo().unwrap());
         assert_eq!(doc.project().name, "D");
         assert!(!doc.history().can_undo());
+    }
+
+    #[test]
+    fn a_failed_save_pauses_before_the_next_one_is_handed_out() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut doc = new_doc(tmp.path());
+        doc.apply(rename("A")).unwrap();
+        doc.fail_write_after = Some(0);
+        doc.apply(rename("B")).unwrap(); // the journal breaks: saves are due at once
+        let start = Instant::now();
+        let mut now = start;
+        for failures in 1..=6u32 {
+            let job = doc.tick(now, true).expect("due");
+            let failed = doc.finish_save(job.journal_seq(), Err(AppError::new("The disk is full")));
+            assert!(failed.is_err());
+            let pause = retry_pause(failures);
+            assert!(doc.tick(now, true).is_none(), "not again at once");
+            assert!(doc.tick(now + pause / 2, true).is_none(), "nor within the pause");
+            assert!(doc.tick(now + pause - Duration::from_millis(1), true).is_none());
+            now += pause;
+        }
+        assert_eq!(retry_pause(1), Duration::from_secs(5));
+        assert_eq!(retry_pause(2), Duration::from_secs(10));
+        assert_eq!(retry_pause(6), Duration::from_secs(60), "at most a minute");
+        assert_eq!(retry_pause(u32::MAX), Duration::from_secs(60));
+        // Once the pause is over a save goes; when it works, the next
+        // change's save is due at once again.
+        let job = doc.tick(now, true).expect("after the pause");
+        run(&mut doc, job);
+        assert!(!doc.has_unsaved_changes());
+        doc.apply(rename("C")).unwrap();
+        assert!(
+            doc.tick(now, false).is_some(),
+            "no pause after a save that worked"
+        );
+    }
+
+    #[test]
+    fn a_save_whose_new_session_fails_still_counts_and_tells_the_journal_problem() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("p.project");
+        let mut doc = new_doc(tmp.path());
+        doc.apply(rename("A")).unwrap();
+        doc.fail_write_after = Some(3);
+        doc.apply(rename("B")).unwrap();
+        assert!(doc.take_journal_problem().is_some());
+        // Something holds the journal's start: it can't be replaced.
+        let start = journal_start_path(&path);
+        fs::remove_file(&start).unwrap();
+        fs::create_dir(&start).unwrap();
+        let now = Instant::now();
+        let job = doc.tick(now, false).expect("due at once");
+        let result = job.run();
+        assert!(result.is_ok(), "the file was written");
+        doc.finish_save(job.journal_seq(), result).unwrap();
+        assert!(!doc.has_unsaved_changes(), "the save counts");
+        assert_eq!(file::load(&path).unwrap().name, "B");
+        let problem = doc.take_journal_problem().expect("the person is told");
+        assert!(problem.what().contains("journal"), "{}", problem.what());
+        assert!(doc.tick(now, true).is_none(), "nothing more to save");
+
+        // Still broken: the next change is kept by a save, which tries the
+        // new session again, without a pause; told once.
+        doc.apply(rename("C")).unwrap();
+        let job = doc.tick(now, false).expect("due at once");
+        run(&mut doc, job);
+        assert!(doc.take_journal_problem().is_none(), "told once");
+        assert_eq!(file::load(&path).unwrap().name, "C");
+        assert_eq!(Document::check(&path).unwrap().unsaved_changes, 0);
+
+        // Once the start can be written, the next save starts the journal
+        // again and it keeps the changes after it.
+        fs::remove_dir(&start).unwrap();
+        doc.apply(rename("D")).unwrap();
+        let job = doc.tick(now, false).expect("due at once");
+        run(&mut doc, job);
+        doc.apply(rename("E")).unwrap();
+        drop(doc); // crash
+        assert_eq!(Document::check(&path).unwrap().unsaved_changes, 1);
+        assert_eq!(
+            Document::open(&path, Recovery::Recover).unwrap().project().name,
+            "E"
+        );
     }
 
     #[test]
