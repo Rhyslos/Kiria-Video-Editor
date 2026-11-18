@@ -284,11 +284,11 @@ fn unpack(package: &Path, layout: &Layout, version: &str) -> diag::Result<()> {
 }
 
 /// Points the `current` file at `version` in one rename, put on the disk
-/// first ([`crate::state_file::write_whole`]).
+/// first ([`diag::disk::write_atomic`]).
 pub fn set_current(layout: &Layout, version: &str) -> diag::Result<()> {
     let file = layout.root().join(CURRENT_FILE);
     let failed = || install_failed(format!("{} could not be written.", file.display()));
-    crate::state_file::write_whole(&file, version.as_bytes()).or_explain(failed)
+    diag::disk::write_atomic(&file, version.as_bytes()).or_explain(failed)
 }
 
 /// Replaces `target` with `source`: a copy beside it first, then one rename.

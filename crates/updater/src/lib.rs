@@ -32,7 +32,7 @@ mod test_server;
 pub use download::Progress;
 pub use fetch::{ReadyUpdate, fetch, fetch_with_progress};
 pub use install::Layout;
-pub use lock::UpdateLock;
+pub use lock::{ChoicesLock, UpdateLock};
 pub use manifest::{Channel, Manifest, ManifestFile, RELEASE_PUBLIC_KEY};
 pub use prefs::UpdatePrefs;
 pub use release::{CheckResult, Release};
