@@ -57,10 +57,10 @@ impl Hit {
         match self {
             Hit::Command { action, keys } => format!("{}    {keys}", action.label()).trim_end().to_owned(),
             Hit::Label { name, at } => {
-                format!("Go to label: {name}    {}", ui_kit::timeline::timecode(*at, fps))
+                format!("Go to label: {name}    {}", ui_kit::time_text::timecode(*at, fps))
             }
             Hit::Clip { name, at, .. } => {
-                format!("Go to clip: {name}    {}", ui_kit::timeline::timecode(*at, fps))
+                format!("Go to clip: {name}    {}", ui_kit::time_text::timecode(*at, fps))
             }
             Hit::File { name, .. } => format!("Show file: {name}    in the media drawer"),
             Hit::Settings => "Settings: theme, editing, resources".into(),
@@ -524,6 +524,61 @@ mod tests {
         assert!(
             find("timeline").iter().any(|h| matches!(h, Hit::Timeline { .. })),
             "\"timeline\" lists them all"
+        );
+    }
+
+    /// The palette writes timecodes with ui-kit's function from seconds,
+    /// the viewer and inspector with the project's from exact times: both
+    /// must read the same for every time.
+    #[test]
+    fn timecodes_read_the_same_as_the_viewer() {
+        use project::Rate;
+        let rates = [
+            Rate::new(30, 1).unwrap(),
+            Rate::new(25, 1).unwrap(),
+            Rate::new(24, 1).unwrap(),
+            Rate::new(60, 1).unwrap(),
+            Rate::new(24_000, 1001).unwrap(),
+            Rate::new(30_000, 1001).unwrap(),
+            Rate::new(60_000, 1001).unwrap(),
+        ];
+        let agree = |t: Time, rate: Rate| {
+            assert_eq!(
+                ui_kit::time_text::timecode(t.as_secs_f64(), rate.as_f64()),
+                t.timecode(rate),
+                "{t:?} at {rate}"
+            );
+        };
+        for rate in rates {
+            let frame = rate.frame_duration();
+            let half = Time::from_ratio(frame.num(), frame.den() * 2).unwrap();
+            // Every frame boundary, the middle of each frame and both sides of
+            // zero, through the first few seconds.
+            for n in -200..400 {
+                let start = rate.frame_start(n);
+                agree(start, rate);
+                agree(start + half, rate);
+            }
+            // Hours roll over, on a frame boundary and half a frame before it.
+            for secs in [59, 60, 3599, 3600, 36_000, 86_399] {
+                let n = rate.frame_at(Time::seconds(secs));
+                agree(rate.frame_start(n), rate);
+                agree(rate.frame_start(n) - half, rate);
+            }
+            agree(Time::ZERO, rate);
+        }
+        // The finding: a label at 1.99 s on a 30 fps timeline.
+        let at = Time::from_ratio(199, 100).unwrap();
+        let rate = Rate::new(30, 1).unwrap();
+        assert_eq!(at.timecode(rate), "00:00:01:29");
+        let label = Hit::Label {
+            name: "Intro".into(),
+            at: at.as_secs_f64(),
+        };
+        assert!(
+            label.text(rate.as_f64()).ends_with("00:00:01:29"),
+            "{}",
+            label.text(30.0)
         );
     }
 }
