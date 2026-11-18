@@ -4470,20 +4470,6 @@ pub fn minor_step(step: f64, fps: f64) -> f64 {
     (step / 5.0).max(1.0 / fps.max(1.0))
 }
 
-/// `HH:MM:SS:FF` for `seconds` at `fps` (whole frames per second for the frame part).
-pub fn timecode(seconds: f64, fps: f64) -> String {
-    let nominal = fps.round().max(1.0) as i64;
-    let frames = (seconds * fps).round() as i64;
-    let (total_secs, ff) = (frames / nominal, frames % nominal);
-    format!(
-        "{:02}:{:02}:{:02}:{:02}",
-        total_secs / 3600,
-        total_secs / 60 % 60,
-        total_secs % 60,
-        ff
-    )
-}
-
 fn draw_ruler(p: &egui::Painter, theme: &Theme, view: &TimelineView, layout: &Layout, fps: f64) {
     let left = layout.time_left();
     let step = ruler_step(view.zoom, fps, 90.0);
@@ -4504,7 +4490,7 @@ fn draw_ruler(p: &egui::Painter, theme: &Theme, view: &TimelineView, layout: &La
             p.text(
                 pos2(x + 4.0, layout.ruler.top() + 4.0),
                 Align2::LEFT_TOP,
-                timecode(t, fps),
+                crate::time_text::timecode(t, fps),
                 crate::fonts::mono(10.5),
                 theme.muted,
             );
@@ -5033,13 +5019,6 @@ mod tests {
             "not 0.4 frames"
         );
         assert_eq!(minor_step(10.0, 60.0), 2.0);
-        assert_eq!(timecode(0.0, 60.0), "00:00:00:00");
-        assert_eq!(timecode(3661.5, 60.0), "01:01:01:30");
-        assert_eq!(
-            timecode(10.0, 60_000.0 / 1001.0),
-            "00:00:09:59",
-            "59.94: frame counts run slightly behind the clock"
-        );
     }
 
     fn click(rig: &mut Rig, at: Pos2, button: egui::PointerButton) -> Vec<TimelineEvent> {
