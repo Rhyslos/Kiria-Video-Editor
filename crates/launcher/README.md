@@ -8,7 +8,7 @@ Phase 2 in progress. Done: the project browser (folder tree, project grid, searc
 
 ## Behaviour
 
-1. Logs to `<data folder>/logs/launcher.<date>.log` (no crash detection; that belongs to the editor).
+1. Logs to `<data folder>/logs/launcher.<date>.log` and writes a crash report to `crash-reports/` if it panics, through `diag::start_helper` (no crash detection; that belongs to the editor).
 1. Opens its window through the [graphics](../graphics/) crate, as the editor does: on Windows Vulkan first, Direct3D 12 when Vulkan reports an error, and its own start markers (`starting/launcher-vulkan/`, one per process) for a driver that crashes or freezes instead. See Graphics below.
 1. In an installed copy, installs an update downloaded on an earlier run (`updater::apply`), checking its signature and checksum again first. The launcher itself is replaced later, once the new version has started properly, so a broken update can never take the recovery with it. Only when the update's manifest needs a newer launcher is it swapped in at once (after its `--self-test`) and started instead, with the same arguments. The window then says "Updated to x.y.z"; a failure is shown in the error strip and the old version keeps working.
 2. With a project file as argument (`launcher trip.kiria`), starts the editor with it at once, lists it for next time and checks for updates. Being offline never delays this.

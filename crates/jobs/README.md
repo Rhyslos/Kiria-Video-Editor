@@ -28,7 +28,7 @@ if let Some(result) = handle.try_result() { /* ... */ }
 | Interface thread | Never part of a pool. Auto budgets leave one CPU thread free for it |
 | Priorities | `Playback` runs before `Interactive`, which runs before `Background`; equal priorities run oldest first |
 | Background policy | `Always`, `PauseWhilePlaying` (default) or `OnlyWhenIdle`. Tell it with `set_playing` and `set_idle`; `closing` lets everything held back run, so closing the app can wait for a save started while playing |
-| Results | `JobHandle::try_result()` (never blocks) or `wait()` (workers and tests only). Errors and panics come back as explained `AppError`s |
+| Results | `JobHandle::try_result()` (never blocks) or `wait()` (workers and tests only). Errors and panics come back as explained `AppError`s; a panic in a job is logged as an error, not written as a crash report (`diag::crash::catch_panic`) |
 | Cancelling | `JobHandle::cancel()` sets a flag the job reads with `ctx.is_cancelled()` |
 | Closing | When the pools close, the jobs running finish; queued jobs never start (their handles say the work was given up), except those submitted with `submit_write`: jobs that write something that must be on disk when the app ends (saves, the timeline layout, a saved frame, version or cheat sheet, clearing the cache). So closing never waits for reading nobody will look at |
 | Held back | A background job that is already running reads `ctx.is_held_back()` (background work is paused now, by the policy) and can wait it out with `ctx.wait_while_held_back()`: a long job such as a proxy build gives the machine back while the timeline plays, also half way through |
@@ -44,3 +44,4 @@ if let Some(result) = handle.try_result() { /* ... */ }
 | `src/pool.rs` | One pool: threads and a priority queue that can hold back background work |
 | `src/budget.rs` | `Budgets`, `Limit`, `BackgroundPolicy`, `Machine`, `Resolved`; `free_space(path)`: the free space on the drive a folder is on (the innermost mount point it lies under), for packaging's check before copying |
 | `src/usage.rs` | `UsageMonitor` and `Usage` for the top-bar readout |
+| `tests/caught_panic.rs` | A panicking job comes back as an error and writes no crash report (the crash handler is process-wide, so a binary of its own) |

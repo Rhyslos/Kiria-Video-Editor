@@ -4,7 +4,7 @@ use crate::{JobContext, JobHandle, Priority, ProgressCell};
 use diag::AppError;
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
-use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, mpsc};
 use std::thread::JoinHandle;
@@ -119,7 +119,9 @@ impl Pool {
             let _span = tracing::debug_span!("job", name = %name).entered();
             // From here the handle sees it as running.
             context.set_progress(0.0);
-            let result = catch_unwind(AssertUnwindSafe(|| job(&context))).unwrap_or_else(|_| {
+            // A panic here is handled (the handle gets an error), so it is
+            // logged, not reported as a crash.
+            let result = diag::crash::catch_panic(AssertUnwindSafe(|| job(&context))).unwrap_or_else(|_| {
                 Err(AppError::new("A background task failed")
                     .why(format!("The task \"{name}\" stopped unexpectedly."))
                     .fix("Try again. If it keeps happening, report it with the Diagnostics details."))
