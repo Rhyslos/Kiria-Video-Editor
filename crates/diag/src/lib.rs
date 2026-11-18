@@ -4,6 +4,8 @@
 //! - [`logging`]: rolling log files in the app's data folder.
 //! - [`crash`]: writes a crash report when the app panics.
 //! - [`session`]: notices when the previous run ended without closing cleanly.
+//! - [`marker`]: markers kept per process with a lock beside each, which
+//!   tell a process still going from one that crashed.
 //!
 //! Most programs only need [`start`] at the top of `main` and
 //! [`Diagnostics::finish`] at the end.
@@ -11,6 +13,7 @@
 pub mod crash;
 mod error;
 pub mod logging;
+pub mod marker;
 mod paths;
 pub mod session;
 mod stamp;
