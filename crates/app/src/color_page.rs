@@ -11,6 +11,7 @@ mod mask;
 mod range;
 mod wheels;
 
+use crate::pending::Pending;
 pub use mask::{dragged as mask_dragged, outline as mask_outline};
 use project::{ClipId, Command, Grade, Primary, Project, SequenceId, Time};
 use ui_kit::Theme;
@@ -66,7 +67,7 @@ pub struct ColorPage {
     /// A grade copied with Copy grade, for Paste.
     pub copied: Option<Grade>,
     /// A grade being dragged, not yet an undo step.
-    changing: Option<(ClipId, Grade)>,
+    changing: Pending<ClipId, Grade>,
     /// The scope shown.
     pub scope: engine::scope::ScopeKind,
     /// How much of Auto white balance's correction is used, 0 to 1.
@@ -104,7 +105,7 @@ impl Default for ColorPage {
             advanced: false,
             apply_to: ApplyTo::default(),
             copied: None,
-            changing: None,
+            changing: Pending::default(),
             scope: engine::scope::ScopeKind::default(),
             scope_picture: None,
             auto_strength: 1.0,
@@ -176,11 +177,10 @@ pub fn reached(project: &Project, seq: &project::Sequence, clip: ClipId, to: &Ap
 }
 
 impl ColorPage {
-    /// The project with the grade being dragged, for the viewer.
     /// The project as the viewer shows it: with the grade being dragged,
     /// or with `graded`'s grade taken away while Before is on.
     pub fn shown(&self, project: &Project, graded: Option<ClipId>) -> Option<Project> {
-        let grades = match (self.before, graded, &self.changing) {
+        let grades = match (self.before, graded, self.changing.get()) {
             (true, Some(clip), _) => vec![(clip, Grade::default())],
             (_, _, Some((clip, grade))) => vec![(*clip, grade.clone())],
             _ => return None,
@@ -191,6 +191,34 @@ impl ColorPage {
         }
         .apply(project)
         .ok()
+    }
+
+    /// Finishes a grade left being dragged on a clip that is no longer the
+    /// one graded (`graded`): with nothing selected the graded clip follows
+    /// the playhead, which can cross into the next clip mid-drag. The grade
+    /// becomes its undo step on the clip it was dragged on (when it changes
+    /// anything), so it is neither lost nor carried to the next clip. Run
+    /// once a frame, before the tools.
+    pub fn finish_left_behind(&mut self, seq: &project::Sequence, graded: Option<ClipId>) -> Asked {
+        let mut asked = Asked::default();
+        let stored = |id: &ClipId| {
+            seq.video_tracks
+                .iter()
+                .flat_map(|t| t.clips.iter())
+                .find(|c| c.id == *id)
+                .map(|c| c.grade.clone())
+        };
+        let left = self.changing.get().is_some_and(|(id, _)| Some(*id) != graded);
+        if left {
+            self.mask_held = false;
+        }
+        if let Some((clip, grade)) = self.changing.finish_on_change(|id| Some(*id) == graded, stored) {
+            asked.commands.push(Command::SetGrades {
+                sequence: seq.id,
+                grades: vec![(clip, grade)],
+            });
+        }
+        asked
     }
 
     /// "Pick white": the picture at `at` (0 to 1 across and down) should
@@ -266,10 +294,7 @@ impl ColorPage {
         if self.tool != Tool::Mask {
             return None;
         }
-        let grade = match &self.changing {
-            Some((id, grade)) if *id == clip.id => grade,
-            _ => &clip.grade,
-        };
+        let grade = self.changing.value_for(&clip.id).unwrap_or(&clip.grade);
         grade.0.get(self.layer)?.mask
     }
 
@@ -282,17 +307,14 @@ impl ColorPage {
         mask: project::Mask,
         done: bool,
     ) -> Asked {
-        let mut grade = match &self.changing {
-            Some((id, grade)) if *id == clip.id => grade.clone(),
-            _ => clip.grade.clone(),
-        };
+        let mut grade = self.changing.value_for(&clip.id).unwrap_or(&clip.grade).clone();
         grade.layer_mut(self.layer).mask = Some(mask);
         self.mask_held = !done;
         let mut asked = Asked::default();
         if !done {
-            self.changing = Some((clip.id, grade));
+            self.changing.set(clip.id, grade);
         } else {
-            self.changing = None;
+            self.changing.clear();
             if grade != clip.grade {
                 asked.commands.push(Command::SetGrades {
                     sequence,
@@ -314,10 +336,7 @@ impl ColorPage {
         media: Option<&project::MediaRef>,
     ) -> Asked {
         let stored = &clip.grade;
-        let mut grade = match &self.changing {
-            Some((id, grade)) if *id == clip.id => grade.clone(),
-            _ => stored.clone(),
-        };
+        let mut grade = self.changing.value_for(&clip.id).unwrap_or(stored).clone();
         let layers = grade.0.len().max(1);
         self.layer = self.layer.min(layers);
         ui.horizontal(|ui| {
@@ -469,11 +488,11 @@ impl ColorPage {
             grade.layer_mut(self.layer).primary = primary;
         }
         if grade == *stored {
-            self.changing = None;
+            self.changing.clear();
         } else if busy {
-            self.changing = Some((clip.id, grade));
+            self.changing.set(clip.id, grade);
         } else {
-            self.changing = None;
+            self.changing.clear();
             asked.commands.push(Command::SetGrades {
                 sequence,
                 grades: vec![(clip.id, grade)],
@@ -817,6 +836,51 @@ mod tests {
         let done = page.drag_mask(p.active_sequence, &clip, moved, true);
         assert_eq!(done.commands.len(), 1, "one undo step");
         assert!(page.shown(&p, Some(clip.id)).is_none());
+    }
+
+    #[test]
+    fn a_drag_left_when_the_playhead_moves_to_the_next_clip_is_kept_on_its_own_clip() {
+        let p = project_with_two_files();
+        let seq = p.active().expect("a timeline");
+        let (a, b) = (
+            seq.video_tracks[0].clips[0].clone(),
+            seq.video_tracks[0].clips[1].clone(),
+        );
+        let mut page = ColorPage {
+            tool: Tool::Mask,
+            ..ColorPage::default()
+        };
+        let moved = project::Mask {
+            x: 300_000,
+            ..project::Mask::MIDDLE
+        };
+        // Dragging on A, the clip at the playhead.
+        let held = page.drag_mask(p.active_sequence, &a, moved, false);
+        assert!(held.commands.is_empty(), "nothing kept while held");
+        assert!(
+            page.finish_left_behind(seq, Some(a.id)).commands.is_empty(),
+            "still A"
+        );
+        assert_eq!(page.mask_shown(&a), Some(moved));
+        // The playhead crosses into B mid-drag: A's grade is one undo step.
+        let left = page.finish_left_behind(seq, Some(b.id));
+        let [Command::SetGrades { grades, .. }] = left.commands.as_slice() else {
+            panic!("one grade set, got {:?}", left.commands);
+        };
+        assert_eq!(grades.len(), 1);
+        assert_eq!(grades[0].0, a.id, "on the clip it was dragged on");
+        assert_eq!(grades[0].1.0[0].mask, Some(moved));
+        assert_eq!(page.mask_shown(&b), None, "not carried to B");
+        assert!(page.shown(&p, Some(b.id)).is_none(), "nothing left waiting");
+        assert!(
+            page.finish_left_behind(seq, Some(b.id)).commands.is_empty(),
+            "only once"
+        );
+        // Past the last clip nothing is graded: a drag left there is kept too.
+        page.drag_mask(p.active_sequence, &b, moved, false);
+        let left = page.finish_left_behind(seq, None);
+        assert_eq!(left.commands.len(), 1, "kept on B");
+        assert!(page.shown(&p, None).is_none());
     }
 
     #[test]
