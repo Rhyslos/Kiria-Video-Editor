@@ -16,7 +16,7 @@
 //! silence and owes it, and the feeder skips as much, so a late file comes
 //! back in step. Playback and export write the same pieces at the same
 //! places, so they make the same sound. A sample that is NaN or infinite (a
-//! damaged recording) goes into the ring as 0 (`audio::FeedWriter::write`),
+//! damaged recording) comes out of [`crate::mix::Mixer::mix_track`] as 0,
 //! before any effect sees it, and the log says so once per track.
 //!
 //! After an edit, [`Feeder::update`] works out what changed per track
@@ -58,7 +58,7 @@ struct Fed {
     /// The timeline sample the next frame written is.
     next: u64,
     /// Samples of its sound that were NaN or infinite and went into the
-    /// ring as 0 (`FeedWriter::write`), so the log says so once.
+    /// ring as 0 (`mix::Mixer::mix_track`), so the log says so once.
     replaced: u64,
 }
 
@@ -289,7 +289,9 @@ impl Feeder {
             let fed = &mut self.tracks[i];
             let frames = fed.writer.write(&self.piece);
             fed.next += frames as u64;
-            let replaced = fed.writer.take_replaced();
+            // `FeedWriter::write` checks again, so the audio crate's mixer
+            // never takes one whatever writes; from here it finds none.
+            let replaced = fed.clips.take_replaced() + fed.writer.take_replaced();
             if replaced > 0 && fed.replaced == 0 {
                 tracing::warn!(
                     "Track {:?}: {replaced} samples were not numbers (a damaged recording?) and were played as silence",

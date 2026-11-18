@@ -462,3 +462,28 @@ fn a_clips_own_volume_line_is_heard_by_the_check() {
     println!("first track: {before:.1} dB, with its clip line at -30 dB: {after:.1} dB");
     assert!((before - after - 30.0).abs() < 1.5, "{before} -> {after}");
 }
+
+#[test]
+fn a_damaged_recording_leaves_the_check_measuring() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_, p) = crate::mix::tests::damaged(dir.path());
+    let seq = p.active_sequence;
+    let mut clips = Clips::new(RATE);
+    let report = analyse(
+        &p,
+        seq,
+        Request::Region(Time::ZERO, Time::seconds(1)),
+        &mut clips,
+        &|| true,
+        &|_| {},
+    )
+    .unwrap()
+    .unwrap();
+    let levels = &report.tracks[0].levels_db;
+    assert!(
+        levels.iter().all(|db| !db.is_nan()),
+        "a NaN in the file stays out of the strips' state: {levels:?}"
+    );
+    let loudest = levels.iter().copied().fold(f32::MIN, f32::max);
+    assert!(loudest > -40.0, "the tone is still measured: {levels:?}");
+}

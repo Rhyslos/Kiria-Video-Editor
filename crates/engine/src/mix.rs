@@ -14,6 +14,15 @@
 //! real-time mixer of its own run offline here (on the feeder's thread,
 //! never in the sound card's callback; [`OfflineMix::nested`]), then the
 //! clip's own sound as for a file.
+//!
+//! **A sample that is not a number** (NaN or infinity, from a damaged
+//! recording) leaves [`Mixer::mix_track`] as 0 and is counted
+//! ([`Mixer::take_replaced`]). Every sound that reaches an effect comes
+//! from there: the feeder's rings for playback and export, a nested
+//! timeline's own feeder, the clarity check's strips and the noise a track
+//! learns. Once inside a filter, compressor or limiter it would stay in its
+//! state and silence or poison the track, or the whole mix, until the
+//! sound started again. A finite sample is never changed.
 
 use crate::offline::OfflineMix;
 use media::AudioDecoder;
@@ -48,6 +57,9 @@ pub struct Mixer {
     made: u64,
     /// How many timelines deep this mixer is: 0 for the timeline played.
     depth: usize,
+    /// Samples `mix_track` gave out as 0 because they were NaN or infinite,
+    /// not yet taken.
+    replaced: u64,
 }
 
 /// A nested timeline's own mixer and where it is.
@@ -129,6 +141,7 @@ impl Mixer {
             nested: Vec::new(),
             made: 0,
             depth,
+            replaced: 0,
         }
     }
 
@@ -160,10 +173,19 @@ impl Mixer {
     /// seconds on, before anything the track itself does (its volume, mute,
     /// solo and effects are the real-time mixer's, `crates/audio`). The
     /// feeder calls this for each track; summed with the track's and the
-    /// master's volume it is exactly what [`Mixer::mix`] makes.
+    /// master's volume it is exactly what [`Mixer::mix`] makes. A sample
+    /// that would be NaN or infinite (a damaged recording) is 0 instead and
+    /// counted for [`Mixer::take_replaced`]; finite ones are untouched.
     pub fn mix_track(&mut self, project: &Project, track: &Track, start: f64, out: &mut [f32]) {
         out.fill(0.0);
         self.add_track(project, track, start, 1.0, out);
+        self.replaced += only_numbers(out);
+    }
+
+    /// Samples [`Mixer::mix_track`] gave out as 0 since last asked because
+    /// they were NaN or infinite (a damaged recording): for the log.
+    pub fn take_replaced(&mut self) -> u64 {
+        std::mem::take(&mut self.replaced)
     }
 
     /// Adds a track's clips, times `gain`, to `out` from `start` seconds on.
@@ -551,6 +573,17 @@ fn read_rate(rate: f64, speed: f64) -> u32 {
     ((rate / speed).round() as u32).clamp(1, 1_000_000)
 }
 
+/// Sets every NaN or infinite sample of `samples` to 0 and says how many
+/// there were; finite samples are left exactly as they are.
+fn only_numbers(samples: &mut [f32]) -> u64 {
+    let mut replaced = 0;
+    for s in samples.iter_mut().filter(|s| !s.is_finite()) {
+        *s = 0.0;
+        replaced += 1;
+    }
+    replaced
+}
+
 /// A decibel value in thousandths as a factor on samples. The bottom of the
 /// range is silence.
 pub fn volume(gain_mdb: i32) -> f32 {
@@ -713,10 +746,82 @@ impl Shape {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use project::{Command, Project, Time};
     use std::path::Path;
+
+    /// Where [`damaged`]'s file has samples that are not numbers
+    /// (interleaved stereo indices) and what they are.
+    pub(crate) const BAD: [(usize, f32); 4] = [
+        (4_000, f32::NAN),
+        (4_001, f32::INFINITY),
+        (30_000, f32::NEG_INFINITY),
+        (60_001, f32::NAN),
+    ];
+
+    /// A second of a stereo 440 Hz tone at 48 kHz in 32-bit floats, as a
+    /// damaged recording might hold it: a few samples are NaN or infinite
+    /// ([`BAD`]). Returns the samples written and a project with the file
+    /// on its timeline.
+    pub(crate) fn damaged(dir: &Path) -> (Vec<f32>, Project) {
+        let rate = 48_000u32;
+        let mut samples: Vec<f32> = (0..rate as usize)
+            .flat_map(|i| {
+                let v = 0.25 * (std::f32::consts::TAU * 440.0 * i as f32 / rate as f32).sin();
+                [v, -v]
+            })
+            .collect();
+        for (at, bad) in BAD {
+            samples[at] = bad;
+        }
+        let data = (samples.len() * 4) as u32;
+        let mut bytes = Vec::with_capacity(44 + data as usize);
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&(36 + data).to_le_bytes());
+        bytes.extend_from_slice(b"WAVEfmt ");
+        bytes.extend_from_slice(&16u32.to_le_bytes());
+        bytes.extend_from_slice(&3u16.to_le_bytes()); // IEEE floats
+        bytes.extend_from_slice(&2u16.to_le_bytes());
+        bytes.extend_from_slice(&rate.to_le_bytes());
+        bytes.extend_from_slice(&(rate * 8).to_le_bytes());
+        bytes.extend_from_slice(&8u16.to_le_bytes());
+        bytes.extend_from_slice(&32u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&data.to_le_bytes());
+        for v in &samples {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        let path = dir.join("damaged.wav");
+        std::fs::write(&path, bytes).unwrap();
+        let p = Project::new_automatic("T");
+        let seq = p.active_sequence;
+        let media = media::describe(&path).unwrap();
+        (
+            samples,
+            Command::Import { sequence: seq, media }.apply(&p).unwrap(),
+        )
+    }
+
+    #[test]
+    fn a_sample_that_is_not_a_number_comes_out_as_0_and_the_rest_as_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let (file, p) = damaged(dir.path());
+        let track = &p.active().unwrap().audio_tracks[0];
+        let mut mixer = Mixer::new(48_000);
+        let mut out = vec![0f32; file.len()];
+        mixer.mix_track(&p, track, 0.0, &mut out);
+        assert_eq!(mixer.take_replaced(), BAD.len() as u64);
+        assert_eq!(mixer.take_replaced(), 0, "taken");
+        for (i, (got, wanted)) in out.iter().zip(&file).enumerate() {
+            if BAD.iter().any(|(at, _)| *at == i) {
+                assert_eq!(*got, 0.0, "sample {i}");
+            } else {
+                // By value: the file's -0.0 is summed into a buffer of zeros.
+                assert_eq!(got, wanted, "sample {i}: the file's own");
+            }
+        }
+    }
 
     fn project() -> Project {
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../media/tests/fixtures/game-3-audio.mkv");
