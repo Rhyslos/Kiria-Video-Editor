@@ -2544,9 +2544,9 @@ impl TimelineView {
         }
     }
 
-    /// The track's volume fader under its buttons: -60 dB at the left,
-    /// +12 dB at the right; double-click resets to 0. Only in a header with
-    /// room for it.
+    /// The track's volume fader under its buttons, on the one volume
+    /// scale ([`crate::volume`]: the bottom at the left, the top at the
+    /// right); double-click resets to 0. Only in a header with room for it.
     fn fader(
         &mut self,
         ui: &mut Ui,
@@ -2567,24 +2567,18 @@ impl TimelineView {
             Some((t, db)) if t == track.id => db,
             _ => track.gain_db,
         };
-        let to_x = |db: f32| bar.left() + (db + 60.0) / 72.0 * bar.width();
+        let to_x = |db: f32| fader_x(bar, db);
         let r = ui
             .interact(
                 bar.expand2(vec2(4.0, 5.0)),
                 id.with("volume"),
                 Sense::click_and_drag(),
             )
-            .on_hover_text(format!("Volume {db:+.1} dB (double-click: 0 dB)"));
+            .on_hover_text(fader_tip(db));
         if r.dragged()
             && let Some(p) = r.interact_pointer_pos()
         {
-            let v = (((p.x - bar.left()) / bar.width()) * 72.0 - 60.0).clamp(-60.0, 12.0);
-            let v = if v.abs() < 1.0 {
-                0.0
-            } else {
-                (v * 2.0).round() / 2.0
-            };
-            self.fader_drag = Some((track.id, v));
+            self.fader_drag = Some((track.id, fader_db_at(bar, p.x)));
         }
         if r.drag_stopped()
             && let Some((_, v)) = self.fader_drag.take()
@@ -4498,6 +4492,26 @@ fn draw_ruler(p: &egui::Painter, theme: &Theme, view: &TimelineView, layout: &La
         t = start + minor * f64::from(i + 1);
         i += 1;
     }
+}
+
+/// x on a track header's fader `bar` for `db` (the fader law of
+/// [`crate::volume`], bottom at the left).
+pub(crate) fn fader_x(bar: Rect, db: f32) -> f32 {
+    bar.left() + crate::volume::share_of(db) * bar.width()
+}
+
+/// Where a track header's fader `bar` dragged to `x` lands.
+pub(crate) fn fader_db_at(bar: Rect, x: f32) -> f32 {
+    crate::volume::settled(crate::volume::db_at_share(
+        (x - bar.left()) / bar.width().max(1.0),
+    ))
+}
+
+/// What a track header's fader says when pointed at: "Volume −6.0 dB
+/// (double-click: 0 dB)"; a track at the bottom of the range is heard.
+pub(crate) fn fader_tip(db: f32) -> String {
+    let words = crate::volume::words(db, crate::volume::Bottom::Heard);
+    format!("Volume {words} (double-click: 0 dB)")
 }
 
 #[cfg(test)]
