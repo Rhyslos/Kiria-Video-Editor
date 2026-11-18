@@ -204,6 +204,7 @@ impl Template {
                 if track.kind != kind {
                     problems.push(format!("track {} is in the wrong area", track.name));
                 }
+                problems.extend(track.problems(&track.name));
                 let mut previous_end = Time::ZERO;
                 for clip in &track.clips {
                     let place = format!("{} › {}", track.name, clip.id);
@@ -213,11 +214,9 @@ impl Template {
                     if clip.nested().is_some() {
                         problems.push(format!("{place} plays a timeline of a project"));
                     }
-                    if clip.duration <= Time::ZERO {
-                        problems.push(format!("{place} has no length"));
-                    }
-                    if clip.start.is_negative() || clip.starts_before_its_source() {
-                        problems.push(format!("{place} starts before zero"));
+                    problems.extend(clip.problems(&place, track.kind));
+                    if clip.look.check().is_err() {
+                        problems.push(format!("{place} has a look out of range"));
                     }
                     if clip.start < previous_end {
                         problems.push(format!("{place} overlaps the clip before it"));
@@ -225,10 +224,6 @@ impl Template {
                     if clip.end() > self.length {
                         problems.push(format!("{place} ends after the template does"));
                     }
-                    if clip.look.check().is_err() {
-                        problems.push(format!("{place} has a look out of range"));
-                    }
-                    problems.extend(clip.keyframes.problems(&place));
                     previous_end = clip.end();
                 }
             }
