@@ -15,12 +15,15 @@ const GAP: f32 = 8.0;
 impl Editor {
     pub(super) fn color_page_ui(&mut self, ui: &mut egui::Ui) {
         let page = ui.available_rect_before_wrap();
+        let held = ui.ctx().input(|i| i.pointer.any_down());
         // A grade left being dragged on a clip no longer graded (the
         // playhead crossed into the next one) becomes its undo step first,
         // so this frame's picture already has it.
         let left = self.document.as_ref().and_then(|d| {
             let seq = d.project().active()?;
-            let graded = color_page::graded_clip(seq, &self.selected, self.viewer.playhead);
+            let graded = self
+                .color_page
+                .graded(seq, &self.selected, self.viewer.playhead, held);
             Some(self.color_page.finish_left_behind(seq, graded))
         });
         for command in left.into_iter().flat_map(|asked| asked.commands) {
@@ -33,7 +36,9 @@ impl Editor {
         };
         let p = &p;
         let Some(seq) = p.active() else { return };
-        let graded_id = color_page::graded_clip(seq, &self.selected, self.viewer.playhead);
+        let graded_id = self
+            .color_page
+            .graded(seq, &self.selected, self.viewer.playhead, held);
         let shown = self.color_page.shown(p, graded_id);
         let shown_p = shown.as_ref().unwrap_or(p);
         let tools_h = match self.color_page.tool {

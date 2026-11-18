@@ -193,9 +193,35 @@ impl ColorPage {
         .ok()
     }
 
+    /// The clip the page grades this frame: while a grade is being dragged
+    /// (`held`: the pointer is down, or the mask is held on the picture),
+    /// the clip it is dragged on, as long as the timeline still has it, so
+    /// the rest of the drag never lands on the next clip when the playhead
+    /// crosses into it; otherwise [`graded_clip`].
+    pub fn graded(
+        &self,
+        seq: &project::Sequence,
+        selected: &[ClipId],
+        playhead: Time,
+        held: bool,
+    ) -> Option<ClipId> {
+        let dragged = self
+            .changing
+            .get()
+            .map(|(id, _)| *id)
+            .filter(|_| held || self.mask_held)
+            .filter(|id| {
+                seq.video_tracks
+                    .iter()
+                    .any(|t| t.clips.iter().any(|c| c.id == *id))
+            });
+        dragged.or_else(|| graded_clip(seq, selected, playhead))
+    }
+
     /// Finishes a grade left being dragged on a clip that is no longer the
-    /// one graded (`graded`): with nothing selected the graded clip follows
-    /// the playhead, which can cross into the next clip mid-drag. The grade
+    /// one graded (`graded`, from [`ColorPage::graded`]): with nothing
+    /// selected the graded clip follows the playhead, which can cross into
+    /// the next clip while a drag waits. The grade
     /// becomes its undo step on the clip it was dragged on (when it changes
     /// anything), so it is neither lost nor carried to the next clip. Run
     /// once a frame, before the tools.
@@ -881,6 +907,58 @@ mod tests {
         let left = page.finish_left_behind(seq, None);
         assert_eq!(left.commands.len(), 1, "kept on B");
         assert!(page.shown(&p, None).is_none());
+    }
+
+    #[test]
+    fn while_a_drag_is_held_the_graded_clip_stays_the_one_dragged_on() {
+        let p = project_with_two_files();
+        let seq = p.active().expect("a timeline");
+        let (a, b) = (
+            seq.video_tracks[0].clips[0].clone(),
+            seq.video_tracks[0].clips[1].clone(),
+        );
+        let mut page = ColorPage {
+            tool: Tool::Mask,
+            ..ColorPage::default()
+        };
+        let in_a = Time::seconds(1);
+        let in_b = Time::seconds(5);
+        assert_eq!(
+            page.graded(seq, &[], in_a, true),
+            Some(a.id),
+            "nothing waiting: the playhead's"
+        );
+        let first = project::Mask {
+            x: 300_000,
+            ..project::Mask::MIDDLE
+        };
+        page.drag_mask(p.active_sequence, &a, first, false);
+        // The playhead crosses into B with the pointer still down.
+        let graded = page.graded(seq, &[], in_b, true);
+        assert_eq!(graded, Some(a.id), "still the clip dragged on");
+        assert!(page.finish_left_behind(seq, graded).commands.is_empty());
+        let next = project::Mask {
+            x: 400_000,
+            ..project::Mask::MIDDLE
+        };
+        page.drag_mask(p.active_sequence, &a, next, false);
+        assert_eq!(page.mask_shown(&a), Some(next), "the next value goes to A");
+        assert_eq!(page.mask_shown(&b), None);
+        // Let go: the drag is A's one undo step, then the playhead's clip.
+        let done = page.drag_mask(p.active_sequence, &a, next, true);
+        let [Command::SetGrades { grades, .. }] = done.commands.as_slice() else {
+            panic!("one grade set, got {:?}", done.commands);
+        };
+        assert_eq!(grades[0].0, a.id);
+        assert_eq!(page.graded(seq, &[], in_b, false), Some(b.id), "follows B");
+        // A slider let go off the page (nothing finished it): the pointer
+        // up, the playhead's clip again, and the drag finished on A.
+        page.drag_mask(p.active_sequence, &a, first, false);
+        page.mask_held = false;
+        let graded = page.graded(seq, &[], in_b, false);
+        assert_eq!(graded, Some(b.id));
+        let left = page.finish_left_behind(seq, graded);
+        assert_eq!(left.commands.len(), 1, "kept on A");
     }
 
     #[test]
