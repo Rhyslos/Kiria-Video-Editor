@@ -14,5 +14,8 @@ serde = { version = "1", features = ["derive"] }
 sysinfo = { version = "0.40", default-features = false, features = ["system", "disk"] }
 tracing = "0.1"
 
+[dev-dependencies]
+tempfile = "3"
+
 [lints]
 workspace = true

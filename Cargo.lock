@@ -1112,6 +1112,7 @@ name = "diag"
 version = "0.1.0"
 dependencies = [
  "brand",
+ "crossbeam-channel",
  "directories",
  "tempfile",
  "time",
@@ -2323,6 +2324,7 @@ dependencies = [
  "os",
  "serde",
  "sysinfo",
+ "tempfile",
  "tracing",
 ]
 
