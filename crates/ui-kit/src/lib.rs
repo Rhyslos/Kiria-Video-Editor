@@ -31,6 +31,7 @@ pub mod transport;
 pub mod user_guide;
 pub mod video_picture;
 pub mod viewer;
+pub mod volume;
 pub mod waveform;
 pub mod yuv_renderer;
 

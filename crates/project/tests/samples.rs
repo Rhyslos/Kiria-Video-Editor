@@ -407,6 +407,40 @@ fn rich_project() -> Project {
     .expect("marks")
 }
 
+/// The header read from the text before the project gives what reading
+/// the whole file gives, on every sample.
+#[test]
+fn every_sample_header_reads_the_same_from_its_head() {
+    #[derive(serde::Deserialize)]
+    struct Whole {
+        format_version: u32,
+        #[serde(default)]
+        journal_seq: u64,
+    }
+    let tmp = tempfile::tempdir().expect("a temporary folder");
+    for version in 1..=FORMAT_VERSION {
+        let text = std::fs::read_to_string(sample_path(version))
+            .expect("the sample is there")
+            .replacen("journal_seq: 0,", &format!("journal_seq: {},", 100 + version), 1);
+        let path = tmp.path().join(format!("v{version}.project"));
+        std::fs::write(&path, &text).expect("written");
+        let whole: Whole = ron::from_str(&text).expect("the whole sample parses");
+        assert_eq!(
+            file::read_journal_seq(&path).expect("read"),
+            whole.journal_seq,
+            "v{version}"
+        );
+        assert_eq!(
+            file::read_info(&path).expect("read").format_version,
+            whole.format_version,
+            "v{version}"
+        );
+        let (project, seq) = file::load_with_journal_seq(&path).expect("opens");
+        assert_eq!(seq, whole.journal_seq, "v{version}");
+        assert_eq!(project, file::from_str(&text).expect("opens"), "v{version}");
+    }
+}
+
 #[test]
 fn version_1_sample_opens() {
     let project = file::load(&sample_path(1)).expect("the version 1 sample opens");

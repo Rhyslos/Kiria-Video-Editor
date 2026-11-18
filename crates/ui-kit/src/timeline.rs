@@ -66,6 +66,7 @@ mod keyframes;
 pub mod level;
 pub mod lines;
 mod loading;
+mod obstacles;
 mod rows;
 mod slip;
 mod speed;
@@ -84,6 +85,7 @@ pub use track_views::COMPACT_TRACK;
 
 use crate::Theme;
 use egui::{Align2, Color32, CursorIcon, FontId, Pos2, Rect, Sense, Shape, Stroke, Ui, Vec2, pos2, vec2};
+use obstacles::Obstacles;
 use rows::Rows;
 use track_views::OneList;
 
@@ -593,31 +595,26 @@ impl ClipDrag {
     /// linked to it. Linked sound is not counted when the clip changes
     /// track: it then finds a free track by itself. Overlaps shorter than
     /// half a frame are not counted either, as places are rounded to frames.
-    fn is_in_the_way(&self, data: &TimelineData) -> bool {
+    /// `room` holds the clips that stay, gathered for this drag.
+    fn is_in_the_way(&self, data: &TimelineData, room: &Obstacles) -> bool {
         if self.kind != DragKind::Move {
             return false;
         }
         let slack = 0.5 / data.fps.max(1.0);
-        let taken = |track: &TimelineTrack, start: f64, end: f64| {
-            track
-                .clips
-                .iter()
-                .any(|c| !self.moves(c) && c.start < end - slack && start < c.start + c.duration - slack)
-        };
         let changes_track = self.lands_elsewhere().is_some();
         for (tracks, audio) in [(data.video, false), (data.audio, true)] {
-            for track in tracks {
+            for (index, track) in tracks.iter().enumerate() {
                 for c in track.clips.iter().filter(|c| self.moves(c)) {
                     let (start, end) = (c.start + self.delta, c.start + c.duration + self.delta);
                     let lands_on = if c.id != self.clip {
-                        (!(audio && changes_track)).then_some(track)
+                        (!(audio && changes_track)).then_some(index)
                     } else {
                         match self.over {
-                            Landing::Track(id) => tracks.iter().find(|t| t.id == id),
+                            Landing::Track(id) => tracks.iter().position(|t| t.id == id),
                             Landing::NewTrack => None,
                         }
                     };
-                    if lands_on.is_some_and(|track| taken(track, start, end)) {
+                    if lands_on.is_some_and(|index| room.taken(audio, index, start, end, slack)) {
                         return true;
                     }
                 }
@@ -684,6 +681,9 @@ pub struct TimelineView {
     needle_drag: Option<f64>,
     scrollbar_drag: Option<(f32, f64)>,
     clip_drag: Option<ClipDrag>,
+    /// The clips that stay while `clip_drag` lasts, gathered once for it:
+    /// what it snaps to and what can be in its way.
+    obstacles: Obstacles,
     /// A track volume being dragged: track and its value so far.
     fader_drag: Option<(u64, f32)>,
     /// Audio tracks whose clips show their level line. View state: the
@@ -779,6 +779,7 @@ impl Default for TimelineView {
             needle_drag: None,
             scrollbar_drag: None,
             clip_drag: None,
+            obstacles: Obstacles::default(),
             fader_drag: None,
             level_lines: Default::default(),
             level_drag: None,
@@ -819,6 +820,8 @@ impl Default for TimelineView {
 pub const HEADER_WIDTH: f32 = 140.0;
 const RULER: f32 = 26.0;
 const LABELS: f32 = 18.0;
+/// The size of a label's name on the labels row.
+const LABEL_SIZE: f32 = 10.5;
 const DIVIDER: f32 = 6.0;
 const SCROLLBAR: f32 = 14.0;
 pub const VIDEO_TRACK: f32 = 54.0;
@@ -1931,6 +1934,9 @@ impl TimelineView {
                                 self.x_of(left, clip.start - length / 2.0),
                                 self.x_of(left, clip.start + length / 2.0),
                             );
+                            if !transitions::in_view(x0, x1, clip_painter.clip_rect()) {
+                                continue;
+                            }
                             transitions::draw(
                                 &clip_painter,
                                 *row,
@@ -2121,8 +2127,15 @@ impl TimelineView {
             visible,
             |t| self.x_of(left, t),
         );
+        let labels_seen = label_painter.clip_rect().x_range();
         for marker in data.markers {
             let x = self.x_of(left, marker.at);
+            // Out of view: its mark and its name (never wider than a
+            // label's size per byte) would be clipped away whole.
+            let widest = marker.name.len() as f32 * LABEL_SIZE;
+            if x + 8.0 + widest < labels_seen.min || x - 5.0 > labels_seen.max {
+                continue;
+            }
             label_painter.add(Shape::convex_polygon(
                 vec![
                     pos2(x - 5.0, layout.labels.top() + cache_bar::HEIGHT + 1.0),
@@ -2136,7 +2149,7 @@ impl TimelineView {
                 pos2(x + 8.0, layout.labels.center().y),
                 Align2::LEFT_CENTER,
                 &marker.name,
-                FontId::proportional(10.5),
+                FontId::proportional(LABEL_SIZE),
                 theme.muted,
             );
         }
@@ -2531,9 +2544,9 @@ impl TimelineView {
         }
     }
 
-    /// The track's volume fader under its buttons: -60 dB at the left,
-    /// +12 dB at the right; double-click resets to 0. Only in a header with
-    /// room for it.
+    /// The track's volume fader under its buttons, on the one volume
+    /// scale ([`crate::volume`]: the bottom at the left, the top at the
+    /// right); double-click resets to 0. Only in a header with room for it.
     fn fader(
         &mut self,
         ui: &mut Ui,
@@ -2554,24 +2567,18 @@ impl TimelineView {
             Some((t, db)) if t == track.id => db,
             _ => track.gain_db,
         };
-        let to_x = |db: f32| bar.left() + (db + 60.0) / 72.0 * bar.width();
+        let to_x = |db: f32| fader_x(bar, db);
         let r = ui
             .interact(
                 bar.expand2(vec2(4.0, 5.0)),
                 id.with("volume"),
                 Sense::click_and_drag(),
             )
-            .on_hover_text(format!("Volume {db:+.1} dB (double-click: 0 dB)"));
+            .on_hover_text(fader_tip(db));
         if r.dragged()
             && let Some(p) = r.interact_pointer_pos()
         {
-            let v = (((p.x - bar.left()) / bar.width()) * 72.0 - 60.0).clamp(-60.0, 12.0);
-            let v = if v.abs() < 1.0 {
-                0.0
-            } else {
-                (v * 2.0).round() / 2.0
-            };
-            self.fader_drag = Some((track.id, v));
+            self.fader_drag = Some((track.id, fader_db_at(bar, p.x)));
         }
         if r.drag_stopped()
             && let Some((_, v)) = self.fader_drag.take()
@@ -3496,8 +3503,9 @@ impl TimelineView {
                 && let Some(drag) = self.clip_drag
             {
                 let raw = t - drag.grabbed_at;
+                self.obstacles.refresh(data, |c| drag.moves(c));
                 let delta = if self.snapping && !ui.input(|i| i.modifiers.alt) {
-                    self.snapped(raw, &drag, data, left)
+                    self.snapped(raw, &drag, data)
                 } else {
                     raw
                 };
@@ -3538,7 +3546,7 @@ impl TimelineView {
                     _ => Landing::Track(drag.track),
                 };
                 let mut drag = ClipDrag { delta, over, ..drag };
-                drag.refused = drag.is_in_the_way(data);
+                drag.refused = drag.is_in_the_way(data, &self.obstacles);
                 self.clip_drag = Some(drag);
                 ui.ctx().set_cursor_icon(match drag.kind {
                     DragKind::Move if drag.refused => CursorIcon::NotAllowed,
@@ -3623,6 +3631,10 @@ impl TimelineView {
                     clip: c.id,
                     gain_db: 0.0,
                 });
+            }
+            if r.drag_stopped() {
+                // Gathered again for the next drag.
+                self.obstacles = Obstacles::default();
             }
             if r.drag_stopped()
                 && let Some(drag) = self.clip_drag.take()
@@ -3874,30 +3886,35 @@ impl TimelineView {
     /// `raw` (seconds) adjusted so the dragged edge lands on the nearest snap
     /// point within a few pixels: other clips' edges, the playhead, the edit
     /// needle, labels and the start.
-    fn snapped(&self, raw: f64, drag: &ClipDrag, data: &TimelineData, _left: f32) -> f64 {
+    /// The clips' edges are looked up in `self.obstacles`, gathered for
+    /// `drag` beforehand. Of two points as near, the dragged start wins
+    /// over its end, then the start of the timeline, the playhead, the
+    /// needle, labels and clip edges in that order (as listed).
+    fn snapped(&self, raw: f64, drag: &ClipDrag, data: &TimelineData) -> f64 {
         let reach = 8.0 / f64::from(self.zoom);
-        let mut points = vec![0.0, data.playhead];
-        points.extend(data.needle);
-        points.extend(data.markers.iter().map(|m| m.at));
-        for track in data.video.iter().chain(data.audio) {
-            for c in track.clips.iter().filter(|c| !drag.moves(c)) {
-                points.push(c.start);
-                points.push(c.start + c.duration);
+        let edges: [Option<f64>; 2] = match drag.kind {
+            DragKind::Move | DragKind::Slide => [Some(drag.start + raw), Some(drag.end + raw)],
+            DragKind::Trim(ClipEdge::Start) | DragKind::RippleTrim(ClipEdge::Start) => {
+                [Some(drag.start + raw), None]
+            }
+            DragKind::Trim(ClipEdge::End) | DragKind::RippleTrim(ClipEdge::End) | DragKind::Roll => {
+                [Some(drag.end + raw), None]
+            }
+            DragKind::Slip => [None, None],
+        };
+        let mut best: Option<f64> = None;
+        for e in edges.into_iter().flatten() {
+            let points = [0.0, data.playhead]
+                .into_iter()
+                .chain(data.needle)
+                .chain(data.markers.iter().map(|m| m.at));
+            let clip_edge = self.obstacles.nearest_edge(e, reach);
+            for d in points.map(|p| p - e).chain(clip_edge) {
+                if d.abs() <= reach && best.is_none_or(|b| d.abs() < b.abs()) {
+                    best = Some(d);
+                }
             }
         }
-        let edges: Vec<f64> = match drag.kind {
-            DragKind::Move | DragKind::Slide => vec![drag.start + raw, drag.end + raw],
-            DragKind::Trim(ClipEdge::Start) | DragKind::RippleTrim(ClipEdge::Start) => vec![drag.start + raw],
-            DragKind::Trim(ClipEdge::End) | DragKind::RippleTrim(ClipEdge::End) | DragKind::Roll => {
-                vec![drag.end + raw]
-            }
-            DragKind::Slip => vec![],
-        };
-        let best = edges
-            .iter()
-            .flat_map(|e| points.iter().map(move |p| p - e))
-            .filter(|d| d.abs() <= reach)
-            .min_by(|a, b| a.abs().total_cmp(&b.abs()));
         raw + best.unwrap_or(0.0)
     }
 }
@@ -4447,20 +4464,6 @@ pub fn minor_step(step: f64, fps: f64) -> f64 {
     (step / 5.0).max(1.0 / fps.max(1.0))
 }
 
-/// `HH:MM:SS:FF` for `seconds` at `fps` (whole frames per second for the frame part).
-pub fn timecode(seconds: f64, fps: f64) -> String {
-    let nominal = fps.round().max(1.0) as i64;
-    let frames = (seconds * fps).round() as i64;
-    let (total_secs, ff) = (frames / nominal, frames % nominal);
-    format!(
-        "{:02}:{:02}:{:02}:{:02}",
-        total_secs / 3600,
-        total_secs / 60 % 60,
-        total_secs % 60,
-        ff
-    )
-}
-
 fn draw_ruler(p: &egui::Painter, theme: &Theme, view: &TimelineView, layout: &Layout, fps: f64) {
     let left = layout.time_left();
     let step = ruler_step(view.zoom, fps, 90.0);
@@ -4481,7 +4484,7 @@ fn draw_ruler(p: &egui::Painter, theme: &Theme, view: &TimelineView, layout: &La
             p.text(
                 pos2(x + 4.0, layout.ruler.top() + 4.0),
                 Align2::LEFT_TOP,
-                timecode(t, fps),
+                crate::time_text::timecode(t, fps),
                 crate::fonts::mono(10.5),
                 theme.muted,
             );
@@ -4489,6 +4492,26 @@ fn draw_ruler(p: &egui::Painter, theme: &Theme, view: &TimelineView, layout: &La
         t = start + minor * f64::from(i + 1);
         i += 1;
     }
+}
+
+/// x on a track header's fader `bar` for `db` (the fader law of
+/// [`crate::volume`], bottom at the left).
+pub(crate) fn fader_x(bar: Rect, db: f32) -> f32 {
+    bar.left() + crate::volume::share_of(db) * bar.width()
+}
+
+/// Where a track header's fader `bar` dragged to `x` lands.
+pub(crate) fn fader_db_at(bar: Rect, x: f32) -> f32 {
+    crate::volume::settled(crate::volume::db_at_share(
+        (x - bar.left()) / bar.width().max(1.0),
+    ))
+}
+
+/// What a track header's fader says when pointed at: "Volume −6.0 dB
+/// (double-click: 0 dB)"; a track at the bottom of the range is heard.
+pub(crate) fn fader_tip(db: f32) -> String {
+    let words = crate::volume::words(db, crate::volume::Bottom::Heard);
+    format!("Volume {words} (double-click: 0 dB)")
 }
 
 #[cfg(test)]
@@ -5010,13 +5033,6 @@ mod tests {
             "not 0.4 frames"
         );
         assert_eq!(minor_step(10.0, 60.0), 2.0);
-        assert_eq!(timecode(0.0, 60.0), "00:00:00:00");
-        assert_eq!(timecode(3661.5, 60.0), "01:01:01:30");
-        assert_eq!(
-            timecode(10.0, 60_000.0 / 1001.0),
-            "00:00:09:59",
-            "59.94: frame counts run slightly behind the clock"
-        );
     }
 
     fn click(rig: &mut Rig, at: Pos2, button: egui::PointerButton) -> Vec<TimelineEvent> {
@@ -6852,5 +6868,189 @@ mod tests {
         rig.modifiers = egui::Modifiers::NONE;
         let events = drag_along(&mut rig, pos2(700.0, 190.0));
         assert!(seeks(&events).is_empty(), "{events:?}");
+    }
+
+    /// Where a drag snaps to, worked out as it was before the drag gathered
+    /// what stays once: a pass over every clip.
+    fn snapped_by_every_clip(view: &TimelineView, raw: f64, drag: &ClipDrag, data: &TimelineData) -> f64 {
+        let reach = 8.0 / f64::from(view.zoom);
+        let mut points = vec![0.0, data.playhead];
+        points.extend(data.needle);
+        points.extend(data.markers.iter().map(|m| m.at));
+        for track in data.video.iter().chain(data.audio) {
+            for c in track.clips.iter().filter(|c| !drag.moves(c)) {
+                points.push(c.start);
+                points.push(c.start + c.duration);
+            }
+        }
+        let edges: Vec<f64> = match drag.kind {
+            DragKind::Move | DragKind::Slide => vec![drag.start + raw, drag.end + raw],
+            DragKind::Trim(ClipEdge::Start) | DragKind::RippleTrim(ClipEdge::Start) => vec![drag.start + raw],
+            DragKind::Trim(ClipEdge::End) | DragKind::RippleTrim(ClipEdge::End) | DragKind::Roll => {
+                vec![drag.end + raw]
+            }
+            DragKind::Slip => vec![],
+        };
+        let best = edges
+            .iter()
+            .flat_map(|e| points.iter().map(move |p| p - e))
+            .filter(|d| d.abs() <= reach)
+            .min_by(|a, b| a.abs().total_cmp(&b.abs()));
+        raw + best.unwrap_or(0.0)
+    }
+
+    /// Whether a clip is in the way of a drag, worked out as it was before:
+    /// every moving clip against every clip of the track it lands on.
+    fn in_the_way_by_every_clip(drag: &ClipDrag, data: &TimelineData) -> bool {
+        if drag.kind != DragKind::Move {
+            return false;
+        }
+        let slack = 0.5 / data.fps.max(1.0);
+        let taken = |track: &TimelineTrack, start: f64, end: f64| {
+            track
+                .clips
+                .iter()
+                .any(|c| !drag.moves(c) && c.start < end - slack && start < c.start + c.duration - slack)
+        };
+        let changes_track = drag.lands_elsewhere().is_some();
+        for (tracks, audio) in [(data.video, false), (data.audio, true)] {
+            for track in tracks {
+                for c in track.clips.iter().filter(|c| drag.moves(c)) {
+                    let (start, end) = (c.start + drag.delta, c.start + c.duration + drag.delta);
+                    let lands_on = if c.id != drag.clip {
+                        (!(audio && changes_track)).then_some(track)
+                    } else {
+                        match drag.over {
+                            Landing::Track(id) => tracks.iter().find(|t| t.id == id),
+                            Landing::NewTrack => None,
+                        }
+                    };
+                    if lands_on.is_some_and(|track| taken(track, start, end)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    #[test]
+    fn a_drag_snaps_and_is_refused_as_when_every_clip_was_looked_at() {
+        let mut seed = 3u64;
+        let mut next = move |below: u64| {
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (seed >> 33) % below
+        };
+        // Quarter seconds everywhere, so edges, labels and the playhead
+        // often lie exactly as far from a dragged edge.
+        let mut quarter = |below: u64| next(below) as f64 / 4.0;
+        let kinds = [
+            DragKind::Move,
+            DragKind::Slide,
+            DragKind::Slip,
+            DragKind::Roll,
+            DragKind::Trim(ClipEdge::Start),
+            DragKind::Trim(ClipEdge::End),
+            DragKind::RippleTrim(ClipEdge::Start),
+            DragKind::RippleTrim(ClipEdge::End),
+        ];
+        let mut refusals = 0;
+        for _ in 0..400 {
+            let mut id = 0;
+            let mut tracks =
+                |ids: std::ops::Range<u64>, quarter: &mut dyn FnMut(u64) -> f64| -> Vec<TimelineTrack> {
+                    ids.map(|t| {
+                        let clips = (0..quarter(40) as u64)
+                            .map(|_| {
+                                id += 1;
+                                let mut c = clip(id, quarter(160), 0.25 + quarter(24));
+                                c.selected = quarter(16) < 1.0;
+                                c.link = (quarter(16) < 1.0).then_some(id % 3);
+                                c
+                            })
+                            .collect();
+                        track(t, clips)
+                    })
+                    .collect()
+                };
+            let video = tracks(0..3, &mut quarter);
+            let audio = tracks(10..12, &mut quarter);
+            let markers: Vec<TimelineMarker> = (0..quarter(16) as u64)
+                .map(|i| TimelineMarker {
+                    id: i,
+                    at: quarter(160),
+                    name: String::new(),
+                    colour: Color32::WHITE,
+                })
+                .collect();
+            let data = TimelineData {
+                video: &video,
+                audio: &audio,
+                length: 40.0,
+                fps: [24.0, 60.0, 2.0][quarter(12) as usize],
+                playhead: quarter(160),
+                needle: (quarter(8) < 1.0).then_some(quarter(160)),
+                region: None,
+                markers: &markers,
+                highlights: &[],
+                spans: &[],
+                follow: false,
+                cache: CacheBar {
+                    ranges: &[],
+                    about: "",
+                },
+                keyframe_eases: &[],
+                roles: &[],
+            };
+            let all: Vec<(&TimelineTrack, &TimelineClip)> = video
+                .iter()
+                .chain(&audio)
+                .flat_map(|t| t.clips.iter().map(move |c| (t, c)))
+                .collect();
+            let Some(&(on, dragged)) = all.get(quarter(4 * all.len().max(1) as u64) as usize) else {
+                continue;
+            };
+            let over = match quarter(20) as u64 {
+                0 => Landing::NewTrack,
+                1 => Landing::Track(10),
+                2 => Landing::Track(1),
+                _ => Landing::Track(on.id),
+            };
+            let mut drag = ClipDrag {
+                clip: dragged.id,
+                link: dragged.link,
+                track: on.id,
+                over,
+                refused: false,
+                kind: kinds[quarter(32) as usize],
+                grabbed_at: 0.0,
+                start: dragged.start,
+                end: dragged.start + dragged.duration,
+                delta: quarter(40) - 5.0,
+                together: quarter(8) < 1.0,
+            };
+            let mut view = TimelineView {
+                zoom: [8.0, 30.0, 60.0, 240.0][quarter(16) as usize],
+                ..TimelineView::default()
+            };
+            view.obstacles.refresh(&data, |c| drag.moves(c));
+            for _ in 0..8 {
+                let raw = quarter(80) - 10.0;
+                assert_eq!(
+                    view.snapped(raw, &drag, &data),
+                    snapped_by_every_clip(&view, raw, &drag, &data),
+                    "{drag:?}, raw {raw}"
+                );
+            }
+            for _ in 0..8 {
+                drag.delta = quarter(80) - 10.0;
+                let refused = in_the_way_by_every_clip(&drag, &data);
+                assert_eq!(drag.is_in_the_way(&data, &view.obstacles), refused, "{drag:?}");
+                refusals += usize::from(refused);
+            }
+        }
+        assert!(refusals > 100, "the cases try refusals too: {refusals}");
     }
 }

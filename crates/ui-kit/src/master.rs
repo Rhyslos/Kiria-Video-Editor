@@ -13,12 +13,13 @@
 //! them again, and they stay readable after playback stops.
 
 use crate::Theme;
+use crate::volume::{self, Bottom};
 use egui::{Align2, CursorIcon, FontId, Rect, Sense, Stroke, Ui, pos2, vec2};
 use serde::{Deserialize, Serialize};
 
-/// The scale shared by the meter and the fader, in dB.
-pub(crate) const TOP_DB: f32 = 12.0;
-pub(crate) const BOTTOM_DB: f32 = -60.0;
+/// The scale shared by the meter and the fader, in dB: the one volume
+/// scale ([`crate::volume`]).
+pub(crate) use crate::volume::{BOTTOM_DB, TOP_DB};
 /// How far drawn levels fall each frame (about 20 dB a second at 60
 /// frames a second), so they can be read.
 const FALL_DB: f32 = 0.35;
@@ -194,15 +195,21 @@ impl Default for MasterColumn {
     }
 }
 
-/// y on the scale for `db` within `bar`.
+/// y on the scale for `db` within `bar` (the fader law of
+/// [`crate::volume`], bottom to top).
 pub(crate) fn y_of(bar: Rect, db: f32) -> f32 {
-    let t = ((db - BOTTOM_DB) / (TOP_DB - BOTTOM_DB)).clamp(0.0, 1.0);
-    bar.bottom() - t * bar.height()
+    bar.bottom() - volume::share_of(db) * bar.height()
 }
 
+/// The volume at `y` within `bar`: the inverse of [`y_of`].
 pub(crate) fn db_at(bar: Rect, y: f32) -> f32 {
-    let t = ((bar.bottom() - y) / bar.height().max(1.0)).clamp(0.0, 1.0);
-    BOTTOM_DB + t * (TOP_DB - BOTTOM_DB)
+    volume::db_at_share((bar.bottom() - y) / bar.height().max(1.0))
+}
+
+/// The mix's volume as the column's Vol row writes it: "−6.0", "0.0",
+/// "+3.0"; the bottom of the range is heard, so "−60.0".
+pub(crate) fn volume_text(db: f32) -> String {
+    volume::number(db, Bottom::Heard)
 }
 
 /// Loudness or a level as text: "-14.2", or "–" for silence.
@@ -378,7 +385,7 @@ impl MasterColumn {
         } else if r.dragged()
             && let Some(p) = r.interact_pointer_pos()
         {
-            self.drag = Some((db_at(bar, p.y) * 2.0).round() / 2.0);
+            self.drag = Some(volume::settled(db_at(bar, p.y)));
         } else if r.drag_stopped() {
             response.gain_db = self.drag.take();
         }
@@ -395,7 +402,7 @@ impl MasterColumn {
             false => theme.text_secondary,
         };
         let rows = [
-            ("Vol", format!("{shown_gain:+.1}"), theme.text),
+            ("Vol", volume_text(shown_gain), theme.text),
             ("M", now(|l| l.momentary), theme.text_secondary),
             ("S", now(|l| l.short_term), theme.text_secondary),
             ("I", db_text(integrated), integrated_colour),

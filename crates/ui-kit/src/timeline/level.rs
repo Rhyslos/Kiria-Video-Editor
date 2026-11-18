@@ -14,12 +14,14 @@
 //! Which tracks show the line is how the timeline is looked at (view state
 //! the page keeps), never an edit.
 
+use crate::volume::{self, Bottom};
 use egui::{Color32, FontId, Pos2, Rect, Stroke, pos2, vec2};
 
-/// The top of the volume range, in decibels.
-pub const LOUDEST_DB: f32 = 12.0;
-/// The bottom of the volume range, in decibels: silence ("Off").
-pub const SILENT_DB: f32 = -60.0;
+/// The top of the volume range, in decibels ([`crate::volume::TOP_DB`]).
+pub const LOUDEST_DB: f32 = volume::TOP_DB;
+/// The bottom of the volume range, in decibels
+/// ([`crate::volume::BOTTOM_DB`]): for a clip, silence ("Off").
+pub const SILENT_DB: f32 = volume::BOTTOM_DB;
 /// The line can be grabbed this many points above or below it.
 pub const GRAB: f32 = 4.0;
 /// With Alt held a drag moves the volume this much slower.
@@ -78,29 +80,17 @@ pub fn gain_of_db(db: f32) -> f32 {
 }
 
 /// The value a drag stops on at `height`: tenths of a decibel, 0 dB
-/// within half a decibel (as easy to find as the fader's), and the very
-/// bottom silent.
+/// within half a decibel, and the very bottom silent
+/// ([`crate::volume::settled_fine`]).
 pub fn settled_db(height: f32) -> f32 {
-    let db = db_at(height);
-    if db <= SILENT_DB + 0.05 {
-        SILENT_DB
-    } else if db.abs() < 0.5 {
-        0.0
-    } else {
-        (db * 10.0).round() / 10.0
-    }
+    volume::settled_fine(db_at(height))
 }
 
-/// A volume as the interface writes it: "Off", "0.0 dB", "+3.0 dB", "−6.5 dB".
+/// A clip's volume as the interface writes it ([`crate::volume::words`]):
+/// "Off" (the bottom of a clip's range is silence), "0.0 dB", "+3.0 dB",
+/// "−6.5 dB".
 pub fn words(db: f64) -> String {
-    if db <= f64::from(SILENT_DB) {
-        "Off".to_owned()
-    } else if db.abs() < 0.05 {
-        "0.0 dB".to_owned()
-    } else {
-        let sign = if db < 0.0 { "−" } else { "+" };
-        format!("{sign}{:.1} dB", db.abs())
-    }
+    volume::words(db as f32, Bottom::Silent)
 }
 
 /// The part of a clip drawn in `clip` that the line moves in: all of it

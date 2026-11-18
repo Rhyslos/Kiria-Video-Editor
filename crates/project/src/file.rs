@@ -304,8 +304,16 @@ struct Header {
     format_version: u32,
     #[serde(default)]
     summary: Option<Summary>,
-    #[serde(default)]
-    journal_seq: u64,
+    /// `None` when the text read has no such field: a file from before
+    /// format 2, or (in a head cut off at the project) one that keeps it
+    /// after the project.
+    #[serde(default, deserialize_with = "present")]
+    journal_seq: Option<u64>,
+}
+
+/// A number written plainly (not as `Some(…)`), as a field that is there.
+fn present<'de, D: serde::Deserializer<'de>>(number: D) -> Result<Option<u64>, D::Error> {
+    u64::deserialize(number).map(Some)
 }
 
 /// Saves `project` to `path`, replacing any existing file only once the new one is complete.
@@ -357,8 +365,11 @@ pub fn load_with_journal_seq(path: &Path) -> diag::Result<(Project, u64)> {
             .why(format!("{} could not be read.", path.display()))
             .fix("Check that the file still exists and that you can open it.")
     })?;
-    let journal_seq = parse_header(&text)?.journal_seq;
-    Ok((from_str(&text)?, journal_seq))
+    // The header is read once, from the text before the project, and the
+    // project once.
+    let header = parse_header(&text)?;
+    let project = project_from(&text, header.format_version, FORMAT_VERSION, MIGRATIONS)?;
+    Ok((project, header.journal_seq.unwrap_or(0)))
 }
 
 /// Makes the project's relative media paths full ones, from `folder` (the
@@ -410,7 +421,7 @@ pub struct FileInfo {
 /// Reads only the start of the file (format version and summary), for project
 /// lists. The project itself is never read, so this stays cheap for big projects.
 pub fn read_info(path: &Path) -> diag::Result<FileInfo> {
-    let head = read_head(path)?;
+    let (head, _) = read_head(path)?;
     let header: Header = ron::from_str(&head).or_explain(damaged)?;
     let mut summary = header.summary;
     if let Some(summary) = &mut summary {
@@ -433,9 +444,10 @@ pub fn read_summary(path: &Path) -> diag::Result<Option<Summary>> {
 }
 
 /// The text before the `project:` field, closed off so it parses as a file on
-/// its own. Files written by this app always put the project last; for any
-/// other layout the whole text is returned.
-fn read_head(path: &Path) -> diag::Result<String> {
+/// its own, and whether it was cut off there. Files written by this app
+/// always put the project last; for any other layout the whole text is
+/// returned (not cut off).
+fn read_head(path: &Path) -> diag::Result<(String, bool)> {
     let explain = || {
         AppError::new("The project can't be read")
             .why(format!("{} could not be read.", path.display()))
@@ -447,25 +459,52 @@ fn read_head(path: &Path) -> diag::Result<String> {
     loop {
         line.clear();
         if reader.read_line(&mut line).or_explain(explain)? == 0 {
-            return Ok(head);
+            return Ok((head, false));
         }
         if line.starts_with(PROJECT_FIELD) {
             head.push(')');
-            return Ok(head);
+            return Ok((head, true));
         }
         head.push_str(&line);
     }
 }
 
+/// [`read_head`] for text already in memory: `None` when there is no
+/// project field at the start of a line.
+fn head_of(text: &str) -> Option<String> {
+    let at = if text.starts_with(PROJECT_FIELD) {
+        0
+    } else {
+        text.find(&format!("\n{PROJECT_FIELD}"))? + 1
+    };
+    Some(format!("{})", &text[..at]))
+}
+
+/// The header read from a head cut off at the project, when it has every
+/// field the whole text would give (else the whole text must be read).
+fn header_in_head(head: &str) -> Option<Header> {
+    let header: Header = ron::from_str(head).ok()?;
+    header.journal_seq.is_some().then_some(header)
+}
+
 /// How the project field starts in files this app writes (two-space indent).
 const PROJECT_FIELD: &str = "  project: ";
 
-/// The last autosave-journal entry included in the file, read from the header only.
+/// The last autosave-journal entry included in the file, read from the
+/// header only (the project is never read, unless the file keeps the
+/// number after it).
 pub fn read_journal_seq(path: &Path) -> diag::Result<u64> {
+    let (head, cut) = read_head(path)?;
+    if !cut {
+        return Ok(parse_whole_header(&head)?.journal_seq.unwrap_or(0));
+    }
+    if let Some(header) = header_in_head(&head) {
+        return Ok(header.journal_seq.unwrap_or(0));
+    }
     let text = fs::read_to_string(path).or_explain(|| {
         AppError::new("The project can't be read").why(format!("{} could not be read.", path.display()))
     })?;
-    Ok(parse_header(&text)?.journal_seq)
+    Ok(parse_whole_header(&text)?.journal_seq.unwrap_or(0))
 }
 
 /// Reads a project saved by a newer version, for looking at only: fields this
@@ -497,12 +536,16 @@ pub fn backup_path(path: &Path, old_version: u32) -> PathBuf {
     PathBuf::from(name)
 }
 
-/// Copies a project file before an upgrade changes it, unless a copy for that
-/// format is already there (the first one is the true original).
+/// Copies a project file before an upgrade changes it, whole or not at all
+/// (`disk::copy_atomic`). It is called while the file is still in format
+/// `old_version` (before anything is written to it), so a copy already
+/// there that reads as a format `old_version` project is the true original
+/// and is kept; one that doesn't (cut short by a crash or a full disk when
+/// an earlier version copied it in place) is made again from the file.
 pub fn back_up_before_upgrade(path: &Path, old_version: u32) -> diag::Result<PathBuf> {
     let backup = backup_path(path, old_version);
-    if !backup.exists() {
-        fs::copy(path, &backup).or_explain(|| {
+    if !is_whole_backup(&backup, old_version) {
+        crate::disk::copy_atomic(path, &backup).or_explain(|| {
             AppError::new("The project can't be upgraded safely")
                 .why(format!(
                     "A copy of the original could not be made at {}.",
@@ -514,6 +557,12 @@ pub fn back_up_before_upgrade(path: &Path, old_version: u32) -> diag::Result<Pat
     Ok(backup)
 }
 
+/// Whether `backup` is there and reads whole as a format `old_version` project.
+fn is_whole_backup(backup: &Path, old_version: u32) -> bool {
+    read_info(backup).is_ok_and(|info| info.format_version == old_version)
+        && fs::read_to_string(backup).is_ok_and(|text| from_str(&text).is_ok())
+}
+
 /// Parses project file text, migrating it from an older format if needed.
 pub fn from_str(text: &str) -> diag::Result<Project> {
     from_str_with(text, FORMAT_VERSION, MIGRATIONS)
@@ -521,7 +570,11 @@ pub fn from_str(text: &str) -> diag::Result<Project> {
 
 /// Like [`from_str`] with an explicit target version and migration list (used by tests).
 pub fn from_str_with(text: &str, current: u32, migrations: &[Migration]) -> diag::Result<Project> {
-    let version = parse_header(text)?.format_version;
+    project_from(text, parse_header(text)?.format_version, current, migrations)
+}
+
+/// The project in `text`, whose header says it is in format `version`.
+fn project_from(text: &str, version: u32, current: u32, migrations: &[Migration]) -> diag::Result<Project> {
     if version > current {
         return Err(AppError::new("This project was saved by a newer version")
             .why(format!(
@@ -559,7 +612,19 @@ pub fn migrate(text: &str, from: u32, to: u32, migrations: &[Migration]) -> diag
     Ok(text)
 }
 
+/// The header fields of a whole file's text, read from the text before the
+/// project (see [`read_head`]) so a big project is not parsed for them. A
+/// file laid out otherwise is read whole, as are files the head alone
+/// doesn't answer for, so it gives what reading all of it gives.
 fn parse_header(text: &str) -> diag::Result<Header> {
+    if let Some(header) = head_of(text).as_deref().and_then(header_in_head) {
+        return Ok(header);
+    }
+    parse_whole_header(text)
+}
+
+/// The header fields, reading all of `text`.
+fn parse_whole_header(text: &str) -> diag::Result<Header> {
     ron::from_str(text).or_explain(damaged)
 }
 
@@ -665,6 +730,36 @@ mod tests {
     }
 
     #[test]
+    fn the_journal_number_is_read_without_reading_the_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("test.project");
+        save_with_journal_seq(&sample_project(), &path, 9).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        let at = text.find(PROJECT_FIELD).unwrap();
+        fs::write(&path, format!("{}{PROJECT_FIELD}%%% not read %%%\n", &text[..at])).unwrap();
+        assert_eq!(read_journal_seq(&path).unwrap(), 9);
+        assert_eq!(parse_header(&text).unwrap().format_version, FORMAT_VERSION);
+    }
+
+    #[test]
+    fn header_fields_kept_after_the_project_are_still_found() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("test.project");
+        let project = sample_project();
+        let body = ron::ser::to_string(&project).unwrap();
+        let text =
+            format!("(\n  format_version: {FORMAT_VERSION},\n{PROJECT_FIELD}{body},\n  journal_seq: 4,\n)\n");
+        fs::write(&path, &text).unwrap();
+        assert_eq!(read_journal_seq(&path).unwrap(), 4);
+        assert_eq!(load_with_journal_seq(&path).unwrap(), (project.clone(), 4));
+        let first =
+            format!("(\n{PROJECT_FIELD}{body},\n  format_version: {FORMAT_VERSION},\n  journal_seq: 5,\n)\n");
+        fs::write(&path, &first).unwrap();
+        assert_eq!(read_journal_seq(&path).unwrap(), 5);
+        assert_eq!(load_with_journal_seq(&path).unwrap(), (project, 5));
+    }
+
+    #[test]
     fn the_version_number_is_rewritten_in_place() {
         let text = "(\n  format_version: 1,\n  summary: None,\n)";
         assert_eq!(
@@ -690,20 +785,66 @@ mod tests {
         assert!(read_info(&path).unwrap_err().what().contains("damaged"));
     }
 
+    /// `sample_project()` as a file of format `version`.
+    fn text_of_format(version: u32) -> String {
+        to_string(&sample_project()).unwrap().replacen(
+            &format!("format_version: {FORMAT_VERSION}"),
+            &format!("format_version: {version}"),
+            1,
+        )
+    }
+
     #[test]
-    fn a_backup_is_made_once_per_old_format() {
+    fn a_backup_is_made_whole() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("p.project");
-        fs::write(&path, "original").unwrap();
-        let backup = back_up_before_upgrade(&path, 1).unwrap();
-        assert_eq!(backup, tmp.path().join("p.project.backup-v1"));
-        fs::write(&path, "upgraded").unwrap();
-        back_up_before_upgrade(&path, 1).unwrap();
+        let original = text_of_format(FORMAT_VERSION - 1);
+        fs::write(&path, &original).unwrap();
+        let backup = back_up_before_upgrade(&path, FORMAT_VERSION - 1).unwrap();
         assert_eq!(
-            fs::read_to_string(&backup).unwrap(),
-            "original",
-            "the first copy is kept"
+            backup,
+            tmp.path()
+                .join(format!("p.project.backup-v{}", FORMAT_VERSION - 1))
         );
+        assert_eq!(fs::read_to_string(&backup).unwrap(), original);
+        let names: Vec<_> = fs::read_dir(tmp.path()).unwrap().collect();
+        assert_eq!(names.len(), 2, "no temporary file is left");
+    }
+
+    #[test]
+    fn a_good_backup_is_kept() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("p.project");
+        let version = FORMAT_VERSION - 1;
+        let original = text_of_format(version);
+        fs::write(&path, &original).unwrap();
+        let backup = back_up_before_upgrade(&path, version).unwrap();
+        // The file changes but is still of that format (opened again by an
+        // older version, say): the first copy is the true original.
+        fs::write(&path, original.replace("Round trip", "Changed later")).unwrap();
+        back_up_before_upgrade(&path, version).unwrap();
+        assert_eq!(fs::read_to_string(&backup).unwrap(), original);
+    }
+
+    #[test]
+    fn a_backup_cut_short_is_made_again() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("p.project");
+        let version = FORMAT_VERSION - 1;
+        let original = text_of_format(version);
+        fs::write(&path, &original).unwrap();
+        let backup = backup_path(&path, version);
+        // A copy cut short by a crash or a full disk: the header is there,
+        // the project is not whole.
+        fs::write(&backup, &original[..original.len() - 20]).unwrap();
+        back_up_before_upgrade(&path, version).unwrap();
+        assert_eq!(fs::read_to_string(&backup).unwrap(), original);
+        // An empty one, and one of another format, too.
+        for wrong in [String::new(), text_of_format(version - 1)] {
+            fs::write(&backup, wrong).unwrap();
+            back_up_before_upgrade(&path, version).unwrap();
+            assert_eq!(fs::read_to_string(&backup).unwrap(), original);
+        }
     }
 
     #[test]

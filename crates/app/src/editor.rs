@@ -1937,10 +1937,7 @@ impl Editor {
         if let Some(handle) = &self.thumbnail
             && let Some(result) = handle.try_result()
         {
-            if let Err(err) = result {
-                tracing::info!("no project picture: {}", err.report());
-                self.thumbnail_shows = None;
-            }
+            thumbnail_finished(result, &mut self.thumbnail_shows);
             self.thumbnail = None;
         }
         let Some(document) = &self.document else { return };
@@ -1962,7 +1959,7 @@ impl Editor {
         // When only written if missing, what the one there shows is unknown.
         self.thumbnail_shows = (!only_if_missing).then(|| shows.clone());
         let out = project::thumbnail_path(document.path());
-        // Written even when closing comes first: closing counts on it.
+        // Written even when closing comes first: closing waits for it.
         self.thumbnail = Some(self.jobs.submit_write(
             PoolKind::Analysis,
             Priority::Background,
@@ -4048,7 +4045,19 @@ impl eframe::App for Editor {
                 Err(err) => tracing::error!("saving on exit failed: {}", err.report()),
             }
         }
-        if self.thumbnail_due == Thumbnail::Now
+        // A picture still being written is waited for (briefly) and what it
+        // shows recorded, so the picture is never written twice at once and
+        // not again when it shows the same.
+        let free = thumbnail_settled(
+            self.thumbnail.take(),
+            THUMBNAIL_ENDS_WITHIN,
+            &mut self.thumbnail_shows,
+        );
+        if !free {
+            tracing::warn!("the project picture was still being written when the window closed");
+        }
+        if free
+            && self.thumbnail_due == Thumbnail::Now
             && let Some(document) = &self.document
         {
             // One small frame on the way out, so the launcher shows the
@@ -4068,6 +4077,37 @@ impl eframe::App for Editor {
 /// How long closing the app waits for the sound to let go of the sound
 /// card and its files.
 const AUDIO_ENDS_WITHIN: Duration = Duration::from_secs(2);
+
+/// How long closing the app waits for the launcher's picture being
+/// written (one small frame).
+const THUMBNAIL_ENDS_WITHIN: Duration = Duration::from_secs(5);
+
+/// Records what a finished job writing the launcher's picture means for
+/// `shows`, what the picture is known to show: after a failure, nothing.
+fn thumbnail_finished(result: diag::Result<bool>, shows: &mut Option<engine::thumbnail::Shows>) {
+    if let Err(err) = result {
+        tracing::info!("no project picture: {}", err.report());
+        *shows = None;
+    }
+}
+
+/// Waits at most `within` for `job`, the launcher's picture being written,
+/// and records its outcome (see [`thumbnail_finished`]). Whether nothing is
+/// writing the picture any more, so it may be written now.
+fn thumbnail_settled(
+    job: Option<JobHandle<bool>>,
+    within: Duration,
+    shows: &mut Option<engine::thumbnail::Shows>,
+) -> bool {
+    let Some(job) = job else { return true };
+    match job.wait_within(within) {
+        Some(result) => {
+            thumbnail_finished(result, shows);
+            true
+        }
+        None => false,
+    }
+}
 
 /// A full save running on a worker.
 struct PendingSave {
@@ -4266,6 +4306,68 @@ mod tests {
         assert_eq!(cut_beside(seq, at(9), true), None, "past the last");
         assert_eq!(cut_beside(seq, at(5), false), Some(at(2)));
         assert_eq!(cut_beside(seq, at(1), false), Some(Time::ZERO));
+    }
+
+    /// Closing waits for the launcher's picture being written before it
+    /// writes one itself, and learns what that one shows.
+    #[test]
+    fn closing_waits_for_the_picture_being_written() {
+        use jobs::{BackgroundPolicy, JobSystem, PoolKind, Priority, Resolved};
+        let jobs = JobSystem::new(Resolved {
+            worker_threads: 2,
+            ram_cache_mb: 64,
+            disk_cache_gb: 1,
+            background: BackgroundPolicy::Always,
+        });
+        let shown = engine::thumbnail::Shows {
+            path: "clip.mkv".into(),
+            stream: 0,
+            rotation: 0,
+            at: Time::ZERO,
+        };
+        let gated = |result: diag::Result<bool>| {
+            let (go, gate) = std::sync::mpsc::channel::<()>();
+            let job = jobs.submit_write(PoolKind::Analysis, Priority::Background, "picture", move |_| {
+                let _ = gate.recv();
+                result
+            });
+            (go, job)
+        };
+        assert!(
+            thumbnail_settled(None, Duration::ZERO, &mut None),
+            "nothing running"
+        );
+
+        // Still writing after the wait: not free, and nothing learnt.
+        let (go, job) = gated(Ok(true));
+        let mut shows = Some(shown.clone());
+        assert!(!thumbnail_settled(
+            Some(job),
+            Duration::from_millis(50),
+            &mut shows
+        ));
+        assert_eq!(shows.as_ref(), Some(&shown));
+        drop(go);
+
+        // Ends while closing waits: free, and what it wrote is known.
+        let (go, job) = gated(Ok(true));
+        let opens = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            let _ = go.send(());
+        });
+        assert!(thumbnail_settled(Some(job), Duration::from_secs(60), &mut shows));
+        assert_eq!(
+            shows.as_ref(),
+            Some(&shown),
+            "the same picture is not written again"
+        );
+        opens.join().unwrap();
+
+        // A failed write leaves what the picture shows unknown.
+        let (go, job) = gated(Err(diag::AppError::new("test")));
+        go.send(()).unwrap();
+        assert!(thumbnail_settled(Some(job), Duration::from_secs(60), &mut shows));
+        assert_eq!(shows, None);
     }
 
     #[test]
