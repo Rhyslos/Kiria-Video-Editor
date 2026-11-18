@@ -25,7 +25,9 @@ fn mixing_never_allocates_or_frees() {
     assert_eq!(n, 1);
     let seconds = 2;
     let mut mix = full_mix(seconds);
-    mix.controller.send(Command::Analyse(Some(3))).expect("room");
+    mix.controller
+        .send(Command::Analyse(audio::Listen::Track(3)))
+        .expect("room");
     let profile = NoiseProfile([-90.0; 64]);
     let mut out = [0f32; 2 * BLOCK];
     let mut counted = 0;
@@ -52,7 +54,16 @@ fn mixing_never_allocates_or_frees() {
                     .map(|(feed, _)| mix.feeds[5] = feed)
                     .expect("room");
             }
+            // The analyser listens to the mix for a while, then a track again.
+            35 => mix
+                .controller
+                .send(Command::Analyse(audio::Listen::Mix))
+                .expect("room"),
             40 => mix.controller.remove_track(7).expect("room"),
+            48 => mix
+                .controller
+                .send(Command::Analyse(audio::Listen::Track(3)))
+                .expect("room"),
             45 => {
                 mix.controller
                     .add_track(7, full(7), lines(7, seconds), None, 4 * BLOCK)

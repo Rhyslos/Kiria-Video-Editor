@@ -358,17 +358,17 @@ mod tests {
     fn frames_side_by_side_read_as_two_blocks_would() {
         let tone = sine(48_000.0, 1_000.0, 0.5, 8_192);
         let quiet: Vec<f32> = tone.iter().map(|s| s * 0.5).collect();
-        let (mut tap, mut analyser) = analyser(48_000);
-        let (mut tap2, mut analyser2) = analyser(48_000);
+        let (mut tap, mut by_blocks) = analyser(48_000);
+        let (mut tap2, mut by_frames) = analyser(48_000);
         for (a, b) in tone.chunks(256).zip(quiet.chunks(256)) {
             tap.send(a, b);
             let frames: Vec<f32> = a.iter().zip(b).flat_map(|(l, r)| [*l, *r]).collect();
             tap2.send_frames(&frames);
-            analyser.step();
-            analyser2.step();
+            by_blocks.step();
+            by_frames.step();
         }
-        assert_eq!(analyser.spectrum().levels(), analyser2.spectrum().levels());
-        assert_eq!(analyser.spectrum().stereo(), analyser2.spectrum().stereo());
+        assert_eq!(by_blocks.spectrum().levels(), by_frames.spectrum().levels());
+        assert_eq!(by_blocks.spectrum().stereo(), by_frames.spectrum().stereo());
     }
 
     #[test]
