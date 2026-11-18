@@ -2,6 +2,7 @@
 //! another timeline (not an edit: see `project::History::open`), and the
 //! commands for timelines, nested timelines and adjustment layers.
 
+use super::clip_clipboard::{added_clips, all_clips};
 use super::{Editor, seconds};
 use project::{ClipId, Command, Project, SequenceId, Time, TrackId};
 use std::sync::Arc;
@@ -212,7 +213,9 @@ impl Editor {
     /// first free one above it, and selects it for the inspector.
     pub(super) fn add_adjustment(&mut self, at: Time, track: Option<TrackId>) -> diag::Result<()> {
         let at = self.snapped(at);
+        let mut before = Vec::new();
         self.with_document(|d| {
+            before = all_clips(d.project());
             let sequence = d.project().active_sequence;
             d.apply(Command::AddAdjustment {
                 sequence,
@@ -224,15 +227,7 @@ impl Editor {
         let added = self
             .document
             .as_ref()
-            .and_then(|d| d.project().active())
-            .and_then(|seq| {
-                seq.video_tracks
-                    .iter()
-                    .flat_map(|t| t.clips.iter())
-                    .filter(|c| c.is_adjustment() && c.start == at)
-                    .map(|c| c.id)
-                    .max()
-            });
+            .and_then(|d| added_clip(&before, d.project()));
         if let Some(clip) = added {
             self.selected = vec![clip];
         }
@@ -252,7 +247,9 @@ impl Editor {
         track: Option<TrackId>,
     ) -> diag::Result<()> {
         let at = self.snapped(at);
+        let mut before = Vec::new();
         self.with_document(|d| {
+            before = all_clips(d.project());
             let sequence = d.project().active_sequence;
             d.apply(Command::AddTitle {
                 sequence,
@@ -265,15 +262,7 @@ impl Editor {
         let added = self
             .document
             .as_ref()
-            .and_then(|d| d.project().active())
-            .and_then(|seq| {
-                seq.video_tracks
-                    .iter()
-                    .flat_map(|t| t.clips.iter())
-                    .filter(|c| c.is_title() && c.start == at)
-                    .map(|c| c.id)
-                    .max()
-            });
+            .and_then(|d| added_clip(&before, d.project()));
         if let Some(clip) = added {
             self.selected = vec![clip];
         }
@@ -346,6 +335,12 @@ impl Editor {
     }
 }
 
+/// The clip a command that adds one clip made: the one on the open
+/// timeline now that was not among `before`, wherever the command put it.
+fn added_clip(before: &[ClipId], p: &Project) -> Option<ClipId> {
+    added_clips(before, all_clips(p)).first().copied()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -401,6 +396,40 @@ mod tests {
         let shown = kept.tabs(&renamed);
         assert_eq!(shown[1].name, "Vertical");
         assert_eq!(*shown, *tabs(&renamed));
+    }
+
+    #[test]
+    fn the_added_layer_is_the_clip_that_was_not_there_before() {
+        let p = crate::inspector::tests::project_with_a_clip();
+        let sequence = p.active_sequence;
+        let add = |p: &Project, at| {
+            Command::AddAdjustment {
+                sequence,
+                at,
+                length: project::timelines::ADJUSTMENT_LENGTH,
+                track: None,
+            }
+            .apply(p)
+            .unwrap()
+        };
+        let before = all_clips(&p);
+        let p2 = add(&p, Time::seconds(2));
+        let layer = added_clip(&before, &p2).unwrap();
+        let clip = p2
+            .active()
+            .unwrap()
+            .tracks()
+            .flat_map(|t| t.clips.iter())
+            .find(|c| c.id == layer);
+        assert!(clip.is_some_and(|c| c.is_adjustment() && c.start == Time::seconds(2)));
+        // A second one at the same moment: the new one, not the first.
+        let before = all_clips(&p2);
+        let p3 = add(&p2, Time::seconds(2));
+        let second = added_clip(&before, &p3).unwrap();
+        assert_ne!(second, layer);
+        assert!(!before.contains(&second));
+        // Nothing added, nothing found.
+        assert_eq!(added_clip(&all_clips(&p3), &p3), None);
     }
 
     /// Prints how long the tabs take per frame for 20 timelines of 5 000

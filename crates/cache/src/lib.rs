@@ -17,6 +17,7 @@
 //! Still to come: the RAM frame cache and the disk render cache. (Frames
 //! kept on the graphics card are `engine::frames`.)
 
+mod disk;
 pub mod loudness;
 pub mod naming;
 pub mod proxy;

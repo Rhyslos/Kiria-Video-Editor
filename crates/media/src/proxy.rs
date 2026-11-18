@@ -46,6 +46,15 @@ pub struct Written {
     pub size: (u32, u32),
 }
 
+/// How a proxy build ended, when nothing went wrong.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Built {
+    /// The proxy is written.
+    Written(Written),
+    /// The build was stopped (cancelled) before the end; nothing is left.
+    Stopped,
+}
+
 /// What a proxy build is told and asks while it runs.
 pub struct Steps<'a> {
     /// Asked between frames: stop and leave nothing behind.
@@ -96,8 +105,9 @@ fn not_usable(name: &str, code: i32) -> AppError {
         .fix("Nothing to do: the next encoder is tried, ending with the processor's own.")
 }
 
-/// The error for a build that was stopped (cancelled) before the end.
-pub fn stopped() -> AppError {
+/// The error that ends the steps of a build that was stopped (cancelled)
+/// before the end; [`write`] turns it into [`Built::Stopped`].
+fn stopped() -> AppError {
     AppError::new("The proxy was not finished").why("Its build was stopped.")
 }
 
@@ -105,7 +115,8 @@ pub fn stopped() -> AppError {
 /// MP4, whatever its name ends with), decoding the original `decoding`'s
 /// way. `length` is the stream's length in seconds, for progress. With
 /// `software` only the CPU's encoder is tried. A file left by a failed or
-/// stopped build is removed.
+/// stopped build is removed; a stopped build is [`Built::Stopped`], not an
+/// error.
 ///
 /// With `workers` over one, a long file is built in that many stretches
 /// side by side ([`stretches`]: each from a key frame, each decoded,
@@ -122,7 +133,7 @@ pub fn write(
     software: bool,
     workers: usize,
     steps: &Steps<'_>,
-) -> diag::Result<Written> {
+) -> diag::Result<Built> {
     let mut last = cannot("This build has no H.264 encoder.");
     for name in ENCODERS {
         if software && name != SOFTWARE_ENCODER {
@@ -152,11 +163,11 @@ pub fn write(
             write_with(original, stream, length, out, decoding, name, steps)
         };
         match built {
-            Ok(written) => return Ok(written),
+            Ok(written) => return Ok(Built::Written(written)),
             Err(err) => {
                 let _ = std::fs::remove_file(out);
                 if (steps.cancelled)() {
-                    return Err(stopped());
+                    return Ok(Built::Stopped);
                 }
                 tracing::info!(
                     "a proxy with {name} did not work, trying the next encoder: {}",
@@ -933,7 +944,10 @@ mod tests {
             progress: &progress,
             pause: &|| {},
         };
-        write(original, stream, length, out, Decoding::Software, true, 1, &steps).unwrap()
+        match write(original, stream, length, out, Decoding::Software, true, 1, &steps).unwrap() {
+            Built::Written(written) => written,
+            Built::Stopped => panic!("never stopped"),
+        }
     }
 
     /// The frame number `counted-*` fixtures show in their bars.
@@ -1121,7 +1135,7 @@ mod tests {
                 pause: &|| {},
             },
         );
-        assert_eq!(result.unwrap_err().what(), stopped().what());
+        assert_eq!(result.unwrap(), Built::Stopped);
         assert!(!out.exists());
     }
 }
