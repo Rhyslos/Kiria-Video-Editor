@@ -7,6 +7,13 @@
 //! Closing it never cancels anything; the version panel keeps the same
 //! choices. The network work runs on worker threads, and the choices are
 //! written to `updates.ron` on a thread of their own (a `project::disk::Keeper`).
+//!
+//! Another launcher (another project open at the same time) may write
+//! `updates.ron` too, above all to mark a version that failed to start as
+//! bad. So the panel never writes back the copy it read at start: each
+//! write reads the file afresh and lays only the choices made in this
+//! window over it ([`Changes`]), and each check does the same, so a version
+//! marked bad elsewhere is never offered or written away.
 
 use crate::work::{Poll, Task};
 use egui::RichText;
@@ -47,7 +54,11 @@ pub struct Updates {
     /// The version in use (see `updater::apply::InstallKind::version_in_use`).
     version: String,
     data_dir: PathBuf,
+    /// The choices as this window shows them: the file as read at start,
+    /// with this window's own changes.
     prefs: UpdatePrefs,
+    /// The choices made in this window, laid over the file's newest ones.
+    changes: Changes,
     /// Writes `updates.ron` off the interface thread, newest choices last.
     prefs_keeper: Keeper,
     state: UpdateState,
@@ -79,6 +90,7 @@ impl Updates {
             version,
             data_dir,
             prefs,
+            changes: Changes::default(),
             prefs_keeper,
             state: UpdateState::NotChecking,
             task: None,
@@ -102,9 +114,12 @@ impl Updates {
     }
 
     fn check(&mut self, ctx: &egui::Context) {
-        let (version, prefs) = (self.version.clone(), self.prefs.clone());
+        let (version, data_dir, changes) =
+            (self.version.clone(), self.data_dir.clone(), self.changes.clone());
         self.state = UpdateState::Checking;
         self.task = Some(Task::spawn(ctx, move || {
+            // Read afresh: another launcher may have marked a version bad.
+            let prefs = changes.over(UpdatePrefs::load(&data_dir));
             Message::Checked(updater::release::check(&version, &prefs))
         }));
     }
@@ -126,6 +141,7 @@ impl Updates {
     fn skip(&mut self, release: &Release) {
         let version = release.version.to_string();
         self.prefs.skipped_version = Some(version.clone());
+        self.changes.skipped_version = Some(Some(version.clone()));
         self.save_prefs();
         self.state = UpdateState::Skipped(version);
     }
@@ -190,6 +206,7 @@ impl Updates {
     pub fn set_channel(&mut self, ctx: &egui::Context, channel: Channel) {
         if self.prefs.channel != channel {
             self.prefs.channel = channel;
+            self.changes.channel = Some(channel);
             self.save_prefs();
             if self.task.is_none() && self.state != UpdateState::NotChecking {
                 self.check(ctx);
@@ -198,10 +215,15 @@ impl Updates {
     }
 
     /// Hands the choices to the keeper, which writes them whole on its own
-    /// thread; a failure shows on a later frame ([`Updates::poll`]).
+    /// thread; a failure shows on a later frame ([`Updates::poll`]). The
+    /// keeper reads the file afresh and changes only what this window
+    /// changed, so what another launcher wrote meanwhile (a version marked
+    /// bad) is kept. Every change made here goes each time, since the keeper
+    /// drops a change still waiting for a newer one.
     fn save_prefs(&mut self) {
-        let prefs = self.prefs.clone();
-        self.prefs_keeper.keep(move || prefs.to_text());
+        let (data_dir, changes) = (self.data_dir.clone(), self.changes.clone());
+        self.prefs_keeper
+            .keep(move || changes.over(UpdatePrefs::load(&data_dir)).to_text());
     }
 
     /// Lets a running download finish (the window has closed), and the
@@ -274,6 +296,7 @@ impl Updates {
             return;
         }
         self.prefs.automatic = automatic;
+        self.changes.automatic = Some(automatic);
         self.save_prefs();
         if automatic && let UpdateState::Available(release) = &self.state {
             let release = release.clone();
@@ -446,6 +469,32 @@ impl Updates {
     }
 }
 
+/// The update choices made in one window, each `None` until it is changed
+/// there. Versions marked bad are never among them: only the start check
+/// (`updater::health::after_start`) adds those, and they are always kept.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct Changes {
+    automatic: Option<bool>,
+    channel: Option<Channel>,
+    skipped_version: Option<Option<String>>,
+}
+
+impl Changes {
+    /// `newest` (the file as it is now) with these changes laid over it.
+    fn over(&self, mut newest: UpdatePrefs) -> UpdatePrefs {
+        if let Some(automatic) = self.automatic {
+            newest.automatic = automatic;
+        }
+        if let Some(channel) = self.channel {
+            newest.channel = channel;
+        }
+        if let Some(skipped) = &self.skipped_version {
+            newest.skipped_version.clone_from(skipped);
+        }
+        newest
+    }
+}
+
 fn heading(ui: &mut egui::Ui, text: &str) {
     ui.label(RichText::new(text).family(ui_kit::fonts::semibold()).size(16.0));
     ui.add_space(6.0);
@@ -486,5 +535,72 @@ mod tests {
         let saved = UpdatePrefs::load(tmp.path());
         assert!(!saved.automatic);
         assert_eq!(saved.channel, Channel::Beta);
+    }
+
+    /// Another launcher's write while this one is open: this window's
+    /// choices go over it, and nothing else of it is lost.
+    fn marked_bad_elsewhere(data_dir: &std::path::Path) {
+        let mut other = UpdatePrefs::load(data_dir);
+        other.bad_versions.push("0.2.0".into());
+        other.save(data_dir).unwrap();
+    }
+
+    #[test]
+    fn a_version_marked_bad_by_another_launcher_is_never_written_away() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = egui::Context::default();
+        let mut updates = Updates::start(&ctx, "0.1.0".into(), tmp.path().to_path_buf(), false);
+        // Another launcher rolls 0.2.0 back after this window read the file.
+        marked_bad_elsewhere(tmp.path());
+        updates.set_automatic(&ctx, false);
+        updates.prefs_keeper.flush().unwrap();
+        let saved = UpdatePrefs::load(tmp.path());
+        assert_eq!(saved.bad_versions, ["0.2.0"]);
+        assert!(!saved.automatic);
+        // Every later choice keeps it too.
+        updates.set_channel(&ctx, Channel::Beta);
+        updates.skip(&Release {
+            version: semver::Version::new(0, 3, 0),
+            prerelease: false,
+            notes: String::new(),
+            assets: Vec::new(),
+        });
+        updates.finish_download();
+        let saved = UpdatePrefs::load(tmp.path());
+        assert_eq!(saved.bad_versions, ["0.2.0"]);
+        assert!(!saved.automatic);
+        assert_eq!(saved.channel, Channel::Beta);
+        assert_eq!(saved.skipped_version.as_deref(), Some("0.3.0"));
+    }
+
+    #[test]
+    fn a_check_reads_the_versions_marked_bad_afresh() {
+        let tmp = tempfile::tempdir().unwrap();
+        let changes = Changes {
+            channel: Some(Channel::Beta),
+            ..Changes::default()
+        };
+        marked_bad_elsewhere(tmp.path());
+        let prefs = changes.over(UpdatePrefs::load(tmp.path()));
+        assert_eq!(prefs.bad_versions, ["0.2.0"]);
+        assert_eq!(prefs.channel, Channel::Beta);
+        // Choices not made in this window are the file's.
+        assert!(prefs.automatic);
+        assert_eq!(prefs.skipped_version, None);
+    }
+
+    #[test]
+    fn choices_made_in_another_window_are_kept_unless_changed_here() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = egui::Context::default();
+        let mut updates = Updates::start(&ctx, "0.1.0".into(), tmp.path().to_path_buf(), false);
+        let mut other = UpdatePrefs::load(tmp.path());
+        other.channel = Channel::Beta;
+        other.save(tmp.path()).unwrap();
+        updates.set_automatic(&ctx, false);
+        updates.finish_download();
+        let saved = UpdatePrefs::load(tmp.path());
+        assert_eq!(saved.channel, Channel::Beta);
+        assert!(!saved.automatic);
     }
 }
