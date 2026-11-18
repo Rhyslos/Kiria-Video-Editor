@@ -405,25 +405,12 @@ impl Made {
     }
 }
 
-/// The package folder's name for a project called `name`: characters file
-/// systems refuse become dashes, an empty name "Untitled".
+/// The package folder's name for a project called `name`: made safe for
+/// a folder name ([`crate::disk::safe_file_name`]: characters file systems
+/// refuse become dashes, a name Windows keeps for a device gets a dash), an
+/// empty name "Untitled".
 pub fn folder_name(name: &str) -> String {
-    let cleaned: String = name
-        .chars()
-        .map(|c| {
-            if c.is_control() || matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') {
-                '-'
-            } else {
-                c
-            }
-        })
-        .collect();
-    let trimmed = cleaned.trim().trim_end_matches('.').trim();
-    if trimmed.is_empty() {
-        "Untitled".to_owned()
-    } else {
-        trimmed.to_owned()
-    }
+    crate::disk::safe_file_name(name, "Untitled")
 }
 
 /// `into/name`, or "name 2", "name 3"… when that is taken.
@@ -698,6 +685,9 @@ mod tests {
     fn folder_names_are_safe() {
         assert_eq!(folder_name("Trip: day 1"), "Trip- day 1");
         assert_eq!(folder_name("  ... "), "Untitled");
+        // Windows can't make a folder called after a device.
+        assert_eq!(folder_name("aux"), "aux-");
+        assert_eq!(folder_name("Con"), "Con-");
         let mut taken = HashSet::new();
         assert_eq!(free_name(&mut taken, "a.mkv"), "a.mkv");
         assert_eq!(free_name(&mut taken, "A.mkv"), "A 2.mkv");

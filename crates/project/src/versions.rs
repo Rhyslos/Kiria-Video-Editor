@@ -40,7 +40,9 @@ pub fn is_folder(dir: &Path) -> bool {
 
 /// Saves `project` as a version called `name`.
 pub fn save(project: &Project, project_file: &Path, name: &str) -> diag::Result<Version> {
-    let name = clean_name(name);
+    // The time in front keeps a device name ("aux") an ordinary file name,
+    // so the name is only cleaned.
+    let name = crate::disk::clean_file_name(name);
     if name.is_empty() {
         return Err(
             AppError::new("A version needs a name").fix("Type a few words, like \"Before the colour pass\".")
@@ -107,23 +109,6 @@ pub fn load(version: &Version) -> diag::Result<Project> {
         .unwrap_or(Path::new(""));
     file::resolve_media_paths(&mut project, project_folder);
     Ok(project)
-}
-
-/// A name that is safe in a file name: no path or reserved characters,
-/// trimmed, at most 60 characters.
-pub(crate) fn clean_name(name: &str) -> String {
-    let cleaned: String = name
-        .chars()
-        .map(|c| {
-            if "/\\:*?\"<>|".contains(c) || c.is_control() {
-                '-'
-            } else {
-                c
-            }
-        })
-        .take(60)
-        .collect();
-    cleaned.trim().to_owned()
 }
 
 #[cfg(test)]

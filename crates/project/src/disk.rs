@@ -127,6 +127,77 @@ pub(crate) fn strip_name<'a>(candidate: &'a str, name: &str) -> Option<&'a str> 
     same.then_some(rest)
 }
 
+/// The most characters [`clean_file_name`] keeps of a name.
+pub const MOST_NAME_CHARS: usize = 60;
+
+/// `name` made safe for a file or folder name on every system the app runs
+/// on, or `fallback` when nothing of it is left: [`clean_file_name`], then
+/// a name Windows keeps for a device ("aux", "CON.txt") gets a dash after
+/// its first part ("aux-", "CON-.txt"), so it is an ordinary name there.
+/// Package folders, saved versions and templates all go by it.
+pub fn safe_file_name(name: &str, fallback: &str) -> String {
+    let cleaned = clean_file_name(name);
+    let mut name = if cleaned.is_empty() {
+        fallback.to_owned()
+    } else {
+        cleaned
+    };
+    if is_device_name(&name) {
+        let first = name.split('.').next().unwrap_or_default().trim_end().len();
+        name.insert(first, '-');
+    }
+    name
+}
+
+/// `name` with what file systems refuse taken out, without the device rule
+/// of [`safe_file_name`] (for callers that refuse such names with a reason,
+/// or put something in front of the name): path, reserved and control
+/// characters become dashes, spaces and dots go from both ends (Windows
+/// drops trailing ones, and leading dots hide a file elsewhere), and at most
+/// [`MOST_NAME_CHARS`] characters are kept. Empty when nothing is left.
+pub fn clean_file_name(name: &str) -> String {
+    let unwanted = |c: char| c.is_whitespace() || c == '.';
+    let replaced: String = name
+        .chars()
+        .map(|c| {
+            if c.is_control() || matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') {
+                '-'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let capped: String = replaced
+        .trim_matches(unwanted)
+        .chars()
+        .take(MOST_NAME_CHARS)
+        .collect();
+    capped.trim_matches(unwanted).to_owned()
+}
+
+/// Whether Windows keeps `name` for a device: CON, PRN, AUX, NUL, CONIN$,
+/// CONOUT$, COM0-9 and LPT0-9 (also with ¹ ² ³), in any capitals, alone or
+/// with an extension ("nul.txt"), and with spaces before the extension.
+pub fn is_device_name(name: &str) -> bool {
+    const KEPT: [&str; 6] = ["con", "prn", "aux", "nul", "conin$", "conout$"];
+    let first = name
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .trim_end()
+        .to_lowercase();
+    let numbered = |prefix: &str| {
+        first.strip_prefix(prefix).is_some_and(|rest| {
+            let mut chars = rest.chars();
+            matches!(
+                (chars.next(), chars.next()),
+                (Some('0'..='9' | '¹' | '²' | '³'), None)
+            )
+        })
+    };
+    KEPT.contains(&first.as_str()) || numbered("com") || numbered("lpt")
+}
+
 /// Makes the text to write; runs on the keeper's thread.
 type Make = Box<dyn FnOnce() -> diag::Result<String> + Send>;
 
@@ -286,6 +357,56 @@ mod tests {
             .collect();
         names.sort();
         names
+    }
+
+    #[test]
+    fn unsafe_file_names_are_made_safe() {
+        assert_eq!(safe_file_name("aux", "Untitled"), "aux-");
+        assert_eq!(safe_file_name("Con", "Untitled"), "Con-");
+        assert_eq!(safe_file_name("CON.txt", "Untitled"), "CON-.txt");
+        assert_eq!(safe_file_name("nul .tar.gz", "Untitled"), "nul- .tar.gz");
+        assert_eq!(safe_file_name("COM1", "Untitled"), "COM1-");
+        assert_eq!(safe_file_name("lpt²", "Untitled"), "lpt²-");
+        assert_eq!(safe_file_name("..", "Untitled"), "Untitled");
+        assert_eq!(safe_file_name("a/b", "Untitled"), "a-b");
+        assert_eq!(safe_file_name("  x. ", "Untitled"), "x");
+        assert_eq!(safe_file_name("", "Untitled"), "Untitled");
+        assert_eq!(safe_file_name(" .aux. ", "Untitled"), "aux-");
+        assert_eq!(safe_file_name("tab\there", "Untitled"), "tab-here");
+        let long = "é".repeat(300);
+        assert_eq!(safe_file_name(&long, "Untitled"), "é".repeat(MOST_NAME_CHARS));
+        // Capped first, then trimmed again: no dot or space left at the end.
+        let dotted = format!("{}. tail", "a".repeat(MOST_NAME_CHARS - 2));
+        assert_eq!(safe_file_name(&dotted, "x"), "a".repeat(MOST_NAME_CHARS - 2));
+        for kept in ["Common", "console", "Auxiliary", "com10", "LPT", "nul-", "con 2"] {
+            assert!(!is_device_name(kept), "{kept}");
+            assert_eq!(safe_file_name(kept, "x"), kept);
+        }
+    }
+
+    /// Ordinary names keep the result the three cleaners this one replaced
+    /// gave them, so packages, versions and templates already on disk are
+    /// still found by the names they were saved under.
+    #[test]
+    fn ordinary_names_keep_their_old_result() {
+        for (name, kept) in [
+            ("Trip", "Trip"),
+            ("Trip v2", "Trip v2"),
+            ("Channel intro", "Channel intro"),
+            ("intro 2026", "intro 2026"),
+            ("Trip: day 1", "Trip- day 1"),
+            ("Before colour: a/b", "Before colour- a-b"),
+            ("Cut 2: the \"best\" bits?", "Cut 2- the -best- bits-"),
+            ("  Holiday 2026  ", "Holiday 2026"),
+            ("v1.2 final", "v1.2 final"),
+            ("Été à Paris", "Été à Paris"),
+            ("家族旅行", "家族旅行"),
+            ("a|b<c>d*e", "a-b-c-d-e"),
+            ("Common", "Common"),
+        ] {
+            assert_eq!(clean_file_name(name), kept, "{name}");
+            assert_eq!(safe_file_name(name, "Untitled"), kept, "{name}");
+        }
     }
 
     #[test]
