@@ -12,7 +12,8 @@
 //!   leaves a [`RollbackNotice`] for the next launcher window to explain.
 //! - neither within the time limit: nothing is concluded (a slow machine).
 //!
-//! Counts live in `health.ron` in the data folder.
+//! Counts live in `health.ron` in the data folder, written whole or not at
+//! all ([`crate::state_file`]).
 
 use crate::install::Layout;
 use crate::prefs::UpdatePrefs;
@@ -97,11 +98,10 @@ pub struct Health {
 }
 
 impl Health {
+    /// The saved record; a missing or unreadable file gives an empty one
+    /// (an unreadable one is logged and kept aside, see [`crate::state_file`]).
     pub fn load(data_dir: &Path) -> Health {
-        std::fs::read_to_string(data_dir.join(HEALTH_FILE))
-            .ok()
-            .and_then(|t| ron::from_str(&t).ok())
-            .unwrap_or_default()
+        crate::state_file::read_ron(&data_dir.join(HEALTH_FILE)).unwrap_or_default()
     }
 
     pub fn save(&self, data_dir: &Path) -> diag::Result<()> {
@@ -111,7 +111,7 @@ impl Health {
                 .fix("Check that the disk is not full.")
         };
         let text = ron::ser::to_string_pretty(self, ron::ser::PrettyConfig::default()).or_explain(explain)?;
-        std::fs::write(data_dir.join(HEALTH_FILE), text).or_explain(explain)
+        crate::state_file::write_whole(&data_dir.join(HEALTH_FILE), text.as_bytes()).or_explain(explain)
     }
 
     /// Records a start; returns the failed starts in a row for that version.
@@ -142,9 +142,7 @@ impl RollbackNotice {
     /// Reads and removes the notice, so it is shown once.
     pub fn take(data_dir: &Path) -> Option<RollbackNotice> {
         let path = data_dir.join(NOTICE_FILE);
-        let notice = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|t| ron::from_str(&t).ok());
+        let notice = crate::state_file::read_ron(&path);
         let _ = std::fs::remove_file(path);
         notice
     }
@@ -152,7 +150,7 @@ impl RollbackNotice {
     fn save(&self, data_dir: &Path) -> diag::Result<()> {
         let text =
             ron::ser::to_string(self).or_explain(|| AppError::new("The rollback note can't be written"))?;
-        std::fs::write(data_dir.join(NOTICE_FILE), text).or_explain(|| {
+        crate::state_file::write_whole(&data_dir.join(NOTICE_FILE), text.as_bytes()).or_explain(|| {
             AppError::new("The rollback note can't be written").fix("Check that the disk is not full.")
         })
     }

@@ -207,13 +207,12 @@ fn unpack(package: &Path, layout: &Layout, version: &str) -> diag::Result<()> {
     fs::rename(&partial, &target).or_explain(failed)
 }
 
-/// Points the `current` file at `version` in one rename.
+/// Points the `current` file at `version` in one rename, put on the disk
+/// first ([`crate::state_file::write_whole`]).
 pub fn set_current(layout: &Layout, version: &str) -> diag::Result<()> {
     let file = layout.root().join(CURRENT_FILE);
-    let temp = layout.root().join(format!("{CURRENT_FILE}.new"));
     let failed = || install_failed(format!("{} could not be written.", file.display()));
-    fs::write(&temp, version).or_explain(failed)?;
-    fs::rename(&temp, &file).or_explain(failed)
+    crate::state_file::write_whole(&file, version.as_bytes()).or_explain(failed)
 }
 
 /// Replaces `target` with `source`: a copy beside it first, then one rename.
