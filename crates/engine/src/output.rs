@@ -9,7 +9,8 @@
 //! sound ready, and during a jump, it hands out silence and only lets the
 //! mixer take its commands (`audio::Mixer::idle`), so nothing is owed.
 //!
-//! Nothing here allocates, frees, locks or waits (a test counts).
+//! Nothing here allocates, frees, locks or waits (a test counts). The card
+//! is handed samples within full scale, never NaN.
 //!
 //! Without a sound card, [`Paced`] stands in for its callback: a thread of
 //! its own hands the same [`Output`] a buffer at real-time pace and throws
@@ -90,7 +91,7 @@ impl Output {
         if self.shared.primed.load(Ordering::Acquire) {
             self.adapter.render(&mut self.mixer, out, channels);
             for sample in out.iter_mut() {
-                *sample = sample.clamp(-1.0, 1.0);
+                *sample = for_the_card(*sample);
             }
         } else {
             self.adapter.clear();
@@ -123,6 +124,17 @@ impl Output {
             }
         }
         self.converted = converted;
+    }
+}
+
+/// A sample as the sound card is handed it: within full scale, and 0 for
+/// one that is not a number (`clamp` keeps NaN, which a card may play as a
+/// loud click or treat as an error).
+fn for_the_card(sample: f32) -> f32 {
+    if sample.is_nan() {
+        0.0
+    } else {
+        sample.clamp(-1.0, 1.0)
     }
 }
 
@@ -195,5 +207,20 @@ impl Paced {
                     .why("The thread that mixes without a sound card could not start.")
                     .fix("Close a few programs and play again.")
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::for_the_card;
+
+    #[test]
+    fn the_card_is_never_handed_nan_or_more_than_full_scale() {
+        assert_eq!(for_the_card(f32::NAN), 0.0);
+        assert_eq!(for_the_card(-f32::NAN), 0.0);
+        assert_eq!(for_the_card(f32::INFINITY), 1.0);
+        assert_eq!(for_the_card(f32::NEG_INFINITY), -1.0);
+        assert_eq!(for_the_card(1.5), 1.0);
+        assert_eq!(for_the_card(-0.25), -0.25);
     }
 }

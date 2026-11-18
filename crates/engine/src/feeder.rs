@@ -15,7 +15,9 @@
 //! timeline sample it is at; when the mixer found a ring dry it played
 //! silence and owes it, and the feeder skips as much, so a late file comes
 //! back in step. Playback and export write the same pieces at the same
-//! places, so they make the same sound.
+//! places, so they make the same sound. A sample that is NaN or infinite (a
+//! damaged recording) goes into the ring as 0 (`audio::FeedWriter::write`),
+//! before any effect sees it, and the log says so once per track.
 //!
 //! After an edit, [`Feeder::update`] works out what changed per track
 //! (`audio::TrackSettings::changes_from`) and sends only that; new lines
@@ -55,6 +57,9 @@ struct Fed {
     sound: TrackSound,
     /// The timeline sample the next frame written is.
     next: u64,
+    /// Samples of its sound that were NaN or infinite and went into the
+    /// ring as 0 (`FeedWriter::write`), so the log says so once.
+    replaced: u64,
 }
 
 pub struct Feeder {
@@ -284,6 +289,14 @@ impl Feeder {
             let fed = &mut self.tracks[i];
             let frames = fed.writer.write(&self.piece);
             fed.next += frames as u64;
+            let replaced = fed.writer.take_replaced();
+            if replaced > 0 && fed.replaced == 0 {
+                tracing::warn!(
+                    "Track {:?}: {replaced} samples were not numbers (a damaged recording?) and were played as silence",
+                    fed.id
+                );
+            }
+            fed.replaced += replaced;
             written += frames;
         }
         written
@@ -356,6 +369,7 @@ impl Feeder {
             settings,
             sound: track.sound.clone(),
             next: first.unwrap_or(self.origin.0),
+            replaced: 0,
         })
     }
 }

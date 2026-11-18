@@ -21,6 +21,13 @@
 //! ([`crate::Controller::located`]). Only then does the feeder write sound
 //! from the new place, taking what it owes first. Sound written before the
 //! mixer said so would be thrown away with the rest.
+//!
+//! **A sample that is not a number** (NaN or infinity, from a damaged
+//! recording) is written as 0 and counted ([`FeedWriter::take_replaced`]):
+//! once inside, it would stay in the filters' and the limiter's state and
+//! silence or poison the track, or the whole mix, until playback started
+//! again. Every sound the mixer hears comes in here, so this is the one
+//! check.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -37,6 +44,8 @@ struct Shared {
 pub struct FeedWriter {
     to: rtrb::Producer<f32>,
     shared: Arc<Shared>,
+    /// Samples written as 0 because they were not numbers, not yet taken.
+    replaced: u64,
 }
 
 /// The mixer's end of a track's ring.
@@ -57,6 +66,7 @@ pub fn ring(frames: usize) -> (FeedWriter, FeedReader) {
         FeedWriter {
             to,
             shared: Arc::clone(&shared),
+            replaced: 0,
         },
         FeedReader {
             from,
@@ -73,7 +83,8 @@ impl FeedWriter {
     }
 
     /// Writes as many whole frames of `interleaved` stereo as there is room
-    /// for; returns how many frames it wrote.
+    /// for; returns how many frames it wrote. A sample that is NaN or
+    /// infinite is written as 0 and counted.
     pub fn write(&mut self, interleaved: &[f32]) -> usize {
         let frames = (interleaved.len() / 2).min(self.room());
         if frames == 0 {
@@ -81,14 +92,27 @@ impl FeedWriter {
         }
         if let Ok(mut chunk) = self.to.write_chunk(frames * 2) {
             let (a, b) = chunk.as_mut_slices();
-            let split = a.len();
-            a.copy_from_slice(&interleaved[..split]);
-            b.copy_from_slice(&interleaved[split..frames * 2]);
+            let mut replaced = 0;
+            for (to, from) in a.iter_mut().chain(b.iter_mut()).zip(&interleaved[..frames * 2]) {
+                *to = if from.is_finite() {
+                    *from
+                } else {
+                    replaced += 1;
+                    0.0
+                };
+            }
+            self.replaced += replaced;
             chunk.commit_all();
             frames
         } else {
             0
         }
+    }
+
+    /// Samples written as 0 since last asked because they were NaN or
+    /// infinite (a damaged recording): for the log.
+    pub fn take_replaced(&mut self) -> u64 {
+        std::mem::take(&mut self.replaced)
     }
 
     /// Frames the mixer had to fill with silence since last asked: skip
@@ -176,6 +200,32 @@ mod tests {
         assert_eq!(w.write(&[1.0; 20]), 4, "only the room there is");
         r.clear();
         assert_eq!(w.room(), 4);
+    }
+
+    #[test]
+    fn samples_that_are_not_numbers_are_written_as_zero_and_counted() {
+        let (mut w, mut r) = ring(4);
+        w.write(&[0.5, -0.5]);
+        let (mut l, mut rr) = ([9f32; 1], [9f32; 1]);
+        r.read(&mut l, &mut rr);
+        // Wraps around the ring's end, so both of the chunk's slices are checked.
+        let written = [
+            f32::NAN,
+            0.25,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            -0.25,
+            f32::NAN,
+            1.0,
+            1.0,
+        ];
+        assert_eq!(w.write(&written), 4);
+        let (mut l, mut rr) = ([9f32; 4], [9f32; 4]);
+        assert_eq!(r.read(&mut l, &mut rr), 0);
+        assert_eq!(l, [0.0, 0.0, -0.25, 1.0]);
+        assert_eq!(rr, [0.25, 0.0, 0.0, 1.0]);
+        assert_eq!(w.take_replaced(), 4);
+        assert_eq!(w.take_replaced(), 0);
     }
 
     #[test]
