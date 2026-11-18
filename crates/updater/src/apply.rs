@@ -37,10 +37,12 @@ pub enum InstallKind {
 }
 
 impl InstallKind {
-    /// Works out how the launcher in `root` was installed.
+    /// Works out how the launcher in `root` was installed. It counts as an
+    /// AppImage only when [`appimage_in_use`] says this launcher really runs
+    /// from one; a stray `APPIMAGE` variable is ignored.
     pub fn detect(root: &Path) -> InstallKind {
-        if let Some(path) = std::env::var_os("APPIMAGE") {
-            return InstallKind::AppImage(PathBuf::from(path));
+        if let Some(path) = appimage_in_use(cfg!(target_os = "linux"), &AppImageSigns::of_this_process()) {
+            return InstallKind::AppImage(path);
         }
         let layout = Layout::at(root);
         if layout.current_version().is_some() {
@@ -62,6 +64,80 @@ impl InstallKind {
             InstallKind::AppImage(_) | InstallKind::Development => launcher.to_owned(),
         }
     }
+}
+
+/// What says whether this process runs from inside an AppImage, gathered
+/// once so [`appimage_in_use`] can decide without touching the system.
+#[derive(Debug, Clone, Default)]
+pub struct AppImageSigns {
+    /// `APPIMAGE`: the AppImage file the runtime started from.
+    pub appimage: Option<PathBuf>,
+    /// `APPDIR`: where that runtime mounted (or unpacked) the AppImage.
+    pub appdir: Option<PathBuf>,
+    /// The running program, with links resolved.
+    pub exe: Option<PathBuf>,
+    /// Whether `appimage` is a regular file (not a link, not a folder).
+    pub appimage_is_file: bool,
+}
+
+impl AppImageSigns {
+    /// Reads the signs for the running process.
+    pub fn of_this_process() -> AppImageSigns {
+        let resolved = |path: PathBuf| fs::canonicalize(&path).unwrap_or(path);
+        let appimage = std::env::var_os("APPIMAGE").map(PathBuf::from);
+        let appimage_is_file = appimage
+            .as_deref()
+            .and_then(|path| fs::symlink_metadata(path).ok())
+            .is_some_and(|meta| meta.file_type().is_file());
+        AppImageSigns {
+            appimage,
+            appdir: std::env::var_os("APPDIR").map(PathBuf::from).map(resolved),
+            exe: std::env::current_exe().ok().map(resolved),
+            appimage_is_file,
+        }
+    }
+}
+
+/// The AppImage file this launcher runs from, if it really runs from one;
+/// only that file may be replaced by an update.
+///
+/// `APPIMAGE` and `APPDIR` are set by the AppImage runtime for the program it
+/// starts, but every program started from there inherits them: a launcher
+/// opened from a terminal or another program that itself came from some other
+/// AppImage sees that other AppImage's values. So the variable alone is never
+/// trusted. It counts only when all of these hold:
+///
+/// - the platform is Linux (`linux`), the only one with an AppImage;
+/// - `APPDIR` is set and absolute, and the running program lies inside it.
+///   The runtime sets `APPDIR` to its own mount point (or unpacked folder)
+///   and starts our launcher from there, so this holds for the real case and
+///   fails whenever the values were inherited from another AppImage, whose
+///   mount our program is not in;
+/// - `APPIMAGE` is an absolute path to a regular file (not a link or folder)
+///   outside `APPDIR`;
+/// - its name is the app's AppImage name (`brand::APP_NAME` at the start,
+///   `.AppImage` at the end, ignoring case). The version in between is not
+///   checked: an AppImage keeps its first name through updates, and people
+///   add to or shorten the middle.
+///
+/// When any of them fails the launcher is not an AppImage install, and the
+/// folder layout (or nothing, for a development build) is used instead.
+pub fn appimage_in_use(linux: bool, signs: &AppImageSigns) -> Option<PathBuf> {
+    if !linux || !signs.appimage_is_file {
+        return None;
+    }
+    let appimage = signs.appimage.as_deref()?;
+    let appdir = signs.appdir.as_deref()?;
+    let exe = signs.exe.as_deref()?;
+    if !appimage.is_absolute() || !appdir.is_absolute() || appdir.parent().is_none() {
+        return None;
+    }
+    if !exe.starts_with(appdir) || appimage.starts_with(appdir) {
+        return None;
+    }
+    let name = appimage.file_name()?.to_str()?.to_lowercase();
+    let ours = name.starts_with(&brand::APP_NAME.to_lowercase()) && name.ends_with(".appimage");
+    ours.then(|| appimage.to_path_buf())
 }
 
 /// The launcher's file name on this platform.
@@ -607,6 +683,102 @@ mod tests {
         };
         assert!(!needs_newer_launcher(&ready("0.1.0"), "0.2.0"));
         assert!(needs_newer_launcher(&ready("0.3.0"), "0.2.0"));
+    }
+
+    /// The signs of a launcher really started from our AppImage.
+    fn real_appimage() -> AppImageSigns {
+        AppImageSigns {
+            appimage: Some(PathBuf::from(format!(
+                "/home/me/Applications/{}-0.2.0-linux-x86_64.AppImage",
+                brand::APP_NAME
+            ))),
+            appdir: Some(PathBuf::from("/tmp/.mount_abc123")),
+            exe: Some(PathBuf::from("/tmp/.mount_abc123/usr/bin/launcher")),
+            appimage_is_file: true,
+        }
+    }
+
+    #[test]
+    fn a_launcher_inside_its_appimage_is_an_appimage_install() {
+        let signs = real_appimage();
+        assert_eq!(appimage_in_use(true, &signs), signs.appimage);
+        // Renamed by hand or by an integration tool: still ours.
+        let renamed = AppImageSigns {
+            appimage: Some(PathBuf::from(format!(
+                "/opt/{}.appimage",
+                brand::APP_NAME.to_lowercase()
+            ))),
+            ..real_appimage()
+        };
+        assert!(appimage_in_use(true, &renamed).is_some());
+    }
+
+    #[test]
+    fn the_appimage_variable_is_ignored_off_linux() {
+        assert_eq!(appimage_in_use(false, &real_appimage()), None);
+    }
+
+    #[test]
+    fn an_inherited_appimage_variable_is_ignored() {
+        // Started from a terminal that came from another AppImage: both
+        // variables are that program's, and this launcher is not in its mount.
+        let inherited = AppImageSigns {
+            appimage: Some(PathBuf::from("/home/me/Applications/Writer-3.1-x86_64.AppImage")),
+            appdir: Some(PathBuf::from("/tmp/.mount_writer")),
+            exe: Some(PathBuf::from("/home/me/build/launcher")),
+            appimage_is_file: true,
+        };
+        assert_eq!(appimage_in_use(true, &inherited), None);
+        // Our name, but this launcher still isn't inside that mount.
+        let outside = AppImageSigns {
+            exe: Some(PathBuf::from("/home/me/build/launcher")),
+            ..real_appimage()
+        };
+        assert_eq!(appimage_in_use(true, &outside), None);
+        // Without APPDIR there is nothing to tie the file to this launcher.
+        let no_appdir = AppImageSigns {
+            appdir: None,
+            ..real_appimage()
+        };
+        assert_eq!(appimage_in_use(true, &no_appdir), None);
+    }
+
+    #[test]
+    fn an_appimage_variable_naming_another_program_is_ignored() {
+        let other = AppImageSigns {
+            appimage: Some(PathBuf::from("/home/me/Applications/Writer-3.1-x86_64.AppImage")),
+            ..real_appimage()
+        };
+        assert_eq!(appimage_in_use(true, &other), None);
+        let not_a_file = AppImageSigns {
+            appimage_is_file: false,
+            ..real_appimage()
+        };
+        assert_eq!(appimage_in_use(true, &not_a_file), None);
+        let relative = AppImageSigns {
+            appimage: Some(PathBuf::from(format!("{}.AppImage", brand::APP_NAME))),
+            ..real_appimage()
+        };
+        assert_eq!(appimage_in_use(true, &relative), None);
+        let root_appdir = AppImageSigns {
+            appdir: Some(PathBuf::from("/")),
+            ..real_appimage()
+        };
+        assert_eq!(appimage_in_use(true, &root_appdir), None);
+    }
+
+    #[test]
+    fn a_stray_appimage_variable_leaves_the_folder_layout_in_use() {
+        // The process's own signs: this test program is not inside any AppImage,
+        // whatever the variables say, so the folder layout is found.
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join(crate::install::CURRENT_FILE), "0.2.0").unwrap();
+        let mut signs = AppImageSigns::of_this_process();
+        signs.appimage = Some(tmp.path().join(format!("{}.AppImage", brand::APP_NAME)));
+        signs.appimage_is_file = true;
+        signs.appdir = Some(tmp.path().join("mount"));
+        assert_eq!(appimage_in_use(true, &signs), None);
+        assert!(matches!(InstallKind::detect(tmp.path()), InstallKind::Folders(_)));
     }
 
     #[test]
