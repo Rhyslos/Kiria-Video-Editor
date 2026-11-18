@@ -293,7 +293,7 @@ impl Editor {
         if let Some(counting) = asks.counting {
             self.settings.loudness_counting = counting;
         }
-        if let Some(target) = asks.target.or(mixer_asks.master.target) {
+        if let Some(target) = asks.target {
             self.settings.loudness_target = target;
         }
         if asks.reset {
@@ -302,20 +302,10 @@ impl Editor {
                 playback.reset_loudness();
             }
         }
-        if mixer_asks.master.reset
-            && let Some(playback) = &self.playback
-        {
-            playback.reset_loudness();
-        }
-        if let Some(gain_db) = mixer_asks.master.gain_db {
-            let result = self.with_document(|d| {
-                let sequence = d.project().active_sequence;
-                d.apply(Command::SetMasterGain { sequence, gain_db })
-            });
-            if let Err(err) = result {
-                self.errors.push(&err);
-            }
-        }
+        // The loudness aimed for, chosen on the page, comes first.
+        let mut master = mixer_asks.master;
+        master.target = master.target.filter(|_| asks.target.is_none());
+        self.master_asks(master);
         for event in events {
             self.timeline_event(event);
         }
@@ -478,8 +468,7 @@ impl Editor {
             right.push(text_w(ui, needle.clone()) + spacing);
         }
         let row = ui_kit::timeline::TOOLBAR_WIDTH + spacing;
-        let tool = self.audio_page.timeline.tool;
-        let folded_text = format!("{} ▾", tool_name(tool));
+        let folded_text = ui_kit::timeline::folded_toolbar_text(&self.audio_page.timeline);
         let folded = text_w(ui, egui::RichText::new(folded_text.as_str())) + 2.0 * padding + spacing;
         let plan = audio_page::bar::plan(ui.available_width() - GAP, row, folded, &right, GAP);
         ui.add_space(GAP);
@@ -489,7 +478,7 @@ impl Editor {
                 self.shortcuts.tip(super::toolbar_action(click))
             })
         } else {
-            folded_tools(ui, &folded_text, &self.audio_page.timeline)
+            ui_kit::timeline::folded_toolbar(ui, &self.audio_page.timeline)
         };
         if let Some(click) = click {
             self.run_action(super::toolbar_action(click));
@@ -538,12 +527,12 @@ impl Editor {
         let show = self.audio_page.show;
         let shown_audio: Vec<ui_kit::TimelineTrack> = drawn
             .audio
-            .into_iter()
+            .drain(..)
             .zip(&seq.audio_tracks)
             .filter(|(_, t)| show.shows(t.sound.role))
             .map(|(d, _)| d)
             .collect();
-        let reference = video_reference(drawn.video);
+        let reference = video_reference(std::mem::take(&mut drawn.video));
         let now = Instant::now();
         let mut audio = shown_audio;
         self.track_paces.time(&mut audio, now);
@@ -569,21 +558,16 @@ impl Editor {
         let data = ui_kit::TimelineData {
             video: &video,
             audio: &audio,
-            length: seq.length().as_secs_f64(),
-            fps: seq.settings.frame_rate.as_f64(),
-            playhead: self.viewer.playhead.as_secs_f64(),
-            needle: needle.map(Time::as_secs_f64),
-            region: seq.region.map(|r| (r.start.as_secs_f64(), r.end.as_secs_f64())),
-            markers: &drawn.markers,
             highlights: &self.silence.found,
             spans: &spans,
-            follow: self.playback.is_some(),
-            cache: ui_kit::timeline::CacheBar {
-                ranges: &drawn.cache,
-                about: timeline_panel::CACHE_BAR_ABOUT,
-            },
-            keyframe_eases: &timeline_panel::EASES,
-            roles: &offered,
+            ..timeline_panel::data(
+                seq,
+                &drawn,
+                self.viewer.playhead,
+                needle,
+                self.playback.is_some(),
+                &offered,
+            )
         };
         let mut child = ui.new_child(
             egui::UiBuilder::new()
@@ -658,55 +642,6 @@ impl Editor {
             self.errors.push(&err);
         }
     }
-}
-
-/// A timeline tool's name, for the folded tools.
-fn tool_name(tool: ui_kit::Tool) -> &'static str {
-    match tool {
-        ui_kit::Tool::Select => "Select",
-        ui_kit::Tool::Blade => "Blade",
-        ui_kit::Tool::Ripple => "Ripple",
-        ui_kit::Tool::Roll => "Roll",
-        ui_kit::Tool::Slip => "Slip",
-        ui_kit::Tool::Slide => "Slide",
-    }
-}
-
-/// The timeline's tools folded into one dropdown, for a narrow bar.
-fn folded_tools(
-    ui: &mut egui::Ui,
-    text: &str,
-    view: &ui_kit::TimelineView,
-) -> Option<ui_kit::timeline::ToolbarClick> {
-    use ui_kit::timeline::ToolbarClick as C;
-    let mut clicked = None;
-    ui.menu_button(text, |ui| {
-        for tool in [
-            ui_kit::Tool::Select,
-            ui_kit::Tool::Blade,
-            ui_kit::Tool::Ripple,
-            ui_kit::Tool::Roll,
-            ui_kit::Tool::Slip,
-            ui_kit::Tool::Slide,
-        ] {
-            if ui.selectable_label(view.tool == tool, tool_name(tool)).clicked() {
-                clicked = Some(C::Tool(tool));
-                ui.close();
-            }
-        }
-        ui.separator();
-        if ui.selectable_label(view.snapping, "Snapping").clicked() {
-            clicked = Some(C::Snapping);
-            ui.close();
-        }
-        if ui.button("Show the whole timeline").clicked() {
-            clicked = Some(C::Fit);
-            ui.close();
-        }
-    })
-    .response
-    .on_hover_text("The timeline's tools (the bar is too narrow for them in a row)");
-    clicked
 }
 
 /// A Show choice with how many tracks it shows: "All tracks (30)".

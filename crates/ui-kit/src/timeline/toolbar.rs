@@ -1,6 +1,8 @@
 //! The row of tools above the timeline, the same on every page that shows
-//! one: each button is a [`ToolbarClick`], which knows its picture and
-//! whether it is lit; the page gives each its tooltip (with its shortcut).
+//! one: each button is a [`ToolbarClick`], which knows its picture, its
+//! name and whether it is lit; the page gives each its tooltip (with its
+//! shortcut). Where the row does not fit, [`folded_toolbar`] offers the
+//! same buttons in one dropdown.
 
 use super::{TimelineView, Tool};
 use crate::Theme;
@@ -39,6 +41,16 @@ impl ToolbarClick {
             ToolbarClick::Snapping => view.snapping,
             ToolbarClick::Fit => false,
             ToolbarClick::RoughCut => view.rough_cut,
+        }
+    }
+
+    /// The button's name, as the folded dropdown lists it.
+    pub fn name(self) -> &'static str {
+        match self {
+            ToolbarClick::Tool(t) => t.name(),
+            ToolbarClick::Snapping => "Snapping",
+            ToolbarClick::Fit => "Show the whole timeline",
+            ToolbarClick::RoughCut => "Rough cut",
         }
     }
 
@@ -97,6 +109,61 @@ pub fn toolbar(
         }
     });
     clicked
+}
+
+/// The text of the [`folded_toolbar`]'s button: the tool in use and a
+/// downward arrow. A page measures it to know how wide the folded bar is.
+pub fn folded_toolbar_text(view: &TimelineView) -> String {
+    format!("{} \u{25BE}", view.tool.name())
+}
+
+/// The [`toolbar`]'s buttons folded into one dropdown, for a bar too
+/// narrow for them in a row: [`ToolbarClick::ALL`] in order, by name, a
+/// line where the row has its gap, lit as the row lights them.
+pub fn folded_toolbar(ui: &mut Ui, view: &TimelineView) -> Option<ToolbarClick> {
+    let mut clicked = None;
+    ui.menu_button(folded_toolbar_text(view), |ui| {
+        for entry in folded_entries(view) {
+            if entry.line_before {
+                ui.separator();
+            }
+            let name = entry.click.name();
+            let r = if entry.click == ToolbarClick::Fit {
+                ui.button(name)
+            } else {
+                ui.selectable_label(entry.lit, name)
+            };
+            if r.clicked() {
+                clicked = Some(entry.click);
+                ui.close();
+            }
+        }
+    })
+    .response
+    .on_hover_text("The timeline's tools (the bar is too narrow for them in a row)");
+    clicked
+}
+
+/// One line of the [`folded_toolbar`]'s dropdown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FoldedEntry {
+    click: ToolbarClick,
+    /// Drawn lit, as the row would draw its button.
+    lit: bool,
+    /// A line above it, where the row has its gap.
+    line_before: bool,
+}
+
+/// The dropdown's lines: every button of the row, in its order.
+fn folded_entries(view: &TimelineView) -> Vec<FoldedEntry> {
+    ToolbarClick::ALL
+        .into_iter()
+        .map(|click| FoldedEntry {
+            click,
+            lit: click.is_on(view),
+            line_before: click.starts_group(),
+        })
+        .collect()
 }
 
 /// While the volume and pan lines are worked (`TimelineView::lines`): a
@@ -267,6 +334,52 @@ mod tests {
         let groups: Vec<_> = all.iter().filter(|c| c.starts_group()).collect();
         assert_eq!(groups, [&ToolbarClick::Snapping]);
         assert_eq!(TOOLBAR_WIDTH, 9.0 * 30.0 + 10.0 + 9.0 * 4.0, "as wide as before");
+    }
+
+    #[test]
+    fn every_button_has_its_own_name_and_each_tool_its_own() {
+        let names: Vec<_> = ToolbarClick::ALL.iter().map(|c| c.name()).collect();
+        for (i, n) in names.iter().enumerate() {
+            assert!(!n.is_empty());
+            assert!(!names[i + 1..].contains(n), "{n} twice");
+        }
+        assert_eq!(ToolbarClick::RoughCut.name(), "Rough cut");
+        assert_eq!(ToolbarClick::Tool(Tool::Slide).name(), Tool::Slide.name());
+        let view = TimelineView {
+            tool: Tool::Ripple,
+            ..TimelineView::default()
+        };
+        assert_eq!(folded_toolbar_text(&view), "Ripple \u{25BE}");
+    }
+
+    /// The folded dropdown offers every button of the row, Rough cut
+    /// included, in the row's order, lit as the row lights them.
+    #[test]
+    fn the_folded_dropdown_lists_every_button_of_the_row() {
+        let view = TimelineView {
+            tool: Tool::Slip,
+            rough_cut: true,
+            ..TimelineView::default()
+        };
+        let entries = folded_entries(&view);
+        let clicks: Vec<_> = entries.iter().map(|e| e.click).collect();
+        assert_eq!(clicks, ToolbarClick::ALL);
+        assert!(clicks.contains(&ToolbarClick::RoughCut));
+        let lines: Vec<_> = entries
+            .iter()
+            .filter(|e| e.line_before)
+            .map(|e| e.click)
+            .collect();
+        assert_eq!(lines, [ToolbarClick::Snapping]);
+        let lit: Vec<_> = entries.iter().filter(|e| e.lit).map(|e| e.click).collect();
+        assert_eq!(
+            lit,
+            [
+                ToolbarClick::Tool(Tool::Slip),
+                ToolbarClick::Snapping,
+                ToolbarClick::RoughCut
+            ]
+        );
     }
 
     #[test]

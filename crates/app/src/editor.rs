@@ -3122,7 +3122,6 @@ impl Editor {
         let Some(document) = &self.document else { return };
         let p = document.project();
         let Some(seq) = p.active() else { return };
-        let rate = seq.settings.frame_rate;
         // A removed track's height is forgotten.
         self.timeline.heights.keep_only(&timeline_panel::track_ids(seq));
         if seq.length() == project::Time::ZERO {
@@ -3305,23 +3304,15 @@ impl Editor {
             }
             let roles = crate::audio_page::roles::offered();
             let data = ui_kit::TimelineData {
-                video: &drawn.video,
-                audio: &drawn.audio,
-                length,
-                fps: rate.as_f64(),
-                playhead: self.viewer.playhead.as_secs_f64(),
-                needle: needle.map(Time::as_secs_f64),
-                region: seq.region.map(|r| (r.start.as_secs_f64(), r.end.as_secs_f64())),
-                markers: &drawn.markers,
                 highlights: &self.silence.found,
-                spans: &[],
-                follow: self.playback.is_some(),
-                cache: ui_kit::timeline::CacheBar {
-                    ranges: &drawn.cache,
-                    about: timeline_panel::CACHE_BAR_ABOUT,
-                },
-                keyframe_eases: &timeline_panel::EASES,
-                roles: &roles,
+                ..timeline_panel::data(
+                    seq,
+                    &drawn,
+                    self.viewer.playhead,
+                    needle,
+                    self.playback.is_some(),
+                    &roles,
+                )
             };
             let status_height = if self.status.is_empty() { 0.0 } else { 24.0 };
             let height = (ui.available_height() - status_height).max(160.0);
@@ -3352,23 +3343,7 @@ impl Editor {
                 master = self.master.show(ui, &self.theme, rect, mix);
             });
         }
-        if master.reset
-            && let Some(playback) = &self.playback
-        {
-            playback.reset_loudness();
-        }
-        if let Some(target) = master.target {
-            self.settings.loudness_target = target;
-        }
-        if let Some(gain_db) = master.gain_db {
-            let result = self.with_document(|d| {
-                let sequence = d.project().active_sequence;
-                d.apply(Command::SetMasterGain { sequence, gain_db })
-            });
-            if let Err(err) = result {
-                self.errors.push(&err);
-            }
-        }
+        self.master_asks(master);
         for event in timeline_events {
             self.timeline_event(event);
         }
@@ -3396,6 +3371,30 @@ impl Editor {
                 egui::RichText::new(&self.status)
                     .color(self.theme.text_secondary.gamma_multiply(self.status_strength)),
             );
+        }
+    }
+
+    /// What the master column asked, the same on every page that shows
+    /// it: its loudness counted again, another loudness aimed for (a
+    /// setting, written by the settings keeper), or a new volume for the
+    /// mix (one undo step).
+    fn master_asks(&mut self, asks: ui_kit::master::MasterResponse) {
+        if asks.reset
+            && let Some(playback) = &self.playback
+        {
+            playback.reset_loudness();
+        }
+        if let Some(target) = asks.target {
+            self.settings.loudness_target = target;
+        }
+        if let Some(gain_db) = asks.gain_db {
+            let result = self.with_document(|d| {
+                let sequence = d.project().active_sequence;
+                d.apply(Command::SetMasterGain { sequence, gain_db })
+            });
+            if let Err(err) = result {
+                self.errors.push(&err);
+            }
         }
     }
 

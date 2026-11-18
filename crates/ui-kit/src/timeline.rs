@@ -90,7 +90,7 @@ pub use loading::{LoadKind, LoadState, Loading, percent};
 pub use menus::RegionCut;
 pub use rows::{MAX_TRACK, MIN_TRACK, TrackHeights};
 pub use ruler::{minor_step, ruler_step};
-pub use toolbar::{TOOLBAR_WIDTH, ToolbarClick, lines_chip, toolbar};
+pub use toolbar::{TOOLBAR_WIDTH, ToolbarClick, folded_toolbar, folded_toolbar_text, lines_chip, toolbar};
 #[cfg(test)]
 pub(crate) use track_controls::{fader_db_at, fader_tip, fader_x};
 pub use track_views::COMPACT_TRACK;
@@ -565,6 +565,20 @@ pub enum Tool {
     Slip,
     /// Drag a clip between its neighbours; they get longer or shorter.
     Slide,
+}
+
+impl Tool {
+    /// The tool's name, as menus show it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Tool::Select => "Select",
+            Tool::Blade => "Blade",
+            Tool::Ripple => "Ripple",
+            Tool::Roll => "Roll",
+            Tool::Slip => "Slip",
+            Tool::Slide => "Slide",
+        }
+    }
 }
 
 /// Where the timeline is looking. Kept by the page between frames.
