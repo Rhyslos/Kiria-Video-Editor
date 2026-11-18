@@ -48,8 +48,25 @@ impl UpdatePrefs {
         })
     }
 
+    /// Reads the choices afresh, lets `change` change them and saves them,
+    /// all while holding [`crate::ChoicesLock`], so a change another
+    /// launcher makes at the same moment (a version marked bad) is never
+    /// written away. Returns what was saved. Blocks for a few seconds at
+    /// most: never call it on an interface thread.
+    pub fn change(
+        data_dir: &std::path::Path,
+        change: impl FnOnce(&mut UpdatePrefs),
+    ) -> diag::Result<UpdatePrefs> {
+        let _lock = crate::ChoicesLock::wait(data_dir);
+        let mut prefs = UpdatePrefs::load(data_dir);
+        change(&mut prefs);
+        prefs.save(data_dir)?;
+        Ok(prefs)
+    }
+
     /// Saves the choices, whole or not at all (a crash while saving leaves
-    /// the previous file).
+    /// the previous file). Replaces whatever the file holds: to change some
+    /// of the choices, use [`UpdatePrefs::change`].
     pub fn save(&self, data_dir: &std::path::Path) -> diag::Result<()> {
         use diag::Explain;
         let explain = || {
@@ -58,7 +75,7 @@ impl UpdatePrefs {
                 .fix("Check that the disk is not full. The choice still applies until the app closes.")
         };
         let text = self.to_text()?;
-        crate::state_file::write_whole(&data_dir.join(PREFS_FILE_NAME), text.as_bytes()).or_explain(explain)
+        diag::disk::write_atomic(&data_dir.join(PREFS_FILE_NAME), text.as_bytes()).or_explain(explain)
     }
 }
 
@@ -120,5 +137,33 @@ mod tests {
         // Saving fresh choices leaves the copy alone.
         UpdatePrefs::default().save(tmp.path()).unwrap();
         assert_eq!(std::fs::read_to_string(&aside).unwrap(), torn);
+    }
+
+    #[test]
+    fn changes_at_the_same_moment_never_lose_a_bad_version() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rounds = 40;
+        std::thread::scope(|scope| {
+            for writer in 0..2 {
+                let data_dir = tmp.path();
+                scope.spawn(move || {
+                    for round in 0..rounds {
+                        UpdatePrefs::change(data_dir, |prefs| {
+                            prefs.bad_versions.push(format!("{writer}.{round}.0"));
+                            // A slow writer: the other one's change lands in between without the lock.
+                            std::thread::sleep(std::time::Duration::from_millis(1));
+                        })
+                        .unwrap();
+                    }
+                });
+            }
+        });
+        let mut bad = UpdatePrefs::load(tmp.path()).bad_versions;
+        bad.sort();
+        let mut expected: Vec<String> = (0..2)
+            .flat_map(|w| (0..rounds).map(move |r| format!("{w}.{r}.0")))
+            .collect();
+        expected.sort();
+        assert_eq!(bad, expected);
     }
 }

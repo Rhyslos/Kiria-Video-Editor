@@ -111,7 +111,7 @@ impl Health {
                 .fix("Check that the disk is not full.")
         };
         let text = ron::ser::to_string_pretty(self, ron::ser::PrettyConfig::default()).or_explain(explain)?;
-        crate::state_file::write_whole(&data_dir.join(HEALTH_FILE), text.as_bytes()).or_explain(explain)
+        diag::disk::write_atomic(&data_dir.join(HEALTH_FILE), text.as_bytes()).or_explain(explain)
     }
 
     /// Records a start; returns the failed starts in a row for that version.
@@ -150,7 +150,7 @@ impl RollbackNotice {
     fn save(&self, data_dir: &Path) -> diag::Result<()> {
         let text =
             ron::ser::to_string(self).or_explain(|| AppError::new("The rollback note can't be written"))?;
-        crate::state_file::write_whole(&data_dir.join(NOTICE_FILE), text.as_bytes()).or_explain(|| {
+        diag::disk::write_atomic(&data_dir.join(NOTICE_FILE), text.as_bytes()).or_explain(|| {
             AppError::new("The rollback note can't be written").fix("Check that the disk is not full.")
         })
     }
@@ -193,6 +193,10 @@ pub fn after_start(
             Ok(None)
         }
         StartOutcome::Failed if failures >= FAILURES_BEFORE_ROLLBACK => {
+            // Held from the read to the write, so a version panel's change
+            // in another launcher never lands between them and the version
+            // marked bad here is never written away.
+            let _choices = crate::ChoicesLock::wait(data_dir);
             let mut prefs = UpdatePrefs::load(data_dir);
             let Some(target) = rollback_target(layout, version, &prefs.bad_versions) else {
                 tracing::warn!(
@@ -219,8 +223,10 @@ pub fn after_start(
 }
 
 /// After `current` started fine: keeps it and the [`VERSIONS_KEPT`] newest
-/// earlier versions, removes the rest (and any newer leftovers that aren't current).
+/// earlier versions, removes the rest (and any newer leftovers that aren't
+/// current), and what a crash long ago left of a write of `current`.
 pub fn prune_after_good_start(layout: &Layout, current: &str) {
+    diag::disk::remove_old_temps(layout.root(), diag::disk::TEMP_LEFT_FOR);
     let Ok(current_v) = Version::parse(current) else {
         return;
     };

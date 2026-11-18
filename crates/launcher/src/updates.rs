@@ -12,8 +12,10 @@
 //! `updates.ron` too, above all to mark a version that failed to start as
 //! bad. So the panel never writes back the copy it read at start: each
 //! write reads the file afresh and lays only the choices made in this
-//! window over it ([`Changes`]), and each check does the same, so a version
-//! marked bad elsewhere is never offered or written away.
+//! window over it ([`Changes`]), holding the lock between launchers from
+//! the read to the write (`updater::UpdatePrefs::change`, on the keeper's
+//! thread), and each check reads it afresh too, so a version marked bad
+//! elsewhere is never offered or written away.
 
 use crate::work::{Poll, Task};
 use egui::RichText;
@@ -217,13 +219,15 @@ impl Updates {
     /// Hands the choices to the keeper, which writes them whole on its own
     /// thread; a failure shows on a later frame ([`Updates::poll`]). The
     /// keeper reads the file afresh and changes only what this window
-    /// changed, so what another launcher wrote meanwhile (a version marked
-    /// bad) is kept. Every change made here goes each time, since the keeper
-    /// drops a change still waiting for a newer one.
+    /// changed, under the lock between launchers, so what another launcher
+    /// wrote meanwhile (a version marked bad) is kept. Every change made
+    /// here goes each time, since the keeper drops a change still waiting
+    /// for a newer one.
     fn save_prefs(&mut self) {
         let (data_dir, changes) = (self.data_dir.clone(), self.changes.clone());
-        self.prefs_keeper
-            .keep(move || changes.over(UpdatePrefs::load(&data_dir)).to_text());
+        self.prefs_keeper.keep_written(move || {
+            UpdatePrefs::change(&data_dir, |prefs| *prefs = changes.over(std::mem::take(prefs))).map(drop)
+        });
     }
 
     /// Lets a running download finish (the window has closed), and the

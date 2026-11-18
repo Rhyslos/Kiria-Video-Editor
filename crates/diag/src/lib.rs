@@ -4,6 +4,8 @@
 //! - [`logging`]: rolling log files in the app's data folder.
 //! - [`crash`]: writes a crash report when the app panics.
 //! - [`session`]: notices when the previous run ended without closing cleanly.
+//! - [`disk`]: small files written whole or not at all, and what crashes
+//!   left of such writes removed.
 //! - [`marker`]: markers kept per process with a lock beside each, which
 //!   tell a process still going from one that crashed.
 //!
@@ -11,6 +13,7 @@
 //! [`Diagnostics::finish`] at the end.
 
 pub mod crash;
+pub mod disk;
 mod error;
 mod log_writer;
 pub mod logging;
@@ -39,7 +42,8 @@ pub struct Diagnostics {
     _log: logging::LogGuard,
 }
 
-/// Sets up the data folders, logging, the crash handler and session tracking.
+/// Sets up the data folders, logging, the crash handler and session tracking,
+/// and removes writes left unfinished long ago ([`disk::remove_old_temps`]).
 ///
 /// `app_version` is the caller's version, usually `brand::VERSION`.
 pub fn start(app_version: &'static str) -> Result<Diagnostics> {
@@ -47,6 +51,7 @@ pub fn start(app_version: &'static str) -> Result<Diagnostics> {
     dirs.create()?;
     let log = logging::init(&dirs.logs, LOG_DAYS_KEPT)?;
     start_crash_reports(&dirs, app_version);
+    disk::remove_old_temps(&dirs.data, disk::TEMP_LEFT_FOR);
     let started = session::Session::start(&dirs.data)?;
     if started.previous_crashed {
         tracing::warn!("the previous run did not close cleanly");
@@ -61,13 +66,15 @@ pub fn start(app_version: &'static str) -> Result<Diagnostics> {
 }
 
 /// Folders, logging (its own `<name>.YYYY-MM-DD.log` files) and crash
-/// reports for a helper program such as the launcher. No crash detection:
+/// reports for a helper program such as the launcher, with old unfinished
+/// writes removed as in [`start`]. No crash detection:
 /// only the editor's own runs count as sessions.
 pub fn start_helper(name: &str, app_version: &'static str) -> Result<(AppDirs, logging::LogGuard)> {
     let dirs = AppDirs::locate()?;
     dirs.create()?;
     let log = logging::init_named(&dirs.logs, LOG_DAYS_KEPT, name)?;
     start_crash_reports(&dirs, app_version);
+    disk::remove_old_temps(&dirs.data, disk::TEMP_LEFT_FOR);
     Ok((dirs, log))
 }
 

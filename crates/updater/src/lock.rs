@@ -11,10 +11,18 @@
 //!
 //! Taking it never waits: a launcher that finds it taken skips that step
 //! this time and starts normally.
+//!
+//! [`ChoicesLock`] is a second, short lock (`updates.ron.lock`) held only
+//! while `updates.ron` is read, changed and written ([`crate::UpdatePrefs::change`],
+//! the rollback in [`crate::health::after_start`]), so two launchers' changes
+//! never land on the same old copy and a version marked bad is never written
+//! away. The writes are tiny, so taking it waits, but only a few seconds
+//! ([`CHOICES_WAIT`]); it is never taken on an interface thread.
 
 use diag::{AppError, Explain};
 use std::fs::{File, TryLockError};
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 /// The lock file, in the data folder. It stays there; only the lock on it
 /// comes and goes (removing it could let two launchers lock two files).
@@ -67,6 +75,64 @@ impl UpdateLock {
     }
 }
 
+/// The lock file of [`ChoicesLock`], in the data folder; it stays there.
+pub const CHOICES_LOCK_FILE: &str = "updates.ron.lock";
+
+/// The longest [`ChoicesLock::wait`] waits.
+pub const CHOICES_WAIT: Duration = Duration::from_secs(3);
+
+/// Held while `updates.ron` is read, changed and written. Dropping it lets go.
+#[derive(Debug)]
+pub struct ChoicesLock {
+    _file: File,
+}
+
+impl ChoicesLock {
+    /// Takes the lock, waiting up to [`CHOICES_WAIT`] for another holder
+    /// (another launcher, or another thread here) to let go. `None` when it
+    /// couldn't be had: the reason is logged and the caller goes ahead
+    /// without it, since a holder stuck for seconds is something gone wrong
+    /// and losing the change (a version marked bad above all) is worse.
+    pub fn wait(data_dir: &Path) -> Option<ChoicesLock> {
+        Self::wait_for(data_dir, CHOICES_WAIT)
+    }
+
+    fn wait_for(data_dir: &Path, longest: Duration) -> Option<ChoicesLock> {
+        let path = data_dir.join(CHOICES_LOCK_FILE);
+        let file = match File::options()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&path)
+        {
+            Ok(file) => file,
+            Err(err) => {
+                tracing::warn!(file = %path.display(), "the update choices are changed without their lock ({err})");
+                return None;
+            }
+        };
+        let deadline = Instant::now() + longest;
+        loop {
+            match file.try_lock() {
+                Ok(()) => return Some(ChoicesLock { _file: file }),
+                Err(TryLockError::WouldBlock) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(TryLockError::WouldBlock) => {
+                    tracing::warn!(
+                        "the update choices are still locked after {longest:?}; changing them anyway"
+                    );
+                    return None;
+                }
+                Err(TryLockError::Error(err)) => {
+                    tracing::warn!(file = %path.display(), "the update choices are changed without their lock ({err})");
+                    return None;
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -94,5 +160,24 @@ mod tests {
         let err = UpdateLock::try_take(&missing).unwrap_err();
         assert!(err.report().contains(LOCK_FILE));
         assert!(UpdateLock::for_step(&missing, "downloading").is_none());
+    }
+
+    #[test]
+    fn the_choices_lock_waits_for_its_holder_and_gives_up_in_time() {
+        let tmp = tempfile::tempdir().unwrap();
+        let held = ChoicesLock::wait(tmp.path()).unwrap();
+        let started = Instant::now();
+        assert!(ChoicesLock::wait_for(tmp.path(), Duration::from_millis(50)).is_none());
+        assert!(started.elapsed() >= Duration::from_millis(50), "it waited first");
+        // Let go while another waits: that one gets it.
+        std::thread::scope(|scope| {
+            let waiter = scope.spawn(|| ChoicesLock::wait(tmp.path()).is_some());
+            std::thread::sleep(Duration::from_millis(30));
+            drop(held);
+            assert!(waiter.join().unwrap());
+        });
+        // Not the update lock: one doesn't keep the other.
+        let _choices = ChoicesLock::wait(tmp.path()).unwrap();
+        assert!(UpdateLock::try_take(tmp.path()).unwrap().is_some());
     }
 }
