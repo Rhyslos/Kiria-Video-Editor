@@ -179,6 +179,9 @@ impl ClipPictures {
 /// A clip's loudness: peaks of its whole file, and where in the file the clip starts.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClipWaveform {
+    /// Which stream of which file the peaks are, the same while it is
+    /// read (`waveform::levels_for` keeps its levels by it).
+    pub id: egui::Id,
     pub peaks: std::sync::Arc<[f32]>,
     pub per_second: f32,
     /// Seconds into the file where the clip begins.
@@ -2667,7 +2670,7 @@ impl TimelineView {
         } else {
             Color32::from_white_alpha(170)
         };
-        let levels = crate::waveform::levels_for(p.ctx(), &w.peaks);
+        let levels = crate::waveform::levels_for(p.ctx(), w.id, &w.peaks);
         let mut mesh = egui::Mesh::default();
         let (mid, half) = (clip_area.center().y, clip_area.height() / 2.0);
         let mut x = clip_area.left().floor();

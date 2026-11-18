@@ -260,6 +260,7 @@ fn preview(
                     ui_kit::waveform::paint(
                         &ui.painter_at(wave),
                         wave,
+                        crate::waveforms::drawn_as(media.id, stream),
                         &peaks.values,
                         peaks.per_second as f32,
                         length,

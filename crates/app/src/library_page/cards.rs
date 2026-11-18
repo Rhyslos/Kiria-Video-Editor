@@ -93,7 +93,8 @@ pub fn line(
 /// waveform, or how far reading it has come.
 enum Shown {
     Picture(egui::TextureId, f32),
-    Sound(crate::waveforms::Look),
+    /// The waveform, and what its drawing is known by.
+    Sound(crate::waveforms::Look, egui::Id),
     Reading,
     Nothing,
 }
@@ -109,7 +110,7 @@ fn shown(page: &mut LibraryPage, readers: &mut Readers<'_>, media: &MediaRef, sk
         if look.state.is_some_and(|s| s != LoadState::Failed) {
             page.waiting += 1;
         }
-        return Shown::Sound(look);
+        return Shown::Sound(look, crate::waveforms::drawn_as(media.id, stream));
     }
     let Some(stream) = super::picture_stream(media) else {
         return Shown::Nothing;
@@ -153,12 +154,13 @@ fn draw_shown(
             let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
             painter.image(*texture, fitted, uv, egui::Color32::WHITE);
         }
-        Shown::Sound(look) => {
+        Shown::Sound(look, id) => {
             if let Some(peaks) = &look.peaks {
                 let inner = rect.shrink2(egui::vec2(6.0, rect.height() * 0.2));
                 ui_kit::waveform::paint(
                     painter,
                     inner,
+                    *id,
                     &peaks.values,
                     peaks.per_second as f32,
                     length,

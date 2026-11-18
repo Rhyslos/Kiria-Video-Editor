@@ -66,6 +66,12 @@ pub struct Look {
     pub state: Option<LoadState>,
 }
 
+/// What a drawing of this stream's waveform is known by: the same while
+/// it is read, so its levels are kept once (`ui_kit::waveform::levels_for`).
+pub fn drawn_as(media: MediaId, stream: u32) -> egui::Id {
+    egui::Id::unique(("waveform", media, stream))
+}
+
 #[derive(Default)]
 pub struct Waveforms {
     streams: HashMap<(MediaId, u32), State>,

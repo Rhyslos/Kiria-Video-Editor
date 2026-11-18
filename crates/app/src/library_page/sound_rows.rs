@@ -235,6 +235,7 @@ fn draw_waveform(
                 ui_kit::waveform::paint(
                     &painter,
                     rect,
+                    crate::waveforms::drawn_as(media.id, stream),
                     &peaks.values,
                     peaks.per_second as f32,
                     length,
