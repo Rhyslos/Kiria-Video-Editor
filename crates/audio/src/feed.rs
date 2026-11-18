@@ -26,8 +26,11 @@
 //! recording) is written as 0 and counted ([`FeedWriter::take_replaced`]):
 //! once inside, it would stay in the filters' and the limiter's state and
 //! silence or poison the track, or the whole mix, until playback started
-//! again. Every sound the mixer hears comes in here, so this is the one
-//! check.
+//! again. Every sound this crate's mixer hears comes in here, so its mixer
+//! never takes one whatever writes. It is not the only check: the
+//! engine's clips' sound (`engine::mix::Mixer::mix_track`) is already
+//! clean before it is written, and that also covers what reaches a
+//! [`crate::strip::Strip`] without a ring (the clarity check).
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
