@@ -9,7 +9,10 @@ name: Release
 # Every push to main publishes an automatic beta (e.g. 0.1.1-beta.12) that beta
 # builds pick up by themselves. Pull requests run the same build without
 # publishing, so every feature can be tried from a real installer (download
-# "windows" from the run's artifacts).
+# "windows" from the run's artifacts). They are never signed: the signing key
+# is only handed to runs of main and v* tags (the `release` environment,
+# RELEASING.md), so a pull request's code never sees it and its unmerged build
+# never carries a valid signature.
 on:
   push:
     tags: ["v*"]
@@ -37,6 +40,10 @@ concurrency:
   group: release-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
+# The token only reads unless a job asks for more (publish writes releases).
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   # Read by packaging/release-env.sh, which sets APP_VERSION, RELEASE_TAG and,
@@ -53,10 +60,10 @@ jobs:
     name: Windows installer
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Install pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Name, version and release tag
         shell: bash
         run: packaging/release-env.sh >> "$GITHUB_ENV"
@@ -102,7 +109,7 @@ jobs:
           Start-Sleep -Seconds 3
           if (Test-Path "$dir/versions") { throw "Uninstalling left the versions folder behind." }
           Write-Host "Installed, started and uninstalled cleanly."
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: windows
           path: |
@@ -117,10 +124,10 @@ jobs:
     if: false
     runs-on: ubuntu-22.04 # the oldest supported base keeps the AppImage working on older distributions
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Install pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Tools for building and testing
         run: sudo apt-get update && sudo apt-get install -y xvfb libegl1 libgl1-mesa-dri libxkbcommon-x11-0 file libasound2-dev
       - name: Name, version and release tag
@@ -138,14 +145,22 @@ jobs:
           ./"$APP_NAME-$APP_VERSION-linux-x86_64.AppImage" --appimage-extract >/dev/null
           LD_LIBRARY_PATH=squashfs-root/usr/lib xvfb-run -a -s "-screen 0 1600x1000x24" squashfs-root/usr/bin/editor --smoke-test
           rm -rf squashfs-root
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: linux
           path: target/dist/*.AppImage
 
+  # The only job that sees RELEASE_SIGNING_KEY. Pull requests skip it (and so
+  # the update drill, which needs a signed build: installed copies trust only
+  # the real key). Its environment, `release`, is where the key is kept and
+  # only main and v* tags may use it (RELEASING.md, "Where the signing key is
+  # kept"), so code that was not merged can't reach the key by changing this
+  # file either.
   sign:
     name: Sign the release
     needs: [windows] # and linux, when the AppImage is turned back on
+    if: github.event_name != 'pull_request'
+    environment: release
     runs-on: ubuntu-latest
     outputs:
       name: ${{ steps.facts.outputs.name }}
@@ -153,11 +168,11 @@ jobs:
       tag: ${{ steps.facts.outputs.tag }}
       signed: ${{ steps.sign.outputs.signed }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Install pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
-      - uses: actions/download-artifact@v4
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: dist
           merge-multiple: true
@@ -183,7 +198,7 @@ jobs:
           cargo xtask sign dist/manifest.json
           cargo xtask verify dist/manifest.json
           echo "signed=true" >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: signature
           path: |
@@ -200,8 +215,8 @@ jobs:
     if: needs.sign.outputs.signed == 'true' && inputs.crash_test != true
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: dist
           merge-multiple: true
@@ -220,7 +235,8 @@ jobs:
     name: Publish the release
     needs: [windows, sign, update-drill]
     # The drill is skipped for unsigned test runs and the rollback-test build; a failed drill stops here.
-    if: ${{ !cancelled() && needs.sign.result == 'success' && (needs.update-drill.result == 'success' || needs.update-drill.result == 'skipped') }}
+    # Pull requests skip signing and come here only to list what would go (nothing is published without a tag).
+    if: ${{ !cancelled() && needs.windows.result == 'success' && (needs.sign.result == 'success' || (github.event_name == 'pull_request' && needs.sign.result == 'skipped')) && (needs.update-drill.result == 'success' || needs.update-drill.result == 'skipped') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -230,8 +246,8 @@ jobs:
       RELEASE_TAG: ${{ needs.sign.outputs.tag }}
       BUILD_CRASH_TEST: ${{ inputs.crash_test && '1' || '' }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: dist
           merge-multiple: true
@@ -273,7 +289,7 @@ jobs:
     if: needs.sign.outputs.tag != '' && inputs.crash_test != true
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: The previous release updates to this one from GitHub
         shell: pwsh
         env:
