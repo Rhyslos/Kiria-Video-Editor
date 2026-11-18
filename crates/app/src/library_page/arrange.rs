@@ -391,8 +391,9 @@ mod tests {
         assert_eq!(empty.in_view(0.0, 100.0, sizes), 0..0);
     }
 
-    #[test]
-    fn ten_thousand_files_are_arranged_quickly() {
+    /// Ten thousand files, half of them under one label, and how long
+    /// arranging them and counting the sidebar took.
+    fn ten_thousand_arranged() -> std::time::Duration {
         let mut p = project();
         for id in 10..10_010 {
             p.media
@@ -407,6 +408,22 @@ mod tests {
         let took = started.elapsed();
         assert_eq!(a.items.len(), found.len());
         assert_eq!(facts.labels.values().copied().max(), Some(5_000));
+        took
+    }
+
+    #[test]
+    fn ten_thousand_files_are_arranged_and_counted() {
+        ten_thousand_arranged();
+    }
+
+    /// A measurement against the wall clock, so it is left out of the
+    /// ordinary run (a loaded machine would fail it for no fault of the
+    /// code). Run it by hand on a quiet machine:
+    /// `cargo test -p app -- --ignored ten_thousand_files_are_arranged_quickly`.
+    #[test]
+    #[ignore = "a measurement, run by hand on a quiet machine"]
+    fn ten_thousand_files_are_arranged_quickly() {
+        let took = ten_thousand_arranged();
         // Done again only when something changed; generous for debug builds.
         assert!(took.as_millis() < 500, "took {took:?}");
     }
