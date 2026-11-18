@@ -18,14 +18,22 @@ install -m 755 packaging/linux/AppRun "$APPDIR/AppRun"
 
 # FFmpeg libraries and licence.
 source packaging/ffmpeg.env
+: "${FFMPEG_LINUX_URL:?}" "${FFMPEG_LINUX_SHA256:?packaging/ffmpeg.env needs FFMPEG_LINUX_SHA256 (see packaging/README.md)}"
 curl -fsSL -o "$WORK/ffmpeg.tar.xz" "$FFMPEG_LINUX_URL"
+# Only the pinned build is shipped: refuse any other archive before unpacking.
+FF_SHA256=$(sha256sum "$WORK/ffmpeg.tar.xz" | cut -d' ' -f1)
+if [ "$FF_SHA256" != "$FFMPEG_LINUX_SHA256" ]; then
+  echo "The FFmpeg archive from $FFMPEG_LINUX_URL is not the pinned build: its SHA-256 is $FF_SHA256, packaging/ffmpeg.env expects $FFMPEG_LINUX_SHA256. Bump the pin on purpose (packaging/README.md)." >&2
+  exit 1
+fi
 tar -xJf "$WORK/ffmpeg.tar.xz" -C "$WORK"
 FF=$(find "$WORK" -maxdepth 1 -type d -name 'ffmpeg-*' | head -n 1)
 cp -a "$FF"/lib/*.so* "$APPDIR/usr/lib/"
 cp "$FF/LICENSE.txt" "$APPDIR/usr/share/licenses/FFmpeg-LICENSE.txt"
 {
   LD_LIBRARY_PATH="$FF/lib" "$FF/bin/ffmpeg" -hide_banner -version | head -n 1 || echo "FFmpeg $FFMPEG_SERIES"
-  echo "SHA-256 of the downloaded archive: $(sha256sum "$WORK/ffmpeg.tar.xz" | cut -d' ' -f1)"
+  echo "Archive: $FFMPEG_LINUX_URL"
+  echo "SHA-256 of the archive: $FF_SHA256"
 } > "$APPDIR/usr/share/licenses/FFMPEG-VERSION.txt"
 
 # The user guide, where the programs look for it (usr/bin/../share/user-guide).

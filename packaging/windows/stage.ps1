@@ -34,7 +34,14 @@ Set-Content -NoNewline -Path (Join-Path $Stage "current") -Value $version
 $ffmpegUrl = (Get-Content packaging/ffmpeg.env | Where-Object { $_ -match '^FFMPEG_WINDOWS_URL=' }) -replace '^FFMPEG_WINDOWS_URL=', ''
 $download = Join-Path $env:RUNNER_TEMP "ffmpeg.zip"
 if (-not $env:RUNNER_TEMP) { $download = "target/ffmpeg.zip" }
+$ffmpegSha256 = (Get-Content packaging/ffmpeg.env | Where-Object { $_ -match '^FFMPEG_WINDOWS_SHA256=' }) -replace '^FFMPEG_WINDOWS_SHA256=', ''
+if (-not $ffmpegUrl -or -not $ffmpegSha256) { throw "packaging/ffmpeg.env needs FFMPEG_WINDOWS_URL and FFMPEG_WINDOWS_SHA256 (see packaging/README.md)." }
 Invoke-WebRequest -Uri $ffmpegUrl -OutFile $download
+# Only the pinned build is shipped: refuse any other archive before unpacking.
+$ffmpegActual = (Get-FileHash $download -Algorithm SHA256).Hash.ToLower()
+if ($ffmpegActual -ne $ffmpegSha256.Trim().ToLower()) {
+    throw "The FFmpeg archive from $ffmpegUrl is not the pinned build: its SHA-256 is $ffmpegActual, packaging/ffmpeg.env expects $ffmpegSha256. Bump the pin on purpose (packaging/README.md)."
+}
 $extract = "target/ffmpeg-windows"
 Remove-Item -Recurse -Force $extract -ErrorAction SilentlyContinue
 Expand-Archive $download -DestinationPath $extract
@@ -43,8 +50,8 @@ Copy-Item (Join-Path $root.FullName "bin/*.dll") $versionDir
 Copy-Item (Join-Path $root.FullName "LICENSE.txt") (Join-Path $licenses "FFmpeg-LICENSE.txt")
 & (Join-Path $root.FullName "bin/ffmpeg.exe") -hide_banner -version | Select-Object -First 1 |
     Set-Content (Join-Path $licenses "FFMPEG-VERSION.txt")
-"SHA-256 of the downloaded archive: " + (Get-FileHash $download -Algorithm SHA256).Hash.ToLower() |
-    Add-Content (Join-Path $licenses "FFMPEG-VERSION.txt")
+"Archive: $ffmpegUrl" | Add-Content (Join-Path $licenses "FFMPEG-VERSION.txt")
+"SHA-256 of the archive: $ffmpegActual" | Add-Content (Join-Path $licenses "FFMPEG-VERSION.txt")
 
 # The user guide (opened from Settings › Help and with F1): the page and its
 # pictures only, not the tools that make them. Each version brings its own,
