@@ -31,6 +31,7 @@ mod media_folders;
 mod new_files;
 mod organise;
 mod package_window;
+mod pending;
 mod picture_handles;
 mod proxies;
 mod prune_window;

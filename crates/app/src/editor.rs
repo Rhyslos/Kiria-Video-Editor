@@ -3311,7 +3311,7 @@ impl Editor {
                 |m, stream| pictures.get(jobs, &ctx, m, stream),
             );
             // Sound being set in the inspector shows on its clips at once.
-            timeline_panel::show_sounds(&mut drawn, self.inspector.sounds_being_set());
+            timeline_panel::show_sounds(&mut drawn, &self.inspector.sounds_being_set());
             crate::audio_page::lines::fill(&mut drawn.audio, seq, self.lines.kind);
             self.timeline.lines = self.lines_on.then_some(self.lines);
             self.timeline.rough_cut = self.settings.rough_cut;
