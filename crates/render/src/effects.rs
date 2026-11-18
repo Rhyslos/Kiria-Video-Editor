@@ -13,6 +13,9 @@ use crate::compositor::{
 };
 
 /// One effect with its numbers, as the shaders take them.
+// A grade with its sampled curves is the largest by far; a frame has a few
+// effects, made once a frame, so the size costs nothing worth a box.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Effect {
     /// Darker towards the edges: `amount` 0-1, from `size` (0-1 of the way
@@ -67,7 +70,25 @@ pub struct GradeNumbers {
     pub balance: [f32; 3],
     pub highlights: f32,
     pub shadows: f32,
+    /// Its curves sampled at [`CURVE_SAMPLES`] even places from 0 to 1,
+    /// master, red, green and blue at each; none when they are straight.
+    pub curves: Option<[[f32; 4]; CURVE_SAMPLES]>,
 }
+
+/// How many places a grade's curves are sampled at.
+pub const CURVE_SAMPLES: usize = 33;
+
+/// Straight curves.
+const STRAIGHT: [[f32; 4]; CURVE_SAMPLES] = {
+    let mut rows = [[0.0; 4]; CURVE_SAMPLES];
+    let mut i = 0;
+    while i < CURVE_SAMPLES {
+        let x = i as f32 / (CURVE_SAMPLES - 1) as f32;
+        rows[i] = [x, x, x, x];
+        i += 1;
+    }
+    rows
+};
 
 impl GradeNumbers {
     /// One that changes nothing.
@@ -83,6 +104,7 @@ impl GradeNumbers {
         balance: [1.0; 3],
         highlights: 0.0,
         shadows: 0.0,
+        curves: None,
     };
 
     fn rows(&self) -> [[f32; 4]; 7] {
@@ -93,8 +115,17 @@ impl GradeNumbers {
             self.overall_wheel,
             [self.exposure, self.contrast, self.pivot, self.saturation],
             [self.balance[0], self.balance[1], self.balance[2], self.highlights],
-            [self.shadows, 0.0, 0.0, 0.0],
+            [
+                self.shadows,
+                if self.curves.is_some() { 1.0 } else { 0.0 },
+                0.0,
+                0.0,
+            ],
         ]
+    }
+
+    fn curve_rows(&self) -> [[f32; 4]; CURVE_SAMPLES] {
+        self.curves.unwrap_or(STRAIGHT)
     }
 }
 
@@ -122,6 +153,8 @@ impl Spot {
 }
 
 /// One pass of a shader: which, and its numbers.
+// As `Effect`: a grade's pass is the largest, and passes are few.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Copy)]
 enum Pass {
     Vignette {
@@ -195,6 +228,14 @@ impl Pass {
         }
     }
 
+    /// The pass's curve rows: a grade's curves, straight for every other.
+    fn curves(self) -> [[f32; 4]; CURVE_SAMPLES] {
+        match self {
+            Pass::Grade(numbers) => numbers.curve_rows(),
+            _ => STRAIGHT,
+        }
+    }
+
     /// The pass's grade rows: a grade's numbers, plain for every other.
     fn grade(self) -> [[f32; 4]; 7] {
         match self {
@@ -204,7 +245,7 @@ impl Pass {
     }
 }
 
-const PASS_BYTES: u64 = 48 + 7 * 16;
+const PASS_BYTES: u64 = 48 + 7 * 16 + CURVE_SAMPLES as u64 * 16;
 
 /// The effect passes for pictures made in one working space.
 #[derive(Debug)]
@@ -391,7 +432,13 @@ impl Effects {
             grade[5],
             grade[6],
         ];
-        let bytes: Vec<u8> = rows.as_flattened().iter().flat_map(|n| n.to_ne_bytes()).collect();
+        let curves = pass.curves();
+        let bytes: Vec<u8> = rows
+            .as_flattened()
+            .iter()
+            .chain(curves.as_flattened())
+            .flat_map(|n| n.to_ne_bytes())
+            .collect();
         let uniforms = uniform_buffer(device, PASS_BYTES);
         queue.write_buffer(&uniforms, 0, &bytes);
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {

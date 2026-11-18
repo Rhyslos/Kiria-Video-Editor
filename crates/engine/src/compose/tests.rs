@@ -206,3 +206,29 @@ fn a_small_copy_for_the_scopes_reads_the_picture_back() {
     assert!(sampled.rgb.iter().all(|p| p.iter().all(|v| *v > 0.98)), "white");
     assert_eq!(sampled.reading(), "100 % of the picture is clipped at white");
 }
+
+#[test]
+fn a_grade_curve_bends_the_light() {
+    let Some(mut composer) = composer() else {
+        eprintln!("no graphics device here: curves aren't checked");
+        return;
+    };
+    let size = (16, 16);
+    let mut layer_grade = project::GradeLayer::new("Base");
+    // White comes down to half on the display-like scale.
+    layer_grade.curves.master = project::Curve(vec![(1_000_000, 500_000)]);
+    let numbers = crate::frame::grade_numbers(&layer_grade);
+    assert!(numbers.curves.is_some());
+    let whole = FrameDescription {
+        size,
+        layers: vec![layer(
+            Area::fitted(size, size),
+            vec![render::Effect::Grade(numbers)],
+        )],
+        steps: vec![Step::Picture(0)],
+    };
+    let composed = composer.compose(&whole, vec![(0, white(size), None)]).unwrap();
+    let shown = light(&composer, &composed)[8 * 16 + 8];
+    let expected = 0.5f32.powf(2.4);
+    assert!((shown - expected).abs() < 0.02, "{shown} against {expected}");
+}

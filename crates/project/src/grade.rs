@@ -118,6 +118,114 @@ impl Default for Primary {
     }
 }
 
+/// A curve: points (in, out), each 0 to [`ONE`], sorted by `in`, joined
+/// smoothly without overshooting (monotone cubic). None, or the two ends
+/// alone at (0, 0) and (1, 1), leaves the picture as it is.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Curve(pub Vec<(i32, i32)>);
+
+impl Curve {
+    /// The most points a curve has.
+    pub const MOST_POINTS: usize = 16;
+
+    /// Whether it leaves the picture as it is.
+    pub fn is_plain(&self) -> bool {
+        self.0.iter().all(|(x, y)| x == y)
+    }
+
+    /// The points as shares of one, with the ends at 0 and 1 made when
+    /// missing (as straight on).
+    fn knots(&self) -> Vec<(f64, f64)> {
+        let one = f64::from(ONE);
+        let mut knots: Vec<(f64, f64)> = self
+            .0
+            .iter()
+            .map(|(x, y)| (f64::from(*x) / one, f64::from(*y) / one))
+            .collect();
+        if knots.first().is_none_or(|(x, _)| *x > 0.0) {
+            knots.insert(0, (0.0, 0.0));
+        }
+        if knots.last().is_none_or(|(x, _)| *x < 1.0) {
+            knots.push((1.0, 1.0));
+        }
+        knots
+    }
+
+    /// Its value at `x` (0 to 1).
+    pub fn at(&self, x: f64) -> f64 {
+        let k = self.knots();
+        let x = x.clamp(0.0, 1.0);
+        let n = k.len();
+        // Slopes between knots, then at each knot (Fritsch and Carlson's
+        // monotone cubic: no overshoot between two points).
+        let d: Vec<f64> = (0..n - 1)
+            .map(|i| (k[i + 1].1 - k[i].1) / (k[i + 1].0 - k[i].0).max(1e-9))
+            .collect();
+        let mut m = vec![0.0; n];
+        m[0] = d[0];
+        m[n - 1] = d[n - 2];
+        for i in 1..n - 1 {
+            m[i] = if d[i - 1] * d[i] <= 0.0 {
+                0.0
+            } else {
+                let (a, b) = (d[i - 1], d[i]);
+                3.0 * (a + b) / ((2.0 * b + a) / a + (b + 2.0 * a) / b)
+            };
+        }
+        let i = (0..n - 1).find(|i| x <= k[i + 1].0).unwrap_or(n - 2);
+        let h = (k[i + 1].0 - k[i].0).max(1e-9);
+        let t = (x - k[i].0) / h;
+        let (t2, t3) = (t * t, t * t * t);
+        let y = (2.0 * t3 - 3.0 * t2 + 1.0) * k[i].1
+            + (t3 - 2.0 * t2 + t) * h * m[i]
+            + (-2.0 * t3 + 3.0 * t2) * k[i + 1].1
+            + (t3 - t2) * h * m[i + 1];
+        y.clamp(0.0, 1.0)
+    }
+
+    /// Refuses points out of range, out of order or too many.
+    pub fn check(&self) -> diag::Result<()> {
+        let fine = self.0.len() <= Curve::MOST_POINTS
+            && self
+                .0
+                .iter()
+                .all(|(x, y)| (0..=ONE).contains(x) && (0..=ONE).contains(y))
+            && self.0.windows(2).all(|w| w[0].0 < w[1].0);
+        match fine {
+            true => Ok(()),
+            false => Err(AppError::new("That curve can't be used")
+                .why("A curve has up to 16 points from 0 to 1, each further along than the last.")),
+        }
+    }
+}
+
+/// A layer's curves: brightness (master) first, then red, green and blue.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Curves {
+    #[serde(skip_serializing_if = "crate::defaults::is_default")]
+    pub master: Curve,
+    #[serde(skip_serializing_if = "crate::defaults::is_default")]
+    pub red: Curve,
+    #[serde(skip_serializing_if = "crate::defaults::is_default")]
+    pub green: Curve,
+    #[serde(skip_serializing_if = "crate::defaults::is_default")]
+    pub blue: Curve,
+}
+
+impl Curves {
+    pub fn is_plain(&self) -> bool {
+        [&self.master, &self.red, &self.green, &self.blue]
+            .iter()
+            .all(|c| c.is_plain())
+    }
+
+    pub fn all(&self) -> [&Curve; 4] {
+        [&self.master, &self.red, &self.green, &self.blue]
+    }
+}
+
 /// One layer of a grade.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct GradeLayer {
@@ -127,6 +235,9 @@ pub struct GradeLayer {
     pub off: bool,
     #[serde(default, skip_serializing_if = "crate::defaults::is_default")]
     pub primary: Primary,
+    /// Its curves (format 29), applied after the primary corrections.
+    #[serde(default, skip_serializing_if = "crate::defaults::is_default")]
+    pub curves: Curves,
 }
 
 impl GradeLayer {
@@ -136,6 +247,7 @@ impl GradeLayer {
             name: name.into(),
             off: false,
             primary: Primary::PLAIN,
+            curves: Curves::default(),
         }
     }
 }
@@ -157,7 +269,9 @@ impl Grade {
 
     /// The layers that change something, in order.
     pub fn applied(&self) -> impl Iterator<Item = &GradeLayer> {
-        self.0.iter().filter(|l| !l.off && !l.primary.is_plain())
+        self.0
+            .iter()
+            .filter(|l| !l.off && !(l.primary.is_plain() && l.curves.is_plain()))
     }
 
     /// Layer `index`, made (with the layers before it) when missing.
@@ -179,7 +293,10 @@ impl Grade {
                 AppError::new("That grade has too many layers").why("A grade can have up to 16 layers.")
             );
         }
-        self.0.iter().try_for_each(|l| l.primary.check())
+        self.0.iter().try_for_each(|l| {
+            l.primary.check()?;
+            l.curves.all().iter().try_for_each(|c| c.check())
+        })
     }
 }
 
@@ -199,6 +316,28 @@ mod tests {
         assert_eq!(grade.0[2].name, "Layer 3");
         grade.0[0].off = true;
         assert!(!grade.is_graded(), "the one that changes something is off");
+    }
+
+    #[test]
+    fn a_curve_goes_through_its_points_smoothly_without_overshoot() {
+        let plain = Curve::default();
+        assert!(plain.is_plain());
+        assert!((plain.at(0.3) - 0.3).abs() < 1e-9, "no points: straight");
+        // An S: darker shadows, brighter highlights.
+        let s = Curve(vec![(250_000, 180_000), (750_000, 820_000)]);
+        assert!(!s.is_plain());
+        assert!((s.at(0.25) - 0.18).abs() < 1e-9 && (s.at(0.75) - 0.82).abs() < 1e-9);
+        let mut last = 0.0;
+        for i in 0..=100 {
+            let y = s.at(f64::from(i) / 100.0);
+            assert!(y >= last - 1e-12, "rising all the way");
+            last = y;
+        }
+        assert_eq!(s.at(1.0), 1.0);
+        assert!(
+            Curve(vec![(500_000, 100), (400_000, 100)]).check().is_err(),
+            "out of order"
+        );
     }
 
     #[test]

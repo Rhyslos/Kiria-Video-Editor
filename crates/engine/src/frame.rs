@@ -406,14 +406,29 @@ fn effects(clip: &Clip, at: Time) -> Vec<render::Effect> {
     let mut passes: Vec<render::Effect> = clip
         .grade
         .applied()
-        .map(|layer| render::Effect::Grade(grade_numbers(&layer.primary)))
+        .map(|layer| render::Effect::Grade(grade_numbers(layer)))
         .collect();
     passes.extend(effect_passes(clip, at));
     passes
 }
 
+/// A grade layer's curves sampled as the shader takes them, or none when
+/// they are straight.
+fn curve_samples(curves: &project::Curves) -> Option<[[f32; 4]; render::effects::CURVE_SAMPLES]> {
+    if curves.is_plain() {
+        return None;
+    }
+    let mut rows = [[0.0f32; 4]; render::effects::CURVE_SAMPLES];
+    for (i, row) in rows.iter_mut().enumerate() {
+        let x = i as f64 / (render::effects::CURVE_SAMPLES - 1) as f64;
+        *row = curves.all().map(|c| c.at(x) as f32);
+    }
+    Some(rows)
+}
+
 /// A grade layer's numbers as the shader takes them.
-pub fn grade_numbers(p: &project::Primary) -> render::GradeNumbers {
+pub fn grade_numbers(layer: &project::GradeLayer) -> render::GradeNumbers {
+    let p = &layer.primary;
     let wheel = |w: project::Wheel| {
         [
             fraction(w.red),
@@ -435,6 +450,7 @@ pub fn grade_numbers(p: &project::Primary) -> render::GradeNumbers {
         balance,
         highlights: fraction(p.highlights),
         shadows: fraction(p.shadows),
+        curves: curve_samples(&layer.curves),
     }
 }
 

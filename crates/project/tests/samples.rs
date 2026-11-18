@@ -194,6 +194,8 @@ fn rich_project() -> Project {
         blue: 100_000,
         brightness: 50_000,
     };
+    // A gentle S on its brightness (format 29).
+    grade.0[0].curves.master = project::Curve(vec![(250_000, 220_000), (750_000, 790_000)]);
     seq.video_tracks[0].clips.push_back(Clip {
         grade,
         look,
@@ -666,12 +668,20 @@ fn version_27_sample_opens_ungraded() {
 }
 
 #[test]
+fn version_28_sample_opens_with_straight_curves() {
+    let project = file::load(&sample_path(28)).expect("the version 28 sample opens");
+    let clip = &project.active().expect("a timeline").video_tracks[0].clips[0];
+    assert!(clip.grade.0.iter().all(|layer| layer.curves.is_plain()));
+}
+
+#[test]
 fn the_current_sample_has_a_graded_picture() {
     let project = file::load(&sample_path(FORMAT_VERSION)).expect("the sample opens");
     let clip = &project.active().expect("a timeline").video_tracks[0].clips[0];
     assert!(clip.grade.is_graded());
     assert_eq!(clip.grade.0[0].primary.exposure, -1_000_000);
     assert!(clip.grade.check().is_ok());
+    assert!(!clip.grade.0[0].curves.is_plain(), "an S curve");
 }
 
 #[test]
