@@ -5,9 +5,11 @@
 //! terminal. Set `RUST_LOG` (for example `RUST_LOG=debug` or
 //! `RUST_LOG=media=trace`) to change how much is written.
 //!
-//! Lines are written by a thread of their own ([`crate::log_writer`]);
-//! [`recent_lines`] has it catch up first, so the crash handler reads the
-//! lines written just before a panic.
+//! Lines are written by a thread of their own ([`crate::log_writer`]),
+//! which also keeps this process's last lines in memory. Every editor
+//! appends to the same daily file, so [`recent_lines`] reads those rather
+//! than the file, after having the writer catch up, so the crash handler
+//! has the lines this process wrote just before a panic and no other's.
 
 use crate::log_writer::BackgroundWriter;
 use crate::{AppError, Explain, Result};
@@ -35,13 +37,7 @@ const FLUSH_WAIT: Duration = Duration::from_millis(500);
 const CLOSE_WAIT: Duration = Duration::from_secs(1);
 
 /// The log this process writes, once [`init_named`] has started it.
-struct Active {
-    writer: BackgroundWriter,
-    dir: PathBuf,
-    name: String,
-}
-
-static ACTIVE: OnceLock<Active> = OnceLock::new();
+static ACTIVE: OnceLock<BackgroundWriter> = OnceLock::new();
 
 /// Keeps the log going. Dropping it writes out what is still queued
 /// (waiting a second at most).
@@ -100,26 +96,21 @@ pub fn init_named(logs_dir: &Path, days_kept: usize, name: &str) -> Result<LogGu
                 .why("The app tried to set up logging after it was already running.")
                 .fix("This is a bug in the app; please report it.")
         })?;
-    let _ = ACTIVE.set(Active {
-        writer: writer.clone(),
-        dir: logs_dir.to_path_buf(),
-        name: name.to_owned(),
-    });
+    let _ = ACTIVE.set(writer.clone());
     Ok(LogGuard(writer))
 }
 
-/// The last `count` lines of this process's log, after waiting briefly for
-/// the lines still queued to reach the file. Empty before logging starts.
-/// Safe to call from a panic hook: the wait is bounded and skipped on the
-/// writer's own thread.
+/// The last `count` lines this process logged (at most the last 200
+/// events), after waiting briefly for the lines still queued to be written.
+/// Read from the writer's memory, not the log file, which other processes
+/// write to as well. Empty before logging starts. Safe to call from a panic
+/// hook: the wait is bounded and skipped on the writer's own thread.
 pub fn recent_lines(count: usize) -> Vec<String> {
-    let Some(active) = ACTIVE.get() else {
+    let Some(writer) = ACTIVE.get() else {
         return Vec::new();
     };
-    active.writer.flush(FLUSH_WAIT);
-    latest_log_file_named(&active.dir, &active.name)
-        .map(|file| tail(&file, count))
-        .unwrap_or_default()
+    writer.flush(FLUSH_WAIT);
+    writer.recent(count)
 }
 
 /// The most recently written log file in `logs_dir`, if any.
