@@ -15,7 +15,7 @@
 use cache::proxy::{ProxyMode, Shelf};
 use engine::{Convert, Preview};
 use media::Decoding;
-use media::proxy::Steps;
+use media::proxy::{Built, Steps};
 use project::{Command, Project, Time};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -129,6 +129,9 @@ fn jump_to_first_picture() {
             &steps,
         )
         .expect("a proxy");
+    let Built::Written(written) = written else {
+        panic!("never stopped");
+    };
     let build = built_at.elapsed().as_secs_f64();
     let bytes = shelf.bytes();
     let judged =

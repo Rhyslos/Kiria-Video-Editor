@@ -200,13 +200,13 @@ fn gap_edges(seq: &project::Sequence, gap: &ui_kit::Gap) -> (Time, Time) {
 
 /// The clips in `after` that are not in `before`, in `after`'s order; a
 /// set, so a paste on a timeline of thousands of clips stays quick.
-fn added_clips(before: &[ClipId], after: Vec<ClipId>) -> Vec<ClipId> {
+pub(super) fn added_clips(before: &[ClipId], after: Vec<ClipId>) -> Vec<ClipId> {
     let before: HashSet<ClipId> = before.iter().copied().collect();
     after.into_iter().filter(|c| !before.contains(c)).collect()
 }
 
 /// Every clip of the open timeline.
-fn all_clips(p: &project::Project) -> Vec<ClipId> {
+pub(super) fn all_clips(p: &project::Project) -> Vec<ClipId> {
     p.active()
         .map(|s| s.tracks().flat_map(|t| t.clips.iter().map(|c| c.id)).collect())
         .unwrap_or_default()

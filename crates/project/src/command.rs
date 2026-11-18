@@ -2212,6 +2212,45 @@ mod tests {
         assert_eq!(times, vec![Time::seconds(10), Time::seconds(30)]);
     }
 
+    #[test]
+    fn a_new_label_never_takes_a_name_in_use() {
+        let f = fixture();
+        let add = |p: &Project, at| {
+            let seq = p.active().unwrap();
+            Command::AddLabel {
+                sequence: f.seq,
+                label: TimelineLabel {
+                    id: LabelId(0),
+                    name: seq.next_label_name(),
+                    at: Time::seconds(at),
+                    color: crate::model::LabelColor::Blue,
+                },
+            }
+            .apply(p)
+            .unwrap()
+        };
+        let p = add(&add(&add(&f.p, 1), 2), 3);
+        let names = |p: &Project| -> Vec<String> {
+            p.active()
+                .unwrap()
+                .labels
+                .iter()
+                .map(|l| l.name.clone())
+                .collect()
+        };
+        assert_eq!(names(&p), ["Label 1", "Label 2", "Label 3"]);
+        // Removing the second leaves two labels; the next is not a second "Label 3".
+        let second = p.active().unwrap().labels[1].id;
+        let p = Command::RemoveLabel {
+            sequence: f.seq,
+            label: second,
+        }
+        .apply(&p)
+        .unwrap();
+        let p = add(&p, 4);
+        assert_eq!(names(&p), ["Label 1", "Label 3", "Label 4"]);
+    }
+
     fn recording(audio: &[&str], seconds: i64) -> MediaRef {
         MediaRef {
             id: MediaId(0),

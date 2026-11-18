@@ -15,7 +15,7 @@
 //! atomics, so neither ever waits for the other.
 
 use diag::{AppError, Explain};
-use media::proxy::{Steps, Written};
+use media::proxy::{Built, Steps};
 use media::{Decoding, VideoDecoder};
 use project::Fingerprint;
 use serde::{Deserialize, Serialize};
@@ -213,7 +213,8 @@ impl Shelf {
     /// Builds the proxy of picture stream `stream` of `original` (`length`
     /// seconds long), decoding the original `decoding`'s way. Slow (the
     /// whole file is decoded): run it on a worker. The file appears only
-    /// when complete; stopped or failed, nothing is left.
+    /// when complete; stopped ([`Built::Stopped`]) or failed, nothing is
+    /// left.
     #[allow(clippy::too_many_arguments)]
     pub fn build(
         &self,
@@ -224,7 +225,7 @@ impl Shelf {
         decoding: Decoding,
         workers: usize,
         steps: &Steps<'_>,
-    ) -> diag::Result<Written> {
+    ) -> diag::Result<Built> {
         let done = self.file_for(fingerprint, stream).ok_or_else(|| {
             AppError::new("The proxy can't be made")
                 .why("The file's fingerprint in the project is not one this app makes, so no proxy can be named after it.")
@@ -243,9 +244,12 @@ impl Shelf {
             tracing::warn!("a cleared proxy's mark could not be taken off: {}", err.report());
         }
         let building = done.with_extension(format!("{}.{BUILDING}", std::process::id()));
-        let written = media::proxy::write(
+        let written = match media::proxy::write(
             original, stream, length, &building, decoding, false, workers, steps,
-        )?;
+        )? {
+            Built::Written(written) => written,
+            Built::Stopped => return Ok(Built::Stopped),
+        };
         std::fs::rename(&building, &done).or_explain(|| {
             let _ = std::fs::remove_file(&building);
             AppError::new("The proxy can't be made")
@@ -254,7 +258,7 @@ impl Shelf {
         })?;
         self.retiring().remove(&done);
         self.changed();
-        Ok(written)
+        Ok(Built::Written(written))
     }
 
     /// Deletes the proxy, if there is one. Returns whether there was. It
@@ -613,10 +617,10 @@ mod tests {
         let original = fixture("vfr-60.mkv");
         let fingerprint = media::fingerprint(&original).unwrap();
         let before = shelf.generation();
-        let written = shelf
+        let built = shelf
             .build(&original, 0, 2.0, &fingerprint, Decoding::Software, 1, &quietly())
             .unwrap();
-        assert!(written.frames > 0);
+        assert!(matches!(built, Built::Written(written) if written.frames > 0));
         let path = shelf.ready(&fingerprint, 0).expect("built");
         assert!(shelf.generation() > before, "the preview looks again");
         // Only the finished proxy is there.

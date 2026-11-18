@@ -102,6 +102,38 @@ pub struct Batch {
     pub cut_short: Vec<PathBuf>,
 }
 
+/// What the status line said about the timeline's settings settling, kept
+/// from the file that settled it until its own batch finishes, so a batch's
+/// summary repeats it and a later batch's never does.
+#[derive(Debug, Default)]
+pub struct SettledNote(Option<String>);
+
+impl SettledNote {
+    /// A file of the batch under way was added; `said` is what settling
+    /// the timeline said, if adding it did.
+    pub fn keep(&mut self, said: Option<String>) {
+        if said.is_some() {
+            self.0 = said;
+        }
+    }
+
+    /// `batch` finished: the line summing it up when it had several files
+    /// (with what settling said, when one of its files settled the
+    /// timeline), `None` for a file on its own. The note is dropped either
+    /// way.
+    pub fn finished(&mut self, batch: &Batch) -> Option<String> {
+        let said = self.0.take();
+        if batch.files <= 1 {
+            return None;
+        }
+        let line = format!("Imported {} of {} files", batch.imported(), batch.files);
+        Some(match said {
+            Some(said) => format!("{line}. {said}"),
+            None => line,
+        })
+    }
+}
+
 impl Batch {
     /// How many were added.
     pub fn imported(&self) -> usize {
@@ -490,6 +522,34 @@ mod tests {
                 stated_length: None,
             },
         }
+    }
+
+    #[test]
+    fn settling_is_said_only_in_the_summary_of_its_own_batch() {
+        let batch = |files| Batch {
+            id: 0,
+            place: true,
+            files,
+            done: files,
+            refused: Vec::new(),
+            cut_short: Vec::new(),
+            waits: false,
+            settle: None,
+        };
+        let mut note = SettledNote::default();
+        // One file on its own settles the timeline: no summary.
+        note.keep(Some("The timeline is now 1080p".into()));
+        assert_eq!(note.finished(&batch(1)), None);
+        // A later batch of three onto the settled timeline settles nothing.
+        note.keep(None);
+        assert_eq!(note.finished(&batch(3)).as_deref(), Some("Imported 3 of 3 files"));
+        // A batch whose first file settles it says so in its summary.
+        note.keep(Some("The timeline is now 4K".into()));
+        note.keep(None);
+        assert_eq!(
+            note.finished(&batch(2)).as_deref(),
+            Some("Imported 2 of 2 files. The timeline is now 4K")
+        );
     }
 
     #[test]
