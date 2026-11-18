@@ -4,7 +4,7 @@ A fast, light, native video editor, written in Rust.
 
 Kiria is a hobby project, built with Claude and maintained by one person. It is open source and will stay open source.
 
-> **Status: early development.** There is nothing to run yet. Progress is tracked in the [build plan](docs/build-plan.md).
+> **Status: early development.** The five pages work, with more still to come before the first version. Every change to `main` publishes an automatic test build (a beta) for Windows; Linux builds are paused for now. Progress is tracked in the [build plan](docs/build-plan.md).
 
 ## Planned for the first version
 
@@ -37,9 +37,14 @@ You need [Rust](https://rustup.rs). The exact version is pinned in `rust-toolcha
 ```sh
 git clone https://github.com/Rhyslos/kiria-video-editor
 cd kiria-video-editor
+cargo xtask ffmpeg      # once: fetches the pinned FFmpeg build (needed to build)
 cargo build --workspace
 cargo test --workspace
+cargo run -p app        # the editor
+cargo run -p launcher   # the project browser
 ```
+
+Building also needs libclang (for the FFmpeg bindings); on Windows set `LIBCLANG_PATH` if it isn't found.
 
 ## Project layout
 

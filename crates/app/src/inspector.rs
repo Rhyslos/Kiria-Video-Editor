@@ -754,10 +754,6 @@ pub fn timeline_rows(seq: &project::Sequence) -> Vec<(&'static str, String)> {
     ]
 }
 
-/// The clip the inspector is about: of the selected ones with a picture,
-/// the one on the highest track (what is seen on top), and on that track
-/// the earliest. With no picture selected, the selected sound clip on the
-/// highest audio track.
 /// The picture effects would go on: the clip the inspector shows, when it
 /// is a picture (on a video track) that plays a file or a timeline.
 pub fn effects_target(project: &Project, selected: &[ClipId]) -> Option<ClipId> {
@@ -765,6 +761,10 @@ pub fn effects_target(project: &Project, selected: &[ClipId]) -> Option<ClipId> 
     (track.kind == TrackKind::Video && !clip.is_adjustment()).then_some(clip.id)
 }
 
+/// The clip the inspector is about: of the selected ones with a picture,
+/// the one on the highest track (what is seen on top), and on that track
+/// the earliest. With no picture selected, the selected sound clip on the
+/// highest audio track.
 fn shown_clip<'a>(
     project: &'a Project,
     selected: &[ClipId],

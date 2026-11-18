@@ -1,6 +1,6 @@
 # engine
 
-Ties the parts together: what is on the timeline at a moment, and the workers that turn it into pictures (and later sound and exported files). The interface only sends requests and reads results back, so slow media can never freeze a window.
+Ties the parts together: what is on the timeline at a moment, and the workers that turn it into pictures, sound and exported files. The interface only sends requests and reads results back, so slow media can never freeze a window.
 
 ## Status
 

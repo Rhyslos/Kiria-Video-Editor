@@ -1,7 +1,8 @@
 //! The editor: window, pages and the start-up sequence.
 //!
-//! Usage: `editor [project file] [--open-last-save] [--import <media file or folder>]... [--playhead <seconds>] [--play] [--select-first-clip] [--cpu-colour] [--graphics-warning] [--decoding-warning] [--shortcuts-page <filter|rebinding|clash>] [--cheat-sheet <file.html>] [--smoke-test | --responsiveness-test | --screenshot <file.png>]`.
-//! The extra options are for automated checks; normal use needs none.
+//! Usage: `editor [project file] [--open-last-save] [--import <media file or folder>]... [options]`.
+//! Every option is read by `run_mode::Options::parse`; the crate README
+//! shows them in use. Most are for automated checks; normal use needs none.
 
 // Release builds on Windows open no console window next to the editor.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
@@ -133,10 +134,10 @@ fn main() -> ExitCode {
     let (mut graphics_start, graphics_problems) =
         graphics::prepare(graphics::Program::Editor, &data_dir, run);
     problems.extend(graphics_problems);
-    if options.graphics_warning {
+    if options.automation.graphics_warning {
         graphics_start = graphics_start.with_warning_preview();
     }
-    if options.decoding_warning {
+    if options.automation.decoding_warning {
         graphics_start = graphics_start.with_decoding_warning_preview();
     }
 
@@ -148,32 +149,7 @@ fn main() -> ExitCode {
             project::Recovery::Recover
         },
         import: run_mode::expand_folders(&options.import),
-        playhead: options.playhead,
-        play: options.play,
-        media_drawer: options.media_drawer,
-        find: options.find.clone(),
-        watch_folders: options.watch_folders.clone(),
-        export_page: options.export_page,
-        export_queue: options.export_queue,
-        close_request: options.close_request,
-        page: options.page,
-        library_tab: options.library_tab.clone(),
-        library_select: options.library_select.clone(),
-        full_screen: options.full_screen,
-        select_first_clip: options.select_first_clip,
-        effects_drawer: options.effects_drawer,
-        sync_by_sound: options.sync_by_sound,
-        actions: options.actions.clone(),
-        then_actions: options.then_actions.clone(),
-        cpu_colour: options.cpu_colour,
-        hold_reading: options.hold_reading,
-        screenshot_wait: options.screenshot_wait,
-        hold_proxy: options.hold_proxy,
-        package_to: options.package_to.clone(),
-        hold_package: options.hold_package,
-        audio: options.audio,
     });
-    let pointer = options.pointer;
     // If this run crashes, the launcher offers to recover this project.
     if let (Some(diagnostics), Some(project)) = (&diagnostics, &project)
         && let Err(err) = diagnostics.note_open_project(&project.path)
@@ -182,6 +158,7 @@ fn main() -> ExitCode {
     }
 
     let report = Arc::new(Mutex::new(RunReport::default()));
+    let window_size = options.automation.window_size.unwrap_or([1440.0, 900.0]);
     let start = editor::Start {
         settings,
         data_dir,
@@ -190,14 +167,10 @@ fn main() -> ExitCode {
         mode: options.mode,
         report: Arc::clone(&report),
         problems,
-        pointer,
-        shortcuts_page: options.shortcuts_page,
-        settings_at: options.settings.clone(),
-        settings_search: options.settings_search.clone(),
+        automation: options.automation,
     };
 
     let mut code = ExitCode::SUCCESS;
-    let window_size = options.window_size.unwrap_or([1440.0, 900.0]);
     let window = || eframe::NativeOptions {
         viewport: ui_kit::icon::with_window_icon(egui::ViewportBuilder::default())
             .with_title(brand::APP_NAME)

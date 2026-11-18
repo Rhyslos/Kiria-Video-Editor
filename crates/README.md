@@ -13,14 +13,14 @@ The Cargo workspace members. One engine with no interface, and thin pages on top
 | [video-device](video-device/) | The window's graphics device as the video decoder shares it, and the copy of a decoded picture into images the viewer draws from | 4A |
 | [os](os/) | Small questions to the operating system: the keyboard layout in use, followed live; worker threads below the interface's priority; very small numbers as zero on the sound card's thread; opening a file with its program and showing a folder in the file manager; an allocator that counts, for tests | 4, 8 |
 | [app](app/) | The editor window and its five pages (binary `editor`) | 0.6 (done), 4 onwards |
-| [updater](updater/) | Release checks, signatures, safe installs, rollback | 1 (done), 3 |
-| [project-index](project-index/) | The launcher's list of known projects and folders (SQLite) | 2 |
-| [launcher](launcher/) | Project browser and update panel (binary `launcher`) | 2 |
+| [updater](updater/) | Release checks, signatures, safe installs, rollback | 1, 3 (done) |
+| [project-index](project-index/) | The launcher's list of known projects and folders (SQLite) | 2 (done) |
+| [launcher](launcher/) | Project browser and update panel (binary `launcher`) | 2 (done) |
 | [media](media/) | Probe, demux, decode, encode (FFmpeg wrapper) | 4A and 6.1 (probe, picture and sound decoding; encoding with `media::encode`: containers, codecs and each codec's encoders in the order tried) |
 | [cache](cache/) | RAM, GPU and disk caches, proxies, thumbnails, waveforms | 4A (waveforms, thumbnails, proxies done) |
 | [audio](audio/) | Real-time mixer, effects, meters, loudness | 8 (effects, master and mixer built; playback and export mix through it; the Audio page built) |
 | [render](render/) | GPU compositor (layers into a frame, a frame shown), colour, effects | 4C (compositor done), 7, 9 |
-| [engine](engine/) | Playback scheduler, export pipeline and the clarity check | 4A (preview picture, mixing, playback done), 6 |
+| [engine](engine/) | Playback scheduler, export pipeline and the clarity check | 4A (preview picture, mixing, playback done), 6 (export done), 8 (clarity check done) |
 | [library](library/) | Media index and search: types, labels, lists, notes, use on timelines, full-text search (SQLite, in memory, built from the project); media folders watched for new recordings | 5 (5.1, 5.2 done) |
 | [ml](ml/) | Model inference (background removal) | 9 |
 

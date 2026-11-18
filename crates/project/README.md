@@ -4,7 +4,7 @@ The project model, edit commands, undo/redo and autosave.
 
 ## Status
 
-Model, project file (format 24), commands, undo/redo, autosave journal and crash recovery done in Phases 0.3 and 0.4; the model and its commands grow with each page since (formats 2 to 24, every one with a migration and a stored sample).
+Model, project file (format 30), commands, undo/redo, autosave journal and crash recovery done in Phases 0.3 and 0.4; the model and its commands grow with each page since (formats 2 to 30, every one with a migration and a stored sample).
 
 ## Files
 
@@ -28,7 +28,7 @@ Model, project file (format 24), commands, undo/redo, autosave journal and crash
 | `src/titles.rs` | Format 26: `Title` (words, `TitleStyle`: LowerThird, Centred, EndCard; letter size in millionths of the frame's height, colour, band) and `TITLE_LENGTH`; `Title::new` (words to change, the layout's usual size), `check` (size 1 % to 40 %, at most 2 000 characters), `first_line` (the clip's name). Added by `AddTitle` (on a video track as an adjustment layer goes, `timelines::add_title`), changed by `SetTitle` |
 | `src/grade.rs` | Format 28: a picture's `Grade` from the Color page, layers (`GradeLayer`: a name, on or off, its `Primary`: exposure, white balance, contrast and pivot, saturation, highlights, shadows, and the Shadows, Midtones, Highlights and Overall `Wheel`s), all whole millionths; `Curves` (format 29: master, red, green and blue `Curve`s, points joined by a monotone cubic, `Curve::at`), where a layer applies (format 30: a `ColorRange` of hue, saturation and lightness with soft edges, `SKIN` its default, and a `Mask`, an ellipse or rectangle placed, sized, turned, feathered and maybe inverted, `MIDDLE` its default), `applied` (the layers that change something), `layer_mut` (made when missing), `check`. Set by `SetGrades` |
 | `src/defaults.rs` | `is_default`: which values are left out of project and template files (format 18), and the test that keeps the defaults they rely on from changing unnoticed |
-| `src/file.rs` | The project file: save (atomic, `disk::write_atomic`; a line per header field, then the project on one line without indenting: a third of the size, and any RON reader reads it the same, so files written indented before open as ever), load, the summary block, format versions and migrations. `read_info` and `read_journal_seq` read only the header (the text before the project; a file that keeps a header field after the project is read whole), and opening reads the header once and the project once; `read_info` gives the format version and summary, for project lists (from format 5 the summary also lists the media files, so lists can say which are missing; format 6 adds the timeline's master volume; format 7 each clip's speed; format 8 each clip's look; format 9 each clip's sound; format 10 each clip's keyframes; format 11 each clip's speed ramp and frame blending; format 12 each clip's kind: file, nested timeline or adjustment layer; format 13 the media's labels, lists and notes; format 14 the length a file imported with its end missing says it has; format 15 the Library's marks and levels; format 16 each track's sound and the master's; format 17 a sound clip's own volume and pan lines). `back_up_before_upgrade` keeps `<file>.backup-v<old>` before an older file is upgraded (copied whole with `disk::copy_atomic`; one already there is kept only when it reads as a project of that format, so a copy cut short is made again); `load_newer` reads a newer file for viewing. `versioned_from_str` is the one loader of a versioned file (its header, the refusal of a newer format, the migrations one version at a time), used by projects, templates and the labels for every project, each refused in its own words (`FileKind`) |
+| `src/file.rs` | The project file: save (atomic, `disk::write_atomic`; a line per header field, then the project on one line without indenting: a third of the size, and any RON reader reads it the same, so files written indented before open as ever), load, the summary block, format versions and migrations. `read_info` and `read_journal_seq` read only the header (the text before the project; a file that keeps a header field after the project is read whole), and opening reads the header once and the project once; `read_info` gives the format version and summary, for project lists (from format 5 the summary also lists the media files, so lists can say which are missing; format 6 adds the timeline's master volume; format 7 each clip's speed; format 8 each clip's look; format 9 each clip's sound; format 10 each clip's keyframes; format 11 each clip's speed ramp and frame blending; format 12 each clip's kind: file, nested timeline or adjustment layer; format 13 the media's labels, lists and notes; format 14 the length a file imported with its end missing says it has; format 15 the Library's marks and levels; format 16 each track's sound and the master's; format 17 a sound clip's own volume and pan lines; later formats are in the format history below). `back_up_before_upgrade` keeps `<file>.backup-v<old>` before an older file is upgraded (copied whole with `disk::copy_atomic`; one already there is kept only when it reads as a project of that format, so a copy cut short is made again); `load_newer` reads a newer file for viewing. `versioned_from_str` is the one loader of a versioned file (its header, the refusal of a newer format, the migrations one version at a time), used by projects, templates and the labels for every project, each refused in its own words (`FileKind`) |
 | `src/disk.rs` | Writing files safely. `write_atomic`: the whole text to a temporary file of this write's own (`.name.<number>.saving`, made with `create_new`, so two writers never share one), put on the disk, renamed over the old file (and, on Unix, the folder synced); on a failure the temporary file is removed and the old file is untouched. `copy_atomic` the same for a copy. `Keeper`: keeps one small file up to date without the caller waiting: `keep` hands over a closure that makes the text and returns at once; a thread of the keeper's own writes one change at a time, a change waiting is replaced by a newer one (the newest wins, an older one never lands after it), `take_failure` reports a failure once, `flush` waits (closing, tests). Settings, export presets, the labels for every project, templates, the timeline layout and the project file are all written this way. `safe_file_name` is the one way a name becomes a file or folder name (package folders, saved versions, templates): reserved, path and control characters become dashes, spaces and dots go from both ends, at most 60 characters (`clean_file_name`), and a name Windows keeps for a device (`is_device_name`: "aux", "CON.txt", COM1…) gets a dash ("aux-", "CON-.txt"); templates refuse such a name with the reason instead |
 | `src/versions.rs` | Saved versions: named copies in `<file>.versions/`, listed newest first; restoring one is the undoable `Restore` command. `load` makes a version's relative media paths (a package's) full from the project's folder. `is_folder` knows such a folder by its name, so project lists leave its files out |
 | `src/templates.rs` | Templates: a stretch of a timeline (`Template`: its clips on every track, placed from zero, and the media they use) saved as `<name>.template` in the app's data folder, with its own format version; `capture` cuts one out of a timeline, `InsertTemplate` drops one in, and `list`, `save`, `rename` and `delete` look after the files. See Templates below |
@@ -110,8 +110,9 @@ RON text with the extension from `brand::PROJECT_FILE_EXTENSION`:
 
 ```ron
 (
-  format_version: 4,
-  summary: Some((name: "...", settings: (...), length: (21, 1))),
+  format_version: 30,
+  summary: Some((name: "...", settings: (...), length: (21, 1), ...)),
+  journal_seq: 12,
   project: ( ... ),
 )
 ```
@@ -157,9 +158,9 @@ RON text with the extension from `brand::PROJECT_FILE_EXTENSION`:
 
 ### Changing the format
 
-1. Copy the current model types into `src/formats/v<N>.rs` (frozen, never edited again).
-2. Change the model and raise `file::FORMAT_VERSION` to `N + 1`.
-3. Add a step to `file::MIGRATIONS` that reads version `N` text into the frozen types, converts them, and writes version `N + 1` text.
+1. Change the model and raise `file::FORMAT_VERSION` to `N + 1`.
+2. Add a step to `file::MIGRATIONS` that turns version `N` text into version `N + 1` text. So far every change has only added fields with defaults, so each step only writes the new version number. A change that renames or reshapes something needs a frozen copy of the old types (never edited again) for its step to read the old text into, convert and write again.
+3. Add a row to the format history above.
 4. Write the new sample with `WRITE_SAMPLES=1 cargo test -p project --test samples`. Keep every older sample: they must still open.
 5. A value marked `skip_serializing_if = "crate::defaults::is_default"` is left out of files when it is its type's default, so that default is part of the format: changing it needs a new version whose migration writes the old value in (`defaults::tests::defaults_are_frozen` fails first). A new field gets the same mark when it has a default.
 6. Templates hold the same `Clip`, `Track` and `MediaRef`. A new field with a default needs nothing: the stored template samples are never rewritten, and they prove that a template saved before the field still reads (clips gained `look` that way; a template saved now keeps each clip's look). If old template text no longer reads into the types (a stored template sample stops opening), raise `templates::FORMAT_VERSION` too and add a step to `templates::MIGRATIONS`, the same way; the command in step 4 then writes the new format's sample, once.
@@ -191,7 +192,7 @@ A template is a stretch of a timeline to drop into any project: an intro, an out
 
 - **The file** is `<name>.template` in `templates/` in the app's data folder (`templates::folder`), written like a project (temporary file, then renamed). The name is the file's name, made safe for one; names differing only in capitals count as the same. A newer or damaged file is listed with why it can't be used, never skipped silently.
 - **Saving** (`Template::capture`) takes the timeline's region, or the whole timeline without one. A clip crossing an edge of the stretch is kept cut there (a cut start also moves where in the file it begins, by the clip's speed). Tracks keep their place: empty tracks after the last used one are dropped. Ids are renumbered from 1, so the same stretch gives the same template whatever project it came from. A link left with one clip is dropped. Track switches (mute, solo, lock, hide) are not kept, and clips on a hidden or muted track are saved like any others; a track's name and volume are kept, for when the track has to be made. Timeline labels are not part of a template.
-- **Format history:** version 1 is the first format.
+- **Format history:** version 1 is the first format; version 2 leaves out values that are their default, as project format 18 does (`templates::MIGRATIONS`: version 1 text reads as it is).
 
 ## Media paths
 
@@ -216,9 +217,10 @@ A project is more than one file on disk. Everything else sits beside the project
 
 | Name | What it is | Written by |
 |---|---|---|
-| `<file>.journal` | The autosave journal | `document.rs` |
-| `<file>.journal.discarded` | Unsaved work set aside by "Open last save" | `document.rs` |
-| `.<file>.saving` | A save in progress; only stays after a crash or power cut | `file.rs` |
+| `<file>.journal` | The autosave journal: every change since the project was opened | `document.rs` |
+| `<file>.journal.start` | The project as it was when the journal started, which recovery replays the journal onto | `document.rs` |
+| `<file>.journal.discarded-<YYYYMMDD-HHMMSS>` | Unsaved work set aside by "Open last save", one file each time (`<file>.journal.discarded` from earlier versions) | `document.rs` |
+| `.<file>.<number>.saving` | A save in progress; only stays after a crash or power cut (`.<file>.saving` from earlier versions) | `disk.rs` |
 | `<file>.backup-v<N>` | The file as it was before an upgrade from format `N` | `file.rs` |
 | `<file>.thumbnail.png` | The picture on the launcher's card | the editor, on every save |
 | `<file>.view` | The timeline layout | the editor |
@@ -226,7 +228,7 @@ A project is more than one file on disk. Everything else sits beside the project
 
 `side_files::existing(project_file)` returns those that are on disk, and `SideFile::path` says where each one is for a given project file. Whatever moves, renames or deletes a project uses these two and nothing else, so no file is forgotten. **A new kind of file kept beside projects must be added to `SideFile`** (the tests in `side_files.rs` compare the list with what this crate really writes beside a project).
 
-Imported recordings are not side files: a project only points at them, and nothing that moves or deletes a project touches them. Caches (waveforms, clip thumbnails) are kept in memory per media file, so there is nothing of them on disk to list yet.
+Imported recordings are not side files: a project only points at them, and nothing that moves or deletes a project touches them. Caches (proxies, waveforms, clip pictures, loudness readings) belong to recordings, not projects: they are kept in the app's cache folder by each recording's fingerprint, never beside a project.
 
 ## Sound finds a free place
 
@@ -239,14 +241,13 @@ Putting one picture over another must not cost the sound that is already there. 
 - **What a laid picture covers** on its own video track is replaced: the clips there are cut at its edges (together with their linked clips, so linked clips stay as long as each other) and the pieces under it go. When the file has sound of its own, the sound linked to those pieces goes too, so one recording laid over another replaces it, picture and sound, and its sound usually lands where the old sound was. A file without sound (a still, a silent clip) replaces the picture only: the sound under it keeps playing. Nothing else is touched: not the other video tracks, not sound that belongs to none of the covered clips (music, a commentary), whatever track it is on.
 - **The clip that is dragged** is never moved out of the way and never cuts: where it would overlap a clip on the track it was dragged to, the move is refused. The same holds for linked pictures, which stay on their tracks: which picture is on which layer decides what is seen, so that is never changed by itself.
 
-## Autosave and recovery
+## Commands in the journal
 
 - A new command is a new variant of `Command`: older journals never hold it, and the commands they do hold keep their meaning. That is why moving to a track and dropping on a track are commands of their own instead of new fields on `MoveLinked` and `OverwriteMedia`, and why `LayMedia` and `MoveBetweenTracks`, which let sound find a free place, came beside `DropMedia`, `OverwriteMedia` and `MoveToTrack` instead of changing them. The app no longer makes `OverwriteMedia`, `MoveToTrack` or a `DropMedia` that does not insert; they stay, with their tests, so that a journal written by an earlier version replays to exactly the project it described. (A field with a default would have kept old journal lines readable too, but an earlier version reading a newer journal would have ignored the field and quietly done something else; a variant it does not know is a line it skips and logs.)
-- Every change, undo and redo is appended to `<project file>.journal` (one line each) the moment it happens, so a crash of the app loses nothing. Asking the disk to keep it through a power cut too (`sync_data`) takes from under a millisecond to tens of milliseconds, so that happens on a thread of its own (`journal_sync.rs`), within moments, and the interface never waits for the disk: an import of 500 files writes 500 lines, and syncing each on the interface thread took up to 18 ms at a time (phase 5 gate). A power cut can lose the changes of the last moments; a half-written last line is ignored (below).
-- Journal entries are numbered. A full save writes the project file plus the number of the last entry it includes, so recovery replays only newer entries: nothing is lost and nothing is applied twice.
-- `Document::tick(now, idle)` returns a `SaveJob` when changes are 30 seconds old, or straight away when the app is idle. The job holds its own snapshot and runs on a worker (`jobs` crate); `Document::finish_save` then empties the journal if nothing changed meanwhile. `Document::save()` does the same on the calling thread.
-- On open, `Document::check` reports how many unsaved changes a crash left, reading only the file's header and each journal line's number (a line counts when it is whole), so it stays quick for big projects and long journals. `Document::open` then either replays them (`Recovery::Recover`, which also saves them into the project file) or sets the journal aside as `<file>.journal.discarded` (`Recovery::OpenLastSave`). Nothing is ever deleted.
-- A half-written last journal line (power cut mid-write) is ignored; entries that no longer apply are skipped and logged.
+- Asking the disk to keep a journal line through a power cut (`sync_data`) takes from under a millisecond to tens of milliseconds, so it happens on a thread of its own (`journal_sync.rs`), within moments, and the interface never waits for the disk: an import of 500 files writes 500 lines, and syncing each on the interface thread took up to 18 ms at a time (phase 5 gate). A power cut can lose the changes of the last moments.
+- `Document::tick(now, idle)` hands out a `SaveJob` when changes are 30 seconds old, or at once when the app is idle; `Document::save()` saves on the calling thread. See Saving and recovery above.
+- On open, `Document::check` reports how many unsaved changes a crash left, reading only the file's header and each journal line's number (a line counts when it is whole), so it stays quick for big projects and long journals. `Document::open` then recovers them or sets them aside (above). Nothing is ever deleted.
+- Entries that no longer apply are skipped while replaying, and logged.
 
 ## Edit behaviour
 

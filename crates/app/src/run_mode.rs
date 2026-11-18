@@ -1,4 +1,5 @@
-//! Command-line options. Normal use needs none; the others exist for automated checks.
+//! Command-line options. Normal use needs none; the others exist for
+//! automated checks, and everything a check scripts is one [`Automation`].
 
 use std::path::PathBuf;
 
@@ -12,6 +13,21 @@ pub struct Options {
     /// Media files to import into the project at start (`--import <file>`,
     /// repeatable; a folder stands for every file in it, see [`expand_folders`]).
     pub import: Vec<PathBuf>,
+    /// Write the printable cheat sheet here and exit, without opening a
+    /// window (`--cheat-sheet keys.html`, for checks).
+    pub cheat_sheet: Option<PathBuf>,
+    pub mode: RunMode,
+    /// What an automated run scripts: where the window starts and what it
+    /// does by itself (screenshots, the responsiveness test).
+    pub automation: Automation,
+}
+
+/// Everything the command line scripts for automated runs, in one value:
+/// the window's start, the steps it takes by itself once the project is in
+/// (`editor::script`) and the background work held part way. None of it is
+/// used in normal runs.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Automation {
     /// Where the playhead starts, in seconds (`--playhead <seconds>`, for screenshots).
     pub playhead: Option<f64>,
     /// Start playing once the project and its imports are ready (`--play`, for checks).
@@ -71,28 +87,21 @@ pub struct Options {
     /// Open the keyboard shortcuts page in a state: `filter`, `rebinding` or
     /// `clash` (`--shortcuts-page clash`, for screenshots).
     pub shortcuts_page: Option<ui_kit::keyboard::Preview>,
-    /// Write the printable cheat sheet here and exit, without opening a
-    /// window (`--cheat-sheet keys.html`, for checks).
-    pub cheat_sheet: Option<PathBuf>,
     /// Convert the viewer's colour on the CPU instead of the GPU (`--cpu-colour`, for comparing the two).
     pub cpu_colour: bool,
     /// Show the question about a failed start with Vulkan (`--graphics-warning`, for screenshots).
     pub graphics_warning: bool,
-    /// Stop the background reading of waveforms and clip pictures at this
-    /// share, 0 to 1 (`--hold-reading 0.4`, for screenshots of reading in progress).
-    pub hold_reading: Option<f32>,
+    /// Show the question about video decoding that stopped the app (`--decoding-warning`, for screenshots).
+    pub decoding_warning: bool,
+    /// Background work stopped part way, for screenshots of it in progress
+    /// (`--hold-reading`, `--hold-proxy`, `--hold-package`).
+    pub holds: Holds,
     /// With `--screenshot`: wait at most this many seconds for what the
     /// screenshot is of (`--screenshot-wait 60`, for slow machines).
     pub screenshot_wait: Option<f64>,
-    /// Stop proxy builds at this share, 0 to 1 (`--hold-proxy 0.43`, for
-    /// screenshots of a proxy being built).
-    pub hold_proxy: Option<f32>,
     /// Open Package project with this folder chosen (`--package-to out`,
     /// for screenshots of the sizes shown first).
     pub package_to: Option<PathBuf>,
-    /// With `--package-to`, also start packaging and stop copying at this
-    /// share, 0 to 1 (`--hold-package 0.4`, for screenshots of progress).
-    pub hold_package: Option<f32>,
     /// Put the pointer here, and maybe drag it from there with the left
     /// button held (`--pointer 640,420 [--drag-to 640,480]`, for
     /// screenshots of what pointing and dragging show). `--release` after
@@ -103,8 +112,6 @@ pub struct Options {
     /// bottom of a panel).
     /// `--click` once (the Display menu, opened).
     pub pointer: Option<crate::fake_pointer::FakePointer>,
-    /// Show the question about video decoding that stopped the app (`--decoding-warning`, for screenshots).
-    pub decoding_warning: bool,
     /// The Audio page's tool, bottom view and track, and a project made to
     /// have many audio tracks (`--audio-tool compressor`, `--audio-view
     /// stacked`, `--audio-band stereo`, `--audio-sizes 0.3,0.35`, `--audio-track 3`, `--audio-tracks 30`, `--audio-clarity-region`; for screenshots
@@ -113,7 +120,19 @@ pub struct Options {
     /// The window's size in points (`--window-size 1280x800`, for
     /// screenshots of a smaller screen); 1440 × 900 when not given.
     pub window_size: Option<[f32; 2]>,
-    pub mode: RunMode,
+}
+
+/// Background work stopped at a share, 0 to 1, for screenshots of it in
+/// progress; `None` runs it to the end, as normal runs always do.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Holds {
+    /// Waveforms and clip pictures (`--hold-reading 0.4`).
+    pub reading: Option<f32>,
+    /// Proxy builds (`--hold-proxy 0.43`).
+    pub proxy: Option<f32>,
+    /// With `--package-to`, also start packaging and stop copying here
+    /// (`--hold-package 0.4`).
+    pub package: Option<f32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -137,215 +156,228 @@ impl Options {
         while let Some(arg) = args.next() {
             match arg.as_str() {
                 "--smoke-test" => options.mode = RunMode::SmokeTest,
-                "--open-last-save" => options.open_last_save = true,
                 "--responsiveness-test" => options.mode = RunMode::ResponsivenessTest,
+                "--screenshot" => {
+                    let path = args.next().ok_or("--screenshot needs a file name")?;
+                    options.mode = RunMode::Screenshot(path.into());
+                }
+                "--open-last-save" => options.open_last_save = true,
                 "--import" => {
                     let path = args.next().ok_or("--import needs a file name")?;
                     options.import.push(path.into());
-                }
-                "--play" => options.play = true,
-                "--media-drawer" => options.media_drawer = true,
-                "--watch-folder" => {
-                    let folder = args.next().ok_or("--watch-folder needs a folder")?;
-                    options.watch_folders.push(folder.into());
-                }
-                "--find" => {
-                    let words = args.next().ok_or("--find needs words to find")?;
-                    options.media_drawer = true;
-                    options.find = Some(words);
-                }
-                "--export-page" => options.export_page = true,
-                "--export-queue" => options.export_queue = true,
-                "--close-request" => options.close_request = true,
-                "--page" => {
-                    let name = args.next().unwrap_or_default();
-                    let page = ui_kit::Page::ALL
-                        .into_iter()
-                        .find(|p| p.label().eq_ignore_ascii_case(&name))
-                        .ok_or("--page needs library, edit, color, audio or export")?;
-                    options.page = Some(page);
-                }
-                "--window-size" => {
-                    let size = args.next().unwrap_or_default();
-                    let (w, h) = size
-                        .split_once('x')
-                        .ok_or("--window-size needs WIDTHxHEIGHT, such as 1280x800")?;
-                    let (w, h): (f32, f32) = (
-                        w.parse().map_err(|_| "--window-size needs a whole width")?,
-                        h.parse().map_err(|_| "--window-size needs a whole height")?,
-                    );
-                    options.window_size = Some([w.max(960.0), h.max(600.0)]);
-                }
-                "--audio-tool" => {
-                    let name = args.next().unwrap_or_default();
-                    let tool = crate::audio_page::Tool::from_name(&name)
-                        .ok_or("--audio-tool needs eq, compressor, clean-up, ducking, loudness or meters")?;
-                    options.audio.tool = Some(tool);
-                }
-                "--audio-band" => {
-                    let name = args.next().unwrap_or_default();
-                    let band = crate::audio_page::band::View::from_name(&name)
-                        .ok_or("--audio-band needs clarity, spectrum, loudness, tracks or stereo")?;
-                    options.audio.band = Some(band);
-                }
-                "--audio-sizes" => {
-                    let text = args.next().unwrap_or_default();
-                    let sizes = crate::audio_page::start::sizes_named(&text)
-                        .ok_or("--audio-sizes needs shares of the page's height: top,band or top,band,timeline, such as 0.3,0.35")?;
-                    options.audio.sizes = Some(sizes);
-                }
-                "--audio-view" => {
-                    let name = args.next().unwrap_or_default();
-                    let view = crate::audio_page::start::view_named(&name)
-                        .ok_or("--audio-view needs timeline, mixer, split or stacked")?;
-                    options.audio.view = Some(view);
-                }
-                "--audio-track" => {
-                    let n = args
-                        .next()
-                        .and_then(|n| n.parse().ok())
-                        .ok_or("--audio-track needs a track's number, from 1")?;
-                    options.audio.track = Some(n);
-                }
-                "--audio-tracks" => {
-                    let n = args
-                        .next()
-                        .and_then(|n| n.parse().ok())
-                        .ok_or("--audio-tracks needs a number of tracks")?;
-                    options.audio.tracks = Some(n);
-                }
-                "--audio-clarity-region" => options.audio.clarity_region = true,
-                "--library-tab" => {
-                    let name = args.next().ok_or("--library-tab needs a tab's name")?;
-                    options.library_tab = Some(name);
-                }
-                "--library-select" => {
-                    let name = args.next().ok_or("--library-select needs a file name")?;
-                    options.library_select = Some(name);
-                }
-                "--full-screen" => options.full_screen = true,
-                "--select-first-clip" => options.select_first_clip = true,
-                "--effects-drawer" => options.effects_drawer = true,
-                "--sync-by-sound" => options.sync_by_sound = true,
-                "--cpu-colour" => options.cpu_colour = true,
-                "--graphics-warning" => options.graphics_warning = true,
-                "--decoding-warning" => options.decoding_warning = true,
-                "--action" => {
-                    let name = args.next().ok_or("--action needs a command name")?;
-                    options.actions.push(name);
-                }
-                "--then" => {
-                    let name = args.next().ok_or("--then needs a command name")?;
-                    options.then_actions.push(name);
                 }
                 "--cheat-sheet" => {
                     let path = args.next().ok_or("--cheat-sheet needs a file name")?;
                     options.cheat_sheet = Some(path.into());
                 }
-                "--settings" => {
-                    let id = args
-                        .next()
-                        .ok_or("--settings needs a tab's or a setting's id, such as proxies")?;
-                    options.settings = Some(id);
-                }
-                "--settings-search" => {
-                    let words = args.next().ok_or("--settings-search needs words to search for")?;
-                    options.settings_search = Some(words);
-                }
-                "--shortcuts-page" => {
-                    let state = args
-                        .next()
-                        .as_deref()
-                        .and_then(ui_kit::keyboard::Preview::from_name)
-                        .ok_or("--shortcuts-page needs filter, rebinding or clash")?;
-                    options.shortcuts_page = Some(state);
-                }
-                "--pointer" | "--drag-to" => {
-                    let pos = args
-                        .next()
-                        .as_deref()
-                        .and_then(crate::fake_pointer::FakePointer::parse_pos)
-                        .ok_or_else(|| format!("{arg} needs a position such as 640,420"))?;
-                    options.pointer = Some(match (arg.as_str(), options.pointer) {
-                        ("--drag-to", Some(pointer)) => crate::fake_pointer::FakePointer {
-                            drag_to: Some(pos),
-                            ..pointer
-                        },
-                        ("--drag-to", None) => return Err("--drag-to needs --pointer before it".into()),
-                        _ => crate::fake_pointer::FakePointer::resting(pos),
-                    });
-                }
-                "--release" => match &mut options.pointer {
-                    Some(pointer) if pointer.drag_to.is_some() => pointer.release = true,
-                    _ => return Err("--release needs --drag-to before it".into()),
-                },
-                "--right-click" | "--double-click" | "--click" => match &mut options.pointer {
-                    Some(pointer) if pointer.drag_to.is_none() && arg == "--right-click" => {
-                        pointer.right_click = true;
-                    }
-                    Some(pointer) if pointer.drag_to.is_none() && arg == "--click" => pointer.click = true,
-                    Some(pointer) if pointer.drag_to.is_none() => pointer.double_click = true,
-                    _ => return Err(format!("{arg} needs --pointer before it, and no --drag-to")),
-                },
-                "--scroll" => {
-                    let points: f32 = args
-                        .next()
-                        .and_then(|s| s.parse().ok())
-                        .ok_or("--scroll needs a number of points")?;
-                    match &mut options.pointer {
-                        Some(pointer) if pointer.drag_to.is_none() => pointer.scroll = points,
-                        _ => return Err("--scroll needs --pointer before it, and no --drag-to".into()),
+                other if other.starts_with("--") => {
+                    if !options.automation.take(other, &mut args)? {
+                        return Err(format!("unknown option {other}"));
                     }
                 }
-                "--hold-reading" => {
-                    let share = args
-                        .next()
-                        .and_then(|s| s.parse().ok())
-                        .ok_or("--hold-reading needs a share between 0 and 1")?;
-                    options.hold_reading = Some(share);
-                }
-                "--screenshot-wait" => {
-                    let seconds = args
-                        .next()
-                        .and_then(|s| s.parse::<f64>().ok())
-                        .filter(|s| s.is_finite() && *s > 0.0)
-                        .ok_or("--screenshot-wait needs a number of seconds")?;
-                    options.screenshot_wait = Some(seconds);
-                }
-                "--hold-proxy" => {
-                    let share = args
-                        .next()
-                        .and_then(|s| s.parse().ok())
-                        .ok_or("--hold-proxy needs a share between 0 and 1")?;
-                    options.hold_proxy = Some(share);
-                }
-                "--package-to" => {
-                    let folder = args.next().ok_or("--package-to needs a folder")?;
-                    options.package_to = Some(folder.into());
-                }
-                "--hold-package" => {
-                    let share = args
-                        .next()
-                        .and_then(|s| s.parse().ok())
-                        .ok_or("--hold-package needs a share between 0 and 1")?;
-                    options.hold_package = Some(share);
-                }
-                "--playhead" => {
-                    let secs = args
-                        .next()
-                        .and_then(|s| s.parse().ok())
-                        .ok_or("--playhead needs seconds")?;
-                    options.playhead = Some(secs);
-                }
-                "--screenshot" => {
-                    let path = args.next().ok_or("--screenshot needs a file name")?;
-                    options.mode = RunMode::Screenshot(path.into());
-                }
-                other if other.starts_with("--") => return Err(format!("unknown option {other}")),
                 path => options.project = Some(path.into()),
             }
         }
         Ok(options)
+    }
+}
+
+/// The next argument read as a number, or `needs` as the error.
+fn number<T: std::str::FromStr>(args: &mut impl Iterator<Item = String>, needs: &str) -> Result<T, String> {
+    args.next()
+        .and_then(|s| s.parse().ok())
+        .ok_or_else(|| needs.to_string())
+}
+
+impl Automation {
+    /// Takes one scripting option and the values it needs from `args`;
+    /// `Ok(false)` when `arg` is not one of them.
+    fn take(&mut self, arg: &str, args: &mut impl Iterator<Item = String>) -> Result<bool, String> {
+        match arg {
+            "--play" => self.play = true,
+            "--media-drawer" => self.media_drawer = true,
+            "--watch-folder" => {
+                let folder = args.next().ok_or("--watch-folder needs a folder")?;
+                self.watch_folders.push(folder.into());
+            }
+            "--find" => {
+                let words = args.next().ok_or("--find needs words to find")?;
+                self.media_drawer = true;
+                self.find = Some(words);
+            }
+            "--export-page" => self.export_page = true,
+            "--export-queue" => self.export_queue = true,
+            "--close-request" => self.close_request = true,
+            "--page" => {
+                let name = args.next().unwrap_or_default();
+                let page = ui_kit::Page::ALL
+                    .into_iter()
+                    .find(|p| p.label().eq_ignore_ascii_case(&name))
+                    .ok_or("--page needs library, edit, color, audio or export")?;
+                self.page = Some(page);
+            }
+            "--window-size" => {
+                let size = args.next().unwrap_or_default();
+                let (w, h) = size
+                    .split_once('x')
+                    .ok_or("--window-size needs WIDTHxHEIGHT, such as 1280x800")?;
+                let (w, h): (f32, f32) = (
+                    w.parse().map_err(|_| "--window-size needs a whole width")?,
+                    h.parse().map_err(|_| "--window-size needs a whole height")?,
+                );
+                self.window_size = Some([w.max(960.0), h.max(600.0)]);
+            }
+            "--audio-tool" => {
+                let name = args.next().unwrap_or_default();
+                let tool = crate::audio_page::Tool::from_name(&name)
+                    .ok_or("--audio-tool needs eq, compressor, clean-up, ducking, loudness or meters")?;
+                self.audio.tool = Some(tool);
+            }
+            "--audio-band" => {
+                let name = args.next().unwrap_or_default();
+                let band = crate::audio_page::band::View::from_name(&name)
+                    .ok_or("--audio-band needs clarity, spectrum, loudness, tracks or stereo")?;
+                self.audio.band = Some(band);
+            }
+            "--audio-sizes" => {
+                let text = args.next().unwrap_or_default();
+                let sizes = crate::audio_page::start::sizes_named(&text)
+                    .ok_or("--audio-sizes needs shares of the page's height: top,band or top,band,timeline, such as 0.3,0.35")?;
+                self.audio.sizes = Some(sizes);
+            }
+            "--audio-view" => {
+                let name = args.next().unwrap_or_default();
+                let view = crate::audio_page::start::view_named(&name)
+                    .ok_or("--audio-view needs timeline, mixer, split or stacked")?;
+                self.audio.view = Some(view);
+            }
+            "--audio-track" => {
+                self.audio.track = Some(number(args, "--audio-track needs a track's number, from 1")?);
+            }
+            "--audio-tracks" => {
+                self.audio.tracks = Some(number(args, "--audio-tracks needs a number of tracks")?);
+            }
+            "--audio-clarity-region" => self.audio.clarity_region = true,
+            "--library-tab" => {
+                let name = args.next().ok_or("--library-tab needs a tab's name")?;
+                self.library_tab = Some(name);
+            }
+            "--library-select" => {
+                let name = args.next().ok_or("--library-select needs a file name")?;
+                self.library_select = Some(name);
+            }
+            "--full-screen" => self.full_screen = true,
+            "--select-first-clip" => self.select_first_clip = true,
+            "--effects-drawer" => self.effects_drawer = true,
+            "--sync-by-sound" => self.sync_by_sound = true,
+            "--cpu-colour" => self.cpu_colour = true,
+            "--graphics-warning" => self.graphics_warning = true,
+            "--decoding-warning" => self.decoding_warning = true,
+            "--action" => {
+                let name = args.next().ok_or("--action needs a command name")?;
+                self.actions.push(name);
+            }
+            "--then" => {
+                let name = args.next().ok_or("--then needs a command name")?;
+                self.then_actions.push(name);
+            }
+            "--settings" => {
+                let id = args
+                    .next()
+                    .ok_or("--settings needs a tab's or a setting's id, such as proxies")?;
+                self.settings = Some(id);
+            }
+            "--settings-search" => {
+                let words = args.next().ok_or("--settings-search needs words to search for")?;
+                self.settings_search = Some(words);
+            }
+            "--shortcuts-page" => {
+                let state = args
+                    .next()
+                    .as_deref()
+                    .and_then(ui_kit::keyboard::Preview::from_name)
+                    .ok_or("--shortcuts-page needs filter, rebinding or clash")?;
+                self.shortcuts_page = Some(state);
+            }
+            "--pointer" | "--drag-to" => {
+                let pos = args
+                    .next()
+                    .as_deref()
+                    .and_then(crate::fake_pointer::FakePointer::parse_pos)
+                    .ok_or_else(|| format!("{arg} needs a position such as 640,420"))?;
+                self.pointer = Some(match (arg, self.pointer) {
+                    ("--drag-to", Some(pointer)) => crate::fake_pointer::FakePointer {
+                        drag_to: Some(pos),
+                        ..pointer
+                    },
+                    ("--drag-to", None) => return Err("--drag-to needs --pointer before it".into()),
+                    _ => crate::fake_pointer::FakePointer::resting(pos),
+                });
+            }
+            "--release" => match &mut self.pointer {
+                Some(pointer) if pointer.drag_to.is_some() => pointer.release = true,
+                _ => return Err("--release needs --drag-to before it".into()),
+            },
+            "--right-click" | "--double-click" | "--click" => match &mut self.pointer {
+                Some(pointer) if pointer.drag_to.is_none() && arg == "--right-click" => {
+                    pointer.right_click = true;
+                }
+                Some(pointer) if pointer.drag_to.is_none() && arg == "--click" => pointer.click = true,
+                Some(pointer) if pointer.drag_to.is_none() => pointer.double_click = true,
+                _ => return Err(format!("{arg} needs --pointer before it, and no --drag-to")),
+            },
+            "--scroll" => {
+                let points: f32 = number(args, "--scroll needs a number of points")?;
+                match &mut self.pointer {
+                    Some(pointer) if pointer.drag_to.is_none() => pointer.scroll = points,
+                    _ => return Err("--scroll needs --pointer before it, and no --drag-to".into()),
+                }
+            }
+            "--hold-reading" => {
+                self.holds.reading = Some(number(args, "--hold-reading needs a share between 0 and 1")?);
+            }
+            "--hold-proxy" => {
+                self.holds.proxy = Some(number(args, "--hold-proxy needs a share between 0 and 1")?);
+            }
+            "--hold-package" => {
+                self.holds.package = Some(number(args, "--hold-package needs a share between 0 and 1")?);
+            }
+            "--screenshot-wait" => {
+                let seconds = args
+                    .next()
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .filter(|s| s.is_finite() && *s > 0.0)
+                    .ok_or("--screenshot-wait needs a number of seconds")?;
+                self.screenshot_wait = Some(seconds);
+            }
+            "--package-to" => {
+                let folder = args.next().ok_or("--package-to needs a folder")?;
+                self.package_to = Some(folder.into());
+            }
+            "--playhead" => self.playhead = Some(number(args, "--playhead needs seconds")?),
+            _ => return Ok(false),
+        }
+        Ok(true)
+    }
+
+    /// What is left of it when no project is open: most of it acts on the
+    /// project (its page, clips, imports, holds), so only what is about
+    /// the window stays (the pointer, the Settings window, the shortcuts
+    /// page, the questions at start and the window's size).
+    pub fn for_project(self, has_project: bool) -> Automation {
+        if has_project {
+            return self;
+        }
+        Automation {
+            pointer: self.pointer,
+            settings: self.settings,
+            settings_search: self.settings_search,
+            shortcuts_page: self.shortcuts_page,
+            graphics_warning: self.graphics_warning,
+            decoding_warning: self.decoding_warning,
+            window_size: self.window_size,
+            ..Automation::default()
+        }
     }
 }
 
@@ -408,50 +440,82 @@ mod tests {
         let o = parse(&["p.x", "--import", "a.mkv", "--import", "b.mp4"]).unwrap();
         assert_eq!(o.import, [PathBuf::from("a.mkv"), PathBuf::from("b.mp4")]);
         assert!(parse(&["--import"]).is_err());
-        assert!(parse(&["p.x", "--cpu-colour"]).unwrap().cpu_colour);
-        assert!(parse(&["p.x", "--export-page"]).unwrap().export_page);
-        assert!(parse(&["p.x", "--export-queue"]).unwrap().export_queue);
-        assert!(parse(&["p.x", "--close-request"]).unwrap().close_request);
+        assert!(parse(&["p.x", "--cpu-colour"]).unwrap().automation.cpu_colour);
+        assert!(parse(&["p.x", "--export-page"]).unwrap().automation.export_page);
+        assert!(parse(&["p.x", "--export-queue"]).unwrap().automation.export_queue);
+        assert!(
+            parse(&["p.x", "--close-request"])
+                .unwrap()
+                .automation
+                .close_request
+        );
         assert_eq!(
-            parse(&["p.x", "--page", "Library"]).unwrap().page,
+            parse(&["p.x", "--page", "Library"]).unwrap().automation.page,
             Some(ui_kit::Page::Library)
         );
         assert!(parse(&["p.x", "--page", "nowhere"]).is_err());
         assert!(parse(&["p.x", "--page"]).is_err());
         let o = parse(&["p.x", "--library-tab", "audio", "--library-select", "a.wav"]).unwrap();
         assert_eq!(
-            (o.library_tab.as_deref(), o.library_select.as_deref()),
+            (
+                o.automation.library_tab.as_deref(),
+                o.automation.library_select.as_deref()
+            ),
             (Some("audio"), Some("a.wav"))
         );
-        assert!(parse(&["p.x", "--select-first-clip"]).unwrap().select_first_clip);
-        assert!(!parse(&["p.x"]).unwrap().select_first_clip);
-        assert!(parse(&["p.x", "--effects-drawer"]).unwrap().effects_drawer);
-        assert!(parse(&["p.x", "--sync-by-sound"]).unwrap().sync_by_sound);
-        assert!(!parse(&["p.x"]).unwrap().cpu_colour);
+        assert!(
+            parse(&["p.x", "--select-first-clip"])
+                .unwrap()
+                .automation
+                .select_first_clip
+        );
+        assert!(!parse(&["p.x"]).unwrap().automation.select_first_clip);
+        assert!(
+            parse(&["p.x", "--effects-drawer"])
+                .unwrap()
+                .automation
+                .effects_drawer
+        );
+        assert!(
+            parse(&["p.x", "--sync-by-sound"])
+                .unwrap()
+                .automation
+                .sync_by_sound
+        );
+        assert!(!parse(&["p.x"]).unwrap().automation.cpu_colour);
         assert_eq!(
-            parse(&["p.x", "--hold-reading", "0.4"]).unwrap().hold_reading,
+            parse(&["p.x", "--hold-reading", "0.4"])
+                .unwrap()
+                .automation
+                .holds
+                .reading,
             Some(0.4)
         );
         assert!(parse(&["p.x", "--hold-reading", "soon"]).is_err());
         assert_eq!(
             parse(&["p.x", "--screenshot-wait", "60"])
                 .unwrap()
+                .automation
                 .screenshot_wait,
             Some(60.0)
         );
         assert!(parse(&["p.x", "--screenshot-wait", "-1"]).is_err());
         assert_eq!(
-            parse(&["p.x", "--hold-proxy", "0.43"]).unwrap().hold_proxy,
+            parse(&["p.x", "--hold-proxy", "0.43"])
+                .unwrap()
+                .automation
+                .holds
+                .proxy,
             Some(0.43)
         );
         let packaged = parse(&["p.x", "--package-to", "out", "--hold-package", "0.4"]).unwrap();
-        assert_eq!(packaged.package_to, Some(PathBuf::from("out")));
-        assert_eq!(packaged.hold_package, Some(0.4));
+        assert_eq!(packaged.automation.package_to, Some(PathBuf::from("out")));
+        assert_eq!(packaged.automation.holds.package, Some(0.4));
         let o = parse(&["p.x", "--pointer", "1200,400", "--scroll", "400"]).unwrap();
-        assert_eq!(o.pointer.map(|p| p.scroll), Some(400.0));
+        assert_eq!(o.automation.pointer.map(|p| p.scroll), Some(400.0));
         assert!(parse(&["p.x", "--scroll", "400"]).is_err());
         let o = parse(&["p.x", "--pointer", "640,420", "--drag-to", "640,480"]).unwrap();
-        let pointer = o.pointer.unwrap();
+        let pointer = o.automation.pointer.unwrap();
         assert_eq!(
             (pointer.at, pointer.drag_to),
             (egui::pos2(640.0, 420.0), Some(egui::pos2(640.0, 480.0)))
@@ -460,18 +524,18 @@ mod tests {
         assert!(parse(&["p.x", "--pointer", "640"]).is_err());
         assert!(!pointer.release && !pointer.right_click);
         let dragged = ["p.x", "--pointer", "640,420", "--drag-to", "640,480", "--release"];
-        assert!(parse(&dragged).unwrap().pointer.unwrap().release);
+        assert!(parse(&dragged).unwrap().automation.pointer.unwrap().release);
         assert!(
             parse(&["p.x", "--pointer", "640,420", "--release"]).is_err(),
             "of what?"
         );
         let o = parse(&["p.x", "--pointer", "40,300", "--right-click"]).unwrap();
-        assert!(o.pointer.unwrap().right_click);
+        assert!(o.automation.pointer.unwrap().right_click);
         assert!(parse(&["p.x", "--right-click"]).is_err(), "where?");
         let o = parse(&["p.x", "--pointer", "40,300", "--double-click"]).unwrap();
-        assert!(o.pointer.unwrap().double_click);
+        assert!(o.automation.pointer.unwrap().double_click);
         let o = parse(&["p.x", "--pointer", "900,610", "--click"]).unwrap();
-        let pointer = o.pointer.unwrap();
+        let pointer = o.automation.pointer.unwrap();
         assert!(pointer.click && !pointer.double_click);
         assert!(parse(&["p.x", "--click"]).is_err(), "where?");
         let both = [
@@ -483,9 +547,17 @@ mod tests {
             "--double-click",
         ];
         assert!(parse(&both).is_err(), "a drag or a double-click, not both");
-        assert!(parse(&["--decoding-warning"]).unwrap().decoding_warning);
+        assert!(
+            parse(&["--decoding-warning"])
+                .unwrap()
+                .automation
+                .decoding_warning
+        );
         assert_eq!(
-            parse(&["--shortcuts-page", "clash"]).unwrap().shortcuts_page,
+            parse(&["--shortcuts-page", "clash"])
+                .unwrap()
+                .automation
+                .shortcuts_page,
             Some(ui_kit::keyboard::Preview::Clash)
         );
         assert!(parse(&["--shortcuts-page", "sideways"]).is_err());
@@ -494,5 +566,62 @@ mod tests {
             Some("keys.html".into())
         );
         assert!(parse(&["--cheat-sheet"]).is_err());
+    }
+
+    #[test]
+    fn scripting_is_kept_in_one_value_and_needs_a_project_for_most_of_it() {
+        let args = [
+            "--page",
+            "audio",
+            "--audio-tracks",
+            "12",
+            "--play",
+            "--hold-reading",
+            "0.4",
+            "--pointer",
+            "640,420",
+            "--settings",
+            "proxies",
+            "--window-size",
+            "1280x800",
+            "--action",
+            "Templates",
+            "--graphics-warning",
+        ];
+        let o = parse(&args).unwrap();
+        assert_eq!(
+            (o.project.as_ref(), &o.import, o.mode.clone(), o.open_last_save),
+            (None, &Vec::new(), RunMode::Normal, false),
+            "nothing scripted lands outside the automation"
+        );
+        let a = o.automation;
+        assert_eq!(
+            (a.page, a.audio.tracks, a.play),
+            (Some(ui_kit::Page::Audio), Some(12), true)
+        );
+        assert_eq!(
+            a.holds,
+            Holds {
+                reading: Some(0.4),
+                ..Holds::default()
+            }
+        );
+        assert_eq!(
+            a.clone().for_project(true),
+            a,
+            "with a project, all of it applies"
+        );
+        let windowed = a.clone().for_project(false);
+        assert_eq!(
+            windowed,
+            Automation {
+                pointer: a.pointer,
+                settings: Some("proxies".into()),
+                window_size: Some([1280.0, 800.0]),
+                graphics_warning: true,
+                ..Automation::default()
+            },
+            "without one, only what is about the window"
+        );
     }
 }

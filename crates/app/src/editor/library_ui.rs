@@ -227,11 +227,5 @@ impl Editor {
         if let Some(err) = self.library_page.poll(ctx, self.settings.preview_quality) {
             self.errors.push(&err);
         }
-        if let (Some(name), Some(document)) = (&self.library_tab, &self.document) {
-            if !self.library_page.open_tab_named(name, document.project()) {
-                tracing::warn!("--library-tab {name}: no such tab");
-            }
-            self.library_tab = None;
-        }
     }
 }
