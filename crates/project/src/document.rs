@@ -251,11 +251,14 @@ impl Document {
     }
 
     /// Looks for unsaved changes left by a crash, without opening anything.
+    /// Cheap for big projects: only the project file's header and each
+    /// journal line's number are read, never the project or the changes;
+    /// it counts what opening with [`Recovery::Recover`] would replay.
     pub fn check(path: &Path) -> diag::Result<OpenCheck> {
         let saved = file::read_journal_seq(path)?;
-        let entries = read_journal(&journal_path(path))?;
+        let numbers = read_journal_with(&journal_path(path), |line| Some((entry_number(line)?, ())))?;
         Ok(OpenCheck {
-            unsaved_changes: unsaved(&entries, saved).len(),
+            unsaved_changes: unsaved(&numbers, saved).len(),
         })
     }
 
@@ -521,7 +524,7 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 /// The entries after the project file's `saved_seq`, when they carry on
 /// from it one by one; none when the first is missing (they could only
 /// replay out of order).
-fn unsaved(entries: &[(u64, JournalEntry)], saved_seq: u64) -> &[(u64, JournalEntry)] {
+fn unsaved<T>(entries: &[(u64, T)], saved_seq: u64) -> &[(u64, T)] {
     let after = &entries[entries.partition_point(|(seq, _)| *seq <= saved_seq)..];
     match after.first() {
         Some((seq, _)) if *seq != saved_seq + 1 => {
@@ -756,6 +759,13 @@ fn replay<'a>(history: &mut History, entries: impl Iterator<Item = &'a JournalEn
 /// what follows could only replay out of order). A crash or a failed write
 /// can leave a half-written last line; it is ignored.
 fn read_journal(path: &Path) -> diag::Result<Vec<(u64, JournalEntry)>> {
+    read_journal_with(path, |line| ron::from_str::<(u64, JournalEntry)>(line).ok())
+}
+
+/// Reads the journal's lines with `read` (`None` for an unreadable line),
+/// up to the first unreadable one or the first that doesn't follow on from
+/// the one before.
+fn read_journal_with<T>(path: &Path, read: impl Fn(&str) -> Option<(u64, T)>) -> diag::Result<Vec<(u64, T)>> {
     let file = match File::open(path) {
         Ok(file) => file,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -771,8 +781,8 @@ fn read_journal(path: &Path) -> diag::Result<Vec<(u64, JournalEntry)>> {
         if line.trim().is_empty() {
             continue;
         }
-        match ron::from_str::<(u64, JournalEntry)>(&line) {
-            Ok(entry) => {
+        match read(&line) {
+            Some(entry) => {
                 if let Some((last, _)) = entries.last()
                     && entry.0 != last + 1
                 {
@@ -784,13 +794,65 @@ fn read_journal(path: &Path) -> diag::Result<Vec<(u64, JournalEntry)>> {
                 }
                 entries.push(entry);
             }
-            Err(_) => {
+            None => {
                 tracing::warn!("stopped reading the autosave journal at an unreadable line");
                 break;
             }
         }
     }
     Ok(entries)
+}
+
+/// The number of a journal line, read without reading the change it holds:
+/// `None` for a line that doesn't start as an entry does, or that isn't
+/// whole (cut off part way, as a crash while writing leaves it), where
+/// reading the entry would fail too.
+fn entry_number(line: &str) -> Option<u64> {
+    let rest = line.trim().strip_prefix('(')?.trim_start();
+    let digits = rest.find(|c: char| !c.is_ascii_digit())?;
+    let (number, after) = rest.split_at(digits);
+    if !after.trim_start().starts_with(',') {
+        return None;
+    }
+    let number = number.parse().ok()?;
+    is_whole(line).then_some(number)
+}
+
+/// True when `line` is one bracketed value, every bracket opened outside a
+/// string closed and nothing but spaces after the last: how a line the
+/// journal wrote completely looks, and what no line cut short does.
+fn is_whole(line: &str) -> bool {
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut closed = false;
+    for byte in line.trim().bytes() {
+        if closed {
+            return false;
+        }
+        if in_string {
+            match byte {
+                _ if escaped => escaped = false,
+                b'\\' => escaped = true,
+                b'"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+        match byte {
+            b'"' => in_string = true,
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => {
+                let Some(less) = depth.checked_sub(1) else {
+                    return false;
+                };
+                depth = less;
+                closed = depth == 0;
+            }
+            _ => {}
+        }
+    }
+    closed
 }
 
 fn open_journal(path: &Path, truncate: bool) -> diag::Result<File> {
@@ -1395,5 +1457,83 @@ mod tests {
         assert_eq!(Document::check(&path).unwrap().unsaved_changes, 0);
         let doc = Document::open(&path, Recovery::Recover).unwrap();
         assert_eq!(audio_tracks(&doc), 3);
+    }
+
+    /// What opening with recovery would replay, read the slow way.
+    fn replayed(path: &Path) -> usize {
+        let saved = file::read_journal_seq(path).unwrap();
+        unsaved(&read_journal(&journal_path(path)).unwrap(), saved).len()
+    }
+
+    #[test]
+    fn the_check_counts_what_recovery_replays_however_the_journal_was_cut() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("p.project");
+        let mut doc = new_doc(tmp.path());
+        // Names with the characters a quick read could trip on.
+        for name in [
+            "plain",
+            "a \"quoted\" (bracket",
+            "back\\slash)",
+            "{[(",
+            "été",
+            "\\",
+        ] {
+            doc.apply(rename(name)).unwrap();
+        }
+        doc.apply(add_track(&doc)).unwrap();
+        assert!(doc.undo().unwrap());
+        assert!(doc.redo().unwrap());
+        doc.save().unwrap();
+        doc.apply(rename("after the save")).unwrap();
+        doc.apply(Command::Restore {
+            project: Box::new(Project::new("Restored (\"x\"", SequenceSettings::GAME_CLIP)),
+        })
+        .unwrap();
+        drop(doc); // crash
+        let journal = fs::read(journal_path(&path)).unwrap();
+        assert_eq!(Document::check(&path).unwrap().unsaved_changes, 2);
+        // Cut off at every byte, as a crash while writing could leave it.
+        for end in 0..=journal.len() {
+            fs::write(journal_path(&path), &journal[..end]).unwrap();
+            assert_eq!(
+                Document::check(&path).unwrap().unsaved_changes,
+                replayed(&path),
+                "cut after {end} bytes"
+            );
+        }
+        // A torn line in the middle, a line of something else, a gap.
+        let text = String::from_utf8(journal).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        let last = lines.len() - 1;
+        for broken in [
+            lines[last][..lines[last].len() - 1].to_owned(),
+            format!("{}{}", &lines[last][..20], lines[last]),
+            "(x, Undo)".to_owned(),
+            "garbage".to_owned(),
+            lines[last].replacen(&format!("({}", last + 1), &format!("({}", last + 5), 1),
+        ] {
+            let mut changed = lines.clone();
+            changed[last - 1] = &broken;
+            fs::write(journal_path(&path), format!("{}\n", changed.join("\n"))).unwrap();
+            assert_eq!(
+                Document::check(&path).unwrap().unsaved_changes,
+                replayed(&path),
+                "{broken}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_check_never_reads_the_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("p.project");
+        let mut doc = new_doc(tmp.path());
+        doc.apply(rename("A")).unwrap();
+        drop(doc); // crash
+        let text = fs::read_to_string(&path).unwrap();
+        let at = text.find("\n  project: ").unwrap() + 1;
+        fs::write(&path, format!("{}  project: %%% not read %%%\n)\n", &text[..at])).unwrap();
+        assert_eq!(Document::check(&path).unwrap().unsaved_changes, 1);
     }
 }
