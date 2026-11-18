@@ -4,7 +4,7 @@ use crate::entry::{Folder, FolderKind, Issue, ProjectEntry};
 use crate::scan::find_project_files;
 use diag::{AppError, Explain};
 use project::{Rate, SequenceSettings, Time};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -214,7 +214,11 @@ impl Index {
     /// Brings the list up to date with the disk: finds project files in the
     /// project and other folders, re-reads files that changed, and marks
     /// missing ones. Slow on big folders; run it on a worker thread.
-    pub fn refresh(&self) -> diag::Result<()> {
+    ///
+    /// A file that can't be stored (a name that isn't valid Unicode, say)
+    /// is logged and skipped so the others still come up to date; the
+    /// result is how many were skipped.
+    pub fn refresh(&self) -> diag::Result<usize> {
         let mut paths: BTreeSet<PathBuf> = BTreeSet::new();
         for folder in self.folders()? {
             if folder.kind.holds_projects() {
@@ -246,10 +250,14 @@ impl Index {
         for path in listed_by_mistake {
             self.deleted(&path)?;
         }
+        let mut skipped = 0;
         for path in paths {
-            self.store(&path, true)?;
+            if let Err(err) = self.store(&path, true) {
+                tracing::warn!(path = %path.display(), "skipped in the project list: {}", err.report());
+                skipped += 1;
+            }
         }
-        Ok(())
+        Ok(skipped)
     }
 
     /// Reads one file and stores what the card needs. With `only_if_changed`,
@@ -349,16 +357,25 @@ impl Index {
     }
 }
 
-/// Creates or upgrades the tables, one schema version at a time.
+/// Creates or upgrades the tables, one schema version at a time, in one
+/// transaction with the version number, so a crash leaves the old layout
+/// whole. Each step also copes with a file an older app left half
+/// upgraded (its steps were not in one transaction): tables are made only
+/// if missing and columns added only if missing.
 fn upgrade(conn: &Connection, from: i32) -> rusqlite::Result<()> {
+    if from >= SCHEMA_VERSION {
+        return Ok(());
+    }
+    // Immediate: two connections opening a new file at once take turns.
+    let transaction = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
     if from < 1 {
-        conn.execute_batch(
-            "CREATE TABLE folders (
+        transaction.execute_batch(
+            "CREATE TABLE IF NOT EXISTS folders (
                 path  TEXT PRIMARY KEY,
                 kind  TEXT NOT NULL,
                 added INTEGER NOT NULL
              );
-             CREATE TABLE projects (
+             CREATE TABLE IF NOT EXISTS projects (
                 path        TEXT PRIMARY KEY,
                 name        TEXT NOT NULL,
                 width       INTEGER,
@@ -375,11 +392,18 @@ fn upgrade(conn: &Connection, from: i32) -> rusqlite::Result<()> {
              );",
         )?;
     }
-    if from < 2 {
+    if from < 2 && !has_column(&transaction, "projects", "automatic")? {
         // Projects whose settings wait for the first video.
-        conn.execute_batch("ALTER TABLE projects ADD COLUMN automatic INTEGER NOT NULL DEFAULT 0;")?;
+        transaction.execute_batch("ALTER TABLE projects ADD COLUMN automatic INTEGER NOT NULL DEFAULT 0;")?;
     }
-    conn.pragma_update(None, "user_version", SCHEMA_VERSION)
+    transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+    transaction.commit()
+}
+
+/// Whether `table` already has `column`.
+fn has_column(conn: &Connection, table: &str, column: &str) -> rusqlite::Result<bool> {
+    let mut statement = conn.prepare("SELECT 1 FROM pragma_table_info(?1) WHERE name = ?2")?;
+    statement.exists(params![table, column])
 }
 
 fn entry_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProjectEntry> {
@@ -549,6 +573,55 @@ mod tests {
         assert!(!old[0].automatic, "existing projects keep their fixed settings");
     }
 
+    #[test]
+    fn a_list_left_half_upgraded_opens() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Version 1 with the new column already added: the old upgrade
+        // stopped before it wrote the version number.
+        let db = tmp.path().join("half-1.sqlite");
+        {
+            let conn = Connection::open(&db).unwrap();
+            upgrade_to_1(&conn);
+            conn.execute_batch(
+                "ALTER TABLE projects ADD COLUMN automatic INTEGER NOT NULL DEFAULT 0;
+                 INSERT INTO projects (path, name, automatic) VALUES ('/p/a.x', 'A', 1);",
+            )
+            .unwrap();
+        }
+        let index = Index::open(&db).unwrap();
+        assert!(index.projects().unwrap()[0].automatic, "the row is kept");
+        drop(index);
+        assert!(Index::open(&db).is_ok(), "and it opens again");
+
+        // Version 0 with the tables already made.
+        let db = tmp.path().join("half-0.sqlite");
+        {
+            let conn = Connection::open(&db).unwrap();
+            upgrade_to_1(&conn);
+            conn.execute_batch("PRAGMA user_version = 0;").unwrap();
+        }
+        let index = Index::open(&db).unwrap();
+        index.add_folder(Path::new("/p"), FolderKind::Projects).unwrap();
+        assert!(index.projects().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_failed_upgrade_leaves_the_old_layout() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("index.sqlite");
+        let conn = Connection::open(&db).unwrap();
+        upgrade_to_1(&conn);
+        // A table in the way makes the step fail part way.
+        conn.execute_batch("DROP TABLE projects; CREATE VIEW projects AS SELECT 1 AS path;")
+            .unwrap();
+        assert!(upgrade(&conn, 1).is_err());
+        let version: i32 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 1, "the version is not raised");
+        assert!(conn.is_autocommit(), "nothing is left half done");
+    }
+
     /// The tables as schema version 1 made them.
     fn upgrade_to_1(conn: &Connection) {
         conn.execute_batch(
@@ -582,6 +655,24 @@ mod tests {
         write_project(&b, "B again", SequenceSettings::GAME_CLIP);
         index.refresh().unwrap();
         assert_eq!(index.project(&b).unwrap().unwrap().issue, None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_name_that_cant_be_listed_does_not_stop_the_refresh() {
+        use std::os::unix::ffi::OsStrExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let index = Index::open_in_memory().unwrap();
+        index.add_folder(tmp.path(), FolderKind::Projects).unwrap();
+        let mut bad_name = b"a\xff.".to_vec();
+        bad_name.extend_from_slice(ext().as_bytes());
+        let bad = tmp.path().join(std::ffi::OsStr::from_bytes(&bad_name));
+        write_project(&bad, "Bad", SequenceSettings::GAME_CLIP);
+        let b = tmp.path().join(format!("b.{}", ext()));
+        write_project(&b, "B", SequenceSettings::GAME_CLIP);
+        assert_eq!(index.refresh().unwrap(), 1, "one skipped");
+        let names: Vec<String> = index.projects().unwrap().into_iter().map(|p| p.name).collect();
+        assert_eq!(names, ["B"]);
     }
 
     #[test]

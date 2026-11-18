@@ -485,42 +485,14 @@ impl Editor {
         ui.add_space(GAP);
         let click = if plan.tools_in_a_row {
             // The timeline's tools, the same as on the Edit page.
-            let tip = |a: Action| self.shortcuts.tip(a);
-            let tips = [
-                tip(Action::SelectTool),
-                tip(Action::BladeTool),
-                tip(Action::RippleTool),
-                tip(Action::RollTool),
-                tip(Action::SlipTool),
-                tip(Action::SlideTool),
-                tip(Action::ToggleSnapping),
-                tip(Action::ZoomToFit),
-                tip(Action::RoughCut),
-            ];
-            ui_kit::timeline::toolbar(
-                ui,
-                &self.theme,
-                &self.audio_page.timeline,
-                [
-                    &tips[0], &tips[1], &tips[2], &tips[3], &tips[4], &tips[5], &tips[6], &tips[7], &tips[8],
-                ],
-            )
+            ui_kit::timeline::toolbar(ui, &self.theme, &self.audio_page.timeline, |click| {
+                self.shortcuts.tip(super::toolbar_action(click))
+            })
         } else {
             folded_tools(ui, &folded_text, &self.audio_page.timeline)
         };
         if let Some(click) = click {
-            use ui_kit::timeline::ToolbarClick as C;
-            self.run_action(match click {
-                C::Tool(ui_kit::Tool::Select) => Action::SelectTool,
-                C::Tool(ui_kit::Tool::Blade) => Action::BladeTool,
-                C::Tool(ui_kit::Tool::Ripple) => Action::RippleTool,
-                C::Tool(ui_kit::Tool::Roll) => Action::RollTool,
-                C::Tool(ui_kit::Tool::Slip) => Action::SlipTool,
-                C::Tool(ui_kit::Tool::Slide) => Action::SlideTool,
-                C::Snapping => Action::ToggleSnapping,
-                C::Fit => Action::ZoomToFit,
-                C::RoughCut => Action::RoughCut,
-            });
+            self.run_action(super::toolbar_action(click));
         }
         // Right: as many as fit whole (the viewer shows the times too).
         if plan.right > 0 {

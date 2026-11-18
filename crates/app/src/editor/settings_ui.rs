@@ -284,7 +284,9 @@ impl Editor {
         }
         self.settings_were_open = self.show_settings;
         let has_project = self.document.is_some();
-        let before = self.settings.clone();
+        // Only the window changes settings here: with it closed there is
+        // nothing to copy or compare each frame.
+        let before = self.show_settings.then(|| self.settings.clone());
         let theme = self.theme;
         let mut open = self.show_settings;
         let mut problems = Vec::new();
@@ -435,7 +437,7 @@ impl Editor {
         {
             self.proxies.clearing();
         }
-        if self.settings != before {
+        if let Some(before) = before.filter(|before| self.settings != *before) {
             if self.settings.theme != before.theme {
                 self.theme = self.settings.theme.theme();
                 self.theme.apply(ctx);

@@ -148,7 +148,8 @@ pub struct Picture {
     pub at: Time,
     /// The top clip's picture, when the worker doesn't put pictures
     /// together itself. `None` in a gap (black), or when the frame couldn't
-    /// be decoded (see `error`).
+    /// be decoded (see `error`). An RGBA picture comes opaque (every
+    /// alpha 255), so the window can show its bytes as they are.
     pub frame: Option<Decoded>,
     /// The timeline's whole picture, put together on the window's device,
     /// when the worker was started with one ([`Preview::start_composing`]).
@@ -374,7 +375,8 @@ fn run(inbox: &Receiver<Request>, outbox: &Sender<Picture>, mut worker: Worker, 
                 None => return,
             },
         };
-        let mut show = |picture: Picture| {
+        let mut show = |mut picture: Picture| {
+            picture.make_opaque();
             if outbox.send(picture).is_err() {
                 return false;
             }
@@ -1559,6 +1561,17 @@ impl Role {
 }
 
 impl Picture {
+    /// Sets every alpha of an RGBA picture to 255, here on the worker, so
+    /// the window has no pass over its pixels to make (the viewer shows a
+    /// picture without its transparency).
+    fn make_opaque(&mut self) {
+        if let Some(Decoded::Rgba(frame)) = &mut self.frame {
+            for alpha in frame.rgba.iter_mut().skip(3).step_by(4) {
+                *alpha = 255;
+            }
+        }
+    }
+
     /// Nothing to see at `at`, and nothing wrong.
     fn black(at: Time) -> Picture {
         Picture {
@@ -1644,6 +1657,22 @@ struct File<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_rgba_picture_is_sent_opaque() {
+        let mut picture = Picture::black(Time::ZERO);
+        picture.frame = Some(Decoded::Rgba(media::Frame {
+            width: 2,
+            height: 1,
+            rgba: vec![10, 20, 30, 0, 40, 50, 60, 128],
+            time: 0.0,
+        }));
+        picture.make_opaque();
+        let Some(Decoded::Rgba(frame)) = picture.frame else {
+            panic!("an RGBA picture");
+        };
+        assert_eq!(frame.rgba, [10, 20, 30, 255, 40, 50, 60, 255]);
+    }
     use project::Command;
     use std::path::Path;
 

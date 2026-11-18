@@ -115,6 +115,8 @@ pub struct Editor {
     selected: Vec<project::ClipId>,
     /// The tabs of the project's timelines, above the timeline.
     tabs: ui_kit::timeline_tabs::TimelineTabs,
+    /// The tabs' contents, kept until a timeline changes.
+    tabs_cache: timelines::TabsCache,
     /// The timeline shown last frame, to notice another one opening.
     shown_sequence: Option<project::SequenceId>,
     /// Where the playhead was in each timeline left this session.
@@ -515,6 +517,7 @@ impl Editor {
             view_keeper,
             selected: Vec::new(),
             tabs: Default::default(),
+            tabs_cache: Default::default(),
             shown_sequence: None,
             playheads: Default::default(),
             fitted: false,
@@ -678,10 +681,10 @@ impl Editor {
             }
             Action::Delete | Action::RippleDelete => {
                 if self.selected.is_empty()
-                    && let Some((start, end)) = self.shown_view().selected_gap()
+                    && let Some(gap) = self.shown_view().selected_gap()
                 {
                     // A selected gap: closed on every track, whichever key.
-                    self.close_gap(start, end)
+                    self.close_gap(gap)
                 } else if self.selected.is_empty() {
                     self.status = "Click a clip, or the gap between two clips, on the timeline first.".into();
                     Ok(())
@@ -1071,14 +1074,12 @@ impl Editor {
     }
 
     /// Sets (or clears) the region, on frames.
-    fn set_region(&mut self, seconds_range: Option<(f64, f64)>) -> diag::Result<()> {
+    fn set_region(&mut self, range: Option<(Time, Time)>) -> diag::Result<()> {
         self.with_document(|d| {
             let Some(seq) = d.project().active() else {
                 return Ok(());
             };
-            let rate = seq.settings.frame_rate;
-            let region = seconds_range
-                .and_then(|(a, b)| project::Region::between(rate.snap(seconds(a)), rate.snap(seconds(b))));
+            let region = region_on_frames(seq.settings.frame_rate, range);
             if region == seq.region {
                 return Ok(());
             }
@@ -1094,23 +1095,14 @@ impl Editor {
         let Some(seq) = self.document.as_ref().and_then(|d| d.project().active()) else {
             return Ok(());
         };
-        let length = seq.length().as_secs_f64();
-        let at = self.viewer.playhead.as_secs_f64();
-        let (from, to) = seq
-            .region
-            .map_or((0.0, length), |r| (r.start.as_secs_f64(), r.end.as_secs_f64()));
-        let region = if start {
-            (at, if to > at { to } else { length })
-        } else {
-            (if from < at { from } else { 0.0 }, at)
-        };
+        let region = marked(seq.region, seq.length(), self.viewer.playhead, start);
         self.set_region(Some(region))
     }
 
-    /// Moves the playhead; while playing, playback carries on from there.
-    fn seek(&mut self, seconds: f64) {
-        let at = Time::from_ratio((seconds * 1_000_000.0).round() as i64, 1_000_000).unwrap_or(Time::ZERO);
-        self.go_to(at);
+    /// Moves the playhead to `at` seconds (as the timeline widget gives
+    /// them); while playing, playback carries on from there.
+    fn seek(&mut self, at: f64) {
+        self.go_to(seconds(at));
     }
 
     /// Moves the playhead to the next (or previous) cut between pictures.
@@ -1192,9 +1184,7 @@ impl Editor {
                     let Some(seq) = d.project().active() else {
                         return Ok(());
                     };
-                    let at =
-                        Time::from_ratio((t * 1_000_000.0).round() as i64, 1_000_000).unwrap_or(Time::ZERO);
-                    let at = seq.settings.frame_rate.snap(at);
+                    let at = seq.settings.frame_rate.snap(seconds(t));
                     let sequence = seq.id;
                     d.apply(Command::SetEditNeedle { sequence, at })
                 });
@@ -1211,8 +1201,8 @@ impl Editor {
                     self.errors.push(&err);
                 }
             }
-            E::CloseGap { start, end } => {
-                if let Err(err) = self.close_gap(start, end) {
+            E::CloseGap(gap) => {
+                if let Err(err) = self.close_gap(gap) {
                     self.errors.push(&err);
                 }
             }
@@ -1377,7 +1367,7 @@ impl Editor {
                 }
             }
             E::SetRegion(range) => {
-                if let Err(err) = self.set_region(range) {
+                if let Err(err) = self.set_region(range.map(|(a, b)| (seconds(a), seconds(b)))) {
                     self.errors.push(&err);
                 }
             }
@@ -2499,7 +2489,7 @@ impl Editor {
         let found = answer.as_ref().map(|a| a.media.as_slice());
         let new_files = match &self.document {
             Some(document) => self.media_folders.new_files(document.project()),
-            None => Vec::new(),
+            None => Default::default(),
         };
         let importer = &self.importer;
         let new_files = crate::new_files::NewFiles {
@@ -3162,7 +3152,7 @@ impl Editor {
             ui.allocate_rect(top, egui::Sense::hover());
             ui.add_space(8.0);
             let new_tip = self.shortcuts.tip(Action::NewTimeline);
-            let shown_tabs = timelines::tabs(p);
+            let shown_tabs = self.tabs_cache.tabs(p);
             ui.horizontal(|ui| {
                 tabs_events = self.tabs.show(ui, &self.theme, &shown_tabs, &new_tip);
             });
@@ -3258,30 +3248,12 @@ impl Editor {
                 least_viewer,
                 least_timeline,
             );
-            let tip = |a: Action| self.shortcuts.tip(a);
-            let tips = [
-                tip(Action::SelectTool),
-                tip(Action::BladeTool),
-                tip(Action::RippleTool),
-                tip(Action::RollTool),
-                tip(Action::SlipTool),
-                tip(Action::SlideTool),
-                tip(Action::ToggleSnapping),
-                tip(Action::ZoomToFit),
-                tip(Action::RoughCut),
-            ];
             let new_tip = self.shortcuts.tip(Action::NewTimeline);
-            let shown_tabs = timelines::tabs(p);
+            let shown_tabs = self.tabs_cache.tabs(p);
             ui.horizontal(|ui| {
-                toolbar_click = ui_kit::timeline::toolbar(
-                    ui,
-                    &self.theme,
-                    &self.timeline,
-                    [
-                        &tips[0], &tips[1], &tips[2], &tips[3], &tips[4], &tips[5], &tips[6], &tips[7],
-                        &tips[8],
-                    ],
-                );
+                toolbar_click = ui_kit::timeline::toolbar(ui, &self.theme, &self.timeline, |click| {
+                    self.shortcuts.tip(toolbar_action(click))
+                });
                 if self.lines_on {
                     ui.add_space(8.0);
                     if ui_kit::timeline::lines_chip(
@@ -3407,17 +3379,7 @@ impl Editor {
             self.run_action(Action::VolumeLines);
         }
         if let Some(click) = toolbar_click {
-            self.run_action(match click {
-                ui_kit::timeline::ToolbarClick::Tool(ui_kit::Tool::Select) => Action::SelectTool,
-                ui_kit::timeline::ToolbarClick::Tool(ui_kit::Tool::Blade) => Action::BladeTool,
-                ui_kit::timeline::ToolbarClick::Tool(ui_kit::Tool::Ripple) => Action::RippleTool,
-                ui_kit::timeline::ToolbarClick::Tool(ui_kit::Tool::Roll) => Action::RollTool,
-                ui_kit::timeline::ToolbarClick::Tool(ui_kit::Tool::Slip) => Action::SlipTool,
-                ui_kit::timeline::ToolbarClick::Tool(ui_kit::Tool::Slide) => Action::SlideTool,
-                ui_kit::timeline::ToolbarClick::Snapping => Action::ToggleSnapping,
-                ui_kit::timeline::ToolbarClick::Fit => Action::ZoomToFit,
-                ui_kit::timeline::ToolbarClick::RoughCut => Action::RoughCut,
-            });
+            self.run_action(toolbar_action(click));
         }
         if let Some(command) = viewer_command {
             self.run_action(command);
@@ -4089,6 +4051,23 @@ const AUDIO_ENDS_WITHIN: Duration = Duration::from_secs(2);
 /// written (one small frame).
 const THUMBNAIL_ENDS_WITHIN: Duration = Duration::from_secs(5);
 
+/// The command a button of the timeline's toolbar runs (and whose
+/// shortcut its tooltip names).
+fn toolbar_action(click: ui_kit::timeline::ToolbarClick) -> Action {
+    use ui_kit::timeline::ToolbarClick as C;
+    match click {
+        C::Tool(ui_kit::Tool::Select) => Action::SelectTool,
+        C::Tool(ui_kit::Tool::Blade) => Action::BladeTool,
+        C::Tool(ui_kit::Tool::Ripple) => Action::RippleTool,
+        C::Tool(ui_kit::Tool::Roll) => Action::RollTool,
+        C::Tool(ui_kit::Tool::Slip) => Action::SlipTool,
+        C::Tool(ui_kit::Tool::Slide) => Action::SlideTool,
+        C::Snapping => Action::ToggleSnapping,
+        C::Fit => Action::ZoomToFit,
+        C::RoughCut => Action::RoughCut,
+    }
+}
+
 /// Records what a finished job writing the launcher's picture means for
 /// `shows`, what the picture is known to show: after a failure, nothing.
 fn thumbnail_finished(result: diag::Result<bool>, shows: &mut Option<engine::thumbnail::Shows>) {
@@ -4208,13 +4187,33 @@ fn click_moves_says(moves: ui_kit::ClickMoves, edit_at_playhead: bool) -> &'stat
     }
 }
 
-/// Seconds (as the timeline widget gives them) as exact time, to the microsecond.
 /// The fix button's command that splits at the playhead when the edit
 /// needle found nothing to split.
 const SPLIT_AT_PLAYHEAD: &str = "split.at-playhead";
 
+/// Seconds (as the timeline widget gives them) as exact time, to the
+/// microsecond. The one place the window turns the widget's seconds into
+/// time; everything after works on exact time.
 pub(crate) fn seconds(s: f64) -> Time {
     Time::from_ratio((s * 1_000_000.0).round() as i64, 1_000_000).unwrap_or(Time::ZERO)
+}
+
+/// The region from `range`, both ends put on the nearest frames of `rate`;
+/// `None` when there is no range or it is empty there.
+fn region_on_frames(rate: project::Rate, range: Option<(Time, Time)>) -> Option<project::Region> {
+    range.and_then(|(a, b)| project::Region::between(rate.snap(a), rate.snap(b)))
+}
+
+/// The region marking in (`start`) or out at `at` gives: that end at
+/// `at`, the other end of `region` kept when it is on the right side,
+/// else the timeline's start or end (`length`). Exact time throughout.
+fn marked(region: Option<project::Region>, length: Time, at: Time, start: bool) -> (Time, Time) {
+    let (from, to) = region.map_or((Time::ZERO, length), |r| (r.start, r.end));
+    if start {
+        (at, if to > at { to } else { length })
+    } else {
+        (if from < at { from } else { Time::ZERO }, at)
+    }
 }
 
 /// A project named on the command line, and what to do with unsaved work from a crash.
@@ -4339,6 +4338,39 @@ fn cut_times(spans: impl Iterator<Item = (Time, Time)>) -> Vec<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Marking works on exact time: a playhead just short of half a frame
+    /// marks the frame before, where rounding it to the microsecond first
+    /// would have crossed the half and marked the frame after.
+    #[test]
+    fn marking_keeps_the_exact_time() {
+        let rate = project::Rate::FPS_30;
+        let length = Time::seconds(10);
+        // Half a frame (1/60 s) less a tenth of a microsecond.
+        let at = Time::from_ratio(9_999_940, 600_000_000).expect("a time");
+        let through_seconds = rate.snap(seconds(at.as_secs_f64()));
+        assert_eq!(
+            through_seconds,
+            rate.frame_start(1),
+            "the old way crossed the half"
+        );
+        let region = region_on_frames(rate, Some(marked(None, length, at, true))).expect("a region");
+        assert_eq!((region.start, region.end), (Time::ZERO, length));
+        // Mark out keeps the region's start, exactly, and the marked end lands
+        // on the frame nearest the exact playhead.
+        let kept = project::Region::between(rate.frame_start(3), length);
+        let out = Time::from_ratio(289_999_940, 600_000_000).expect("a time");
+        let region = region_on_frames(rate, Some(marked(kept, length, out, false))).expect("a region");
+        assert_eq!(
+            (region.start, region.end),
+            (rate.frame_start(3), rate.frame_start(14))
+        );
+        assert_eq!(
+            marked(kept, length, Time::ZERO, false),
+            (Time::ZERO, Time::ZERO),
+            "nothing before"
+        );
+    }
 
     #[test]
     fn up_and_down_go_to_the_cut_before_and_after() {

@@ -421,7 +421,7 @@ impl Viewer {
             Some(Decoded::Rgba(frame)) => {
                 let size = (frame.width, frame.height);
                 Some((
-                    Shown::Texture(self.texture(ctx, &frame)),
+                    Shown::Texture(self.texture(ctx, frame)),
                     "colour on the CPU",
                     size,
                     false,
@@ -524,13 +524,8 @@ impl Viewer {
     }
 
     /// An RGBA picture as a texture, written into the one on show when there is one.
-    fn texture(&mut self, ctx: &egui::Context, frame: &media::Frame) -> egui::TextureHandle {
-        let pixels = frame
-            .rgba
-            .chunks_exact(4)
-            .map(|p| egui::Color32::from_rgb(p[0], p[1], p[2]))
-            .collect();
-        let image = egui::ColorImage::new([frame.width as usize, frame.height as usize], pixels);
+    fn texture(&mut self, ctx: &egui::Context, frame: media::Frame) -> egui::TextureHandle {
+        let image = color_image(frame);
         // The handle names one texture: a copy of it writes into the one on show.
         match self.shown.as_deref() {
             Some(Shown::Texture(texture)) => {
@@ -838,4 +833,51 @@ fn start_preview(
         composing,
         move || ctx.request_repaint(),
     )
+}
+
+/// An RGBA picture from the preview worker, which sends it opaque, as an
+/// image: its bytes are taken as the colours, without a copy, so nothing
+/// is done per pixel on the interface thread.
+fn color_image(frame: media::Frame) -> egui::ColorImage {
+    let size = [frame.width as usize, frame.height as usize];
+    let pixels = match bytemuck::allocation::try_cast_vec::<u8, egui::Color32>(frame.rgba) {
+        Ok(pixels) => pixels,
+        // Room for a part of a pixel: trimmed (a copy at most), then taken.
+        Err((_, mut rgba)) => {
+            rgba.shrink_to_fit();
+            bytemuck::allocation::try_cast_vec(rgba).unwrap_or_else(|(_, rgba)| {
+                rgba.chunks_exact(4)
+                    .map(|p| egui::Color32::from_rgb(p[0], p[1], p[2]))
+                    .collect()
+            })
+        }
+    };
+    egui::ColorImage::new(size, pixels)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_opaque_picture_is_shown_as_its_bytes() {
+        let rgba = vec![10, 20, 30, 255, 200, 100, 0, 255, 1, 2, 3, 255, 4, 5, 6, 255];
+        let mut odd = Vec::with_capacity(rgba.len() + 3);
+        odd.extend_from_slice(&rgba);
+        for rgba in [rgba, odd] {
+            let frame = media::Frame {
+                width: 2,
+                height: 2,
+                rgba: rgba.clone(),
+                time: 0.0,
+            };
+            let image = color_image(frame);
+            assert_eq!(image.size, [2, 2]);
+            let expected: Vec<_> = rgba
+                .chunks_exact(4)
+                .map(|p| egui::Color32::from_rgb(p[0], p[1], p[2]))
+                .collect();
+            assert_eq!(image.pixels, expected);
+        }
+    }
 }

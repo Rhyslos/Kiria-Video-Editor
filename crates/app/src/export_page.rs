@@ -406,6 +406,9 @@ impl ExportPage {
         };
         let loudness = self.loudness.look(project, seq.id, range, notify.clone());
         let disk = self.disk.look(&folder, &path, notify);
+        if let Some(wait) = self.disk.wait() {
+            ctx.request_repaint_after(wait);
+        }
         let media = self.media_counts(project, seq.id, missing);
         let video = settings.video;
         let encodable = self

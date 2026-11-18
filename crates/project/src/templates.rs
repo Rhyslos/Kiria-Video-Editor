@@ -636,27 +636,23 @@ fn path_of(dir: &Path, name: &str) -> PathBuf {
     dir.join(format!("{name}.{FILE_EXTENSION}"))
 }
 
-/// `name` made safe for a file name, or why it can't be one.
+/// `name` made safe for a file name, or why it can't be one: cleaned as
+/// every file name is ([`crate::disk::clean_file_name`]), and refused with
+/// the reason where [`crate::disk::safe_file_name`] would have to change it
+/// further (nothing left, or a name the system keeps for a device), so a
+/// template is always called what it is saved as.
 fn usable_name(name: &str) -> diag::Result<String> {
-    let name = crate::versions::clean_name(name);
-    let name = name.trim_start_matches('.').trim_end_matches('.').trim();
+    let name = crate::disk::clean_file_name(name);
     if name.is_empty() {
         return Err(AppError::new("A template needs a name").fix("Type a few words, like \"Channel intro\"."));
     }
-    // Names some systems keep for devices can't be file names there.
-    const KEPT: [&str; 4] = ["con", "prn", "aux", "nul"];
-    let lower = name.to_lowercase();
-    let numbered = |prefix: &str| {
-        lower
-            .strip_prefix(prefix)
-            .is_some_and(|rest| rest.len() == 1 && rest.chars().all(|c| c.is_ascii_digit()))
-    };
-    if KEPT.contains(&lower.as_str()) || numbered("com") || numbered("lpt") {
+    if crate::disk::is_device_name(&name) {
         return Err(AppError::new("That name can't be used for a template")
             .why(format!("The operating system keeps \"{name}\" for itself."))
             .fix("Add a word, like \"Channel intro\"."));
     }
-    Ok(name.to_owned())
+    debug_assert_eq!(crate::disk::safe_file_name(&name, ""), name);
+    Ok(name)
 }
 
 /// Names differing only in capitals count as the same, as they are the
@@ -1474,6 +1470,10 @@ mod tests {
                 .contains("can't be used")
         );
         assert!(save(&template, &dir, "com1").is_err());
+        assert!(
+            save(&template, &dir, "con.txt").is_err(),
+            "a device name with an extension"
+        );
         assert_eq!(save(&template, &dir, "Common").unwrap(), "Common");
         assert_eq!(list(&dir).len(), 2);
     }

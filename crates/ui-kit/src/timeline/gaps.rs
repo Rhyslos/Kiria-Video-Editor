@@ -6,41 +6,46 @@
 use super::TimelineTrack;
 use egui::{Rect, Stroke, pos2};
 
-/// A selected gap: its track and where it lies, in seconds.
+/// A selected gap: its track, where it lies (in seconds, to draw it) and
+/// the clips on each side, so the page finds its exact edges by id
+/// rather than from the seconds.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Gap {
     pub track: u64,
     pub start: f64,
     pub end: f64,
+    /// The clip whose end is the gap's start; `None` when the gap starts
+    /// at the start of the timeline.
+    pub before: Option<u64>,
+    /// The clip whose start is the gap's end.
+    pub after: u64,
 }
 
 /// The gap of `track` at `t`: from the end of the clip before (or the
 /// start of the timeline) to the start of the clip after. `None` where
 /// there is a clip, or nothing after (the open end of the track).
 pub fn gap_at(track: &TimelineTrack, t: f64) -> Option<Gap> {
-    if track
-        .clips
-        .iter()
-        .any(|c| c.start <= t && t < c.start + c.duration)
-    {
+    if track.clip_at(t).is_some() {
         return None;
     }
-    let start = track
+    let before = track
         .clips
         .iter()
-        .map(|c| c.start + c.duration)
-        .filter(|end| *end <= t)
-        .fold(0.0, f64::max);
-    let end = track
+        .filter(|c| c.start + c.duration <= t)
+        .max_by(|a, b| (a.start + a.duration).total_cmp(&(b.start + b.duration)));
+    let after = track
         .clips
         .iter()
-        .map(|c| c.start)
-        .filter(|s| *s > t)
-        .fold(f64::INFINITY, f64::min);
-    (end.is_finite() && end - start > 1e-6).then_some(Gap {
+        .filter(|c| c.start > t)
+        .min_by(|a, b| a.start.total_cmp(&b.start))?;
+    let start = before.map_or(0.0, |c| (c.start + c.duration).max(0.0));
+    let end = after.start;
+    (end - start > 1e-6).then_some(Gap {
         track: track.id,
         start,
         end,
+        before: before.map(|c| c.id),
+        after: after.id,
     })
 }
 
@@ -106,12 +111,14 @@ mod tests {
             Some(Gap {
                 track: 4,
                 start: 5.0,
-                end: 9.0
+                end: 9.0,
+                before: Some(0),
+                after: 1,
             })
         );
         assert_eq!(
-            gap_at(&t, 1.0).map(|g| (g.start, g.end)),
-            Some((0.0, 2.0)),
+            gap_at(&t, 1.0).map(|g| (g.start, g.end, g.before, g.after)),
+            Some((0.0, 2.0, None, 0)),
             "from the start"
         );
         assert_eq!(gap_at(&t, 3.0), None, "on a clip");
