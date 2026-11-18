@@ -663,7 +663,7 @@ fn play(
     mut session: Session,
     mut heard: Option<Heard>,
     shape: (u32, usize),
-    clock: &Clock,
+    clock: &Arc<Clock>,
     inbox: &Receiver<Message>,
 ) {
     let out = &clock.output;
@@ -673,7 +673,7 @@ fn play(
         if heard.is_some() && (out.lost.load(Ordering::Acquire) || quiet.too_long(out, Instant::now())) {
             if let Some(card) = heard.take() {
                 tracing::warn!("the sound output went away: playing on unheard, so the meters still work");
-                match card.give_back() {
+                match card.give_back(clock) {
                     Some(output) => play_unheard(output, shape, clock),
                     None => {
                         tracing::warn!(
@@ -765,9 +765,9 @@ impl Heard {
     /// Lets go of the stream and takes the mix back, at most
     /// [`GIVE_BACK_PATIENCE`] later. The stream is let go on a thread of its
     /// own, so a driver that stopped answering can't hold playback up.
-    fn give_back(self) -> Option<Output> {
+    fn give_back(self, clock: &Arc<Clock>) -> Option<Output> {
         let Heard { stream, slot } = self;
-        let running = Running::new();
+        let running = Running::new(Arc::clone(clock));
         let closing = std::thread::Builder::new()
             .name("sound-closing".into())
             .spawn(move || {
