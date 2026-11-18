@@ -476,8 +476,8 @@ impl Editor {
         );
     }
 
-    /// The Edit page until the viewer and the timeline widget arrive: import,
-    /// and a plain list of what is on the timeline.
+    /// The Edit page: the toolbar and the viewer (with the inspector beside
+    /// it) next to the media drawer's tab, and the timeline under them.
     pub(super) fn edit_page(&mut self, ui: &mut egui::Ui) {
         // The toolbar and the viewer sit beside the media drawer's tab; the
         // timeline below runs from the page's left edge to its right.

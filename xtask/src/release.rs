@@ -52,7 +52,7 @@ pub fn keygen(args: &[String]) -> Result<(), String> {
     std::fs::write(out, BASE64.encode(secret)).map_err(|e| format!("Can't write {out}: {e}"))?;
     let public = updater::manifest::public_key_of(&secret);
     println!(
-        "Secret key written to {out}. Store it as the RELEASE_SIGNING_KEY repository secret, then delete the file."
+        "Secret key written to {out}. Store it as the RELEASE_SIGNING_KEY secret of the `release` environment (RELEASING.md, \"Where the signing key is kept\"), then delete the file."
     );
     println!("Public key for RELEASE_PUBLIC_KEY:");
     for row in public.chunks(16) {
@@ -111,7 +111,7 @@ pub fn sign(args: &[String]) -> Result<(), String> {
         return Err("Usage: cargo xtask sign <manifest.json>".into());
     };
     let secret = std::env::var("RELEASE_SIGNING_KEY")
-        .map_err(|_| "RELEASE_SIGNING_KEY is not set. Add it as a repository secret.".to_owned())?;
+        .map_err(|_| "RELEASE_SIGNING_KEY is not set. Add it as a secret of the `release` environment (see RELEASING.md).".to_owned())?;
     let secret: [u8; 32] = BASE64
         .decode(secret.trim())
         .ok()

@@ -4,7 +4,7 @@ Shared interface parts. Anything that must look and behave the same on every pag
 
 ## Status
 
-Phase 0.6 done: themes, fonts, shared sizes, the top bar, the shortcut table and error display. Phase 2 added the title bar for the launcher, the shared dialog look and the shared time wording. The shared timeline widget (playhead, edit needle, region, labels, ruler, transport) arrives in Phase 4.
+Themes, fonts, shared sizes, the top bar and the launcher's title bar, the shortcut table and the keyboard shortcuts page, error display, dialogs, Settings, the shared time wording, the viewer with its transport and picture handles, the timeline widget every page shares (playhead, edit needle, region, labels, ruler, lines, keyframe marks), the inspector's parts, and the Audio page's mixer and the master column.
 
 ## Files
 
@@ -54,11 +54,10 @@ Phase 0.6 done: themes, fonts, shared sizes, the top bar, the shortcut table and
 
 ## Rules
 
-- Colours come only from `Theme` and `status`. No hex values in pages.
 - Sizes that more than one page uses come from `layout`.
 - New commands go into the `actions!` list (`src/shortcuts/actions.rs`) and their usual keys into `USUAL` (`src/shortcuts.rs`); the test there refuses a key bound twice.
 - Shortcuts match on the physical key, so they work on every keyboard layout. While a text field has focus only Ctrl shortcuts fire; while a dialog is up none do (`ShortcutTable::pressed`).
 - A name is never typed into a field inside a menu or pop-up (it closes on the click and the keys go to shortcuts): ask with `dialog::name_dialog`.
 - Shortcuts can be changed, so interface text never types a key name: it asks the table (`keys_for`, `keys_or_name`, `tip`, `written`), which writes it for the keyboard in use.
-- Colours come only from `Theme`, `status` and `context`.
+- Colours come only from `Theme` and the fixed sets beside it in `theme` (`status`, `context`, `role`, `clarity`, `labels`, `channels`, `analyser`). No hex values in pages.
 - Every window starts with `setup` (fonts, theme), which also turns off the toolkit's own zoom of the whole interface on Ctrl with =, - and 0: those keys are in the shortcut table (they zoom the viewer's picture).

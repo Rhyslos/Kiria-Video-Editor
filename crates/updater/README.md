@@ -4,7 +4,7 @@ Release checks, signature checks, downloads and installing. A version that fails
 
 ## Status
 
-Phase 1 done: checking GitHub, verifying the signed manifest, resumable verified downloads, update preferences, and the install layout the launcher reads. Phase 3 started: installing a verified download beside the current version, switching to it, and swapping in a newer launcher.
+Phases 1 and 3 done: checking GitHub, verifying the signed manifest, resumable verified downloads, update preferences, the install layout the launcher reads, installing a verified download beside the current version, switching to it, swapping in a newer launcher, and rolling back a version that fails to start (`health.rs`).
 
 ## Files
 

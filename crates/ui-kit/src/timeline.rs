@@ -1313,7 +1313,6 @@ impl TimelineView {
         self.level_drag.map(|d| (d.clip, d.db))
     }
 
-    /// Fits `length` seconds in `width` pixels.
     /// A line's point being dragged: whose line, which, and every point
     /// as it is now (seconds on the timeline), so the page can be heard
     /// following it before the undo step comes.
@@ -1325,6 +1324,7 @@ impl TimelineView {
         })
     }
 
+    /// Fits `length` seconds in `width` pixels.
     pub fn fit(&mut self, length: f64, width: f32) {
         if length > 0.0 && width > 0.0 {
             self.zoom = ((width * 0.95) / length as f32).clamp(MIN_ZOOM, self.max_zoom);

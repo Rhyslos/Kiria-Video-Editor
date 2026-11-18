@@ -1,7 +1,8 @@
 //! The editor: window, pages and the start-up sequence.
 //!
-//! Usage: `editor [project file] [--open-last-save] [--import <media file or folder>]... [--playhead <seconds>] [--play] [--select-first-clip] [--cpu-colour] [--graphics-warning] [--decoding-warning] [--shortcuts-page <filter|rebinding|clash>] [--cheat-sheet <file.html>] [--smoke-test | --responsiveness-test | --screenshot <file.png>]`.
-//! The extra options are for automated checks; normal use needs none.
+//! Usage: `editor [project file] [--open-last-save] [--import <media file or folder>]... [options]`.
+//! Every option is read by `run_mode::Options::parse`; the crate README
+//! shows them in use. Most are for automated checks; normal use needs none.
 
 // Release builds on Windows open no console window next to the editor.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
