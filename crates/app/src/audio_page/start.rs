@@ -6,7 +6,7 @@ use super::{Bottom, SplitWay, Tool};
 use project::{ClipLines, Project, Time, TrackKind, TrackRole};
 
 /// What the command line asked of the Audio page.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Start {
     pub tool: Option<Tool>,
     pub view: Option<(Bottom, Option<SplitWay>)>,
@@ -20,6 +20,9 @@ pub struct Start {
     /// Check the region for clarity (made the whole timeline when there is
     /// none), once the tracks are in (`--audio-clarity-region`).
     pub clarity_region: bool,
+    /// The shares of the page's height (`--audio-sizes 0.3,0.35`: the top
+    /// row and the band, then stacked Split's timeline).
+    pub sizes: Option<super::heights::Heights>,
 }
 
 /// `timeline`, `mixer`, `split` or `stacked`.
@@ -119,6 +122,27 @@ pub fn many_tracks(project: &Project, n: usize) -> Option<Project> {
     Some(p)
 }
 
+/// `top,band[,timeline]`: shares of the page's height, each above 0 and under 1.
+pub fn sizes_named(text: &str) -> Option<super::heights::Heights> {
+    let shares: Vec<f32> = text
+        .split(',')
+        .map(|s| s.trim().parse::<f32>().ok().filter(|v| *v > 0.0 && *v < 1.0))
+        .collect::<Option<_>>()?;
+    match shares[..] {
+        [top, band] => Some(super::heights::Heights {
+            top: Some(top),
+            band: Some(band),
+            timeline: None,
+        }),
+        [top, band, timeline] => Some(super::heights::Heights {
+            top: Some(top),
+            band: Some(band),
+            timeline: Some(timeline),
+        }),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -133,5 +157,16 @@ mod tests {
         assert_eq!(view_named("nothing"), None);
         let p = Project::new("T", project::SequenceSettings::GAME_CLIP);
         assert!(many_tracks(&p, 30).is_none(), "no clip to copy");
+    }
+
+    #[test]
+    fn sizes_are_read_as_shares_of_the_page() {
+        let h = sizes_named("0.3, 0.35").unwrap();
+        assert_eq!((h.top, h.band, h.timeline), (Some(0.3), Some(0.35), None));
+        let h = sizes_named("0.3,0.2,0.25").unwrap();
+        assert_eq!(h.timeline, Some(0.25));
+        assert_eq!(sizes_named("0.3"), None);
+        assert_eq!(sizes_named("0.3,1.5"), None);
+        assert_eq!(sizes_named("big,small"), None);
     }
 }
