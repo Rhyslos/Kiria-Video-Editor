@@ -418,6 +418,14 @@ pub enum Command {
         sequence: SequenceId,
         ranges: Vec<Region>,
     },
+    /// `RemoveRanges` and then clears the timeline's region, as one step:
+    /// removing the region, or keeping only it, takes the region away with
+    /// its stretch, and one undo brings back both. (A command of its own so
+    /// that `RemoveRanges` in older journals keeps the region as it did.)
+    RemoveRangesAndRegion {
+        sequence: SequenceId,
+        ranges: Vec<Region>,
+    },
     /// Splits at `at`: only `clip` and its linked clips, or every clip under `at` when `None`.
     Split {
         sequence: SequenceId,
@@ -942,6 +950,10 @@ impl Command {
             Command::Slide { sequence, clip, by } => crate::edits::slide(&mut p, *sequence, *clip, *by)?,
             Command::RemoveRanges { sequence, ranges } => {
                 crate::edits::remove_ranges(&mut p, *sequence, ranges)?
+            }
+            Command::RemoveRangesAndRegion { sequence, ranges } => {
+                crate::edits::remove_ranges(&mut p, *sequence, ranges)?;
+                sequence_mut(&mut p, *sequence)?.region = None;
             }
             Command::Split { sequence, at, clip } => split(&mut p, *sequence, *at, *clip)?,
             Command::AddLabel { sequence, label } => {
@@ -3374,6 +3386,40 @@ mod tests {
             .apply(&p)
             .is_err()
         );
+    }
+
+    #[test]
+    fn removing_stretches_and_the_region_is_one_undo_step() {
+        let (p, seq) = imported(); // 0-30 s and 30-40 s
+        let region = Region::between(Time::seconds(5), Time::seconds(10)).unwrap();
+        let p = Command::SetRegion {
+            sequence: seq,
+            region: Some(region),
+        }
+        .apply(&p)
+        .unwrap();
+        // The older command keeps the region, as journals expect.
+        let kept = Command::RemoveRanges {
+            sequence: seq,
+            ranges: vec![region],
+        }
+        .apply(&p)
+        .unwrap();
+        assert_eq!(kept.active().unwrap().region, Some(region));
+        let mut history = crate::history::History::new(p.clone());
+        history
+            .apply(&Command::RemoveRangesAndRegion {
+                sequence: seq,
+                ranges: vec![region],
+            })
+            .unwrap();
+        let s = history.current().active().unwrap();
+        assert_eq!(s.region, None, "the region went with its stretch");
+        assert_eq!(s.length(), Time::seconds(35));
+        assert_eq!(s.video_tracks, kept.active().unwrap().video_tracks);
+        assert!(history.undo());
+        assert_eq!(history.current(), &p, "one undo brings back clips and region");
+        assert!(!history.undo(), "nothing else to undo");
     }
 
     /// A timeline of `n` clips of 3 s on V1, each linked to one on A1.
