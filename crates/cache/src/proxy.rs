@@ -412,23 +412,18 @@ impl Shelf {
             .unwrap_or_default()
     }
 
-    /// Writes the list whole: a file of its own first, then put in place.
+    /// Writes the list whole or not at all (`project::disk::write_atomic`).
     fn write_cleared(&self, names: &HashSet<String>) -> diag::Result<()> {
         let mut lines: Vec<&str> = names.iter().map(String::as_str).collect();
         lines.sort_unstable();
         let path = self.folder.join(CLEARED_LIST);
-        let writing = path.with_extension(format!("{}.writing", std::process::id()));
         let cant = || {
             AppError::new("The list of cleared proxies can't be saved")
                 .why(format!("Writing {} failed.", path.display()))
                 .fix("Check that the disk is not full and that you can write there.")
         };
         std::fs::create_dir_all(&self.folder).or_explain(cant)?;
-        std::fs::write(&writing, lines.join("\n")).or_explain(cant)?;
-        std::fs::rename(&writing, &path).or_explain(|| {
-            let _ = std::fs::remove_file(&writing);
-            cant()
-        })
+        project::disk::write_atomic(&path, lines.join("\n").as_bytes()).or_explain(cant)
     }
 
     /// The proxies there are, with their size and last use, oldest first.

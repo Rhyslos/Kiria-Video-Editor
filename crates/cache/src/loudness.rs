@@ -7,7 +7,7 @@
 use crate::naming;
 use project::Fingerprint;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// What was measured of a sound stream.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -90,20 +90,8 @@ impl Store {
     /// the files written here are removed, never the folder's other
     /// contents.
     pub fn clear(&self) -> usize {
-        clear_folder(&self.folder)
+        crate::disk::trim(&self.folder, &[EXTENSION], 0)
     }
-}
-
-fn clear_folder(folder: &Path) -> usize {
-    let Ok(entries) = std::fs::read_dir(folder) else {
-        return 0;
-    };
-    entries
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().is_some_and(|e| e == EXTENSION) && path.is_file())
-        .filter(|path| std::fs::remove_file(path).is_ok())
-        .count()
 }
 
 #[cfg(test)]
