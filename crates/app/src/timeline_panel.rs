@@ -309,6 +309,7 @@ pub fn drawn(
                 // What there is to draw inside the clip, how much of its
                 // reading is done, and how the reading of the rest goes.
                 let (mut peaks, mut strip, mut ready, mut state) = (None, None, 1.0, None);
+                let mut drawn_as = egui::Id::NULL;
                 match (t.kind, media) {
                     (project::TrackKind::Audio, Some(m)) => {
                         let look = waveform(m, c.stream);
@@ -316,6 +317,7 @@ pub fn drawn(
                         // A clip whose own part of the file has been read is done.
                         state = look.state.filter(|s| ready < 1.0 || *s == LoadState::Failed);
                         peaks = look.peaks;
+                        drawn_as = crate::waveforms::drawn_as(m.id, c.stream);
                     }
                     (project::TrackKind::Video, Some(m)) if !is_missing => {
                         (strip, state) = pictures(m, c.stream);
@@ -378,6 +380,7 @@ pub fn drawn(
                     missing: is_missing,
                     link: c.link.map(|l| l.0),
                     waveform: peaks.map(|p| ui_kit::ClipWaveform {
+                        id: drawn_as,
                         peaks: p.values,
                         per_second: p.per_second as f32,
                         source_in,
@@ -1046,6 +1049,7 @@ mod tests {
             missing: false,
             link,
             waveform: peaks.map(|p| ui_kit::ClipWaveform {
+                id: egui::Id::unique(id),
                 peaks: vec![p].into(),
                 per_second: 1.0,
                 source_in: 0.0,
