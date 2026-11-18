@@ -153,8 +153,11 @@ fn make(ctx: &Context, peaks: &Arc<[f32]>, workers: &Arc<AtomicUsize>) -> Making
     let spawned = std::thread::Builder::new()
         .name("waveform levels".into())
         .spawn(move || {
-            let _ = made.set(Arc::new(Levels::of(&of)));
+            let levels = Arc::new(Levels::of(&of));
+            // Counted out before the levels can be seen, so the interface
+            // never finds them made while this worker still counts.
             busy.fetch_sub(1, Ordering::SeqCst);
+            let _ = made.set(levels);
             ctx.request_repaint();
         });
     if let Err(err) = spawned {
@@ -350,6 +353,24 @@ mod tests {
     }
 
     #[test]
+    fn levels_are_seen_only_once_their_worker_is_counted_out() {
+        let ctx = Context::default();
+        let peaks: Arc<[f32]> = (0..FEW as u32).map(|i| i as f32).collect();
+        for _ in 0..500 {
+            let workers = Arc::new(AtomicUsize::new(0));
+            let (_, cell) = make(&ctx, &peaks, &workers);
+            // Look as often as possible, so the moment the levels appear is
+            // caught: the count must already be down then.
+            let give_up = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while cell.get().is_none() {
+                assert!(std::time::Instant::now() < give_up, "made in time");
+                std::hint::spin_loop();
+            }
+            assert_eq!(workers.load(Ordering::SeqCst), 0, "worker still counted");
+        }
+    }
+
+    #[test]
     fn peaks_growing_as_they_are_read_keep_one_entry_and_one_worker() {
         let ctx = Context::default();
         let id = Id::unique("a stream being read");
@@ -379,6 +400,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(5));
         };
         assert_eq!(levels.loudest(&last, 0, last.len()), 88.0 / 89.0);
+        assert_eq!(kept.workers.load(Ordering::SeqCst), 0, "worker done");
         let entry = &kept.waveforms[&id];
         assert!(entry.making.is_none(), "nothing else being made");
         // Another stream drawn a minute later: the first is let go.
