@@ -3778,7 +3778,7 @@ impl eframe::App for Editor {
         }
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         self.heartbeat.beat();
         let started = Instant::now();
         let ctx = ui.ctx().clone();
@@ -3811,6 +3811,12 @@ impl eframe::App for Editor {
         // A file chooser that could not open says why.
         if let Some(problem) = ui_kit::file_dialog::take_problem(&ctx) {
             self.errors.push(&problem);
+        }
+        // A picture the graphics card turned down says why, once per cause.
+        if let Some(state) = frame.wgpu_render_state() {
+            for problem in ui_kit::video_picture::refusals(state) {
+                self.errors.push(&problem);
+            }
         }
         let listening = self.shortcuts_page.as_ref().is_some_and(|p| p.listening());
         if !listening {
