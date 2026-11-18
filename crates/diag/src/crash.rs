@@ -66,8 +66,9 @@ pub struct CrashDetails<'a> {
 }
 
 /// Writes a report on every panic that is not caught with [`catch_panic`],
-/// then runs the previous panic handler. The report's log lines are this
-/// process's own log ([`crate::logging::recent_lines`]).
+/// then runs the previous panic handler. The report's log lines are only
+/// this process's own, kept in memory by the log writer
+/// ([`crate::logging::recent_lines`]), not the end of the shared log file.
 pub fn install_panic_hook(crash_dir: PathBuf, app_version: &'static str) {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {

@@ -3,18 +3,31 @@
 //! Log lines are handed to a thread of their own that writes them to the
 //! file, so logging never waits for the disk. Unlike a plain background
 //! writer it can be asked to [`flush`](BackgroundWriter::flush): to write
-//! everything queued so far and say so, with a time limit. The crash
-//! handler does that before it reads the log back, so a report has the lines
-//! written just before the panic.
+//! everything queued so far and say so, with a time limit.
+//!
+//! The writer thread also keeps the last lines it wrote in memory
+//! ([`BackgroundWriter::recent`]): this process's own lines, whatever other
+//! processes (several editors at once) append to the same daily file. The
+//! crash handler flushes, then reads those, so a report has the lines this
+//! process wrote just before the panic and no other's.
 
 use crossbeam_channel::{Receiver, Sender};
 use std::cell::Cell;
+use std::collections::VecDeque;
 use std::io::{self, Write};
+use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::time::{Duration, Instant};
 use tracing_subscriber::fmt::MakeWriter;
 
 /// How many lines may wait for the disk before new ones are dropped.
 const QUEUE_LINES: usize = 128_000;
+
+/// How many written events [`BackgroundWriter::recent`] keeps at most.
+const RECENT_EVENTS: usize = 200;
+
+/// How many bytes of written events [`BackgroundWriter::recent`] keeps at
+/// most (the newest event is always kept).
+const RECENT_BYTES: usize = 128 * 1024;
 
 thread_local! {
     /// True on the writer's own thread, which must never wait for itself.
@@ -31,6 +44,28 @@ enum Message {
 #[derive(Debug, Clone)]
 pub(crate) struct BackgroundWriter {
     sender: Sender<Message>,
+    recent: Arc<Mutex<Recent>>,
+}
+
+/// The last events the writer thread wrote, oldest first, each as formatted
+/// (one or more lines, each ending in a line break).
+#[derive(Debug, Default)]
+struct Recent {
+    events: VecDeque<Vec<u8>>,
+    bytes: usize,
+}
+
+impl Recent {
+    /// Keeps `event`, letting go of the oldest ones past the limits.
+    fn keep(&mut self, event: Vec<u8>) {
+        self.bytes += event.len();
+        self.events.push_back(event);
+        while self.events.len() > RECENT_EVENTS || (self.bytes > RECENT_BYTES && self.events.len() > 1) {
+            if let Some(old) = self.events.pop_front() {
+                self.bytes -= old.len();
+            }
+        }
+    }
 }
 
 impl BackgroundWriter {
@@ -38,10 +73,55 @@ impl BackgroundWriter {
     /// `BackgroundWriter` is gone.
     pub(crate) fn spawn(out: impl Write + Send + 'static) -> io::Result<Self> {
         let (sender, receiver) = crossbeam_channel::bounded(QUEUE_LINES);
+        let recent = Arc::new(Mutex::new(Recent::default()));
+        let kept = Arc::clone(&recent);
         std::thread::Builder::new()
             .name("log writer".into())
-            .spawn(move || write_lines(out, &receiver))?;
-        Ok(Self { sender })
+            .spawn(move || write_lines(out, &receiver, &kept))?;
+        Ok(Self { sender, recent })
+    }
+
+    /// The last `count` lines the writer thread has written, oldest first:
+    /// only this process's, from the last events it kept in memory (at most
+    /// [`RECENT_EVENTS`] of them and about [`RECENT_BYTES`]). Lines still
+    /// queued are not in it; [`flush`](Self::flush) first to have them.
+    /// On the writer's own thread (a panic while writing the log) it gives
+    /// up rather than wait for itself.
+    pub(crate) fn recent(&self, count: usize) -> Vec<String> {
+        let Some(recent) = self.lock_recent() else {
+            return Vec::new();
+        };
+        let mut lines = Vec::new();
+        for event in recent.events.iter().rev() {
+            let text = String::from_utf8_lossy(event);
+            for line in text.lines().rev() {
+                if lines.len() == count {
+                    break;
+                }
+                lines.push(line.to_owned());
+            }
+            if lines.len() == count {
+                break;
+            }
+        }
+        lines.reverse();
+        lines
+    }
+
+    fn lock_recent(&self) -> Option<MutexGuard<'_, Recent>> {
+        if ON_WRITER_THREAD.with(Cell::get) {
+            // This thread may hold the lock itself.
+            return match self.recent.try_lock() {
+                Ok(recent) => Some(recent),
+                Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+                Err(TryLockError::WouldBlock) => None,
+            };
+        }
+        Some(
+            self.recent
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        )
     }
 
     /// Waits at most `limit` until every line queued before this call is in
@@ -61,12 +141,19 @@ impl BackgroundWriter {
     }
 }
 
-fn write_lines(mut out: impl Write, receiver: &Receiver<Message>) {
+fn write_lines(mut out: impl Write, receiver: &Receiver<Message>, recent: &Mutex<Recent>) {
     ON_WRITER_THREAD.with(|on| on.set(true));
     for message in receiver {
         match message {
-            // A line that can't be written has nowhere else to go.
-            Message::Line(line) => drop(out.write_all(&line)),
+            Message::Line(line) => {
+                // A line that can't be written has nowhere else to go; it
+                // is still kept for a crash report.
+                let _ = out.write_all(&line);
+                recent
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .keep(line);
+            }
             Message::Flush(done) => {
                 let _ = out.flush();
                 let _ = done.send(());
@@ -132,7 +219,10 @@ mod tests {
     #[test]
     fn flush_on_the_writer_thread_does_not_wait() {
         let (sender, receiver) = crossbeam_channel::bounded(1);
-        let writer = BackgroundWriter { sender };
+        let writer = BackgroundWriter {
+            sender,
+            recent: Arc::default(),
+        };
         let probe = writer.clone();
         let handle = std::thread::spawn(move || {
             ON_WRITER_THREAD.with(|on| on.set(true));
@@ -148,7 +238,37 @@ mod tests {
     fn flush_gives_up_after_its_limit() {
         // Nobody reads the queue: the answer never comes.
         let (sender, _receiver) = crossbeam_channel::bounded(4);
-        let writer = BackgroundWriter { sender };
+        let writer = BackgroundWriter {
+            sender,
+            recent: Arc::default(),
+        };
         assert!(!writer.flush(Duration::from_millis(50)));
+    }
+
+    #[test]
+    fn recent_has_the_last_lines_written() {
+        let writer = BackgroundWriter::spawn(Kept::default()).unwrap();
+        for n in 0..1000 {
+            (&writer).write_all(format!("line {n}\n").as_bytes()).unwrap();
+        }
+        (&writer).write_all(b"first of two\nsecond of two\n").unwrap();
+        assert!(writer.flush(Duration::from_secs(10)));
+        let lines = writer.recent(3);
+        assert_eq!(lines, vec!["line 999", "first of two", "second of two"]);
+        let kept = writer.recent(usize::MAX);
+        assert_eq!(kept.len(), RECENT_EVENTS + 1, "one event has two lines");
+        assert_eq!(kept.first().map(String::as_str), Some("line 801"));
+    }
+
+    #[test]
+    fn recent_keeps_a_bounded_number_of_bytes() {
+        let mut recent = Recent::default();
+        for _ in 0..10 {
+            recent.keep(vec![b'x'; RECENT_BYTES / 4]);
+        }
+        assert!(recent.bytes <= RECENT_BYTES, "{}", recent.bytes);
+        recent.keep(vec![b'y'; RECENT_BYTES * 2]);
+        assert_eq!(recent.events.len(), 1, "the newest event is always kept");
+        assert_eq!(recent.bytes, RECENT_BYTES * 2);
     }
 }
