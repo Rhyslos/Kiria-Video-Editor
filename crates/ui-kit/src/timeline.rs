@@ -334,8 +334,9 @@ pub enum TimelineEvent {
     /// Empty space was clicked.
     ClearSelection,
     /// "Close the gap" from the right-click menu of a gap: move everything
-    /// after it back by its length, on every track.
-    CloseGap { start: f64, end: f64 },
+    /// after it back by its length, on every track. The gap names the
+    /// clips on each side, so the page closes it at their exact edges.
+    CloseGap(Gap),
     /// A clip (with its linked clips) was dragged by `by` seconds and, when
     /// `track` is given, onto that track of its kind. With `new_track` it
     /// was let go past the last track of its kind (above the top video
@@ -1037,10 +1038,7 @@ fn clip_menu(r: &egui::Response, menu: Menu, events: &mut Vec<TimelineEvent>) {
                 .on_hover_text("Move everything after it back by its length, on every track")
                 .clicked()
         {
-            events.push(TimelineEvent::CloseGap {
-                start: gap.start,
-                end: gap.end,
-            });
+            events.push(TimelineEvent::CloseGap(gap));
             ui.close();
         }
         if ui.button("Add a label here").clicked() {
@@ -1237,10 +1235,9 @@ impl TimelineView {
         self.reveal_audio = true;
     }
 
-    /// The gap selected by a click on it, if any: its start and end in
-    /// seconds.
-    pub fn selected_gap(&self) -> Option<(f64, f64)> {
-        self.gap.map(|g| (g.start, g.end))
+    /// The gap selected by a click on it, if any.
+    pub fn selected_gap(&self) -> Option<Gap> {
+        self.gap
     }
 
     /// Forgets the selected gap (it was closed, or something else chosen).

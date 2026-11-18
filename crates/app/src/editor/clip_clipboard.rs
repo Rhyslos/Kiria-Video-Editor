@@ -9,7 +9,7 @@
 //! so ("Cut closes the gap").
 
 use super::Editor;
-use project::{ClipId, Command, CopiedClips};
+use project::{ClipId, Command, CopiedClips, Time};
 use std::collections::HashSet;
 
 /// What the status line says after pasting `copied`, `left_out` of them
@@ -159,25 +159,14 @@ impl Editor {
 }
 
 impl Editor {
-    /// Closes the gap `start`..`end` (seconds, put on frames) on every
-    /// track, one undo step; refused with the reason when something on
-    /// another track is in it.
-    pub(super) fn close_gap(&mut self, start: f64, end: f64) -> diag::Result<()> {
+    /// Closes `gap` on every track, one undo step; refused with the reason
+    /// when something on another track is in it.
+    pub(super) fn close_gap(&mut self, gap: ui_kit::Gap) -> diag::Result<()> {
         self.with_document(|d| {
             let Some(seq) = d.project().active() else {
                 return Ok(());
             };
-            // The exact edges of the clips around it (they need not be on
-            // the timeline's frames), else the nearest frames.
-            let rate = seq.settings.frame_rate;
-            let edge = |at: f64, ends: bool| {
-                seq.tracks()
-                    .flat_map(|t| t.clips.iter())
-                    .map(|c| if ends { c.end() } else { c.start })
-                    .find(|t| (t.as_secs_f64() - at).abs() < 1e-6)
-                    .unwrap_or_else(|| rate.snap(super::seconds(at)))
-            };
-            let (start, end) = (edge(start, true), edge(end, false));
+            let (start, end) = gap_edges(seq, &gap);
             d.apply(Command::CloseGap {
                 sequence: seq.id,
                 start,
@@ -190,7 +179,25 @@ impl Editor {
     }
 }
 
-/// Every clip of the open timeline.
+/// The exact edges of `gap`: the end of the clip before it (or the
+/// timeline's start) and the start of the clip after, found by their ids,
+/// so edges off the timeline's frames (sound lined up to the sample) are
+/// kept. A clip no longer there falls back to the nearest frame.
+fn gap_edges(seq: &project::Sequence, gap: &ui_kit::Gap) -> (Time, Time) {
+    let rate = seq.settings.frame_rate;
+    let clip = |id: u64| {
+        seq.tracks()
+            .flat_map(|t| t.clips.iter())
+            .find(|c| c.id == ClipId(id))
+    };
+    let start = match gap.before {
+        None => Time::ZERO,
+        Some(id) => clip(id).map_or_else(|| rate.snap(super::seconds(gap.start)), |c| c.end()),
+    };
+    let end = clip(gap.after).map_or_else(|| rate.snap(super::seconds(gap.end)), |c| c.start);
+    (start, end)
+}
+
 /// The clips in `after` that are not in `before`, in `after`'s order; a
 /// set, so a paste on a timeline of thousands of clips stays quick.
 fn added_clips(before: &[ClipId], after: Vec<ClipId>) -> Vec<ClipId> {
@@ -198,6 +205,7 @@ fn added_clips(before: &[ClipId], after: Vec<ClipId>) -> Vec<ClipId> {
     after.into_iter().filter(|c| !before.contains(c)).collect()
 }
 
+/// Every clip of the open timeline.
 fn all_clips(p: &project::Project) -> Vec<ClipId> {
     p.active()
         .map(|s| s.tracks().flat_map(|t| t.clips.iter().map(|c| c.id)).collect())
@@ -246,5 +254,63 @@ mod tests {
         let scanning = start.elapsed();
         assert_eq!(found, scanned);
         println!("pasted clips, 5 000 clips: set {now:?}, list scan {scanning:?}");
+
+    /// A gap after sound lined up to the sample (its end off the frames)
+    /// closes at that exact end, even with another clip's end less than a
+    /// microsecond before it on another track.
+    #[test]
+    fn a_gap_off_the_frames_closes_at_the_exact_edges() {
+        let mut p = crate::inspector::tests::project_with_a_clip();
+        let video = p.active().unwrap().video_tracks[0].clips[0].clone();
+        let sound = |p: &mut project::Project, start: Time, duration: Time| project::Clip {
+            id: p.allocate_id(),
+            start,
+            duration,
+            stream: 0,
+            ..video.clone()
+        };
+        let edge = Time::seconds(1) + Time::from_ratio(1, 48_000).unwrap();
+        let decoy = sound(&mut p, Time::ZERO, edge - Time::from_ratio(1, 2_000_000).unwrap());
+        let before = sound(&mut p, Time::ZERO, edge);
+        let after = sound(&mut p, Time::seconds(3), Time::seconds(2));
+        let mut a2 = p.new_track(project::TrackKind::Audio, "A2");
+        a2.clips.push_back(before.clone());
+        a2.clips.push_back(after.clone());
+        let seq = &mut p.sequences[0];
+        seq.video_tracks[0].clips.clear();
+        seq.audio_tracks[0].clips.push_back(decoy);
+        seq.audio_tracks.push_back(a2);
+        let gap = ui_kit::Gap {
+            track: 0,
+            start: edge.as_secs_f64(),
+            end: 3.0,
+            before: Some(before.id.0),
+            after: after.id.0,
+        };
+        let seq = p.active().unwrap();
+        let (start, end) = gap_edges(seq, &gap);
+        assert_eq!((start, end), (edge, Time::seconds(3)));
+        let closed = Command::CloseGap {
+            sequence: seq.id,
+            start,
+            end,
+        }
+        .apply(&p)
+        .unwrap();
+        let moved = &closed.active().unwrap().audio_tracks[1].clips[1];
+        assert_eq!(moved.start, edge, "right after the sound, to the sample");
+        // A gap from the timeline's start, and a clip that is gone: the
+        // nearest frame of the seconds given.
+        let from_start = ui_kit::Gap {
+            before: None,
+            after: 999,
+            end: 2.01,
+            ..gap
+        };
+        let rate = seq.settings.frame_rate;
+        assert_eq!(
+            gap_edges(seq, &from_start),
+            (Time::ZERO, rate.snap(Time::from_ratio(201, 100).unwrap()))
+        );
     }
 }
