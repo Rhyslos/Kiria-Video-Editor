@@ -12,7 +12,7 @@ use audio::dsp::lines::Lines;
 use audio::settings::LimiterSettings;
 use audio::test_signal::{Rng, sine};
 use audio::{BLOCK, BlockAdapter, Command, MasterChange, MasterSettings, TrackChange, TrackSettings};
-use common::{RATE, full, lines, sound};
+use common::{RATE, full, full_mix, lines, sound};
 
 fn interleave(l: &[f32], r: &[f32]) -> Vec<f32> {
     l.iter().zip(r).flat_map(|(a, b)| [*a, *b]).collect()
@@ -314,4 +314,35 @@ fn the_analyser_listens_to_the_chosen_track() {
     assert!(analyser.step());
     let band = audio::dsp::bands::band_of(1_000.0);
     assert!(analyser.spectrum().levels()[band] > -12.0);
+}
+
+#[test]
+fn a_sample_that_is_not_a_number_leaves_no_trace_in_the_effects() {
+    // Every effect on, on every track and the master: a NaN or an infinity
+    // stuck in a filter's, the compressor's or the limiter's state would
+    // poison the track or the whole mix from then on.
+    let mut mix = full_mix(2);
+    let mut block = [0f32; 2 * BLOCK];
+    for _ in 0..40 {
+        mix.feed();
+        mix.mixer.process(&mut block);
+    }
+    let mut bad = [0f32; 2 * BLOCK];
+    for (i, s) in bad.iter_mut().enumerate() {
+        *s = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 0.1][i % 4];
+    }
+    // A dialogue track (the ducking key) and a music track.
+    for t in [0, 8] {
+        assert_eq!(mix.feeds[t].write(&bad), BLOCK);
+        assert_eq!(mix.feeds[t].take_replaced(), 3 * BLOCK as u64 / 2);
+    }
+    let mut after = Vec::new();
+    for _ in 0..40 {
+        mix.feed();
+        mix.mixer.process(&mut block);
+        after.extend_from_slice(&block);
+    }
+    assert!(after.iter().all(|s| s.is_finite()), "the mix stays numbers");
+    let tail = &after[after.len() - 8 * 2 * BLOCK..];
+    assert!(tail.iter().any(|s| s.abs() > 1e-3), "and still sounds");
 }
