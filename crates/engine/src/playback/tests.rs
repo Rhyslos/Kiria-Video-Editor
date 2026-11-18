@@ -441,12 +441,19 @@ fn track_meters_follow_the_tracks_and_the_analyser_hears_the_one_chosen() {
         .iter()
         .any(|(_, m)| m.take().momentary.is_finite());
     assert!(heard);
-    fake.send.send(Message::Analyse(Some(ids[0]))).unwrap();
+    fake.send
+        .send(Message::Analyse(Some(Listen::Track(ids[0]))))
+        .unwrap();
     fake.play(RATE as usize / 2, 480);
     assert!(
         spectrum.levels().iter().any(|l| *l > -100.0),
         "the chosen track is shown"
     );
+    fake.send.send(Message::Analyse(Some(Listen::Mix))).unwrap();
+    let windows = spectrum.stereo().windows;
+    fake.play(RATE as usize / 2, 480);
+    assert!(spectrum.stereo().windows > windows, "the mix is listened to");
+    assert!(spectrum.levels().iter().any(|l| *l > -100.0), "and shown");
     let mut without = project.clone();
     without.sequences[0].audio_tracks.remove(2);
     fake.update(&without);

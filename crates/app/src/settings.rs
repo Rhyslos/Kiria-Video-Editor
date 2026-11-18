@@ -84,6 +84,9 @@ pub struct Settings {
     pub audio_bottom: crate::audio_page::Bottom,
     /// How the Audio page's Split lays them out: side by side, or stacked.
     pub audio_split: crate::audio_page::SplitWay,
+    /// What the Audio page's band across the middle shows: the clarity
+    /// check, or the spectrum, loudness, tracks or stereo picture.
+    pub audio_band: crate::audio_page::band::View,
     /// How the Audio page's loudness overview counts integrated loudness,
     /// range and peaks: every play, until reset, or in the region.
     pub loudness_counting: crate::audio_page::Counting,

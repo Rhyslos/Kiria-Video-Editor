@@ -52,7 +52,7 @@ pub mod white_balance;
 
 pub use compose::{Composed, Composing};
 pub use export::{Export, ExportSettings};
-pub use playback::Playback;
+pub use playback::{Listen, Playback};
 /// Counts allocations on threads a test marks: the sound card's callback
 /// is checked never to allocate (`playback`'s tests).
 #[cfg(test)]

@@ -196,8 +196,17 @@ enum Message {
     Project(Box<Project>),
     /// Go on from `at`; `number` counts jumps.
     Jump { at: Time, number: u64 },
-    /// The track the EQ's analyser listens to, if any.
-    Analyse(Option<TrackId>),
+    /// What the analyser listens to, if anything.
+    Analyse(Option<Listen>),
+}
+
+/// What the analyser (the EQ's, and the Audio page's band) listens to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Listen {
+    /// A track, after its EQ.
+    Track(TrackId),
+    /// The mix, as the sound card is handed it.
+    Mix,
 }
 
 #[derive(Debug)]
@@ -209,8 +218,8 @@ pub struct Playback {
     clock: Arc<Clock>,
     messages: Sender<Message>,
     mix: Option<MixShape>,
-    /// The track last sent to the analyser.
-    analysed: Option<TrackId>,
+    /// What the analyser was last told to listen to.
+    analysed: Option<Listen>,
 }
 
 impl Playback {
@@ -350,14 +359,15 @@ impl Playback {
         self.clock.meters.lock().map(|m| m.clone()).unwrap_or_default()
     }
 
-    /// What the EQ's analyser shows (the track [`Playback::analyse`] chose,
-    /// after its EQ), once the mixer is made.
+    /// What the analyser shows (what [`Playback::analyse`] chose: a track
+    /// after its EQ, or the mix), its spectrum and stereo picture, once the
+    /// mixer is made.
     pub fn spectrum(&self) -> Option<Arc<Spectrum>> {
         self.clock.spectrum.get().cloned()
     }
 
-    /// Which track the EQ's analyser listens to; sent only when it changes.
-    pub fn analyse(&mut self, track: Option<TrackId>) {
+    /// What the analyser listens to; sent only when it changes.
+    pub fn analyse(&mut self, track: Option<Listen>) {
         if self.analysed != track {
             self.analysed = track;
             let _ = self.messages.send(Message::Analyse(track));
@@ -395,8 +405,8 @@ struct Session {
     master: MasterSettings,
     /// The EQ's analyser, stepped on this thread.
     analyser: Analyser,
-    /// The track it listens to, sent again when tracks change slots.
-    analysed: Option<TrackId>,
+    /// What it listens to, sent again when tracks change slots.
+    analysed: Option<Listen>,
 }
 
 /// Makes the mixer for `sequence` at `rate`, adds every track, sends it to
@@ -483,11 +493,16 @@ impl Session {
 
     /// Tells the mixer which slot the analyser listens to.
     fn send_analysed(&mut self) {
-        let slot = self
-            .analysed
-            .and_then(|t| self.feeder.slot_of(t))
-            .and_then(|s| u16::try_from(s).ok());
-        if let Err(err) = self.controller.send(audio::Command::Analyse(slot)) {
+        let listen = match self.analysed {
+            None => audio::Listen::Nothing,
+            Some(Listen::Mix) => audio::Listen::Mix,
+            Some(Listen::Track(t)) => self
+                .feeder
+                .slot_of(t)
+                .and_then(|s| u16::try_from(s).ok())
+                .map_or(audio::Listen::Nothing, audio::Listen::Track),
+        };
+        if let Err(err) = self.controller.send(audio::Command::Analyse(listen)) {
             tracing::warn!("{}", err.report());
         }
     }

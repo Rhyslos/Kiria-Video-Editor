@@ -335,6 +335,9 @@ impl Editor {
         let full_screen = project.as_ref().is_some_and(|p| p.full_screen);
         let audio_start = project.as_ref().map(|p| p.audio).unwrap_or_default();
         let mut settings = settings;
+        if let Some(band) = audio_start.band {
+            settings.audio_band = band;
+        }
         if let Some((bottom, way)) = audio_start.view {
             settings.audio_bottom = bottom;
             if let Some(way) = way {

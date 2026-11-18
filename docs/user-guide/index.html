@@ -1050,7 +1050,7 @@ footer p { color: var(--muted); }
 <ul>
 <li><strong>Top left:</strong> the viewer with its transport, the same as on the Edit page.</li>
 <li><strong>Top right:</strong> the tools for one track. Pick the track in the dropdown, then a tool: <strong>EQ</strong>, <strong>Compressor</strong>, <strong>Clean-up</strong>, <strong>Ducking</strong>, <strong>Loudness</strong> or <strong>Meters</strong>. Each tool says in one plain sentence what it is doing right now.</li>
-<li><strong>Middle:</strong> the <a href="#clarity">clarity check</a>.</li>
+<li><strong>Middle:</strong> the <a href="#clarity">clarity check</a>, or one of four <a href="#audio-band">live pictures of the sound</a>; the column at its left switches.</li>
 <li><strong>Bottom:</strong> <strong>Timeline</strong>, <strong>Mixer</strong> or <strong>Split</strong> (both, side by side or stacked), and a <strong>Show</strong> filter to see only one role's tracks.</li>
 </ul>
 <p>The playhead, edit needle, region, labels, transport and keys are the same as on the Edit page. Every change is one undo step, and you hear a value while you drag it.</p>
@@ -1147,6 +1147,18 @@ footer p { color: var(--muted); }
 <li>“Nothing covers the voice here.” means all is well.</li>
 </ul>
 <p>Only tracks with the Dialogue role count as the voice, so set <a href="#roles">roles</a> first.</p>
+</section>
+<section id="audio-band">
+<h3>Spectrum, Loudness, Tracks and Stereo<a class="anchor" href="#audio-band" aria-label="Link to this section">#</a></h3>
+<figure><img loading="lazy" src="images/audio-band-tracks.jpg" width="1440" height="900" alt="The Audio page with the middle band on Tracks: a lane per track in its role's colour, showing when the mic, the voice chat, the game and the music were heard."><figcaption>Tracks: who is heard when, over the last 15 seconds.</figcaption></figure>
+<p>The column at the left of the middle band switches it from <strong>Clarity</strong> to a live picture of what is playing. The app remembers your choice for every project. The pictures fill in while you play and keep the last few seconds when you stop.</p>
+<ul>
+<li><strong>Spectrum</strong>: the sound by frequency now (lows left, highs right), with a faint line holding the highest levels for a moment. Beside it, the last few seconds as a spectrogram: time runs left to right, frequency goes up, and brighter is louder. <strong>Mix</strong> shows the whole mix as it goes out; the track's name shows the track chosen above, after its EQ. While the EQ tool is open, the analyser listens to the EQ's track.</li>
+<li><strong>Loudness</strong>: the mix's loudness over the last 30 seconds. The thick line is short-term (3 seconds), the thin one momentary, and the dashed green line is the loudness you aim for (the same setting as the master column's). Red ticks along the top mark true peaks over −1 dBTP. Beside it, the short-term loudness now, large.</li>
+<li><strong>Tracks</strong>: a lane per track, in its role's colour, showing how loud it was over the last 15 seconds. You can see who speaks when, and what plays under them. A track while ducking turns it down is drawn fainter. The <strong>Show</strong> filter narrows the lanes too.</li>
+<li><strong>Stereo</strong>: left against right as a cloud of points. Straight up and down is mono, a wide cloud is wide stereo, and a flat line means the channels are opposite and cancel on one speaker. <strong>Phase</strong> shows how alike the channels are (+1 the same, −1 opposite) and <strong>Balance</strong> which side is louder, with a sentence on what it means, such as “Stereo, and safe on one speaker.” Phase turns red when parts would cancel on a phone.</li>
+</ul>
+<figure><img loading="lazy" src="images/audio-band-spectrum.jpg" width="1440" height="900" alt="The middle band on Spectrum: the mix's levels by frequency with the highs held, and a spectrogram of the last few seconds beside it."><figcaption>Spectrum: the mix by frequency, and the last few seconds as a spectrogram.</figcaption></figure>
 </section>
 </section>
 

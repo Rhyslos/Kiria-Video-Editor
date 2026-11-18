@@ -107,7 +107,7 @@ pub struct Options {
     pub decoding_warning: bool,
     /// The Audio page's tool, bottom view and track, and a project made to
     /// have many audio tracks (`--audio-tool compressor`, `--audio-view
-    /// stacked`, `--audio-track 3`, `--audio-tracks 30`, `--audio-clarity-region`; for screenshots
+    /// stacked`, `--audio-band stereo`, `--audio-track 3`, `--audio-tracks 30`, `--audio-clarity-region`; for screenshots
     /// and the responsiveness test of the Audio page).
     pub audio: crate::audio_page::Start,
     /// The window's size in points (`--window-size 1280x800`, for
@@ -181,6 +181,12 @@ impl Options {
                     let tool = crate::audio_page::Tool::from_name(&name)
                         .ok_or("--audio-tool needs eq, compressor, clean-up, ducking, loudness or meters")?;
                     options.audio.tool = Some(tool);
+                }
+                "--audio-band" => {
+                    let name = args.next().unwrap_or_default();
+                    let band = crate::audio_page::band::View::from_name(&name)
+                        .ok_or("--audio-band needs clarity, spectrum, loudness, tracks or stereo")?;
+                    options.audio.band = Some(band);
                 }
                 "--audio-view" => {
                     let name = args.next().unwrap_or_default();

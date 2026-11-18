@@ -1,5 +1,6 @@
 //! The Audio page as the window runs it: the shared viewer top left, the
-//! page's tools top right, the clarity check across the middle, and the
+//! page's tools top right, the band across the middle (the clarity check
+//! or a live picture of the sound), and the
 //! bottom (the shared timeline, the mixer, or both) under a bar with the
 //! view toggle, the Show filter, the timeline's tools and the lines tool.
 //! Every frame it takes the mixer's meters once, counts for the loudness
@@ -16,7 +17,7 @@ use ui_kit::{Action, Page, layout};
 
 /// The tools' panel's width beside the viewer.
 pub const TOOLS_WIDTH: f32 = layout::TOOLS_WIDTH;
-/// The clarity check's band across the middle.
+/// The band across the middle (the clarity check or a live picture).
 const CLARITY_HEIGHT: f32 = 112.0;
 /// The bar over the bottom views.
 const BAR_HEIGHT: f32 = 30.0;
@@ -72,10 +73,14 @@ impl Editor {
         if let Some(playback) = &mut self.playback {
             live.playing = true;
             live.unheard = playback.unheard();
-            let wants = (self.audio_page.tool == audio_page::Tool::Eq)
-                .then_some(track)
-                .flatten();
+            let wants = audio_page::band::listen(
+                self.audio_page.tool,
+                self.settings.audio_band,
+                self.audio_page.band.source,
+                track,
+            );
             playback.analyse(wants);
+            live.listening = wants;
             live.tracks = playback
                 .track_meters()
                 .into_iter()
@@ -205,8 +210,43 @@ impl Editor {
             egui::pos2(page.left(), top.bottom() + GAP),
             egui::vec2(page.width(), CLARITY_HEIGHT),
         );
-        let clarity_asks =
-            audio_page::clarity_draw::band(ui, &self.theme, clarity, &mut self.audio_page.clarity, seq);
+        let roles: Vec<(project::TrackId, project::TrackRole)> =
+            seq.audio_tracks.iter().map(|t| (t.id, t.sound.role)).collect();
+        let stereo = self
+            .playback
+            .as_ref()
+            .filter(|_| live.listening.is_some())
+            .and_then(|p| p.spectrum())
+            .map(|s| s.stereo());
+        let dt = ui.input(|i| i.stable_dt);
+        self.audio_page
+            .band
+            .follow(&live, stereo, &roles, self.viewer.playhead.as_secs_f64(), dt);
+        if live.playing && self.settings.audio_band != audio_page::band::View::Clarity {
+            ui.ctx().request_repaint();
+        }
+        let track_name = audio_page::chosen(seq, self.audio_page.track).map(|t| t.name.clone());
+        let band_context = audio_page::band_draw::Context {
+            seq,
+            listening: live.listening,
+            track_name: track_name.as_deref(),
+            target: self.settings.loudness_target.lufs(),
+            show: self.audio_page.show,
+        };
+        let audio_page::AudioPage {
+            band,
+            clarity: checks,
+            ..
+        } = &mut self.audio_page;
+        let clarity_asks = audio_page::band_draw::band(
+            ui,
+            &self.theme,
+            clarity,
+            &mut self.settings.audio_band,
+            band,
+            checks,
+            &band_context,
+        );
 
         // The bar over the bottom views.
         let bar = egui::Rect::from_min_size(

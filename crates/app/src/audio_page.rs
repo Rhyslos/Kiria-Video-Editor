@@ -12,6 +12,8 @@
 //! would be, which playback follows, so it is heard as it moves) and
 //! becomes one undo step when the hand is off it, as the inspector does.
 
+pub mod band;
+pub mod band_draw;
 pub mod bar;
 pub mod clarity;
 pub mod clarity_draw;
@@ -128,8 +130,11 @@ pub struct Live {
     pub master: Option<Measured>,
     /// How far the master's compressor and limiter turn the mix down (dB).
     pub master_reduction: Option<(f32, f32)>,
-    /// The analyser's levels for the track the EQ shows.
+    /// The analyser's levels: of the track the EQ shows, or what the
+    /// band's Spectrum and Stereo listen to (`listening` says which).
     pub spectrum: Option<[f32; audio::dsp::bands::COUNT]>,
+    /// What the analyser listens to.
+    pub listening: Option<engine::Listen>,
     /// Playing without a sound output: measured, not heard.
     pub unheard: bool,
 }
@@ -173,6 +178,8 @@ pub struct AudioPage {
     strip_shown: Option<TrackId>,
     /// The clarity check across the middle.
     pub clarity: clarity::ClarityBand,
+    /// The live pictures the band can show instead.
+    pub band: band::Band,
     /// A noise being learned on a worker, for a track.
     learning: Option<(TrackId, SequenceId, JobHandle<NoiseProfile>)>,
 }
