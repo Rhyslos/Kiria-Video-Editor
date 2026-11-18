@@ -276,6 +276,17 @@ impl Sequence {
     pub fn tracks(&self) -> impl Iterator<Item = &Track> {
         self.video_tracks.iter().chain(self.audio_tracks.iter())
     }
+
+    /// The name a new timeline label gets: "Label" and the number it will
+    /// be on the timeline ("Label 3" beside two), or the next number free
+    /// when a label already has that name, so a removal never leads to two
+    /// labels of one name.
+    pub fn next_label_name(&self) -> String {
+        (self.labels.len() + 1..)
+            .map(|n| format!("Label {n}"))
+            .find(|name| !self.labels.iter().any(|l| l.name.eq_ignore_ascii_case(name)))
+            .unwrap_or_else(|| "Label".to_owned())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

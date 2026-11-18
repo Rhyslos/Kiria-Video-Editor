@@ -42,6 +42,34 @@ impl Fading {
     }
 }
 
+/// Marks the message the status line holds as being about the timeline
+/// (the lines tool's hint), so a page without a timeline drops it. The mark
+/// is set beside the message when it is said and holds only while the line
+/// still shows that message: any later message is not about the timeline
+/// unless it is marked too.
+#[derive(Debug, Default)]
+pub struct AboutTimeline {
+    marked: Option<String>,
+}
+
+impl AboutTimeline {
+    /// Says `message` on the status line, marked as about the timeline.
+    pub fn say(&mut self, status: &mut String, message: &str) {
+        message.clone_into(status);
+        self.marked = Some(message.to_owned());
+    }
+
+    /// On a page without a timeline: clears the status line when it still
+    /// shows the marked message.
+    pub fn leave_timeline(&mut self, status: &mut String) {
+        if let Some(marked) = self.marked.take()
+            && *status == marked
+        {
+            status.clear();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -61,5 +89,23 @@ mod tests {
         assert_eq!(fading.follow(&mut status, later).0, 1.0);
         fading.follow(&mut status, later + SHOWN + FADING);
         assert!(status.is_empty(), "gone once faded out");
+    }
+
+    #[test]
+    fn only_a_message_marked_about_the_timeline_goes_with_it() {
+        let mut about = AboutTimeline::default();
+        let mut status = String::new();
+        about.say(&mut status, "Lines off");
+        about.leave_timeline(&mut status);
+        assert!(status.is_empty(), "the marked message goes");
+        // A later message in its place stays, whatever it says.
+        about.say(&mut status, "Lines on");
+        status = "Imported 3 files".to_owned();
+        about.leave_timeline(&mut status);
+        assert_eq!(status, "Imported 3 files");
+        // And the mark is not kept for later.
+        status = "Lines on".to_owned();
+        about.leave_timeline(&mut status);
+        assert_eq!(status, "Lines on");
     }
 }

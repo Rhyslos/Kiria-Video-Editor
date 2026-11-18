@@ -125,7 +125,7 @@ impl BuildPace {
 /// A build under way.
 struct Build {
     media: MediaId,
-    handle: JobHandle<media::proxy::Written>,
+    handle: JobHandle<media::proxy::Built>,
     /// Asked for by hand: other builds don't take its place.
     asked: bool,
     pace: Pace,
@@ -523,13 +523,13 @@ impl ProxyBuilds {
         jobs: &JobSystem,
         project: &Project,
         media: MediaId,
-        result: diag::Result<media::proxy::Written>,
+        result: diag::Result<media::proxy::Built>,
     ) {
         let Some(file) = self.files.get_mut(&media) else {
             return;
         };
         match result {
-            Ok(written) => {
+            Ok(media::proxy::Built::Written(written)) => {
                 tracing::info!(file = %file.path.display(), encoder = %written.encoder, frames = written.frames, "proxy built");
                 file.state = State::Ready;
                 self.built += 1;
@@ -537,8 +537,8 @@ impl ProxyBuilds {
                 self.start_trim(jobs, project);
             }
             // Stopped: given way to another, deleted, or the file went.
-            Err(_) if build_was_stopped(&file.state) => {}
-            Err(err) if err.what() == media::proxy::stopped().what() => {
+            Ok(media::proxy::Built::Stopped) | Err(_) if build_was_stopped(&file.state) => {}
+            Ok(media::proxy::Built::Stopped) => {
                 file.state = match file.state {
                     State::Building(Some(judged)) => State::Judged(judged),
                     _ => State::Unjudged,
@@ -983,6 +983,40 @@ mod tests {
         assert_eq!(video_stream(&media), None);
         media.kind = MediaKind::Video;
         assert_eq!(video_stream(&media), None, "no picture stream described");
+    }
+
+    #[test]
+    fn a_stopped_build_is_told_from_a_failed_one_by_its_outcome() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut builds = ProxyBuilds::new(dir.path().to_path_buf(), ProxyMode::On, 1, None);
+        let jobs = jobs::JobSystem::new(jobs::Budgets::default().resolve(&jobs::Machine::detect()));
+        let project = Project::new("T", project::SequenceSettings::GAME_CLIP);
+        let building = || File {
+            path: PathBuf::from("1.mp4"),
+            fingerprint: Fingerprint {
+                size: 1,
+                sample_hash: "1".into(),
+            },
+            stream: 0,
+            length: 10.0,
+            state: State::Building(Some(Judgement {
+                longest_gap: 2.0,
+                typical_jump: Duration::from_millis(90),
+                needs_proxy: true,
+            })),
+        };
+        let id = MediaId(1);
+        builds.files.insert(id, building());
+        builds.finished(&jobs, &project, id, Ok(media::proxy::Built::Stopped));
+        assert!(
+            matches!(builds.files[&id].state, State::Judged(j) if j.needs_proxy),
+            "stopped: back to its judgement, to be built later"
+        );
+        // A failure is one whatever its words, even the ones a stop once had.
+        builds.files.insert(id, building());
+        let failed = diag::AppError::new("The proxy was not finished").why("Its build was stopped.");
+        builds.finished(&jobs, &project, id, Err(failed));
+        assert!(matches!(&builds.files[&id].state, State::Failed(_)));
     }
 
     #[test]

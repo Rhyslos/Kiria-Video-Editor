@@ -34,10 +34,12 @@ const LINES_ON: &str =
     "Lines: click an audio track to add a point, drag one to move it, double-click it to remove it";
 const LINES_OFF: &str = "Lines off: the pointer works clips again";
 
-/// Whether the status line says something about the timeline that a page
-/// without one should not keep showing (the lines tool's hint).
-fn about_the_timeline(status: &str) -> bool {
-    status == LINES_ON || status == LINES_OFF
+/// What the person is told when a fix they clicked has nothing behind it
+/// (the command is logged, not shown).
+fn unknown_fix(label: &str) -> diag::AppError {
+    diag::AppError::new(format!("\"{label}\" couldn't be done"))
+        .why("This version of the app has no way to do it yet. Nothing was changed.")
+        .fix("Do it by hand for now; the app's log says which fix it was.")
 }
 
 /// The outcome of an automated run, read by `main` after the window closes.
@@ -102,7 +104,7 @@ pub struct Editor {
     importer: Importer,
     import_requested: bool,
     /// What the timeline's settings settled on during the import under way.
-    import_settled: Option<String>,
+    import_settled: import::SettledNote,
     viewer: Viewer,
     /// Split view's Source and the viewer's own window (the Display menu).
     display: crate::display::ViewerDisplay,
@@ -249,6 +251,8 @@ pub struct Editor {
     slip_playhead: Option<Time>,
     /// The status line's age: it fades out a few seconds after it last changed.
     status_fade: crate::status_line::Fading,
+    /// Whether the status line's message is about the timeline.
+    status_about_timeline: crate::status_line::AboutTimeline,
     /// How strongly the status line is drawn this frame (1 full).
     status_strength: f32,
     playing: bool,
@@ -509,7 +513,7 @@ impl Editor {
             thumbnail_shows: None,
             importer,
             import_requested: false,
-            import_settled: None,
+            import_settled: Default::default(),
             viewer,
             display,
             playback: None,
@@ -599,6 +603,7 @@ impl Editor {
             status: String::new(),
             slip_playhead: None,
             status_fade: Default::default(),
+            status_about_timeline: Default::default(),
             status_strength: 1.0,
             playing: false,
             looping: false,
@@ -756,7 +761,9 @@ impl Editor {
             }
             Action::VolumeLines => {
                 self.lines_on = !self.lines_on;
-                self.status = if self.lines_on { LINES_ON } else { LINES_OFF }.into();
+                // About the timeline: a page without one drops it.
+                let says = if self.lines_on { LINES_ON } else { LINES_OFF };
+                self.status_about_timeline.say(&mut self.status, says);
                 Ok(())
             }
             Action::RoughCut => {
@@ -1020,18 +1027,19 @@ impl Editor {
         }
     }
 
-    /// Adds a timeline label at `at`, named by its number.
+    /// Adds a timeline label at `at`, named by its number
+    /// (`Sequence::next_label_name`, never a name in use).
     fn add_label(&mut self, at: Time) -> diag::Result<()> {
         self.with_document(|d| {
             let Some(seq) = d.project().active() else {
                 return Ok(());
             };
-            let (sequence, number) = (seq.id, seq.labels.len() + 1);
+            let (sequence, name) = (seq.id, seq.next_label_name());
             d.apply(Command::AddLabel {
                 sequence,
                 label: TimelineLabel {
                     id: LabelId(0),
-                    name: format!("Label {number}"),
+                    name,
                     at: seq.settings.frame_rate.snap(at),
                     color: LabelColor::Blue,
                 },
@@ -1780,7 +1788,7 @@ impl Editor {
                             None => format!("Imported {line}"),
                         };
                         // Said again when the batch is summed up.
-                        self.import_settled = settled.or(self.import_settled.take());
+                        self.import_settled.keep(settled);
                         if let Some(words) = end_missing {
                             self.status = format!("{}. {words}", self.status.trim_end_matches('.'));
                         }
@@ -1811,11 +1819,10 @@ impl Editor {
             }
             // Files picked or dropped together: one line for them all, and
             // one message for those refused.
-            if let Some(batch) = batch.filter(|b| b.files > 1) {
-                self.status = format!("Imported {} of {} files", batch.imported(), batch.files);
-                if let Some(said) = self.import_settled.take() {
-                    self.status = format!("{}. {said}", self.status);
-                }
+            if let Some(batch) = batch
+                && let Some(line) = self.import_settled.finished(&batch)
+            {
+                self.status = line;
                 let whats_there = (!batch.cut_short.is_empty())
                     .then(|| self.importer.set_aside(batch.cut_short.clone(), batch.place));
                 if let Some(err) = batch.summary(whats_there) {
@@ -2916,8 +2923,8 @@ impl Editor {
     }
 
     fn page(&mut self, ui: &mut egui::Ui) {
-        if !matches!(self.page, Page::Edit | Page::Audio) && about_the_timeline(&self.status) {
-            self.status.clear();
+        if !matches!(self.page, Page::Edit | Page::Audio) {
+            self.status_about_timeline.leave_timeline(&mut self.status);
         }
         if let Some(response) = self.errors.show_over(ui, &self.theme) {
             match response {
@@ -2937,7 +2944,13 @@ impl Editor {
                             self.status = "Importing what is there…".into();
                         }
                     }
-                    None => self.status = format!("No handler for {} yet.", action.command),
+                    // A fix the app offered but has nothing behind: a
+                    // mistake in the app. It goes in the log; the person,
+                    // who clicked it, is told plainly that nothing was done.
+                    None => {
+                        tracing::warn!(command = %action.command, "no handler for a fix");
+                        self.errors.push(&unknown_fix(&action.label));
+                    }
                 },
             }
             ui.add_space(8.0);
@@ -4504,8 +4517,29 @@ mod tests {
     /// clears it, anything else stays.
     #[test]
     fn the_lines_hint_is_only_for_pages_with_a_timeline() {
-        assert!(about_the_timeline(LINES_ON) && about_the_timeline(LINES_OFF));
-        assert!(!about_the_timeline("Imported 3 files"));
+        let mut about = crate::status_line::AboutTimeline::default();
+        for hint in [LINES_ON, LINES_OFF] {
+            let mut status = String::new();
+            about.say(&mut status, hint);
+            assert_eq!(status, hint);
+            about.leave_timeline(&mut status);
+            assert!(status.is_empty(), "{hint}");
+        }
+        let mut status = "Imported 3 files".to_owned();
+        about.leave_timeline(&mut status);
+        assert_eq!(status, "Imported 3 files");
+    }
+
+    /// A fix with nothing behind it is told plainly, by its label, never
+    /// by its command.
+    #[test]
+    fn a_fix_with_nothing_behind_it_says_so_plainly() {
+        let err = unknown_fix("Import what's there");
+        assert_eq!(err.what(), "\"Import what's there\" couldn't be done");
+        assert!(
+            err.why_text()
+                .is_some_and(|why| why.contains("Nothing was changed"))
+        );
     }
 
     /// The command bound to Escape stops a running follow or analysis and
