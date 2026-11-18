@@ -30,9 +30,9 @@ pub mod settings;
 pub mod strip;
 pub mod test_signal;
 
-pub use analyser::{Analyser, Spectrum};
+pub use analyser::{Analyser, Spectrum, Stereo};
 pub use block::BlockAdapter;
-pub use control::{Command, Controller};
+pub use control::{Command, Controller, Listen};
 pub use feed::{FeedReader, FeedWriter};
 pub use mixer::{Mixer, mixer};
 pub use readout::{MasterReadout, TrackLevels, TrackReadout};

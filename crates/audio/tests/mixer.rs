@@ -309,7 +309,7 @@ fn the_analyser_listens_to_the_chosen_track() {
     feed.write(&tone(0.3, 0.5));
     run(&mut mixer, 16);
     assert!(!analyser.step(), "nobody chosen");
-    c.send(Command::Analyse(Some(1))).unwrap();
+    c.send(Command::Analyse(audio::Listen::Track(1))).unwrap();
     run(&mut mixer, 16);
     assert!(analyser.step());
     let band = audio::dsp::bands::band_of(1_000.0);

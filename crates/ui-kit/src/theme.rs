@@ -111,6 +111,37 @@ pub mod clarity {
     pub const MUDDY: Color32 = Color32::from_rgb(0xC8, 0xA9, 0x6E);
 }
 
+/// The Audio page's analyser band: the spectrogram's colours from quiet
+/// to loud, and the marks for what is too loud or out of phase. The same
+/// in every theme.
+pub mod analyser {
+    use egui::Color32;
+    /// The spectrogram's ramp, quiet to loud: dark blue, violet, red,
+    /// orange, pale yellow (told apart by lightness as well as hue).
+    const HEAT: [Color32; 5] = [
+        Color32::from_rgb(0x10, 0x12, 0x24),
+        Color32::from_rgb(0x4B, 0x23, 0x7A),
+        Color32::from_rgb(0xB8, 0x36, 0x5C),
+        Color32::from_rgb(0xF0, 0x8A, 0x3A),
+        Color32::from_rgb(0xFA, 0xEB, 0xA8),
+    ];
+
+    /// The colour of `t` (0 quiet to 1 loud) on the ramp.
+    pub fn heat(t: f32) -> Color32 {
+        let t = t.clamp(0.0, 1.0) * (HEAT.len() - 1) as f32;
+        let i = (t.floor() as usize).min(HEAT.len() - 2);
+        let k = t - i as f32;
+        let (a, b) = (HEAT[i], HEAT[i + 1]);
+        let mix = |x: u8, y: u8| (f32::from(x) + (f32::from(y) - f32::from(x)) * k).round() as u8;
+        Color32::from_rgb(mix(a.r(), b.r()), mix(a.g(), b.g()), mix(a.b(), b.b()))
+    }
+
+    /// Too loud: true peaks over the ceiling, phase that cancels.
+    pub const OVER: Color32 = Color32::from_rgb(0xE5, 0x48, 0x4D);
+    /// Fine: in step, under the ceiling.
+    pub const FINE: Color32 = Color32::from_rgb(0x5D, 0xBB, 0x7A);
+}
+
 const fn hex(rgb: u32) -> Color32 {
     Color32::from_rgb((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8)
 }

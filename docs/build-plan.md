@@ -485,6 +485,7 @@ A voice-over edit (screen recording, a separate mic with hiss, music) found thes
 - [x] The lines tool shows on the Edit page's tool row ("Lines on ×"), Escape leaves it, and its hint never stays on a page without a timeline.
 - [x] A clip dragged under the last audio track gets a "New track" zone when the tracks fill the timeline; errors float over the page instead of pushing it down; the inspector is cut at its edge and scrolls.
 - [x] One track naming scheme ("A2"), an untitled stream never naming a track; a track made Dialogue gets the voice's Low cut at 80 Hz in the same undo step.
+- [x] The band across the middle of the Audio page has a column of views: Clarity, and four live pictures of what plays: Spectrum (the mix or the chosen track, highs held, with a spectrogram of the last few seconds), Loudness (momentary and short-term over 30 s against the aim, true peaks over −1 dBTP marked), Tracks (a lane per track over 15 s in its role's colour, fainter while ducked) and Stereo (left against right, phase and balance in words). The analyser listens to the EQ's track while the EQ is open, else to the mix or the track as the band says (`audio::Listen`); the view is a setting.
 - [x] Export: a preset stays lit when only Normalise changes; a sound-only format has no "Video" panel; encoder probes log their refusals for debugging only, without an export's fix.
 
 **Gate 8**

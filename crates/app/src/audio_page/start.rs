@@ -10,6 +10,8 @@ use project::{ClipLines, Project, Time, TrackKind, TrackRole};
 pub struct Start {
     pub tool: Option<Tool>,
     pub view: Option<(Bottom, Option<SplitWay>)>,
+    /// What the band across the middle shows (`--audio-band stereo`).
+    pub band: Option<super::band::View>,
     /// The track the tools start on, counted from 1.
     pub track: Option<usize>,
     /// Make the open timeline have this many audio tracks (from the first

@@ -28,6 +28,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// Room in each queue.
 pub const QUEUE: usize = 1024;
 
+/// What the analyser listens to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Listen {
+    #[default]
+    Nothing,
+    /// The track in this slot, after its EQ.
+    Track(u16),
+    /// The mix as it goes to the sound card, after the master.
+    Mix,
+}
+
 /// A change the mixer takes at the start of its next block.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Command {
@@ -35,8 +46,8 @@ pub enum Command {
     Track { slot: u16, change: TrackChange },
     /// A section of the master's settings.
     Master(MasterChange),
-    /// Which track the analyser listens to, if any.
-    Analyse(Option<u16>),
+    /// What the analyser listens to.
+    Analyse(Listen),
     /// Carry on from sample `at` of the timeline; every ring is emptied.
     /// `number` comes back through [`Controller::located`] once done.
     Locate { at: u64, number: u64 },

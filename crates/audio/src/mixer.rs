@@ -19,7 +19,7 @@
 
 use crate::BLOCK;
 use crate::analyser::{self, Analyser, Tap};
-use crate::control::{self, Command, Controller, Inbox, MixerTrack, Returned, Swap};
+use crate::control::{self, Command, Controller, Inbox, Listen, MixerTrack, Returned, Swap};
 use crate::dsp::cleanup;
 use crate::dsp::duck::Key;
 use crate::master::Master;
@@ -42,7 +42,7 @@ pub struct Mixer {
     work: [[f32; BLOCK]; 2],
     sum: [[f32; BLOCK]; 2],
     tap: Tap,
-    analysed: Option<u16>,
+    analysed: Listen,
     master: Master,
     master_readout: Arc<MasterReadout>,
     /// Frames of silence played for dry rings, summed over tracks, since made.
@@ -69,7 +69,7 @@ pub fn mixer(rate: u32, slots: usize, master: MasterSettings) -> (Mixer, Control
         work: [[0.0; BLOCK]; 2],
         sum: [[0.0; BLOCK]; 2],
         tap,
-        analysed: None,
+        analysed: Listen::Nothing,
         master: Master::new(rate, master),
         master_readout,
         dry: 0,
@@ -159,7 +159,7 @@ impl Mixer {
                 self.dry += track.feed.read(l, r) as u64;
                 let s = track.strip.settings();
                 let audible = !s.mute && (!any_solo || s.solo);
-                let tap = (self.analysed == Some(slot as u16)).then_some(&mut self.tap);
+                let tap = (self.analysed == Listen::Track(slot as u16)).then_some(&mut self.tap);
                 track.strip.process(
                     self.pos,
                     &self.key_db,
@@ -186,6 +186,9 @@ impl Mixer {
         let [l, r] = &mut self.sum;
         let readout = self.metering.then_some(&*self.master_readout);
         self.master.process(l, r, out, readout);
+        if self.analysed == Listen::Mix {
+            self.tap.send_frames(out);
+        }
         self.pos += BLOCK as u64;
     }
 
