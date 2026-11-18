@@ -58,6 +58,8 @@
 //! (seconds as `f64`, for drawing only) and gets back [`TimelineEvent`]s.
 
 pub mod cache_bar;
+mod clip_draw;
+mod clip_input;
 mod empty_end;
 mod fades;
 mod gaps;
@@ -65,11 +67,16 @@ mod headers;
 mod keyframes;
 pub mod level;
 pub mod lines;
+mod lines_input;
 mod loading;
+mod menus;
 mod obstacles;
 mod rows;
+mod ruler;
 mod slip;
 mod speed;
+mod toolbar;
+mod track_controls;
 pub use gaps::Gap;
 pub use slip::SlipRoom;
 mod track_views;
@@ -80,13 +87,26 @@ pub use fades::ClipSound;
 pub use keyframes::KeyframeMark;
 pub use lines::{LineBeingSet, LineKind, LineOwner, LinePoints, LinesShown};
 pub use loading::{LoadKind, LoadState, Loading, percent};
+pub use menus::RegionCut;
 pub use rows::{MAX_TRACK, MIN_TRACK, TrackHeights};
+pub use ruler::{minor_step, ruler_step};
+pub use toolbar::{TOOLBAR_WIDTH, ToolbarClick, lines_chip, toolbar};
+#[cfg(test)]
+pub(crate) use track_controls::{fader_db_at, fader_tip, fader_x};
 pub use track_views::COMPACT_TRACK;
 
 use crate::Theme;
-use egui::{Align2, Color32, CursorIcon, FontId, Pos2, Rect, Sense, Shape, Stroke, Ui, Vec2, pos2, vec2};
+#[cfg(test)]
+use clip_draw::new_track_strip;
+use clip_draw::{AUDIO_COLOURS, TrackLook, TrackRow};
+use clip_input::{ClipDrag, DragKind, Landing};
+#[cfg(test)]
+use clip_input::{drag_for, past_the_last};
+use egui::{Color32, CursorIcon, Pos2, Rect, Sense, Stroke, Ui, Vec2, pos2, vec2};
 use obstacles::Obstacles;
 use rows::Rows;
+use ruler::RegionDrag;
+use track_controls::HeightDrag;
 use track_views::OneList;
 
 /// One clip as the timeline shows it.
@@ -264,6 +284,25 @@ pub struct TimelineTrack {
     /// Its role, an index into [`TimelineData::roles`]: a mark in its
     /// colour by its name, and chosen in the names' right-click menu.
     pub role: Option<usize>,
+}
+
+impl TimelineClip {
+    /// Whether the clip is at time `t`: from its start up to (not at) its end.
+    fn covers(&self, t: f64) -> bool {
+        self.start <= t && t < self.start + self.duration
+    }
+}
+
+impl TimelineTrack {
+    /// The clip of the track at time `t`, if any.
+    fn clip_at(&self, t: f64) -> Option<&TimelineClip> {
+        self.clips.iter().find(|c| c.covers(t))
+    }
+}
+
+/// Clip `id` among the clips of `tracks`.
+fn find_clip(tracks: &[TimelineTrack], id: u64) -> Option<&TimelineClip> {
+    tracks.iter().flat_map(|t| &t.clips).find(|c| c.id == id)
 }
 
 /// A timeline label (a named, coloured marker).
@@ -465,15 +504,6 @@ pub enum MarksChange {
 /// pointer (id, start, end).
 type MenuSpot = (f64, Option<(u64, f64, f64)>);
 
-/// The region while it is being drawn or one of its handles dragged.
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum RegionDrag {
-    /// Shift-drag in the ruler from this time.
-    New(f64),
-    Start,
-    End,
-}
-
 /// A file being dragged from a list (the media drawer) onto the timeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DraggedMedia(pub u64);
@@ -535,117 +565,6 @@ pub enum Tool {
     Slip,
     /// Drag a clip between its neighbours; they get longer or shorter.
     Slide,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum DragKind {
-    Move,
-    Trim(ClipEdge),
-    RippleTrim(ClipEdge),
-    /// The cut after the dragged clip.
-    Roll,
-    Slip,
-    Slide,
-}
-
-/// Where a dragged clip would land if let go now.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Landing {
-    Track(u64),
-    /// Past the last track of its kind: on a track to be made there.
-    NewTrack,
-}
-
-/// A clip being dragged: what is moving and by how much so far.
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct ClipDrag {
-    clip: u64,
-    link: Option<u64>,
-    /// The track the clip is on.
-    track: u64,
-    /// Where it would land if let go now: another track of its kind, or a
-    /// new one, once a move has gone up or down far enough.
-    over: Landing,
-    /// Let go now, the move would be refused: a clip is in the way.
-    refused: bool,
-    kind: DragKind,
-    /// Pointer time when the drag began.
-    grabbed_at: f64,
-    start: f64,
-    end: f64,
-    /// Current offset in seconds, after snapping.
-    delta: f64,
-    /// A move of one of several selected clips: all the selected clips
-    /// (and those linked to them) move along their own tracks together.
-    together: bool,
-}
-
-impl ClipDrag {
-    fn moves(&self, c: &TimelineClip) -> bool {
-        c.id == self.clip || (self.link.is_some() && c.link == self.link) || (self.together && c.selected)
-    }
-
-    /// Where the dragged clip is drawn instead of on its own track, when
-    /// the drag has taken it off it.
-    fn lands_elsewhere(&self) -> Option<Landing> {
-        (self.kind == DragKind::Move && self.over != Landing::Track(self.track)).then_some(self.over)
-    }
-
-    /// Whether a clip is in the way of this move, among `data`'s clips: on
-    /// the track the dragged clip would land on, or on the track of a clip
-    /// linked to it. Linked sound is not counted when the clip changes
-    /// track: it then finds a free track by itself. Overlaps shorter than
-    /// half a frame are not counted either, as places are rounded to frames.
-    /// `room` holds the clips that stay, gathered for this drag.
-    fn is_in_the_way(&self, data: &TimelineData, room: &Obstacles) -> bool {
-        if self.kind != DragKind::Move {
-            return false;
-        }
-        let slack = 0.5 / data.fps.max(1.0);
-        let changes_track = self.lands_elsewhere().is_some();
-        for (tracks, audio) in [(data.video, false), (data.audio, true)] {
-            for (index, track) in tracks.iter().enumerate() {
-                for c in track.clips.iter().filter(|c| self.moves(c)) {
-                    let (start, end) = (c.start + self.delta, c.start + c.duration + self.delta);
-                    let lands_on = if c.id != self.clip {
-                        (!(audio && changes_track)).then_some(index)
-                    } else {
-                        match self.over {
-                            Landing::Track(id) => tracks.iter().position(|t| t.id == id),
-                            Landing::NewTrack => None,
-                        }
-                    };
-                    if lands_on.is_some_and(|index| room.taken(audio, index, start, end, slack)) {
-                        return true;
-                    }
-                }
-            }
-        }
-        false
-    }
-
-    /// Where `c` is drawn while the drag lasts.
-    fn shown(&self, c: &TimelineClip) -> (f64, f64) {
-        let (s, d) = (c.start, c.duration);
-        match self.kind {
-            DragKind::Move | DragKind::Slide => (s + self.delta, d),
-            DragKind::Trim(ClipEdge::Start) => (s + self.delta, (d - self.delta).max(0.0)),
-            DragKind::RippleTrim(ClipEdge::Start) => (s, (d - self.delta).max(0.0)),
-            DragKind::Trim(ClipEdge::End) | DragKind::RippleTrim(ClipEdge::End) | DragKind::Roll => {
-                (s, (d + self.delta).max(0.0))
-            }
-            DragKind::Slip => (s, d),
-        }
-    }
-}
-
-/// A track's height being changed by dragging the edge of its name.
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct HeightDrag {
-    track: u64,
-    /// The height and the pointer's y when the drag began.
-    from_height: f32,
-    from_y: f32,
 }
 
 /// Where the timeline is looking. Kept by the page between frames.
@@ -884,26 +803,6 @@ pub enum ViewStep {
     UsualTrackHeights,
 }
 
-/// How a waveform is drawn: its track's colour, dimmed when the track is
-/// muted, and how much louder or quieter than recorded (the clip's volume
-/// times its track's).
-#[derive(Debug, Clone, Copy)]
-struct WaveLook {
-    colour: Color32,
-    muted: bool,
-    gain: f32,
-}
-
-/// Colours of audio tracks, one per track in turn.
-const AUDIO_COLOURS: [Color32; 6] = [
-    Color32::from_rgb(0x3E, 0x8E, 0x7E),
-    Color32::from_rgb(0x5B, 0x7F, 0xC4),
-    Color32::from_rgb(0x9A, 0x6C, 0xC4),
-    Color32::from_rgb(0xC4, 0x7A, 0x4F),
-    Color32::from_rgb(0x6F, 0x9E, 0x4C),
-    Color32::from_rgb(0xB8, 0x5C, 0x7A),
-];
-
 /// The areas the timeline is made of.
 #[derive(Debug, Clone, Copy)]
 struct Layout {
@@ -1010,224 +909,6 @@ impl Layout {
     }
 }
 
-/// The right-click menu of a timeline area, for the time and clip that were
-/// clicked (`menu_at`). Call it every frame for the area's response, wherever
-/// the pointer is: a menu that is not shown for a frame closes.
-fn clip_menu(r: &egui::Response, menu: Menu, events: &mut Vec<TimelineEvent>) {
-    let Menu {
-        at: menu_at,
-        marks,
-        eases,
-        has_region,
-        video_track,
-        on_nested,
-        ends_empty,
-        gap,
-        selection,
-        several,
-    } = menu;
-    r.context_menu(|ui| {
-        if let Some((clip, marks)) = marks {
-            marks_menu(ui, clip, marks, eases, events);
-            return;
-        }
-        let Some((at, clip)) = menu_at else { return };
-        if let Some(gap) = gap.filter(|_| clip.is_none())
-            && ui
-                .button("Close the gap")
-                .on_hover_text("Move everything after it back by its length, on every track")
-                .clicked()
-        {
-            events.push(TimelineEvent::CloseGap(gap));
-            ui.close();
-        }
-        if ui.button("Add a label here").clicked() {
-            events.push(TimelineEvent::AddLabel(at));
-            ui.close();
-        }
-        if let Some((id, start, end)) = clip {
-            if on_nested && ui.button("Open its timeline").clicked() {
-                events.push(TimelineEvent::OpenNested { clip: id });
-                ui.close();
-            }
-            if ends_empty
-                && ui
-                    .button("Fit to the nested timeline")
-                    .on_hover_text("Its timeline is shorter now: shorten the clip to end where it does.")
-                    .clicked()
-            {
-                events.push(TimelineEvent::FitNested { clip: id });
-                ui.close();
-            }
-            if ui.button("Split this clip here").clicked() {
-                events.push(TimelineEvent::SplitAt { at, clip: Some(id) });
-                ui.close();
-            }
-            ui.menu_button("Speed", |ui| {
-                for (text, num, den) in [
-                    ("25% (slow motion)", 1, 4),
-                    ("50% (slow motion)", 1, 2),
-                    ("100% (normal)", 1, 1),
-                    ("200%", 2, 1),
-                    ("400%", 4, 1),
-                ] {
-                    if ui.button(text).clicked() {
-                        events.push(TimelineEvent::SetSpeed { clip: id, num, den });
-                        ui.close();
-                    }
-                }
-            });
-            if ui.button("Set the region to this clip").clicked() {
-                events.push(TimelineEvent::SetRegion(Some((start, end))));
-                ui.close();
-            }
-        }
-        if ui.button("Split every track here").clicked() {
-            events.push(TimelineEvent::SplitAt { at, clip: None });
-            ui.close();
-        }
-        if video_track.is_some() && ui.button("Add an adjustment layer here").clicked() {
-            events.push(TimelineEvent::AddAdjustment {
-                at,
-                track: video_track,
-            });
-            ui.close();
-        }
-        if selection && ui.button("Nest the selected clips").clicked() {
-            events.push(TimelineEvent::NestSelected);
-            ui.close();
-        }
-        if several && ui.button("Sync by sound…").clicked() {
-            events.push(TimelineEvent::SyncBySound);
-            ui.close();
-        }
-        if has_region {
-            ui.separator();
-            region_menu(ui, events);
-            if ui.button("Clear the region").clicked() {
-                events.push(TimelineEvent::SetRegion(None));
-                ui.close();
-            }
-        }
-    });
-}
-
-/// What can be done with the region's stretch of every track.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RegionCut {
-    /// Take it out and close the gap (everything after moves back).
-    Remove,
-    /// Take it out and leave the gap.
-    Lift,
-    /// Keep only it: everything before and after goes.
-    Keep,
-}
-
-/// The region's cuts as menu lines, each with the command it is in the
-/// shortcut table (so search finds them too).
-fn region_menu(ui: &mut Ui, events: &mut Vec<TimelineEvent>) {
-    for (cut, text, tip) in [
-        (
-            RegionCut::Remove,
-            "Remove the region",
-            "Cut it out of every track and close the gap",
-        ),
-        (
-            RegionCut::Lift,
-            "Remove the region, leave a gap",
-            "Empty it on every track; nothing moves",
-        ),
-        (
-            RegionCut::Keep,
-            "Keep only the region",
-            "Remove everything before and after it",
-        ),
-    ] {
-        if ui.button(text).on_hover_text(tip).clicked() {
-            events.push(TimelineEvent::RegionCut(cut));
-            ui.close();
-        }
-    }
-}
-
-/// What the right-click menu of a timeline area is about.
-#[derive(Clone, Copy)]
-struct Menu<'a> {
-    at: Option<MenuSpot>,
-    /// Keyframe marks it was opened on (with their clip), and the marks
-    /// shown there now: the menu is theirs.
-    marks: Option<(u64, &'a [&'a KeyframeMark])>,
-    eases: &'a [&'a str],
-    has_region: bool,
-    /// The video track the menu was opened on (none over the audio area).
-    video_track: Option<u64>,
-    /// The clip it was opened on plays another timeline.
-    on_nested: bool,
-    /// That nested clip is longer than what its timeline has left to play.
-    ends_empty: bool,
-    /// The gap it was opened on.
-    gap: Option<Gap>,
-    /// Some clip is selected.
-    selection: bool,
-    /// Two or more clips are selected.
-    several: bool,
-}
-
-/// The right-click menu of keyframe marks: go there, remove their
-/// keyframes, or set how they go on to the next.
-fn marks_menu(
-    ui: &mut Ui,
-    clip: u64,
-    marks: &[&KeyframeMark],
-    eases: &[&str],
-    events: &mut Vec<TimelineEvent>,
-) {
-    let times: Vec<f64> = marks.iter().map(|m| m.at).collect();
-    let mut keyed: Vec<&str> = Vec::new();
-    for word in marks.iter().flat_map(|m| m.keyed.iter()) {
-        if !keyed.contains(word) {
-            keyed.push(word);
-        }
-    }
-    let title = match (marks.len(), keyed.is_empty()) {
-        (1, false) => format!("Keyframes: {}", keyed.join(", ")),
-        (1, true) => "Keyframes".to_owned(),
-        (n, _) => format!("{n} keyframe marks"),
-    };
-    ui.label(egui::RichText::new(title).weak().size(12.0));
-    let change = |change| TimelineEvent::Keyframes {
-        clip,
-        marks: times.clone(),
-        change,
-    };
-    if let [one] = marks
-        && ui.button("Go here").clicked()
-    {
-        events.push(TimelineEvent::Seek(one.at));
-        ui.close();
-    }
-    if ui.button("Remove these keyframes").clicked() {
-        events.push(change(MarksChange::Remove));
-        ui.close();
-    }
-    if eases.is_empty() {
-        return;
-    }
-    ui.separator();
-    ui.label(egui::RichText::new("From here on").weak().size(12.0));
-    // Ticked when every mark goes on that way.
-    let shared = marks
-        .first()
-        .and_then(|m| m.ease)
-        .filter(|e| marks.iter().all(|m| m.ease == Some(*e)));
-    for (i, name) in eases.iter().enumerate() {
-        if ui.selectable_label(shared == Some(i), *name).clicked() {
-            events.push(change(MarksChange::Ease(i)));
-            ui.close();
-        }
-    }
-}
-
 impl TimelineView {
     /// A track is being added by hand: when it is an audio track, it is
     /// scrolled into view once it shows.
@@ -1285,6 +966,21 @@ impl TimelineView {
     /// Time at screen x.
     pub fn time_at(&self, left: f32, x: f32) -> f64 {
         self.scroll + f64::from(x - left) / f64::from(self.zoom)
+    }
+
+    /// Time at screen x, inside the timeline: never before its start or
+    /// past its end.
+    fn time_inside(&self, left: f32, x: f32, data: &TimelineData) -> f64 {
+        self.time_at(left, x).clamp(0.0, data.length.max(0.0))
+    }
+
+    /// Where a clip shown from `start` for `duration` is drawn, from `top`
+    /// to `bottom` of its row: at least a pixel wide, however far out the
+    /// view is zoomed.
+    fn clip_rect(&self, left: f32, start: f64, duration: f64, top: f32, bottom: f32) -> Rect {
+        let x0 = self.x_of(left, start);
+        let x1 = self.x_of(left, start + duration).max(x0 + 1.0);
+        Rect::from_min_max(pos2(x0, top), pos2(x1, bottom))
     }
 
     /// Zooms by `factor`, keeping the time under screen x `anchor` in place.
@@ -1633,7 +1329,50 @@ impl TimelineView {
         let mut events = Vec::new();
         let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
         self.notice_new_tracks(rect, data);
-        // A selected gap that is no longer there (closed, filled, undone) is forgotten.
+        self.forget_gone_gap(data);
+        let panning = self.move_view(ui, rect, data);
+        // With the divider off the areas follow the list's scroll, which
+        // the wheel or a command may just have changed.
+        let layout = self.layout(rect, data);
+        let left = layout.time_left();
+        // Body: video tracks bottom-up above the divider, audio top-down below it.
+        let video_rows = self.rows(Half::Video, &layout, data);
+        let audio_rows = self.rows(Half::Audio, &layout, data);
+        self.file_over = None;
+        self.effect_over = None;
+        self.transition_over = None;
+        // While the middle button pans, nothing else reacts to the pointer.
+        if !panning {
+            self.input(ui, &layout, data, [&video_rows, &audio_rows], &mut events);
+            // On top of the clips: with lines shown, the pointer over the
+            // audio tracks works their lines.
+            self.lines_input(ui, &layout, data, &audio_rows, &mut events);
+        }
+        let visible = (self.time_at(left, left), self.time_at(left, rect.right()));
+        let painter = ui.painter_at(rect);
+        painter.rect_filled(rect, 0.0, theme.panel);
+        self.draw_areas(
+            ui,
+            theme,
+            data,
+            &layout,
+            [&video_rows, &audio_rows],
+            visible,
+            &mut events,
+        );
+        self.draw_drop_marks(ui, &layout, &video_rows);
+        self.draw_edges(&painter, theme, rect, &layout, &audio_rows);
+        self.draw_ruler_row(ui, theme, data, rect, &layout);
+        self.draw_spans(ui, &layout, data, &audio_rows);
+        self.draw_region(ui, theme, data, rect, &layout);
+        self.draw_labels(ui, theme, data, &layout, visible);
+        self.draw_scrollbar(&painter, theme, data, &layout);
+        self.draw_playhead_and_needle(ui, theme, data, rect, &layout);
+        events
+    }
+
+    /// A selected gap that is no longer there (closed, filled, undone) is forgotten.
+    fn forget_gone_gap(&mut self, data: &TimelineData) {
         if let Some(gap) = self.gap {
             let still = data
                 .video
@@ -1645,6 +1384,13 @@ impl TimelineView {
                 self.gap = None;
             }
         }
+    }
+
+    /// Where the view looks this frame: following the playhead, within
+    /// the zoom allowed, moved by commands, the wheel and the middle
+    /// button, never scrolled out of range. True while the middle button
+    /// pans (then nothing else reacts to the pointer).
+    fn move_view(&mut self, ui: &Ui, rect: Rect, data: &TimelineData) -> bool {
         let layout = self.layout(rect, data);
         let left = layout.time_left();
         let visible = (self.time_at(left, left), self.time_at(left, rect.right()));
@@ -1666,34 +1412,30 @@ impl TimelineView {
         self.wheel(ui, &layout, data);
         let panning = self.middle_pan(ui, &layout);
         self.keep_scrolls_in_range(&layout, data);
-        // With the divider off the areas follow the list's scroll, which
-        // the wheel or a command may just have changed.
-        let layout = self.layout(rect, data);
-        // Body: video tracks bottom-up above the divider, audio top-down below it.
-        let video_rows = self.rows(Half::Video, &layout, data);
-        let audio_rows = self.rows(Half::Audio, &layout, data);
-        self.file_over = None;
-        self.effect_over = None;
-        self.transition_over = None;
-        // While the middle button pans, nothing else reacts to the pointer.
-        if !panning {
-            self.input(ui, &layout, data, [&video_rows, &audio_rows], &mut events);
-            // On top of the clips: with lines shown, the pointer over the
-            // audio tracks works their lines.
-            self.lines_input(ui, &layout, data, &audio_rows, &mut events);
-        }
-        let visible = (self.time_at(left, left), self.time_at(left, rect.right()));
-        let painter = ui.painter_at(rect);
-        painter.rect_filled(rect, 0.0, theme.panel);
+        panning
+    }
 
+    /// Both areas: each track's resizable edge, its header and its clips,
+    /// and a clip dragged past the last track in the strip of a new one.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_areas(
+        &mut self,
+        ui: &mut Ui,
+        theme: &Theme,
+        data: &TimelineData,
+        layout: &Layout,
+        [video_rows, audio_rows]: [&Rows; 2],
+        visible: (f64, f64),
+        events: &mut Vec<TimelineEvent>,
+    ) {
+        let left = layout.time_left();
         let mut renaming_shown = false;
         // Compact rows keep almost all their height for the clip, and show
         // only its colour and name: pictures and waveforms would not read.
-        let inset = track_views::clip_inset(self.compact);
         let full = !self.compact;
         for (area, tracks, rows, half) in [
-            (layout.video, data.video, &video_rows, Half::Video),
-            (layout.audio, data.audio, &audio_rows, Half::Audio),
+            (layout.video, data.video, video_rows, Half::Video),
+            (layout.audio, data.audio, audio_rows, Half::Audio),
         ] {
             let audio = half == Half::Audio;
             let clip_painter = ui.painter_at(Rect::from_min_max(pos2(left, area.top()), area.max));
@@ -1711,68 +1453,18 @@ impl TimelineView {
                 }
                 let band = Rect::from_min_max(pos2(left, row.top()), pos2(area.right(), row.bottom()));
                 clip_painter.rect_filled(band.shrink2(vec2(0.0, 1.0)), 0.0, theme.bg);
-                let header = Rect::from_min_max(pos2(layout.header_x, row.top()), pos2(left, row.bottom()))
-                    .intersect(area);
-                match self.rename.as_mut().filter(|r| r.track == track.id) {
-                    Some(rename) => {
-                        renaming_shown = true;
-                        match headers::name_field(ui, rename, header, row.center().y) {
-                            headers::Typed::Going => {}
-                            headers::Typed::Dropped => self.rename = None,
-                            headers::Typed::Done(name) => {
-                                self.rename = None;
-                                if name != track.name {
-                                    events.push(TimelineEvent::RenameTrack {
-                                        track: track.id,
-                                        name,
-                                    });
-                                }
-                            }
-                        }
-                    }
-                    None => headers::draw_name(
-                        &header_painter,
-                        theme,
-                        track,
-                        pos2(layout.header_x + 12.0, row.center().y),
-                    ),
-                }
-                // A track's role: a mark in its colour along the header's edge.
-                if let Some((_, colour)) = track.role.and_then(|i| data.roles.get(i)) {
-                    let mark = Rect::from_min_max(
-                        pos2(layout.header_x + 3.0, row.top() + 4.0),
-                        pos2(layout.header_x + 6.0, row.bottom() - 4.0),
-                    );
-                    header_painter.rect_filled(mark, 1.5, *colour);
-                }
-                // The short line about reading stops before the header's
-                // buttons; pointing at it says the whole of it.
-                let first_button = headers::button_rect(header, if audio { -1.0 } else { 1.0 });
-                let text_room =
-                    Rect::from_min_max(header.min, pos2(first_button.left() - 4.0, header.bottom()));
-                let text_painter =
-                    header_painter.with_clip_rect(header_painter.clip_rect().intersect(text_room));
-                if let Some(loading) = &track.loading
-                    && let Some(line) = loading::draw_in_header(
-                        &text_painter,
-                        theme,
-                        header,
-                        text_room.right() - header.left() - 12.0,
-                        loading,
-                    )
-                {
-                    ui.interact(
-                        line.expand(3.0).intersect(header),
-                        ui.scope_id().with(("track loading", track.id)),
-                        Sense::hover(),
-                    )
-                    .on_hover_text(loading.explanation());
-                }
-                if audio {
-                    self.track_controls(ui, theme, track, header, &mut events);
-                } else {
-                    headers::eye(ui, theme, track, header, self.compact, &mut events);
-                }
+                renaming_shown |= self.draw_track_header(
+                    ui,
+                    theme,
+                    data,
+                    layout,
+                    &header_painter,
+                    track,
+                    *row,
+                    area,
+                    audio,
+                    events,
+                );
                 let colour = if audio {
                     AUDIO_COLOURS[i % AUDIO_COLOURS.len()]
                 } else {
@@ -1786,264 +1478,50 @@ impl TimelineView {
                 };
                 let track_gain = 10f32.powf(track_gain / 20.0);
                 let level_line = audio && full && self.level_line(track.id);
-                // Clips a few pixels wide can't be told apart: neighbours
-                // merge into one shape, so zooming far out stays cheap.
-                let mut merged: Option<Rect> = None;
-                let leaving = elsewhere
-                    .filter(|(d, _)| d.track == track.id)
-                    .map(|(d, _)| d.clip);
-                let arriving = elsewhere
-                    .filter(|(_, over)| *over == Landing::Track(track.id))
-                    .and_then(|(d, _)| tracks.iter().flat_map(|t| &t.clips).find(|c| c.id == d.clip));
-                let shown = track.clips.iter().filter(|c| Some(c.id) != leaving);
-                for clip in shown.chain(arriving) {
-                    let (start, duration) = match &self.clip_drag {
-                        Some(d) if d.moves(clip) => d.shown(clip),
-                        _ => (clip.start, clip.duration),
-                    };
-                    // Being slipped: its pictures, waveform and marks move under it.
-                    let slipping = self
-                        .clip_drag
-                        .filter(|d| d.kind == DragKind::Slip && d.moves(clip));
-                    let slipped = slipping.map(|d| slip::shifted(clip, d.delta));
-                    let clip = slipped.as_ref().unwrap_or(clip);
-                    if start + duration < visible.0 || start > visible.1 {
-                        continue;
-                    }
-                    let x0 = self.x_of(left, start);
-                    let x1 = self.x_of(left, start + duration).max(x0 + 1.0);
-                    let r = Rect::from_min_max(pos2(x0, row.top() + inset), pos2(x1, row.bottom() - inset));
-                    if r.width() < 4.0 && !clip.selected && !clip.missing {
-                        merged = match merged {
-                            Some(m) if r.left() - m.right() < 2.0 => Some(m.union(r)),
-                            Some(m) => {
-                                clip_painter.rect_filled(m, 1.0, tiny_fill(theme, colour, audio));
-                                Some(r)
-                            }
-                            None => Some(r),
-                        };
-                        continue;
-                    }
-                    if let Some(m) = merged.take() {
-                        clip_painter.rect_filled(m, 1.0, tiny_fill(theme, colour, audio));
-                    }
-                    draw_clip_body(&clip_painter, theme, r, colour, audio);
-                    // With both (the rough cut view), pictures fill the top
-                    // and the sound the bottom of the clip.
-                    let (pictures, waveform) = match full {
-                        true => (clip.pictures.as_ref(), clip.waveform.as_ref()),
-                        false => (None, None),
-                    };
-                    let (pic_r, wave_r) = match (pictures, waveform) {
-                        (Some(_), Some(_)) => {
-                            let split = r.top() + r.height() * 0.62;
-                            (
-                                Rect::from_min_max(r.min, pos2(r.right(), split)),
-                                Rect::from_min_max(pos2(r.left(), split - 17.0), r.max),
-                            )
-                        }
-                        _ => (r, r),
-                    };
-                    if let Some(pictures) = pictures {
-                        self.draw_pictures(&clip_painter, pic_r, clip, start, pictures);
-                    }
-                    // The clip's volume: the one its level line is being dragged to.
-                    let dragged_db = self.level_drag.filter(|d| d.clip == clip.id).map(|d| d.db);
-                    let clip_gain = dragged_db.map_or(clip.sound.gain, level::gain_of_db);
-                    if let Some(w) = waveform {
-                        let wave_colour = if audio { colour } else { AUDIO_COLOURS[0] };
-                        let look = WaveLook {
-                            colour: wave_colour,
-                            muted: track.muted,
-                            gain: clip_gain * track_gain,
-                        };
-                        self.draw_waveform(&clip_painter, wave_r, clip, start, w, look);
-                    }
-                    if full {
-                        fades::draw(&clip_painter, wave_r, &clip.sound, self.zoom);
-                    }
-                    if full && let Some(curve) = &clip.speed_curve {
-                        speed::draw(&clip_painter, r, curve, theme.accent);
-                    }
-                    if level_line {
-                        let db = dragged_db.unwrap_or_else(|| level::db_of_gain(clip.sound.gain));
-                        let hovered = self.level_drag.is_none()
-                            && ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| {
-                                r.contains(p)
-                                    && clip_painter.clip_rect().contains(p)
-                                    && level::grabs(r, db, p.y)
-                            });
-                        let label_x = dragged_db
-                            .and_then(|_| ui.input(|i| i.pointer.hover_pos()))
-                            .map(|p| p.x);
-                        level::draw(&clip_painter, r, db, hovered || dragged_db.is_some(), label_x);
-                    }
-                    if audio && full {
-                        let shift = start - clip.start;
-                        self.draw_line(
-                            ui,
-                            &clip_painter,
-                            LineOwner::Clip(clip.id),
-                            clip.line.as_deref(),
-                            r,
-                            |t| self.x_of(left, t + shift),
-                        );
-                    }
-                    if let Some(until) = clip.plays_until.filter(|u| *u < start + duration) {
-                        empty_end::draw(&clip_painter, theme, r, self.x_of(left, until));
-                    }
-                    draw_clip_marks(&clip_painter, theme, r, clip, pictures.is_some());
-                    if let (Some(d), Some(room)) = (slipping.filter(|d| d.clip == clip.id), clip.slip_room) {
-                        slip::draw_room(&clip_painter, theme, r, room, d.delta);
-                    }
-                    if let Some(loading) = &clip.loading {
-                        loading::draw_on_clip(&clip_painter, theme, r, loading);
-                    }
-                    if self.clip_drag.is_some_and(|d| d.refused && d.moves(clip)) {
-                        draw_refused(&clip_painter, r);
-                    }
-                    if full && !clip.keyframes.is_empty() {
-                        // On top of everything else in the clip, where it is
-                        // shown (also while it is dragged).
-                        let shift = start - clip.start;
-                        let x_of = |t: f64| self.x_of(left, t + shift);
-                        let chosen = self.chosen_marks.of(clip.id, &clip.keyframes, data.fps);
-                        let look = keyframes::MarksLook {
-                            colour: theme.accent,
-                            chosen: &chosen,
-                            drag: self.mark_drag.as_ref().filter(|d| d.clip == clip.id),
-                            fps: data.fps,
-                        };
-                        // A box being dragged goes under the marks it chooses.
-                        if let Some(chosen_box) = self.mark_box.as_ref().filter(|b| b.clip == clip.id) {
-                            keyframes::draw_box(&clip_painter, r, chosen_box, x_of, theme.accent);
-                        }
-                        keyframes::draw(&clip_painter, r, &clip.keyframes, x_of, look);
-                    }
-                }
-                if let Some(m) = merged {
-                    clip_painter.rect_filled(m, 1.0, tiny_fill(theme, colour, audio));
-                }
-                if !audio {
-                    for clip in &track.clips {
-                        if let Some(length) = clip.transition_in {
-                            let (x0, x1) = (
-                                self.x_of(left, clip.start - length / 2.0),
-                                self.x_of(left, clip.start + length / 2.0),
-                            );
-                            if !transitions::in_view(x0, x1, clip_painter.clip_rect()) {
-                                continue;
-                            }
-                            transitions::draw(
-                                &clip_painter,
-                                *row,
-                                x0,
-                                x1,
-                                theme.text,
-                                theme.panel.gamma_multiply(0.85),
-                            );
-                        }
-                    }
-                }
-                if let Some(gap) = self.gap.filter(|g| g.track == track.id) {
-                    let (x0, x1) = (self.x_of(left, gap.start), self.x_of(left, gap.end));
-                    gaps::draw(&clip_painter, *row, x0, x1, theme.accent);
-                }
-                if audio && full {
-                    let row_band = Rect::from_min_max(
-                        pos2(left, row.top() + inset),
-                        pos2(area.right(), row.bottom() - inset),
-                    );
-                    self.draw_line(
-                        ui,
-                        &clip_painter,
-                        LineOwner::Track(track.id),
-                        track.line.as_deref(),
-                        row_band,
-                        |t| self.x_of(left, t),
-                    );
-                }
-                if track.hidden {
-                    // Not in the picture: its clips are dimmed.
-                    clip_painter.rect_filled(band.shrink2(vec2(0.0, 1.0)), 0.0, theme.bg.gamma_multiply(0.6));
-                }
+                let at = TrackRow {
+                    track,
+                    tracks,
+                    row: *row,
+                    band,
+                    area,
+                };
+                let look = TrackLook {
+                    colour,
+                    audio,
+                    muted: track.muted,
+                    gain: track_gain,
+                    level_line,
+                    full,
+                    left,
+                };
+                self.draw_track_clips(ui, theme, data, &clip_painter, &at, look, elsewhere, visible);
             }
             // A clip dragged past the last track of this area: a lit strip
             // where the new track would be, with the clip in it.
             if let Some((drag, Landing::NewTrack)) = elsewhere
-                && let Some(clip) = tracks.iter().flat_map(|t| &t.clips).find(|c| c.id == drag.clip)
+                && let Some(clip) = find_clip(tracks, drag.clip)
             {
-                let usual = match self.compact {
-                    true => COMPACT_TRACK,
-                    false => self.usual_height(half),
-                };
-                let strip = new_track_strip(area, rows, usual, half);
-                let mark = ui.visuals().selection.stroke.color;
-                let lit = Rect::from_min_max(pos2(left, strip.top()), strip.max);
-                clip_painter.rect_filled(lit, 0.0, mark.gamma_multiply(0.3));
-                let edge = match half {
-                    Half::Video => strip.top(),
-                    Half::Audio => strip.bottom(),
-                };
-                ui.painter_at(area).line_segment(
-                    [pos2(area.left(), edge), pos2(area.right(), edge)],
-                    Stroke::new(2.0, mark),
-                );
-                let header = Rect::from_min_max(strip.min, pos2(left, strip.bottom()));
-                header_painter.rect_filled(header, 0.0, theme.panel);
-                header_painter.rect_filled(header, 0.0, mark.gamma_multiply(0.3));
-                header_painter.text(
-                    pos2(layout.header_x + 12.0, strip.center().y),
-                    Align2::LEFT_CENTER,
-                    "New track",
-                    FontId::proportional(11.5),
-                    theme.text,
-                );
-                let (start, duration) = drag.shown(clip);
-                let x0 = self.x_of(left, start);
-                let x1 = self.x_of(left, start + duration).max(x0 + 1.0);
-                let r = Rect::from_min_max(pos2(x0, strip.top() + inset), pos2(x1, strip.bottom() - inset));
-                let colour = if audio {
-                    AUDIO_COLOURS[0]
-                } else {
-                    theme.line_strong
-                };
-                draw_clip_body(&clip_painter, theme, r, colour, audio);
-                draw_clip_marks(&clip_painter, theme, r, clip, false);
+                let painters = (&clip_painter, &header_painter);
+                self.draw_new_track(ui, theme, layout, painters, half, area, rows, drag, clip);
             }
         }
         if !renaming_shown {
             // The track whose name was being typed has left the view, or is gone.
             self.rename = None;
         }
-        // A transition dragged over a cut: the cut it would go onto.
-        if let Some((row, x)) = self.transition_over {
-            let tracks = Rect::from_min_max(pos2(left, layout.video.top()), layout.audio.max);
-            let mark = ui.visuals().selection.stroke.color;
-            transitions::draw_landing(&ui.painter_at(tracks), row, x, mark);
-        }
-        // An effect dragged over a clip: the clip it would go onto.
-        if let Some(clip) = self.effect_over {
-            let tracks = Rect::from_min_max(pos2(left, layout.video.top()), layout.audio.max);
-            let mark = ui.visuals().selection.stroke.color;
-            ui.painter_at(tracks)
-                .rect_stroke(clip, 4.0, Stroke::new(2.0, mark), egui::StrokeKind::Inside);
-        }
-        // A file dragged over the timeline: where it would land.
-        if let Some((at, row)) = self.file_over {
-            let tracks = Rect::from_min_max(pos2(left, layout.video.top()), layout.audio.max);
-            let mark = ui.visuals().selection.stroke.color;
-            let x = self.x_of(left, at);
-            let p = ui.painter_at(tracks);
-            if let Some(row) = row.and_then(|row| video_rows.rects().get(row)) {
-                let band = Rect::from_min_max(pos2(left, row.top()), row.max).intersect(layout.video);
-                p.rect_filled(band, 0.0, mark.gamma_multiply(0.15));
-            }
-            p.line_segment(
-                [pos2(x, tracks.top()), pos2(x, tracks.bottom())],
-                Stroke::new(2.0, mark),
-            );
-        }
+    }
+
+    /// The edge of the column of track names, and the divider (with the
+    /// divider off, a hairline where the video tracks end).
+    fn draw_edges(
+        &self,
+        painter: &egui::Painter,
+        theme: &Theme,
+        rect: Rect,
+        layout: &Layout,
+        audio_rows: &Rows,
+    ) {
+        let left = layout.time_left();
         // Track header column and its edge.
         painter.line_segment(
             [
@@ -2055,7 +1533,7 @@ impl TimelineView {
         if self.divider {
             painter.rect_filled(layout.divider, 0.0, theme.line);
         } else if let Some(first) = audio_rows.rects().first()
-            && TimelineView::body(&layout).y_range().contains(first.top())
+            && TimelineView::body(layout).y_range().contains(first.top())
         {
             // One list: a hairline where the video tracks end and the audio
             // tracks begin, nothing to drag.
@@ -2064,639 +1542,6 @@ impl TimelineView {
                 Stroke::new(1.0, theme.line_strong),
             );
         }
-
-        // Ruler and labels row.
-        painter.rect_filled(
-            Rect::from_min_max(pos2(rect.left(), rect.top()), layout.labels.right_bottom()),
-            0.0,
-            theme.panel,
-        );
-        draw_ruler(&ui.painter_at(layout.ruler), theme, self, &layout, data.fps);
-        if !data.highlights.is_empty() {
-            let body = Rect::from_min_max(
-                pos2(left, layout.labels.bottom()),
-                pos2(rect.right(), layout.scrollbar.top()),
-            );
-            let mark = ui.painter_at(body);
-            let fill = crate::status::ERROR.gamma_multiply(0.22);
-            for &(a, b) in data.highlights {
-                let (x0, x1) = (self.x_of(left, a), self.x_of(left, b));
-                if x1 >= body.left() && x0 <= body.right() {
-                    mark.rect_filled(
-                        Rect::from_min_max(pos2(x0, body.top()), pos2(x1.max(x0 + 1.0), body.bottom())),
-                        0.0,
-                        fill,
-                    );
-                }
-            }
-        }
-        self.draw_spans(ui, &layout, data, &audio_rows);
-        let region = self.region_drag.map(|(_, r)| r).or(data.region);
-        if let Some((a, b)) = region {
-            let (x0, x1) = (self.x_of(left, a), self.x_of(left, b));
-            // Everything outside the region is darkened.
-            let body = Rect::from_min_max(
-                pos2(left, layout.labels.bottom()),
-                pos2(rect.right(), layout.scrollbar.top()),
-            );
-            let shade = ui.painter_at(body);
-            let dim = Color32::from_black_alpha(90);
-            shade.rect_filled(Rect::from_min_max(body.min, pos2(x0, body.bottom())), 0.0, dim);
-            shade.rect_filled(Rect::from_min_max(pos2(x1, body.top()), body.max), 0.0, dim);
-            // The bar and its round handles.
-            let rp = ui.painter_at(layout.ruler.expand2(vec2(8.0, 0.0)));
-            let y = layout.ruler.bottom() - 4.0;
-            rp.rect_filled(
-                Rect::from_min_max(pos2(x0, y - 2.5), pos2(x1, y + 2.5)),
-                0.0,
-                theme.accent.gamma_multiply(0.6),
-            );
-            for x in [x0, x1] {
-                rp.circle_filled(pos2(x, y), 5.0, theme.accent);
-            }
-        }
-        let label_painter = ui.painter_at(layout.labels);
-        cache_bar::draw(
-            &label_painter,
-            theme,
-            layout.cache_strip(),
-            &data.cache,
-            visible,
-            |t| self.x_of(left, t),
-        );
-        let labels_seen = label_painter.clip_rect().x_range();
-        for marker in data.markers {
-            let x = self.x_of(left, marker.at);
-            // Out of view: its mark and its name (never wider than a
-            // label's size per byte) would be clipped away whole.
-            let widest = marker.name.len() as f32 * LABEL_SIZE;
-            if x + 8.0 + widest < labels_seen.min || x - 5.0 > labels_seen.max {
-                continue;
-            }
-            label_painter.add(Shape::convex_polygon(
-                vec![
-                    pos2(x - 5.0, layout.labels.top() + cache_bar::HEIGHT + 1.0),
-                    pos2(x + 5.0, layout.labels.top() + cache_bar::HEIGHT + 1.0),
-                    pos2(x, layout.labels.bottom() - 3.0),
-                ],
-                marker.colour,
-                Stroke::NONE,
-            ));
-            label_painter.text(
-                pos2(x + 8.0, layout.labels.center().y),
-                Align2::LEFT_CENTER,
-                &marker.name,
-                FontId::proportional(LABEL_SIZE),
-                theme.muted,
-            );
-        }
-
-        // Scroll bar.
-        let (thumb, _) = scrollbar_thumb(&layout, self, data.length);
-        painter.rect_filled(layout.scrollbar, 0.0, theme.bg);
-        painter.rect_filled(thumb.shrink(3.0), 4.0, theme.line_strong);
-
-        // Playhead and edit needle over everything in the time area.
-        let over = ui.painter_at(Rect::from_min_max(
-            pos2(left, rect.top()),
-            pos2(rect.right(), layout.scrollbar.top()),
-        ));
-        let ph = self.x_of(left, data.playhead);
-        over.line_segment(
-            [pos2(ph, rect.top()), pos2(ph, layout.scrollbar.top())],
-            Stroke::new(1.5, theme.text),
-        );
-        draw_playhead_handle(
-            &over,
-            theme,
-            ph,
-            &layout,
-            self.needle_moves(data),
-            self.playhead_lit,
-        );
-        if let Some(needle) = self.needle_drag.or(data.needle) {
-            let nx = self.x_of(left, needle);
-            over.line_segment(
-                [
-                    pos2(nx, layout.ruler.top() + 8.0),
-                    pos2(nx, layout.scrollbar.top()),
-                ],
-                Stroke::new(1.5, crate::status::EDIT_NEEDLE),
-            );
-            over.add(Shape::convex_polygon(
-                needle_handle(nx, &layout),
-                crate::status::EDIT_NEEDLE,
-                Stroke::NONE,
-            ));
-        }
-        events
-    }
-
-    /// Draws a track's or a clip's line in `rect`: with its points when
-    /// it is the kind of line shown, faintly when it has points but isn't,
-    /// not at all otherwise. A line being dragged is drawn as it is now.
-    fn draw_line(
-        &self,
-        ui: &Ui,
-        p: &egui::Painter,
-        owner: LineOwner,
-        points: Option<&[(f64, f32)]>,
-        rect: Rect,
-        x_of: impl Fn(f64) -> f32,
-    ) {
-        let editable = self
-            .lines
-            .is_some_and(|l| l.on_clips == matches!(owner, LineOwner::Clip(_)));
-        let kind = self.lines.map_or(LineKind::Volume, |l| l.kind);
-        let drag = self.line_drag.as_ref().filter(|d| d.owner == owner);
-        let points = drag.map(|d| d.points.as_slice()).or(points).unwrap_or_default();
-        if !editable && points.is_empty() {
-            return;
-        }
-        let hover = ui
-            .input(|i| i.pointer.hover_pos())
-            .filter(|pos| rect.contains(*pos) && p.clip_rect().contains(*pos));
-        let lit = drag.map(|d| d.index).or_else(|| {
-            hover.and_then(|pos| lines::hit(points, |t, v| pos2(x_of(t), lines::y_of(kind, rect, v)), pos))
-        });
-        let look = lines::Look {
-            kind,
-            editable,
-            lit: lit.filter(|_| editable),
-            tag_x: drag
-                .and(hover.or_else(|| ui.input(|i| i.pointer.hover_pos())))
-                .map(|h| h.x),
-        };
-        lines::draw(p, rect, points, x_of, &look);
-    }
-
-    /// With lines shown, the pointer over the audio tracks works the line
-    /// of the row (or clip) under it: a click adds a point, a drag moves
-    /// one, a double-click or its menu removes it. Each change is one
-    /// [`TimelineEvent::Line`].
-    fn lines_input(
-        &mut self,
-        ui: &mut Ui,
-        layout: &Layout,
-        data: &TimelineData,
-        rows: &Rows,
-        events: &mut Vec<TimelineEvent>,
-    ) {
-        let Some(shown) = self.lines.filter(|_| !self.compact) else {
-            self.line_drag = None;
-            return;
-        };
-        let left = layout.time_left();
-        let area = Rect::from_min_max(pos2(left, layout.audio.top()), layout.audio.max);
-        let r = ui.interact(
-            area,
-            ui.scope_id().with("timeline-lines"),
-            Sense::click_and_drag(),
-        );
-        let frame = 1.0 / data.fps.max(1.0);
-        let kind = shown.kind;
-        // A point being dragged follows the pointer until let go.
-        let pointer_t = r.interact_pointer_pos().map(|p| self.time_at(left, p.x));
-        if let Some(drag) = &mut self.line_drag {
-            if let Some(p) = r.interact_pointer_pos().filter(|_| r.dragged())
-                && let Some(t) = pointer_t
-            {
-                let t = (t / frame).round() * frame;
-                let fine = ui.input(|i| i.modifiers.shift || i.modifiers.alt);
-                let value = drag.follow(p.y, fine);
-                drag.points = lines::moved(&drag.points, drag.index, (t, value), frame, drag.bounds);
-            }
-            if r.drag_stopped() || !ui.input(|i| i.pointer.primary_down()) {
-                events.push(TimelineEvent::Line {
-                    owner: drag.owner,
-                    kind: drag.kind,
-                    points: drag.points.clone(),
-                });
-                self.line_drag = None;
-            }
-            return;
-        }
-        let pointer = r.interact_pointer_pos().or(r.hover_pos());
-        let pointer = if r.drag_started() {
-            ui.input(|i| i.pointer.press_origin()).or(pointer)
-        } else {
-            pointer
-        };
-        // Whose line is under the pointer, where it is drawn and where its
-        // points may go.
-        let inset = track_views::clip_inset(self.compact);
-        let under = pointer.and_then(|p| {
-            let row = rows.at(p.y)?;
-            let (track, rect) = (data.audio.get(row)?, *rows.rects().get(row)?);
-            let band = Rect::from_min_max(
-                pos2(left, rect.top() + inset),
-                pos2(area.right(), rect.bottom() - inset),
-            );
-            if !shown.on_clips {
-                let points = track.line.as_deref().unwrap_or_default().to_vec();
-                return Some((
-                    LineOwner::Track(track.id),
-                    band,
-                    points,
-                    (0.0, data.length.max(0.0)),
-                ));
-            }
-            let t = self.time_at(left, p.x);
-            let clip = track
-                .clips
-                .iter()
-                .find(|c| c.start <= t && t < c.start + c.duration)?;
-            let (x0, x1) = (
-                self.x_of(left, clip.start),
-                self.x_of(left, clip.start + clip.duration),
-            );
-            let rect = Rect::from_min_max(pos2(x0, band.top()), pos2(x1, band.bottom()));
-            let points = clip.line.as_deref().unwrap_or_default().to_vec();
-            Some((
-                LineOwner::Clip(clip.id),
-                rect,
-                points,
-                (clip.start, clip.start + clip.duration),
-            ))
-        });
-        let point_at = |p: Pos2, rect: Rect, points: &[(f64, f32)]| {
-            lines::hit(
-                points,
-                |t, v| pos2(self.x_of(left, t), lines::y_of(kind, rect, v)),
-                p,
-            )
-        };
-        if let Some((owner, rect, points, bounds)) = &under
-            && let Some(p) = pointer
-        {
-            let hit = point_at(p, *rect, points);
-            let r = match hit {
-                Some(_) => r.clone().on_hover_cursor(CursorIcon::Grab),
-                None => r.clone().on_hover_cursor(CursorIcon::Crosshair),
-            };
-            let t = ((self.time_at(left, p.x) / frame).round() * frame).clamp(bounds.0, bounds.1);
-            if r.drag_started_by(egui::PointerButton::Primary) {
-                // A point taken where the button went down (the pointer has
-                // moved a little by the time a drag is noticed), or one made
-                // there.
-                let origin = ui.input(|i| i.pointer.press_origin()).unwrap_or(p);
-                let hit = point_at(origin, *rect, points);
-                let t = ((self.time_at(left, origin.x) / frame).round() * frame).clamp(bounds.0, bounds.1);
-                let (points, index) = match hit {
-                    Some(i) => (points.clone(), i),
-                    None => lines::added(points, t, lines::value_at(kind, *rect, origin.y)),
-                };
-                let height = points
-                    .get(index)
-                    .map_or(0.5, |(_, value)| lines::height_of(kind, *value));
-                self.line_drag = Some(lines::LineDrag {
-                    owner: *owner,
-                    kind,
-                    index,
-                    points,
-                    bounds: *bounds,
-                    rect: *rect,
-                    height,
-                    // From where the button went down, so the way moved
-                    // before the drag was noticed counts too.
-                    last_y: origin.y,
-                });
-            } else if r.double_clicked() {
-                if let Some(i) = hit {
-                    events.push(TimelineEvent::Line {
-                        owner: *owner,
-                        kind,
-                        points: lines::removed(points, i),
-                    });
-                }
-            } else if r.clicked() && hit.is_none() {
-                let (points, _) = lines::added(points, t, lines::value_at(kind, *rect, p.y));
-                events.push(TimelineEvent::Line {
-                    owner: *owner,
-                    kind,
-                    points,
-                });
-            } else if r.secondary_clicked() {
-                self.line_menu = Some((*owner, hit));
-            }
-        }
-        // The menu: remove the point, or clear the whole line.
-        let menu = self.line_menu;
-        let mut close = false;
-        r.context_menu(|ui| {
-            let Some((owner, point)) = menu else { return };
-            let points = match owner {
-                LineOwner::Track(id) => data
-                    .audio
-                    .iter()
-                    .find(|t| t.id == id)
-                    .and_then(|t| t.line.clone()),
-                LineOwner::Clip(id) => data
-                    .audio
-                    .iter()
-                    .flat_map(|t| &t.clips)
-                    .find(|c| c.id == id)
-                    .and_then(|c| c.line.clone()),
-            }
-            .unwrap_or_else(|| Vec::new().into());
-            if let Some(i) = point
-                && ui.button("Remove this point").clicked()
-            {
-                events.push(TimelineEvent::Line {
-                    owner,
-                    kind,
-                    points: lines::removed(&points, i),
-                });
-                close = true;
-            }
-            let whose = match owner {
-                LineOwner::Track(_) => "track's",
-                LineOwner::Clip(_) => "clip's",
-            };
-            let what = match kind {
-                LineKind::Volume => "volume",
-                LineKind::Pan => "pan",
-            };
-            if ui
-                .add_enabled(
-                    !points.is_empty(),
-                    egui::Button::new(format!("Clear this {whose} {what} line")),
-                )
-                .clicked()
-            {
-                events.push(TimelineEvent::Line {
-                    owner,
-                    kind,
-                    points: Vec::new(),
-                });
-                close = true;
-            }
-            if close {
-                ui.close();
-            }
-        });
-    }
-
-    /// M (mute), S (solo) and a volume fader in an audio track's header.
-    fn track_controls(
-        &mut self,
-        ui: &mut Ui,
-        theme: &Theme,
-        track: &TimelineTrack,
-        header: Rect,
-        events: &mut Vec<TimelineEvent>,
-    ) {
-        if header.height() < headers::least_for_buttons(self.compact) {
-            return;
-        }
-        let id = ui.scope_id().with(("track", track.id));
-        let button = |i: f32| headers::button_rect(header, i);
-        if !self.compact {
-            self.level_button(ui, theme, track.id, button(-1.0), id);
-        }
-        self.mute_and_solo(ui, theme, track, header, id, events);
-        // The fader, in a header with room for it under the buttons.
-        if !self.compact {
-            self.fader(ui, theme, track, header, id, events);
-        }
-    }
-
-    /// The level button, left of M and S: the level line on the clips of
-    /// track `track`.
-    fn level_button(&mut self, ui: &mut Ui, theme: &Theme, track: u64, rect: Rect, id: egui::Id) {
-        let on = self.level_line(track);
-        let r = ui
-            .interact(rect, id.with("level"), Sense::click())
-            .on_hover_text(if on {
-                "Level lines on: drag the line across a clip to change its volume, double-click it for 0 dB. Click to hide them"
-            } else {
-                "Level lines: show a line across each clip of this track, to drag its volume up or down"
-            });
-        let fill = match on {
-            true => theme.accent,
-            false if r.hovered() => theme.line_strong,
-            false => theme.line,
-        };
-        ui.painter().rect_filled(rect, 3.0, fill);
-        level::draw_icon(
-            ui.painter(),
-            rect.center(),
-            if on { theme.bg } else { theme.text },
-        );
-        if r.clicked() {
-            self.set_level_line(track, !on);
-        }
-    }
-
-    /// M (mute) and S (solo), the two buttons at the right of an audio
-    /// track's header.
-    fn mute_and_solo(
-        &mut self,
-        ui: &mut Ui,
-        theme: &Theme,
-        track: &TimelineTrack,
-        header: Rect,
-        id: egui::Id,
-        events: &mut Vec<TimelineEvent>,
-    ) {
-        for (i, (label, on, tip)) in [
-            ("M", track.muted, "Mute"),
-            ("S", track.solo, "Solo: hear only soloed tracks"),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let rect = headers::button_rect(header, i as f32);
-            let r = ui
-                .interact(rect, id.with(label), Sense::click())
-                .on_hover_text(tip);
-            let fill = match (on, i) {
-                (true, 0) => crate::status::WARNING,
-                (true, _) => theme.accent,
-                _ if r.hovered() => theme.line_strong,
-                _ => theme.line,
-            };
-            let p = ui.painter();
-            p.rect_filled(rect, 3.0, fill);
-            p.text(
-                rect.center(),
-                Align2::CENTER_CENTER,
-                label,
-                FontId::proportional(10.5),
-                if on { theme.bg } else { theme.text },
-            );
-            if r.clicked() {
-                let (muted, solo) = if i == 0 {
-                    (!track.muted, track.solo)
-                } else {
-                    (track.muted, !track.solo)
-                };
-                events.push(TimelineEvent::TrackMix {
-                    track: track.id,
-                    muted,
-                    solo,
-                    gain_db: track.gain_db,
-                });
-            }
-        }
-    }
-
-    /// The track's volume fader under its buttons, on the one volume
-    /// scale ([`crate::volume`]: the bottom at the left, the top at the
-    /// right); double-click resets to 0. Only in a header with room for it.
-    fn fader(
-        &mut self,
-        ui: &mut Ui,
-        theme: &Theme,
-        track: &TimelineTrack,
-        header: Rect,
-        id: egui::Id,
-        events: &mut Vec<TimelineEvent>,
-    ) {
-        let bar = Rect::from_min_size(
-            pos2(header.left() + 12.0, header.bottom() - 12.0),
-            vec2(HEADER_WIDTH - 30.0, 5.0),
-        );
-        if bar.bottom() > header.bottom() || bar.top() < header.top() + 22.0 {
-            return;
-        }
-        let db = match self.fader_drag {
-            Some((t, db)) if t == track.id => db,
-            _ => track.gain_db,
-        };
-        let to_x = |db: f32| fader_x(bar, db);
-        let r = ui
-            .interact(
-                bar.expand2(vec2(4.0, 5.0)),
-                id.with("volume"),
-                Sense::click_and_drag(),
-            )
-            .on_hover_text(fader_tip(db));
-        if r.dragged()
-            && let Some(p) = r.interact_pointer_pos()
-        {
-            self.fader_drag = Some((track.id, fader_db_at(bar, p.x)));
-        }
-        if r.drag_stopped()
-            && let Some((_, v)) = self.fader_drag.take()
-        {
-            events.push(TimelineEvent::TrackMix {
-                track: track.id,
-                muted: track.muted,
-                solo: track.solo,
-                gain_db: v,
-            });
-        }
-        if r.double_clicked() {
-            events.push(TimelineEvent::TrackMix {
-                track: track.id,
-                muted: track.muted,
-                solo: track.solo,
-                gain_db: 0.0,
-            });
-        }
-        let p = ui.painter();
-        p.rect_filled(bar, 2.0, theme.line);
-        p.rect_filled(
-            Rect::from_min_max(bar.min, pos2(to_x(db), bar.bottom())),
-            2.0,
-            theme.text_secondary,
-        );
-        p.line_segment(
-            [
-                pos2(to_x(0.0), bar.top() - 2.0),
-                pos2(to_x(0.0), bar.bottom() + 2.0),
-            ],
-            Stroke::new(1.0, theme.muted),
-        );
-        p.circle_filled(pos2(to_x(db), bar.center().y), 5.0, theme.text);
-    }
-
-    /// Pictures side by side across the clip, each the one nearest its
-    /// place in the file. Only the visible ones are drawn.
-    fn draw_pictures(
-        &self,
-        p: &egui::Painter,
-        r: Rect,
-        clip: &TimelineClip,
-        shown_start: f64,
-        pics: &ClipPictures,
-    ) {
-        let area = Rect::from_min_max(
-            pos2(r.left() + 1.0, r.top() + 3.0),
-            pos2(r.right() - 1.0, r.bottom() - 1.0),
-        );
-        let visible = p.clip_rect().intersect(area);
-        if visible.width() < 1.0 || pics.textures.is_empty() || pics.every <= 0.0 {
-            return;
-        }
-        let tile = (area.height() * pics.aspect).max(8.0);
-        let left = r.left() - ((shown_start - clip.start) * f64::from(self.zoom)) as f32;
-        let painter = p.with_clip_rect(visible);
-        let first = ((visible.left() - area.left()) / tile).floor().max(0.0);
-        let mut x = area.left() + first * tile;
-        let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
-        while x < visible.right() {
-            let t = pics.file_at(f64::from(x + tile / 2.0 - left) / f64::from(self.zoom));
-            let i = ((t / pics.every).round().max(0.0) as usize).min(pics.textures.len() - 1);
-            let rect = Rect::from_min_size(pos2(x, area.top()), vec2(tile, area.height()));
-            painter.image(pics.textures[i], rect, uv, Color32::from_white_alpha(230));
-            x += tile;
-        }
-    }
-
-    /// The clip's loudness as one bar per pixel column, centred in the
-    /// clip, as loud as `look` says (never taller than the clip).
-    fn draw_waveform(
-        &self,
-        p: &egui::Painter,
-        r: Rect,
-        clip: &TimelineClip,
-        shown_start: f64,
-        w: &ClipWaveform,
-        look: WaveLook,
-    ) {
-        let WaveLook { colour, muted, gain } = look;
-        // Below the clip's name, down to its bottom edge; in a short clip
-        // there is no room under the name, so the whole clip is used.
-        let top = if r.height() < SHORT_CLIP { 3.0 } else { 19.0 };
-        let below_name = Rect::from_min_max(
-            pos2(r.left() + 1.0, r.top() + top),
-            pos2(r.right() - 1.0, r.bottom() - 3.0),
-        );
-        let clip_area = p.clip_rect().intersect(below_name);
-        if clip_area.width() < 1.0 || clip_area.height() < 4.0 || w.peaks.is_empty() {
-            return;
-        }
-        let left = r.left() - ((shown_start - clip.start) * f64::from(self.zoom)) as f32;
-        let colour = if muted {
-            colour.gamma_multiply(0.5)
-        } else {
-            Color32::from_white_alpha(170)
-        };
-        let levels = crate::waveform::levels_for(p.ctx(), w.id, &w.peaks);
-        let mut mesh = egui::Mesh::default();
-        let (mid, half) = (clip_area.center().y, clip_area.height() / 2.0);
-        let mut x = clip_area.left().floor();
-        while x < clip_area.right() {
-            let t = w.file_at(f64::from(x - left) / f64::from(self.zoom));
-            let t_next = w.file_at(f64::from(x + 1.0 - left) / f64::from(self.zoom));
-            let a = (t * f64::from(w.per_second)).max(0.0) as usize;
-            let b = ((t_next * f64::from(w.per_second)).ceil() as usize)
-                .max(a + 1)
-                .min(w.peaks.len());
-            if a >= w.peaks.len() {
-                break;
-            }
-            let peak = (crate::waveform::loudest(&w.peaks, levels.as_deref(), a, b) * gain).min(1.0);
-            let h = (peak.sqrt() * half).max(0.5);
-            mesh.add_colored_rect(
-                Rect::from_min_max(pos2(x, mid - h), pos2(x + 1.0, mid + h)),
-                colour,
-            );
-            x += 1.0;
-        }
-        p.add(Shape::mesh(mesh));
     }
 
     /// The wheel, wherever the pointer is on the timeline: Ctrl (or a pinch)
@@ -2752,92 +1597,6 @@ impl TimelineView {
         }
     }
 
-    /// The edge of a track's name that resizes the track: the bottom edge of
-    /// an audio track, the top edge of a video track (the side each area
-    /// grows towards). Drag it, or double-click for the usual height.
-    fn track_edge(
-        &mut self,
-        ui: &mut Ui,
-        theme: &Theme,
-        half: Half,
-        track: &TimelineTrack,
-        row: Rect,
-        area: Rect,
-    ) {
-        let edge = match half {
-            Half::Video => row.top(),
-            Half::Audio => row.bottom(),
-        };
-        let handle = Rect::from_min_max(
-            pos2(area.left(), edge - 3.0),
-            pos2(area.left() + HEADER_WIDTH, edge + 3.0),
-        )
-        .intersect(area);
-        // A drag goes on while the button is held, also when the edge has
-        // been dragged out of the area and can't be pointed at any more.
-        if !ui.input(|i| i.pointer.primary_down()) {
-            self.height_drag = None;
-        }
-        // Compact tracks are all one height: nothing to drag.
-        if self.compact {
-            self.height_drag = None;
-            return;
-        }
-        let r = handle.is_positive().then(|| {
-            ui.interact(
-                handle,
-                ui.scope_id().with(("track height", track.id)),
-                Sense::click_and_drag(),
-            )
-            .on_hover_cursor(CursorIcon::ResizeVertical)
-        });
-        if r.as_ref()
-            .is_some_and(|r| r.drag_started_by(egui::PointerButton::Primary))
-        {
-            let from_y = ui.input(|i| i.pointer.press_origin()).map_or(edge, |p| p.y);
-            self.height_drag = Some(HeightDrag {
-                track: track.id,
-                from_height: row.height(),
-                from_y,
-            });
-        }
-        let dragging = self.height_drag.filter(|d| d.track == track.id);
-        if let Some(drag) = dragging
-            && let Some(p) = ui.input(|i| i.pointer.interact_pos())
-        {
-            // Down makes an audio track taller; up makes a video track taller.
-            let by = match half {
-                Half::Video => drag.from_y - p.y,
-                Half::Audio => p.y - drag.from_y,
-            };
-            let usual = self.usual_height(half);
-            self.heights.set(track.id, usual, drag.from_height + by);
-            ui.ctx().set_cursor_icon(CursorIcon::ResizeVertical);
-        }
-        if r.as_ref().is_some_and(|r| r.double_clicked()) {
-            self.heights.reset(track.id);
-        }
-        // The edge lights up when pointed at; while dragged, across the whole timeline.
-        let pointed_at = r.as_ref().is_some_and(|r| r.hovered());
-        if dragging.is_some() || pointed_at {
-            let (right, colour) = match dragging {
-                Some(_) => (area.right(), theme.text_secondary),
-                None => (handle.right(), theme.muted),
-            };
-            ui.painter_at(area).line_segment(
-                [pos2(area.left(), edge), pos2(right, edge)],
-                Stroke::new(2.0, colour),
-            );
-        }
-        if dragging.is_none()
-            && let Some(r) = r
-        {
-            r.on_hover_text(
-                "Drag to make this track taller or shorter. Double-click: its usual height. Alt+wheel: every track here.",
-            );
-        }
-    }
-
     /// Dragging with the middle button pans: time sideways, and the area the
     /// drag began over up and down. True while such a drag lasts.
     fn middle_pan(&mut self, ui: &Ui, layout: &Layout) -> bool {
@@ -2871,6 +1630,10 @@ impl TimelineView {
         true
     }
 
+    /// The pointer on the timeline, part by part. The order decides which
+    /// part takes a press: the ruler first, then the handles lying on it
+    /// (on top of it); a handle or a label that takes the pointer ends
+    /// this frame's input.
     fn input(
         &mut self,
         ui: &mut Ui,
@@ -2884,1362 +1647,31 @@ impl TimelineView {
         if self.scrub && !ui.input(|i| i.pointer.primary_down()) {
             self.scrub = false;
         }
-        // The ruler takes the pointer first, so that the handles lying on it
-        // (the edit needle's, the region's edges) come after it and are on
-        // top: a press on a handle drags the handle, not the playhead.
-        let ruler = ui.interact(
-            layout.ruler.union(layout.labels),
-            id.with("ruler"),
-            Sense::click_and_drag(),
-        );
-        // A right-click in the ruler offers what can be done with the region.
-        if data.region.is_some() {
-            ruler.context_menu(|ui| {
-                region_menu(ui, events);
-                if ui.button("Clear the region").clicked() {
-                    events.push(TimelineEvent::SetRegion(None));
-                    ui.close();
-                }
-            });
+        let ruler = self.ruler_response(ui, layout, data, id, events);
+        if self.playhead_handle_input(ui, layout, data, id, events)
+            || self.needle_handle_input(ui, layout, data, id, events)
+            || self.region_handles_input(ui, layout, data, id, events)
+        {
+            return;
         }
-
-        // The playhead's handle at the top of the ruler: dragging it moves
-        // the playhead whatever a click in the ruler moves. Not with Shift
-        // held, so a region can be begun at the playhead.
-        let ph = self.x_of(left, data.playhead);
-        let handle_id = id.with("playhead");
-        let shift = ui.input(|i| i.modifiers.shift);
-        self.playhead_lit = false;
-        if !shift || ui.ctx().is_being_dragged(handle_id) {
-            let r = ui
-                .interact(playhead_grab(ph, layout), handle_id, Sense::click_and_drag())
-                .on_hover_cursor(CursorIcon::ResizeHorizontal);
-            self.playhead_lit = r.hovered() || r.dragged();
-            if self.needle_moves(data) && !r.dragged() {
-                r.clone()
-                    .on_hover_text("Drag to move the playhead, or Alt+click anywhere on the timeline");
-            }
-            if r.dragged_by(egui::PointerButton::Primary)
-                && let Some(p) = r.interact_pointer_pos()
-            {
-                events.push(TimelineEvent::Seek(
-                    self.time_at(left, p.x).clamp(0.0, data.length.max(0.0)),
-                ));
-            }
-            if let Some(t) = self.alt_click(ui, &r, left, data) {
-                events.push(TimelineEvent::Seek(t));
-            }
-            if r.dragged() || r.drag_stopped() || r.clicked() {
-                return;
-            }
-        }
-
-        // The edit needle's handle, dragged along the ruler.
-        if let Some(needle) = data.needle {
-            let nx = self.x_of(left, needle);
-            let handle = Rect::from_center_size(pos2(nx, layout.ruler.bottom() - 6.0), vec2(14.0, 14.0));
-            let r = ui
-                .interact(handle, id.with("needle"), Sense::drag())
-                .on_hover_cursor(CursorIcon::ResizeHorizontal);
-            if r.dragged()
-                && let Some(p) = r.interact_pointer_pos()
-            {
-                self.needle_drag = Some(self.time_at(left, p.x).clamp(0.0, data.length.max(0.0)));
-            }
-            if r.drag_stopped()
-                && let Some(t) = self.needle_drag.take()
-            {
-                events.push(TimelineEvent::MoveNeedle(t));
-            }
-            if r.dragged() || r.drag_stopped() {
-                return;
-            }
-        }
-
-        // Region handles: drag to adjust.
-        if let Some((a, b)) = data.region {
-            for (edge, x) in [
-                (RegionDrag::Start, self.x_of(left, a)),
-                (RegionDrag::End, self.x_of(left, b)),
-            ] {
-                let handle = Rect::from_center_size(pos2(x, layout.ruler.bottom() - 4.0), vec2(14.0, 14.0));
-                let r = ui
-                    .interact(
-                        handle,
-                        id.with(("region", edge == RegionDrag::Start)),
-                        Sense::drag(),
-                    )
-                    .on_hover_cursor(CursorIcon::ResizeHorizontal);
-                if r.drag_started() {
-                    self.region_drag = Some((edge, (a, b)));
-                }
-                if r.dragged()
-                    && let (Some(p), Some((kind, (ra, rb)))) = (r.interact_pointer_pos(), self.region_drag)
-                {
-                    let t = self.time_at(left, p.x).clamp(0.0, data.length.max(0.0));
-                    let next = match kind {
-                        RegionDrag::Start => (t.min(rb), rb),
-                        _ => (ra, t.max(ra)),
-                    };
-                    self.region_drag = Some((kind, next));
-                }
-                if r.drag_stopped()
-                    && let Some((_, (ra, rb))) = self.region_drag.take()
-                {
-                    events.push(TimelineEvent::SetRegion((rb - ra > 1e-6).then_some((ra, rb))));
-                }
-                if r.dragged() || r.drag_stopped() {
-                    return;
-                }
-            }
-        }
-
         // Alt+click anywhere in the ruler or the labels row: the playhead
         // goes there, whatever a click moves.
         let ruler_alt = self.alt_click(ui, &ruler, left, data);
         if let Some(t) = ruler_alt {
             events.push(TimelineEvent::Seek(t));
         }
-
-        // Labels: click one to go to it, double-click to rename or recolour it.
-        if ruler_alt.is_none()
-            && let Some(pos) = ui.input(|i| i.pointer.interact_pos())
-            && layout.labels.contains(pos)
-            && let Some(marker) = self.marker_near(left, data.markers, pos.x)
-        {
-            let (double, single) = ui.input(|i| {
-                (
-                    i.pointer.button_double_clicked(egui::PointerButton::Primary),
-                    i.pointer.button_clicked(egui::PointerButton::Primary),
-                )
-            });
-            ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
-            if double {
-                events.push(TimelineEvent::EditLabel(marker.id));
-                return;
-            }
-            if single && !ui.input(|i| i.modifiers.alt) {
-                events.push(TimelineEvent::Seek(marker.at));
-                return;
-            }
+        if ruler_alt.is_none() && self.labels_input(ui, layout, data, events) {
+            return;
         }
-
-        // Ruler: click or drag to move the playhead; Shift-drag draws the region.
-        // The cache bar explains its colours when pointed at.
-        if let Some(p) = ruler.hover_pos()
-            && layout.cache_strip().expand2(vec2(0.0, 2.0)).contains(p)
-            && !ruler.dragged()
-        {
-            ruler
-                .clone()
-                .on_hover_text_at_pointer(cache_bar::legend(data.cache.about));
-        }
-        let (shift, alt) = ui.input(|i| (i.modifiers.shift, i.modifiers.alt));
-        if ruler.drag_started_by(egui::PointerButton::Primary) {
-            if shift && let Some(p) = ruler.interact_pointer_pos() {
-                let t = self.time_at(left, p.x).clamp(0.0, data.length.max(0.0));
-                self.region_drag = Some((RegionDrag::New(t), (t, t)));
-            } else if alt {
-                self.scrub = true;
-            }
-        }
-        if ruler_alt.is_some() {
-            // Alt+click: the playhead went there above.
-        } else if self.scrub {
-            // Alt+drag: the playhead follows, whatever a click moves.
-            if ruler.dragged()
-                && let Some(p) = ruler.interact_pointer_pos()
-            {
-                events.push(TimelineEvent::Seek(self.frame_under(left, p.x, data)));
-            }
-        } else if let Some((RegionDrag::New(from), _)) = self.region_drag {
-            if ruler.dragged()
-                && let Some(p) = ruler.interact_pointer_pos()
-            {
-                let t = self.time_at(left, p.x).clamp(0.0, data.length.max(0.0));
-                self.region_drag = Some((RegionDrag::New(from), (from.min(t), from.max(t))));
-            }
-            if ruler.drag_stopped()
-                && let Some((_, (a, b))) = self.region_drag.take()
-                && b - a > 1e-6
-            {
-                events.push(TimelineEvent::SetRegion(Some((a, b))));
-            }
-        } else if self.needle_moves(data) {
-            // A click puts the edit needle there; a drag takes it along and
-            // puts it where it is let go, as dragging its handle does.
-            if let Some(p) = ruler.interact_pointer_pos() {
-                let t = self.time_at(left, p.x).clamp(0.0, data.length.max(0.0));
-                if ruler.clicked() {
-                    events.push(TimelineEvent::MoveNeedle(t));
-                } else if ruler.dragged_by(egui::PointerButton::Primary) {
-                    self.needle_drag = Some(t);
-                }
-            }
-            if ruler.drag_stopped()
-                && let Some(t) = self.needle_drag.take()
-            {
-                events.push(TimelineEvent::MoveNeedle(t));
-            }
-        } else if (ruler.clicked() || ruler.dragged_by(egui::PointerButton::Primary))
-            && let Some(p) = ruler.interact_pointer_pos()
-        {
-            events.push(TimelineEvent::Seek(
-                self.time_at(left, p.x).clamp(0.0, data.length.max(0.0)),
-            ));
-        }
-
+        self.ruler_clicks(ui, layout, data, &ruler, ruler_alt.is_some(), events);
         // Divider (none in the one list).
         if self.divider {
             self.divider_input(ui, layout, data, id);
         }
-
-        // Scroll bar: drag the thumb.
-        let (thumb, total) = scrollbar_thumb(layout, self, data.length);
-        let bar = ui.interact(layout.scrollbar, id.with("scrollbar"), Sense::click_and_drag());
-        if bar.drag_started()
-            && let Some(p) = bar.interact_pointer_pos()
-        {
-            self.scrollbar_drag = Some((p.x, if thumb.contains(p) { self.scroll } else { -1.0 }));
-        }
-        if let (Some((start_x, start_scroll)), Some(p)) = (self.scrollbar_drag, bar.interact_pointer_pos()) {
-            let per_px = total / f64::from(layout.width().max(1.0));
-            if start_scroll >= 0.0 {
-                self.scroll = (start_scroll + f64::from(p.x - start_x) * per_px).max(0.0);
-            } else {
-                // Grabbed beside the thumb: centre the view there.
-                let page = f64::from(layout.width()) / f64::from(self.zoom);
-                self.scroll = (f64::from(p.x - left) * per_px - page / 2.0).max(0.0);
-            }
-        }
-        if bar.drag_stopped() {
-            self.scrollbar_drag = None;
-        }
-
-        // Track names: right-click for the menu of tracks, double-click a name to change it.
-        for (half, area, rows) in [
-            (Half::Video, layout.video, rows[0]),
-            (Half::Audio, layout.audio, rows[1]),
-        ] {
-            let names = Rect::from_min_max(area.min, pos2(left, area.bottom()));
-            let r = ui.interact(names, id.with(("names", half)), Sense::click());
-            let under = r
-                .interact_pointer_pos()
-                .or(r.hover_pos())
-                .and_then(|p| rows.at(p.y))
-                .and_then(|row| tracks_of(half, data).get(row));
-            if r.secondary_clicked() {
-                self.names_menu = Some((half, under.map(|t| t.id)));
-            }
-            if r.double_clicked()
-                && let Some(track) = under
-            {
-                self.rename = Some(headers::Rename::of(track));
-            }
-            headers::menu(
-                &r,
-                self.names_menu.filter(|(h, _)| *h == half),
-                data,
-                &mut self.rename,
-                &mut self.level_lines,
-                events,
-            );
-        }
-
-        // Clips: click selects (or cuts, with the blade); drag moves or trims.
-        for (area, tracks, rows, from_bottom) in [
-            (layout.video, data.video, rows[0], true),
-            (layout.audio, data.audio, rows[1], false),
-        ] {
-            let time_area = Rect::from_min_max(pos2(left, area.top()), area.max);
-            let r = ui.interact(time_area, id.with(("area", from_bottom)), Sense::click_and_drag());
-            // While a file is dragged here from a list, the list has the
-            // pointer: the area is not pointed at, but the file is over it.
-            let title_over = r.dnd_hover_payload::<DraggedTitle>().is_some();
-            let file_over = r.dnd_hover_payload::<DraggedMedia>().is_some()
-                || r.dnd_hover_payload::<DraggedTimeline>().is_some()
-                || title_over;
-            let effect_over = r.dnd_hover_payload::<DraggedEffect>().is_some();
-            let transition_over = from_bottom && r.dnd_hover_payload::<DraggedTransition>().is_some();
-            let file_at = ui
-                .input(|i| i.pointer.interact_pos())
-                .filter(|_| file_over || effect_over || transition_over);
-            let menu_marks = self.menu_marks(tracks, data.fps);
-            let menu_clip = self
-                .menu_at
-                .and_then(|(_, clip)| clip)
-                .and_then(|(id, ..)| tracks.iter().flat_map(|t| &t.clips).find(|c| c.id == id));
-            let on_nested = menu_clip.is_some_and(|c| c.shows == ClipShows::Timeline);
-            let ends_empty = menu_clip.is_some_and(|c| c.plays_until.is_some());
-            let selected = data
-                .video
-                .iter()
-                .chain(data.audio)
-                .flat_map(|t| &t.clips)
-                .filter(|c| c.selected)
-                .take(2)
-                .count();
-            let menu = Menu {
-                at: self.menu_at,
-                marks: menu_marks.as_ref().map(|(clip, marks)| (*clip, marks.as_slice())),
-                eases: data.keyframe_eases,
-                has_region: data.region.is_some(),
-                video_track: self.menu_track.filter(|_| from_bottom),
-                on_nested,
-                ends_empty,
-                gap: self.menu_gap,
-                selection: selected > 0,
-                several: selected > 1,
-            };
-            let Some(p) = r.interact_pointer_pos().or(r.hover_pos()).or(file_at) else {
-                // The pointer is elsewhere, perhaps on the menu itself: an
-                // open menu is still shown, or it would close under it.
-                clip_menu(&r, menu, events);
-                continue;
-            };
-            // A drag is only noticed a few pixels after the press: what is
-            // dragged, and from where, is what was pressed.
-            let p = if r.drag_started() {
-                ui.input(|i| i.pointer.press_origin()).unwrap_or(p)
-            } else {
-                p
-            };
-            let row_rects = rows.rects();
-            let t = self.time_at(left, p.x);
-            // The video track a file dropped here lands on: the one under
-            // the pointer, or the nearest above or below the rows.
-            let drop_row = rows.nearest(p.y).filter(|_| from_bottom);
-            // A file dragged over the timeline: show where it would land.
-            if file_over {
-                self.file_over = Some((t.max(0.0), drop_row));
-            }
-            // Taking a payload of the other type would lose it: ask for
-            // the one that is there.
-            let timeline_over = r.dnd_hover_payload::<DraggedTimeline>().is_some();
-            if timeline_over && let Some(dragged) = r.dnd_release_payload::<DraggedTimeline>() {
-                events.push(TimelineEvent::DropTimeline {
-                    timeline: dragged.0,
-                    at: t.max(0.0),
-                    track: drop_row.and_then(|row| tracks.get(row)).map(|t| t.id),
-                });
-                continue;
-            }
-            if title_over {
-                if let Some(dragged) = r.dnd_release_payload::<DraggedTitle>() {
-                    events.push(TimelineEvent::DropTitle {
-                        title: dragged.0,
-                        at: t.max(0.0),
-                        track: drop_row.and_then(|row| tracks.get(row)).map(|t| t.id),
-                    });
-                }
-                continue;
-            }
-            if transition_over {
-                // The cut nearest the pointer on the clip under it, lit;
-                // let go there, the transition goes onto it.
-                let under = rows
-                    .at(p.y)
-                    .and_then(|row| Some((tracks.get(row)?, *row_rects.get(row)?)))
-                    .and_then(|(track, band)| Some((transitions::cut_near(track, t)?, band)));
-                self.transition_over = under.map(|((_, cut), band)| (band, self.x_of(left, cut)));
-                if let Some(dragged) = r.dnd_release_payload::<DraggedTransition>()
-                    && let Some(((clip, _), _)) = under
-                {
-                    events.push(TimelineEvent::DropTransition {
-                        transition: dragged.0,
-                        clip,
-                    });
-                }
-                continue;
-            }
-            if effect_over {
-                // The clip under the pointer, outlined while the effect is
-                // over it; let go there, the effect goes onto it.
-                let under = rows
-                    .at(p.y)
-                    .and_then(|row| Some((row, tracks.get(row)?)))
-                    .and_then(|(row, track)| {
-                        let clip = track
-                            .clips
-                            .iter()
-                            .find(|c| c.start <= t && t < c.start + c.duration)?;
-                        let band = row_rects.get(row)?;
-                        let x = (
-                            self.x_of(left, clip.start),
-                            self.x_of(left, clip.start + clip.duration),
-                        );
-                        Some((clip.id, Rect::from_x_y_ranges(x.0..=x.1, band.y_range())))
-                    });
-                self.effect_over = under.map(|(_, rect)| rect);
-                if let Some(dragged) = r.dnd_release_payload::<DraggedEffect>()
-                    && let Some((clip, _)) = under
-                {
-                    events.push(TimelineEvent::DropEffect {
-                        effect: dragged.0,
-                        clip,
-                    });
-                }
-                continue;
-            }
-            if let Some(dragged) = r.dnd_release_payload::<DraggedMedia>() {
-                let insert = ui.input(|i| i.modifiers.command);
-                events.push(TimelineEvent::DropMedia {
-                    media: dragged.0,
-                    at: t.max(0.0),
-                    insert,
-                    track: drop_row.and_then(|row| tracks.get(row)).map(|t| t.id),
-                });
-                continue;
-            }
-            let hit_track = rows.at(p.y).and_then(|row| tracks.get(row));
-            let hit = hit_track.and_then(|track| {
-                track
-                    .clips
-                    .iter()
-                    .find(|c| c.start <= t && t < c.start + c.duration)
-            });
-            let edge_px = 6.0;
-            let zone = hit.map(|c| {
-                let (x0, x1) = (self.x_of(left, c.start), self.x_of(left, c.start + c.duration));
-                if (p.x - x0).abs() <= edge_px && x1 - x0 > edge_px * 3.0 {
-                    DragKind::Trim(ClipEdge::Start)
-                } else if (x1 - p.x).abs() <= edge_px && x1 - x0 > edge_px * 3.0 {
-                    DragKind::Trim(ClipEdge::End)
-                } else {
-                    DragKind::Move
-                }
-            });
-
-            // Alt+drag on empty track space scrubs: the playhead follows the
-            // pointer. (On a clip, Alt+drag moves or trims it without snapping.)
-            if r.drag_started_by(egui::PointerButton::Primary)
-                && hit.is_none()
-                && ui.input(|i| i.modifiers.alt)
-            {
-                self.scrub = true;
-            }
-            if self.scrub
-                && r.dragged()
-                && let Some(now) = r.interact_pointer_pos()
-            {
-                events.push(TimelineEvent::Seek(self.frame_under(left, now.x, data)));
-                ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
-            }
-
-            // A keyframe mark on the clip under the pointer: it comes before
-            // the clip itself.
-            let on_mark = match (hit, rows.at(p.y).and_then(|row| row_rects.get(row))) {
-                (Some(c), Some(row))
-                    if !self.compact && !c.keyframes.is_empty() && self.clip_drag.is_none() =>
-                {
-                    let drawn = Rect::from_min_max(
-                        pos2(self.x_of(left, c.start), row.top() + 3.0),
-                        pos2(self.x_of(left, c.start + c.duration), row.bottom() - 3.0),
-                    );
-                    keyframes::hit(drawn, &c.keyframes, |t| self.x_of(left, t), p).map(|mark| (c, mark))
-                }
-                _ => None,
-            };
-
-            // The level line of an audio clip, when its track shows it: it
-            // comes before moving the clip, its edges before the line.
-            let on_line = match (hit, hit_track, rows.at(p.y).and_then(|row| row_rects.get(row))) {
-                (Some(c), Some(track), Some(row))
-                    if !from_bottom
-                        && !self.compact
-                        && self.level_line(track.id)
-                        && zone == Some(DragKind::Move)
-                        && self.clip_drag.is_none() =>
-                {
-                    let x0 = self.x_of(left, c.start);
-                    let x1 = self.x_of(left, c.start + c.duration).max(x0 + 1.0);
-                    let drawn = Rect::from_min_max(pos2(x0, row.top() + 3.0), pos2(x1, row.bottom() - 3.0));
-                    let db = level::db_of_gain(c.sound.gain);
-                    level::grabs(drawn, db, p.y).then_some((c, drawn, db))
-                }
-                _ => None,
-            };
-            // The strip along the bottom of a clip with marks, away from
-            // them: a drag there draws a box that chooses marks.
-            let on_strip = match (hit, rows.at(p.y).and_then(|row| row_rects.get(row))) {
-                (Some(c), Some(row))
-                    if on_mark.is_none()
-                        && !self.compact
-                        && !c.keyframes.is_empty()
-                        && zone == Some(DragKind::Move)
-                        && self.clip_drag.is_none() =>
-                {
-                    let drawn = Rect::from_min_max(
-                        pos2(self.x_of(left, c.start), row.top() + 3.0),
-                        pos2(self.x_of(left, c.start + c.duration), row.bottom() - 3.0),
-                    );
-                    keyframes::in_strip(drawn, p).then_some(c)
-                }
-                _ => None,
-            };
-            let still = self.clip_drag.is_none()
-                && self.level_drag.is_none()
-                && self.mark_drag.is_none()
-                && self.mark_box.is_none();
-            if r.hovered()
-                && still
-                && let Some((_, mark)) = on_mark
-            {
-                ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
-                r.clone().on_hover_text_at_pointer(mark.says());
-            } else if r.hovered() && still && on_strip.is_some() {
-                ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
-            } else if r.hovered() && still && on_line.is_some() {
-                ui.ctx().set_cursor_icon(CursorIcon::ResizeVertical);
-                if let Some((_, _, db)) = on_line {
-                    r.clone().on_hover_text_at_pointer(format!(
-                        "Volume {}: drag up or down (Alt: finer), double-click for 0 dB",
-                        level::words(f64::from(db))
-                    ));
-                }
-            } else if r.hovered() && still {
-                match (self.tool, zone) {
-                    (Tool::Blade, Some(_)) => ui.ctx().set_cursor_icon(CursorIcon::Crosshair),
-                    (Tool::Select | Tool::Ripple | Tool::Roll, Some(DragKind::Trim(_))) => {
-                        ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal)
-                    }
-                    (Tool::Select | Tool::Ripple, Some(DragKind::Move)) => {
-                        ui.ctx().set_cursor_icon(CursorIcon::Grab)
-                    }
-                    (Tool::Slip | Tool::Slide, Some(_)) => ui.ctx().set_cursor_icon(CursorIcon::ResizeColumn),
-                    _ => {}
-                }
-                if let Some(c) = hit.filter(|c| !c.info.is_empty()) {
-                    r.clone().on_hover_text_at_pointer(&c.info);
-                }
-            }
-
-            if r.drag_started_by(egui::PointerButton::Primary)
-                && let Some((c, mark)) = on_mark
-            {
-                // The chosen marks move with the grabbed one; a mark that
-                // isn't chosen is chosen alone.
-                let fps = data.fps;
-                let chosen = self.chosen_marks.of(c.id, &c.keyframes, fps);
-                let others = chosen
-                    .iter()
-                    .copied()
-                    .filter(|at| !keyframes::same(*at, mark.at, fps));
-                let moving: Vec<f64> = match chosen.iter().any(|at| keyframes::same(*at, mark.at, fps)) {
-                    true => std::iter::once(mark.at).chain(others).collect(),
-                    false => {
-                        self.chosen_marks.click(c.id, mark.at, false, fps);
-                        vec![mark.at]
-                    }
-                };
-                self.mark_drag = Some(keyframes::MarkDrag {
-                    clip: c.id,
-                    moving,
-                    from: t,
-                    by: 0.0,
-                    refused: false,
-                });
-            } else if r.drag_started_by(egui::PointerButton::Primary)
-                && let Some(c) = on_strip
-            {
-                let add = ui.input(|i| i.modifiers.shift || i.modifiers.command);
-                let kept = match add {
-                    true => self.chosen_marks.of(c.id, &c.keyframes, data.fps),
-                    false => Vec::new(),
-                };
-                self.mark_box = Some(keyframes::MarkBox {
-                    clip: c.id,
-                    from: t,
-                    to: t,
-                    kept,
-                });
-            } else if r.drag_started_by(egui::PointerButton::Primary)
-                && let Some((c, drawn, db)) = on_line
-            {
-                self.level_drag = Some(level::LevelDrag::new(c.id, drawn, db, p.y));
-                if !c.selected {
-                    events.push(TimelineEvent::Select {
-                        clip: c.id,
-                        add: false,
-                    });
-                }
-            } else if r.drag_started_by(egui::PointerButton::Primary)
-                && let (Some(c), Some(zone), Some(track)) = (hit, zone, hit_track)
-                && let Some((c, kind)) = drag_for(self.tool, zone, c, tracks, row_rects, p.y)
-            {
-                // One of several selected clips: they all move together.
-                let together = kind == DragKind::Move
-                    && c.selected
-                    && data
-                        .video
-                        .iter()
-                        .chain(data.audio)
-                        .flat_map(|t| &t.clips)
-                        .any(|o| o.selected && o.id != c.id && (c.link.is_none() || o.link != c.link));
-                self.clip_drag = Some(ClipDrag {
-                    clip: c.id,
-                    link: c.link,
-                    track: track.id,
-                    over: Landing::Track(track.id),
-                    refused: false,
-                    kind,
-                    grabbed_at: t,
-                    start: c.start,
-                    end: c.start + c.duration,
-                    delta: 0.0,
-                    together,
-                });
-                if !c.selected {
-                    events.push(TimelineEvent::Select {
-                        clip: c.id,
-                        add: false,
-                    });
-                }
-            }
-            if r.dragged()
-                && let Some(drag) = self.clip_drag
-            {
-                let raw = t - drag.grabbed_at;
-                self.obstacles.refresh(data, |c| drag.moves(c));
-                let delta = if self.snapping && !ui.input(|i| i.modifiers.alt) {
-                    self.snapped(raw, &drag, data)
-                } else {
-                    raw
-                };
-                // Held to the file there is, as it goes, so letting go is
-                // never refused because the file ends.
-                // (A trim changes the clip and the clips linked to it only.)
-                let room = || {
-                    slip::room_of(data, |c| {
-                        c.id == drag.clip || (drag.link.is_some() && c.link == drag.link)
-                    })
-                };
-                let delta = match drag.kind {
-                    DragKind::Move | DragKind::Slide => delta.max(-drag.start),
-                    DragKind::Trim(ClipEdge::Start) => {
-                        slip::trim_held(delta, room(), data.fps, true).max(-drag.start)
-                    }
-                    DragKind::RippleTrim(ClipEdge::Start) => slip::trim_held(delta, room(), data.fps, true),
-                    DragKind::Trim(ClipEdge::End) | DragKind::RippleTrim(ClipEdge::End) | DragKind::Roll => {
-                        slip::trim_held(delta, room(), data.fps, false)
-                    }
-                    DragKind::Slip => slip::held(delta, room(), data.fps),
-                };
-                // A move also follows the pointer to another track of this
-                // area, and past the last one to a track of its own.
-                let over = match drag.kind {
-                    // Several clips move along their own tracks only.
-                    DragKind::Move if drag.together => Landing::Track(drag.track),
-                    DragKind::Move
-                        if self.asks_for_new_track(&drag, tracks, rows, time_area, from_bottom, p.y) =>
-                    {
-                        Landing::NewTrack
-                    }
-                    DragKind::Move => {
-                        // (`max` last: an area scrolled out of the one list has no height.)
-                        let y = p.y.min(time_area.bottom() - 1.0).max(time_area.top());
-                        landing_track(tracks, rows, y, drag.track).map_or(drag.over, Landing::Track)
-                    }
-                    _ => Landing::Track(drag.track),
-                };
-                let mut drag = ClipDrag { delta, over, ..drag };
-                drag.refused = drag.is_in_the_way(data, &self.obstacles);
-                self.clip_drag = Some(drag);
-                ui.ctx().set_cursor_icon(match drag.kind {
-                    DragKind::Move if drag.refused => CursorIcon::NotAllowed,
-                    DragKind::Move => CursorIcon::Grabbing,
-                    DragKind::Slip | DragKind::Slide => CursorIcon::ResizeColumn,
-                    _ => CursorIcon::ResizeHorizontal,
-                });
-            }
-            if r.dragged()
-                && let Some(drag) = self.mark_drag.clone()
-                && let Some(now) = r.interact_pointer_pos()
-                && let Some(c) = tracks.iter().flat_map(|t| &t.clips).find(|c| c.id == drag.clip)
-            {
-                self.follow_mark_drag(ui, drag, c, data, self.time_at(left, now.x));
-            }
-            let box_to = r
-                .interact_pointer_pos()
-                .filter(|_| r.dragged())
-                .map(|now| self.time_at(left, now.x));
-            if let Some(chosen_box) = &mut self.mark_box {
-                if let Some(to) = box_to {
-                    chosen_box.to = to;
-                    ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
-                }
-                if let Some(c) = tracks
-                    .iter()
-                    .flat_map(|t| &t.clips)
-                    .find(|c| c.id == chosen_box.clip)
-                {
-                    self.chosen_marks = chosen_box.chosen(&c.keyframes, data.fps);
-                }
-                if r.drag_stopped() {
-                    self.mark_box = None;
-                }
-            }
-            if r.drag_stopped()
-                && let Some(drag) = self.mark_drag.take()
-                && drag.by.abs() > 0.5 / data.fps.max(1.0)
-            {
-                if !drag.refused {
-                    // The chosen marks go along.
-                    let at = drag.moving.iter().map(|at| at + drag.by).collect();
-                    self.chosen_marks = keyframes::Chosen { clip: drag.clip, at };
-                }
-                events.push(TimelineEvent::Keyframes {
-                    clip: drag.clip,
-                    marks: drag.moving,
-                    change: MarksChange::Move(drag.by),
-                });
-            }
-            if let Some(drag) = &mut self.level_drag {
-                // Where the pointer is now, also on the frame the drag is
-                // noticed (when `p` is where it was pressed).
-                if r.dragged()
-                    && let Some(now) = r.interact_pointer_pos()
-                {
-                    drag.follow(now.y, ui.input(|i| i.modifiers.alt || i.modifiers.shift));
-                    ui.ctx().set_cursor_icon(CursorIcon::ResizeVertical);
-                }
-                if r.drag_stopped() {
-                    let drag = *drag;
-                    self.level_drag = None;
-                    if (drag.db - drag.from_db).abs() > 1e-3 {
-                        events.push(TimelineEvent::ClipVolume {
-                            clip: drag.clip,
-                            gain_db: drag.db,
-                        });
-                    }
-                }
-            }
-            if r.double_clicked()
-                && on_line.is_none()
-                && let Some(c) = hit.filter(|c| c.shows == ClipShows::Timeline)
-            {
-                events.push(TimelineEvent::OpenNested { clip: c.id });
-            }
-            if r.double_clicked()
-                && let Some((c, _, db)) = on_line
-                && db != 0.0
-            {
-                events.push(TimelineEvent::ClipVolume {
-                    clip: c.id,
-                    gain_db: 0.0,
-                });
-            }
-            if r.drag_stopped() {
-                // Gathered again for the next drag.
-                self.obstacles = Obstacles::default();
-            }
-            if r.drag_stopped()
-                && let Some(drag) = self.clip_drag.take()
-                && (drag.delta.abs() > 1e-9 || drag.lands_elsewhere().is_some())
-            {
-                events.push(match drag.kind {
-                    DragKind::Move => TimelineEvent::Move {
-                        clip: drag.clip,
-                        by: drag.delta,
-                        track: match drag.lands_elsewhere() {
-                            Some(Landing::Track(track)) => Some(track),
-                            Some(Landing::NewTrack) | None => None,
-                        },
-                        new_track: drag.over == Landing::NewTrack,
-                    },
-                    DragKind::Trim(ClipEdge::Start) => TimelineEvent::Trim {
-                        clip: drag.clip,
-                        edge: ClipEdge::Start,
-                        to: drag.start + drag.delta,
-                    },
-                    DragKind::Trim(ClipEdge::End) => TimelineEvent::Trim {
-                        clip: drag.clip,
-                        edge: ClipEdge::End,
-                        to: drag.end + drag.delta,
-                    },
-                    DragKind::RippleTrim(edge) => TimelineEvent::RippleTrim {
-                        clip: drag.clip,
-                        edge,
-                        to: match edge {
-                            ClipEdge::Start => drag.start + drag.delta,
-                            ClipEdge::End => drag.end + drag.delta,
-                        },
-                    },
-                    DragKind::Roll => TimelineEvent::Roll {
-                        clip: drag.clip,
-                        to: drag.end + drag.delta,
-                    },
-                    // Dragging right brings earlier parts of the file into view.
-                    DragKind::Slip => TimelineEvent::Slip {
-                        clip: drag.clip,
-                        by: -drag.delta,
-                    },
-                    DragKind::Slide => TimelineEvent::Slide {
-                        clip: drag.clip,
-                        by: drag.delta,
-                    },
-                });
-            }
-            if r.secondary_clicked() {
-                self.menu_at = Some((t, hit.map(|c| (c.id, c.start, c.start + c.duration))));
-                self.menu_track = hit_track.map(|track| track.id).filter(|_| from_bottom);
-                self.menu_gap = match hit {
-                    Some(_) => None,
-                    None => hit_track.and_then(|track| gaps::gap_at(track, t)),
-                };
-                // On a mark, the menu is the chosen marks' when it is one of
-                // them, and that mark's alone otherwise.
-                self.mark_menu = on_mark.map(|(c, mark)| {
-                    let chosen = self.chosen_marks.of(c.id, &c.keyframes, data.fps);
-                    if !chosen.iter().any(|at| keyframes::same(*at, mark.at, data.fps)) {
-                        self.chosen_marks.click(c.id, mark.at, false, data.fps);
-                        return (c.id, vec![mark.at]);
-                    }
-                    (c.id, chosen)
-                });
-            }
-            let menu_marks = self.menu_marks(tracks, data.fps);
-            let menu = Menu {
-                marks: menu_marks.as_ref().map(|(clip, marks)| (*clip, marks.as_slice())),
-                at: self.menu_at,
-                video_track: self.menu_track.filter(|_| from_bottom),
-                ..menu
-            };
-            clip_menu(&r, menu, events);
-            let add = ui.input(|i| i.modifiers.shift || i.modifiers.command);
-            if let Some(at) = self.alt_click(ui, &r, left, data) {
-                // Alt+click: the playhead goes there, with any tool; the
-                // selection and the chosen marks stay as they are.
-                events.push(TimelineEvent::Seek(at));
-            } else if r.clicked()
-                && let Some((c, mark)) = on_mark
-            {
-                // A keyframe mark: the playhead goes there, or (Shift or
-                // Ctrl) the mark is chosen with the others.
-                self.chosen_marks.click(c.id, mark.at, add, data.fps);
-                if !add {
-                    events.push(TimelineEvent::Seek(mark.at));
-                }
-            } else if r.clicked() {
-                self.chosen_marks = keyframes::Chosen::default();
-                // A click between two clips selects the gap there.
-                self.gap = match hit {
-                    Some(_) => None,
-                    None => hit_track.and_then(|track| gaps::gap_at(track, t)),
-                };
-                events.push(match (self.tool, hit) {
-                    (Tool::Blade, Some(c)) => TimelineEvent::Blade { clip: c.id, at: t },
-                    (_, Some(c)) => TimelineEvent::Select { clip: c.id, add },
-                    (_, None) => TimelineEvent::ClearSelection,
-                });
-            }
-        }
+        self.scrollbar_input(ui, layout, data, id);
+        self.names_input(ui, layout, data, rows, id, events);
+        self.clip_areas_input(ui, layout, data, rows, id, events);
     }
-
-    /// The marks the right-click menu was opened on, when they are on a
-    /// clip of `tracks` and still there.
-    fn menu_marks<'d>(&self, tracks: &'d [TimelineTrack], fps: f64) -> Option<(u64, Vec<&'d KeyframeMark>)> {
-        let (clip, times) = self.mark_menu.as_ref()?;
-        let c = tracks.iter().flat_map(|t| &t.clips).find(|c| c.id == *clip)?;
-        let marks: Vec<&KeyframeMark> = c
-            .keyframes
-            .iter()
-            .filter(|m| times.iter().any(|at| keyframes::same(*at, m.at, fps)))
-            .collect();
-        (!marks.is_empty()).then_some((*clip, marks))
-    }
-
-    /// A keyframe mark dragged on clip `c` with the pointer at time `now`:
-    /// how far its marks go, and whether they could be let go there.
-    fn follow_mark_drag(
-        &mut self,
-        ui: &Ui,
-        drag: keyframes::MarkDrag,
-        c: &TimelineClip,
-        data: &TimelineData,
-        now: f64,
-    ) {
-        let fps = data.fps;
-        let moving = |at: f64| drag.moving.iter().any(|m| keyframes::same(*m, at, fps));
-        // The playhead and the clip's other marks, unless snapping is off.
-        let targets: Vec<f64> = match self.snapping && !ui.input(|i| i.modifiers.alt) {
-            true => std::iter::once(data.playhead)
-                .chain(c.keyframes.iter().map(|m| m.at).filter(|at| !moving(*at)))
-                .collect(),
-            false => Vec::new(),
-        };
-        let (first, last) = keyframes::frames_of(c.start, c.start + c.duration, fps);
-        let room = keyframes::Room {
-            fps,
-            first,
-            last,
-            targets: &targets,
-            reach: f64::from(keyframes::SNAP_REACH) / f64::from(self.zoom),
-        };
-        let by = keyframes::dragged_by(now - drag.from, &drag.moving, room);
-        let refused = keyframes::clashes(&c.keyframes, &drag.moving, by, fps);
-        ui.ctx().set_cursor_icon(match refused {
-            true => CursorIcon::NotAllowed,
-            false => CursorIcon::ResizeHorizontal,
-        });
-        self.mark_drag = Some(keyframes::MarkDrag { by, refused, ..drag });
-    }
-
-    /// The start of the frame under screen x, inside the timeline: where
-    /// an Alt+click or an Alt+drag puts the playhead.
-    fn frame_under(&self, left: f32, x: f32, data: &TimelineData) -> f64 {
-        let t = self.time_at(left, x).clamp(0.0, data.length.max(0.0));
-        if data.fps <= 0.0 {
-            return t;
-        }
-        // A hair over, so a time on a frame's start stays on that frame.
-        (t * data.fps + 1e-6).floor() / data.fps
-    }
-
-    /// Where an Alt+click on `r` puts the playhead: a click as egui tells
-    /// it (pressed and let go without dragging) with Alt held. Alt+drag
-    /// keeps its own meaning (no snapping, or scrubbing).
-    fn alt_click(&self, ui: &Ui, r: &egui::Response, left: f32, data: &TimelineData) -> Option<f64> {
-        if !r.clicked_by(egui::PointerButton::Primary) || !ui.input(|i| i.modifiers.alt) {
-            return None;
-        }
-        let p = r.interact_pointer_pos()?;
-        Some(self.frame_under(left, p.x, data))
-    }
-
-    /// Whether a click in the ruler moves the edit needle: so set, and the
-    /// timeline has a needle of its own.
-    fn needle_moves(&self, data: &TimelineData) -> bool {
-        self.click_moves == ClickMoves::EditNeedle && data.needle.is_some()
-    }
-
-    /// The divider between the video and the audio area: drag it to share
-    /// the body between them.
-    fn divider_input(&mut self, ui: &Ui, layout: &Layout, data: &TimelineData, id: egui::Id) {
-        let divider = ui
-            .interact(
-                layout.divider.expand2(vec2(0.0, 2.0)),
-                id.with("divider"),
-                Sense::drag(),
-            )
-            .on_hover_cursor(CursorIcon::ResizeVertical);
-        if divider.drag_started() {
-            // From where the divider is drawn, which the video tracks may
-            // have pushed past the place it was last dragged to.
-            self.split = layout.video_share();
-        }
-        if divider.dragged() {
-            let body = layout.video.height() + layout.audio.height();
-            self.split = (self.split + divider.drag_delta().y / body.max(1.0)).clamp(0.1, 0.9);
-            // Dragged to where the video tracks don't all show, it stays
-            // there: that was asked for.
-            self.fit_video = self.split + 0.5 / body.max(1.0) >= self.share_for_video_tracks(body, data);
-        }
-    }
-
-    /// Whether a clip dragged to screen position `y` is clearly past the
-    /// last track of its kind (`tracks`, with their `rows` in `area`): above
-    /// the top video track, or under the bottom audio track. Only while
-    /// that track's far edge is in view, so a track scrolled out of sight is
-    /// not skipped; and not for a clip alone on that last track, which a
-    /// new track would only leave empty. When the tracks reach the area's
-    /// far edge (no room past the last), the band [`NEW_TRACK_EDGE`] along
-    /// that edge, or past it, asks.
-    fn asks_for_new_track(
-        &self,
-        drag: &ClipDrag,
-        tracks: &[TimelineTrack],
-        rows: &Rows,
-        area: Rect,
-        video: bool,
-        y: f32,
-    ) -> bool {
-        let (Some(last), Some(row)) = (tracks.last(), rows.rects().get(tracks.len().wrapping_sub(1))) else {
-            return false;
-        };
-        // In the rough cut view an audio track may hold more than is shown.
-        let alone = last.id == drag.track && last.clips.len() == 1 && (video || !self.rough_cut);
-        if alone {
-            return false;
-        }
-        past_the_last(row, area, video, y)
-    }
-
-    /// The label drawn nearest to `x`, if one is within a few pixels.
-    fn marker_near<'m>(
-        &self,
-        left: f32,
-        markers: &'m [TimelineMarker],
-        x: f32,
-    ) -> Option<&'m TimelineMarker> {
-        markers
-            .iter()
-            .map(|m| (m, (self.x_of(left, m.at) - x).abs()))
-            .filter(|(_, d)| *d <= 7.0)
-            .min_by(|a, b| a.1.total_cmp(&b.1))
-            .map(|(m, _)| m)
-    }
-
-    /// `raw` (seconds) adjusted so the dragged edge lands on the nearest snap
-    /// point within a few pixels: other clips' edges, the playhead, the edit
-    /// needle, labels and the start.
-    /// The clips' edges are looked up in `self.obstacles`, gathered for
-    /// `drag` beforehand. Of two points as near, the dragged start wins
-    /// over its end, then the start of the timeline, the playhead, the
-    /// needle, labels and clip edges in that order (as listed).
-    fn snapped(&self, raw: f64, drag: &ClipDrag, data: &TimelineData) -> f64 {
-        let reach = 8.0 / f64::from(self.zoom);
-        let edges: [Option<f64>; 2] = match drag.kind {
-            DragKind::Move | DragKind::Slide => [Some(drag.start + raw), Some(drag.end + raw)],
-            DragKind::Trim(ClipEdge::Start) | DragKind::RippleTrim(ClipEdge::Start) => {
-                [Some(drag.start + raw), None]
-            }
-            DragKind::Trim(ClipEdge::End) | DragKind::RippleTrim(ClipEdge::End) | DragKind::Roll => {
-                [Some(drag.end + raw), None]
-            }
-            DragKind::Slip => [None, None],
-        };
-        let mut best: Option<f64> = None;
-        for e in edges.into_iter().flatten() {
-            let points = [0.0, data.playhead]
-                .into_iter()
-                .chain(data.needle)
-                .chain(data.markers.iter().map(|m| m.at));
-            let clip_edge = self.obstacles.nearest_edge(e, reach);
-            for d in points.map(|p| p - e).chain(clip_edge) {
-                if d.abs() <= reach && best.is_none_or(|b| d.abs() < b.abs()) {
-                    best = Some(d);
-                }
-            }
-        }
-        raw + best.unwrap_or(0.0)
-    }
-}
-
-/// What the timeline's toolbar asked for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ToolbarClick {
-    Tool(Tool),
-    Snapping,
-    Fit,
-    RoughCut,
-}
-
-/// How wide [`toolbar`] is (at most): nine buttons, a gap, and the
-/// spacing between them.
-pub const TOOLBAR_WIDTH: f32 = 9.0 * TOOL_BUTTON + 10.0 + 9.0 * TOOLBAR_SPACING;
-const TOOL_BUTTON: f32 = 30.0;
-/// The toolbar's own spacing between buttons (it sets it, so the width holds).
-const TOOLBAR_SPACING: f32 = 4.0;
-
-/// The row of tools above the timeline: Select, Blade, Ripple, Roll, Slip,
-/// Slide, then Snapping, Fit and the rough cut view. `tips` gives each
-/// button's tooltip (with its shortcut), in that order.
-pub fn toolbar(ui: &mut Ui, theme: &Theme, view: &TimelineView, tips: [&str; 9]) -> Option<ToolbarClick> {
-    let mut clicked = None;
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = TOOLBAR_SPACING;
-        let size = vec2(TOOL_BUTTON, 26.0);
-        // While the lines are worked the pointer works them, not a tool.
-        let tool = |t: Tool| view.tool == t && view.lines.is_none();
-        let items = [
-            (ToolbarClick::Tool(Tool::Select), tool(Tool::Select), 0),
-            (ToolbarClick::Tool(Tool::Blade), tool(Tool::Blade), 1),
-            (ToolbarClick::Tool(Tool::Ripple), tool(Tool::Ripple), 2),
-            (ToolbarClick::Tool(Tool::Roll), tool(Tool::Roll), 3),
-            (ToolbarClick::Tool(Tool::Slip), tool(Tool::Slip), 4),
-            (ToolbarClick::Tool(Tool::Slide), tool(Tool::Slide), 5),
-            (ToolbarClick::Snapping, view.snapping, 6),
-            (ToolbarClick::Fit, false, 7),
-            (ToolbarClick::RoughCut, view.rough_cut, 8),
-        ];
-        for (click, on, i) in items {
-            if i == 6 {
-                ui.add_space(10.0);
-            }
-            let (rect, r) = ui.allocate_exact_size(size, Sense::click());
-            let r = r.on_hover_text(tips[i]);
-            let fill = if on {
-                theme.accent.gamma_multiply(0.25)
-            } else if r.hovered() {
-                theme.line
-            } else {
-                Color32::TRANSPARENT
-            };
-            ui.painter().rect_filled(rect, 6.0, fill);
-            let colour = if on { theme.accent } else { theme.text_secondary };
-            tool_icon(ui.painter(), i, rect.center(), colour);
-            if r.clicked() {
-                clicked = Some(click);
-            }
-        }
-    });
-    clicked
-}
-
-/// While the volume and pan lines are worked (`TimelineView::lines`): a
-/// lit pill after the [`toolbar`] saying so, with a cross to leave them
-/// (`tip` names the key, which leaves them too, as Escape does). Returns
-/// whether it was clicked.
-pub fn lines_chip(ui: &mut Ui, theme: &Theme, tip: &str) -> bool {
-    let text = "Lines on   \u{00D7}";
-    let galley = ui
-        .painter()
-        .layout_no_wrap(text.to_owned(), FontId::proportional(12.5), theme.accent);
-    let (rect, r) = ui.allocate_exact_size(vec2(galley.size().x + 18.0, 26.0), Sense::click());
-    let fill = if r.hovered() {
-        theme.accent.gamma_multiply(0.35)
-    } else {
-        theme.accent.gamma_multiply(0.22)
-    };
-    ui.painter().rect_filled(rect, 13.0, fill);
-    ui.painter()
-        .galley(rect.center() - galley.size() / 2.0, galley, theme.accent);
-    r.on_hover_text(format!(
-        "The pointer works the volume and pan lines of the audio tracks, not clips. Click to go back to the clips ({tip}, or Escape)."
-    ))
-    .clicked()
-}
-
-fn tool_icon(p: &egui::Painter, which: usize, c: Pos2, colour: Color32) {
-    let stroke = Stroke::new(1.6, colour);
-    match which {
-        // Pointer arrow.
-        0 => {
-            p.add(Shape::convex_polygon(
-                vec![
-                    c + vec2(-4.0, -7.0),
-                    c + vec2(5.0, 1.0),
-                    c + vec2(0.5, 1.5),
-                    c + vec2(-1.5, 6.5),
-                ],
-                colour,
-                Stroke::NONE,
-            ));
-        }
-        // Blade: a cut line through a clip.
-        1 => {
-            p.rect_stroke(
-                Rect::from_center_size(c, vec2(16.0, 9.0)),
-                2.0,
-                stroke,
-                egui::StrokeKind::Inside,
-            );
-            p.line_segment(
-                [c + vec2(0.0, -8.0), c + vec2(0.0, 8.0)],
-                Stroke::new(2.0, colour),
-            );
-        }
-        // Ripple: an edge with the rest of the timeline following.
-        2 => {
-            p.line_segment(
-                [c + vec2(-4.0, -7.0), c + vec2(-4.0, 7.0)],
-                Stroke::new(2.0, colour),
-            );
-            p.rect_stroke(
-                Rect::from_min_max(c + vec2(-1.0, -4.0), c + vec2(8.0, 4.0)),
-                1.5,
-                stroke,
-                egui::StrokeKind::Inside,
-            );
-            p.line_segment([c + vec2(-8.0, 0.0), c + vec2(-5.0, 0.0)], stroke);
-        }
-        // Roll: two clips meeting at a cut that moves.
-        3 => {
-            for s in [-1.0, 1.0] {
-                p.rect_stroke(
-                    Rect::from_min_max(
-                        c + vec2(if s < 0.0 { -8.0 } else { 1.0 }, -4.0),
-                        c + vec2(if s < 0.0 { -1.0 } else { 8.0 }, 4.0),
-                    ),
-                    1.5,
-                    stroke,
-                    egui::StrokeKind::Inside,
-                );
-            }
-            p.line_segment(
-                [c + vec2(0.0, -8.0), c + vec2(0.0, 8.0)],
-                Stroke::new(2.0, colour),
-            );
-        }
-        // Slip: arrows inside a clip.
-        4 => {
-            p.rect_stroke(
-                Rect::from_center_size(c, vec2(18.0, 10.0)),
-                2.0,
-                stroke,
-                egui::StrokeKind::Inside,
-            );
-            p.line_segment([c + vec2(-5.0, 0.0), c + vec2(5.0, 0.0)], stroke);
-            for s in [-1.0, 1.0] {
-                p.line_segment([c + vec2(5.0 * s, 0.0), c + vec2(3.0 * s, -2.0)], stroke);
-                p.line_segment([c + vec2(5.0 * s, 0.0), c + vec2(3.0 * s, 2.0)], stroke);
-            }
-        }
-        // Slide: a clip with arrows outside it.
-        5 => {
-            p.rect_filled(Rect::from_center_size(c, vec2(8.0, 10.0)), 1.5, colour);
-            for s in [-1.0, 1.0] {
-                p.line_segment([c + vec2(6.0 * s, 0.0), c + vec2(10.0 * s, 0.0)], stroke);
-                p.line_segment([c + vec2(10.0 * s, 0.0), c + vec2(8.0 * s, -2.0)], stroke);
-                p.line_segment([c + vec2(10.0 * s, 0.0), c + vec2(8.0 * s, 2.0)], stroke);
-            }
-        }
-        // Snapping: a magnet.
-        6 => {
-            p.add(Shape::line(
-                vec![
-                    c + vec2(-5.0, -6.0),
-                    c + vec2(-5.0, 1.0),
-                    c + vec2(-3.0, 5.0),
-                    c + vec2(0.0, 6.0),
-                    c + vec2(3.0, 5.0),
-                    c + vec2(5.0, 1.0),
-                    c + vec2(5.0, -6.0),
-                ],
-                Stroke::new(2.4, colour),
-            ));
-        }
-        // Rough cut: a picture with its sound underneath, as one strip.
-        8 => {
-            p.rect_filled(
-                Rect::from_min_max(c + vec2(-8.0, -6.0), c + vec2(8.0, 0.0)),
-                1.5,
-                colour,
-            );
-            for (i, h) in [2.0f32, 4.0, 3.0, 5.0, 2.0, 4.0, 3.0].iter().enumerate() {
-                let x = c.x - 7.0 + i as f32 * 2.3;
-                p.line_segment(
-                    [pos2(x, c.y + 4.0 - h / 2.0), pos2(x, c.y + 4.0 + h / 2.0)],
-                    stroke,
-                );
-            }
-        }
-        // Fit: arrows out to both sides.
-        _ => {
-            p.line_segment([c + vec2(-7.0, 0.0), c + vec2(7.0, 0.0)], stroke);
-            for s in [-1.0, 1.0] {
-                p.line_segment([c + vec2(7.0 * s, 0.0), c + vec2(4.0 * s, -3.0)], stroke);
-                p.line_segment([c + vec2(7.0 * s, 0.0), c + vec2(4.0 * s, 3.0)], stroke);
-            }
-        }
-    }
-}
-
-/// What dragging `c` (grabbed in `zone`) does with `tool`, and which clip
-/// it acts on: the roll tool grabbed at a clip's start acts on the cut after
-/// the clip before it. `None` when the tool does nothing there.
-fn drag_for<'a>(
-    tool: Tool,
-    zone: DragKind,
-    c: &'a TimelineClip,
-    tracks: &'a [TimelineTrack],
-    rows: &[Rect],
-    y: f32,
-) -> Option<(&'a TimelineClip, DragKind)> {
-    match (tool, zone) {
-        (Tool::Select, kind) => Some((c, kind)),
-        (Tool::Ripple, DragKind::Trim(edge)) => Some((c, DragKind::RippleTrim(edge))),
-        (Tool::Ripple, kind) => Some((c, kind)),
-        (Tool::Roll, DragKind::Trim(ClipEdge::End)) => Some((c, DragKind::Roll)),
-        (Tool::Roll, DragKind::Trim(ClipEdge::Start)) => {
-            let track = tracks
-                .iter()
-                .zip(rows)
-                .find(|(_, row)| row.y_range().contains(y))?
-                .0;
-            let before = track
-                .clips
-                .iter()
-                .find(|b| (b.start + b.duration - c.start).abs() < 1e-6 && b.id != c.id)?;
-            Some((before, DragKind::Roll))
-        }
-        (Tool::Slip, _) => Some((c, DragKind::Slip)),
-        (Tool::Slide, _) => Some((c, DragKind::Slide)),
-        _ => None,
-    }
-}
-
-/// The track a clip dragged to screen position `y` lands on: the one whose
-/// row is there (the nearest past the first or the last), but its own
-/// track, `own`, until the pointer is clearly past that row's edge.
-fn landing_track(tracks: &[TimelineTrack], rows: &Rows, y: f32, own: u64) -> Option<u64> {
-    let own_row = tracks
-        .iter()
-        .position(|t| t.id == own)
-        .and_then(|i| rows.rects().get(i));
-    if own_row.is_some_and(|r| r.top() - STAYS_ON_ITS_TRACK <= y && y < r.bottom() + STAYS_ON_ITS_TRACK) {
-        return Some(own);
-    }
-    rows.nearest(y).and_then(|row| tracks.get(row)).map(|t| t.id)
-}
-
-/// Whether `y` is past the last track's `row` (see
-/// `TimelineView::asks_for_new_track`): [`NEW_TRACK_PAST`] past it when
-/// there is room, or within [`NEW_TRACK_EDGE`] of the area's edge (or past
-/// it) when the row reaches that edge. Never while the row's far edge is
-/// out of view.
-fn past_the_last(row: &Rect, area: Rect, video: bool, y: f32) -> bool {
-    if video {
-        let room = row.top() - area.top();
-        if room < -0.5 {
-            false
-        } else if room >= NEW_TRACK_PAST + NEW_TRACK_EDGE {
-            y < row.top() - NEW_TRACK_PAST
-        } else {
-            y < area.top() + NEW_TRACK_EDGE
-        }
-    } else {
-        let room = area.bottom() - row.bottom();
-        if room < -0.5 {
-            false
-        } else if room >= NEW_TRACK_PAST + NEW_TRACK_EDGE {
-            y >= row.bottom() + NEW_TRACK_PAST
-        } else {
-            y >= area.bottom() - NEW_TRACK_EDGE
-        }
-    }
-}
-
-/// Where the lit strip for a new track goes: past the last row of `rows`
-/// (above the top video track, under the bottom audio track), as tall as a
-/// track usually is where `area` has that much room, and over the edge of
-/// the area where it has none.
-fn new_track_strip(area: Rect, rows: &Rows, usual: f32, half: Half) -> Rect {
-    // Never taller than a track usually is (compact tracks are shorter).
-    let least = NEW_TRACK_STRIP.min(usual);
-    let (top, bottom) = match (half, rows.rects().last()) {
-        (Half::Video, last) => {
-            let edge = last.map_or(area.bottom(), |row| row.top());
-            let top = (edge - usual).max(area.top());
-            if edge - top >= least {
-                (top, edge)
-            } else {
-                (area.top(), area.top() + least)
-            }
-        }
-        (Half::Audio, last) => {
-            let edge = last.map_or(area.top(), |row| row.bottom());
-            let bottom = (edge + usual).min(area.bottom());
-            if bottom - edge >= least {
-                (edge, bottom)
-            } else {
-                (area.bottom() - least, area.bottom())
-            }
-        }
-    };
-    Rect::from_min_max(pos2(area.left(), top), pos2(area.right(), bottom))
-}
-
-/// Marks a dragged clip that could not be put where it is now.
-fn draw_refused(p: &egui::Painter, r: Rect) {
-    p.rect_filled(r, 3.0, crate::status::ERROR.gamma_multiply(0.35));
-    p.rect_stroke(
-        r,
-        3.0,
-        Stroke::new(1.5, crate::status::ERROR),
-        egui::StrokeKind::Inside,
-    );
 }
 
 /// The tracks of one area.
@@ -4248,267 +1680,6 @@ fn tracks_of<'a>(half: Half, data: &TimelineData<'a>) -> &'a [TimelineTrack] {
         Half::Video => data.video,
         Half::Audio => data.audio,
     }
-}
-
-fn tiny_fill(theme: &Theme, colour: Color32, audio: bool) -> Color32 {
-    if audio {
-        colour.gamma_multiply(0.55)
-    } else {
-        theme.line_strong
-    }
-}
-
-fn draw_clip_body(p: &egui::Painter, theme: &Theme, r: Rect, colour: Color32, audio: bool) {
-    let fill = if audio {
-        colour.gamma_multiply(0.55)
-    } else {
-        theme.raised
-    };
-    p.rect_filled(r, 4.0, fill);
-    if !audio {
-        // Video clips share one fill; the top edge carries the label colour.
-        p.rect_filled(
-            Rect::from_min_max(r.min, pos2(r.right(), r.top() + 3.0)),
-            2.0,
-            colour,
-        );
-    }
-}
-
-/// What goes over a clip's contents: missing and selected outlines, and its
-/// name (on a dark pill over `pictures`). In a short clip (compact tracks)
-/// the name is centred from top to bottom.
-fn draw_clip_marks(p: &egui::Painter, theme: &Theme, r: Rect, clip: &TimelineClip, pictures: bool) {
-    if clip.missing {
-        p.rect_stroke(
-            r,
-            4.0,
-            Stroke::new(1.5, crate::status::ERROR),
-            egui::StrokeKind::Inside,
-        );
-    }
-    draw_what_it_shows(p, theme, r, clip.shows);
-    if clip.graded && r.width() > 16.0 && r.height() > 14.0 {
-        p.circle_filled(pos2(r.left() + 7.0, r.bottom() - 7.0), 3.0, theme.accent);
-    }
-    if clip.selected {
-        p.rect_stroke(r, 4.0, Stroke::new(2.0, theme.accent), egui::StrokeKind::Inside);
-    }
-    if r.width() > 30.0 {
-        let text = if clip.missing {
-            format!("{} (missing)", clip.name)
-        } else {
-            clip.name.clone()
-        };
-        let galley = p.layout_no_wrap(text, FontId::proportional(11.0), theme.text);
-        let pos = match r.height() < 24.0 {
-            true => pos2(r.left() + 6.0, r.center().y - galley.size().y / 2.0),
-            false => pos2(r.left() + 6.0, r.top() + 6.0),
-        };
-        let inside = p.with_clip_rect(r.shrink2(vec2(2.0, 0.0)));
-        if pictures {
-            // A dark pill keeps the name readable over the pictures.
-            let pill = Rect::from_min_size(pos - vec2(3.0, 1.0), galley.size() + vec2(6.0, 2.0));
-            inside.rect_filled(pill, 3.0, Color32::from_black_alpha(150));
-        }
-        inside.galley(pos, galley, theme.text);
-    }
-}
-
-/// The mark of a clip that plays no file: light stripes across an
-/// adjustment layer, a small stack of two frames in the top right corner
-/// of a nested timeline, and a "T" there on a title.
-fn draw_what_it_shows(p: &egui::Painter, theme: &Theme, r: Rect, shows: ClipShows) {
-    match shows {
-        ClipShows::File => {}
-        ClipShows::Adjustment => {
-            let inside = p.with_clip_rect(r.shrink(1.0).intersect(p.clip_rect()));
-            let stroke = Stroke::new(1.0, theme.text_secondary.gamma_multiply(0.25));
-            let step = 10.0;
-            let mut x = r.left() - r.height();
-            while x < r.right() {
-                inside.line_segment([pos2(x, r.bottom()), pos2(x + r.height(), r.top())], stroke);
-                x += step;
-            }
-        }
-        ClipShows::Title => {
-            let seen = r.intersect(p.clip_rect());
-            if seen.width() < 40.0 || seen.height() < 14.0 {
-                return;
-            }
-            p.text(
-                pos2(seen.right() - 8.0, seen.top() + 4.0),
-                Align2::RIGHT_TOP,
-                "T",
-                FontId::proportional(12.0),
-                theme.text_secondary,
-            );
-        }
-        ClipShows::Timeline => {
-            // In the top right corner of the part in view.
-            let seen = r.intersect(p.clip_rect());
-            if seen.width() < 40.0 || seen.height() < 14.0 {
-                return;
-            }
-            let stroke = Stroke::new(1.2, theme.text_secondary);
-            let corner = pos2(seen.right() - 18.0, seen.top() + 6.0);
-            let back = Rect::from_min_size(corner + vec2(3.0, 0.0), vec2(10.0, 7.0));
-            let front = Rect::from_min_size(corner + vec2(0.0, 3.0), vec2(10.0, 7.0));
-            p.rect_stroke(back, 1.0, stroke, egui::StrokeKind::Inside);
-            p.rect_filled(front, 1.0, theme.raised);
-            p.rect_stroke(front, 1.0, stroke, egui::StrokeKind::Inside);
-        }
-    }
-}
-
-/// Where the playhead's handle can be taken hold of: its head at the top
-/// of the ruler, a little wider than it is drawn.
-fn playhead_grab(x: f32, layout: &Layout) -> Rect {
-    Rect::from_min_max(
-        pos2(x - 8.0, layout.ruler.top()),
-        pos2(x + 8.0, layout.ruler.top() + 18.0),
-    )
-}
-
-/// The playhead's head at the top of the ruler. When a click in the ruler
-/// moves the edit needle (`grab`), the head is the way to move the
-/// playhead: drawn larger, with grip lines; lit while pointed at or dragged.
-fn draw_playhead_handle(p: &egui::Painter, theme: &Theme, x: f32, layout: &Layout, grab: bool, lit: bool) {
-    let top = layout.ruler.top();
-    let (half, side, tip) = if grab { (7.0, 11.0, 18.0) } else { (6.0, 8.0, 14.0) };
-    let colour = if lit { theme.accent } else { theme.text };
-    p.add(Shape::convex_polygon(
-        vec![
-            pos2(x - half, top),
-            pos2(x + half, top),
-            pos2(x + half, top + side),
-            pos2(x, top + tip),
-            pos2(x - half, top + side),
-        ],
-        colour,
-        Stroke::NONE,
-    ));
-    if grab {
-        for dx in [-2.5, 0.0, 2.5] {
-            p.line_segment(
-                [pos2(x + dx, top + 3.0), pos2(x + dx, top + 9.0)],
-                Stroke::new(1.0, theme.panel),
-            );
-        }
-    }
-}
-
-fn needle_handle(x: f32, layout: &Layout) -> Vec<Pos2> {
-    let b = layout.ruler.bottom();
-    vec![
-        pos2(x - 6.0, b - 12.0),
-        pos2(x + 6.0, b - 12.0),
-        pos2(x + 6.0, b - 5.0),
-        pos2(x, b),
-        pos2(x - 6.0, b - 5.0),
-    ]
-}
-
-/// The thumb's rectangle and the total time the bar spans.
-fn scrollbar_thumb(layout: &Layout, view: &TimelineView, length: f64) -> (Rect, f64) {
-    let page = f64::from(layout.width()) / f64::from(view.zoom);
-    let total = (length * 1.1).max(view.scroll + page).max(page);
-    let w = f64::from(layout.width());
-    let x0 = layout.scrollbar.left() + (view.scroll / total * w) as f32;
-    let x1 = layout.scrollbar.left() + ((view.scroll + page) / total * w) as f32;
-    (
-        Rect::from_min_max(
-            pos2(x0, layout.scrollbar.top()),
-            pos2(x1.max(x0 + 20.0), layout.scrollbar.bottom()),
-        ),
-        total,
-    )
-}
-
-/// The step between ruler marks, in seconds: the smallest that leaves at
-/// least `min_px` between labels.
-pub fn ruler_step(zoom: f32, fps: f64, min_px: f32) -> f64 {
-    let frame = 1.0 / fps.max(1.0);
-    let steps = [
-        frame,
-        2.0 * frame,
-        5.0 * frame,
-        10.0 * frame,
-        1.0,
-        2.0,
-        5.0,
-        10.0,
-        15.0,
-        30.0,
-        60.0,
-        120.0,
-        300.0,
-        600.0,
-        900.0,
-        1800.0,
-        3600.0,
-    ];
-    steps
-        .into_iter()
-        .find(|s| (*s * f64::from(zoom)) as f32 >= min_px)
-        .unwrap_or(3600.0)
-}
-
-/// The step between the small ruler marks under a label step of `step`
-/// seconds: a fifth of it, but never finer than a frame, so zoomed all the
-/// way in there is one mark per frame.
-pub fn minor_step(step: f64, fps: f64) -> f64 {
-    (step / 5.0).max(1.0 / fps.max(1.0))
-}
-
-fn draw_ruler(p: &egui::Painter, theme: &Theme, view: &TimelineView, layout: &Layout, fps: f64) {
-    let left = layout.time_left();
-    let step = ruler_step(view.zoom, fps, 90.0);
-    let minor = minor_step(step, fps);
-    let start = (view.scroll / minor).floor() * minor;
-    let end = view.time_at(left, layout.ruler.right());
-    let mut t = start;
-    let mut i = 0;
-    while t <= end && i < 10_000 {
-        let x = view.x_of(left, t);
-        let major = ((t / step).round() * step - t).abs() < minor * 0.01;
-        let h = if major { 10.0 } else { 5.0 };
-        p.line_segment(
-            [pos2(x, layout.ruler.bottom() - h), pos2(x, layout.ruler.bottom())],
-            Stroke::new(1.0, theme.line_strong),
-        );
-        if major {
-            p.text(
-                pos2(x + 4.0, layout.ruler.top() + 4.0),
-                Align2::LEFT_TOP,
-                crate::time_text::timecode(t, fps),
-                crate::fonts::mono(10.5),
-                theme.muted,
-            );
-        }
-        t = start + minor * f64::from(i + 1);
-        i += 1;
-    }
-}
-
-/// x on a track header's fader `bar` for `db` (the fader law of
-/// [`crate::volume`], bottom at the left).
-pub(crate) fn fader_x(bar: Rect, db: f32) -> f32 {
-    bar.left() + crate::volume::share_of(db) * bar.width()
-}
-
-/// Where a track header's fader `bar` dragged to `x` lands.
-pub(crate) fn fader_db_at(bar: Rect, x: f32) -> f32 {
-    crate::volume::settled(crate::volume::db_at_share(
-        (x - bar.left()) / bar.width().max(1.0),
-    ))
-}
-
-/// What a track header's fader says when pointed at: "Volume −6.0 dB
-/// (double-click: 0 dB)"; a track at the bottom of the range is heard.
-pub(crate) fn fader_tip(db: f32) -> String {
-    let words = crate::volume::words(db, crate::volume::Bottom::Heard);
-    format!("Volume {words} (double-click: 0 dB)")
 }
 
 #[cfg(test)]
