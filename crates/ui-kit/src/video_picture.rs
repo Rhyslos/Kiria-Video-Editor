@@ -25,8 +25,12 @@
 //! once (a split viewer's Source and Program): each is drawn from a
 //! [`Slot`] of its own, which keeps its own textures, so one never takes
 //! the other's place.
+//!
+//! A picture the graphics device can't take leaves its slot empty; why is
+//! told once per cause and slot, as an explained error the program picks up
+//! with [`refusals`] and shows like any other.
 
-use crate::yuv_renderer::YuvRenderer;
+use crate::yuv_renderer::{Refused, YuvRenderer};
 use egui_wgpu::wgpu;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -174,6 +178,39 @@ impl Shown {
 struct Slots {
     target: wgpu::TextureFormat,
     shown: Vec<(Slot, Shown)>,
+    refusals: Refusals,
+}
+
+/// Pictures turned down: the last cause in each slot, and the causes not
+/// yet handed to the program.
+#[derive(Debug, Default)]
+struct Refusals {
+    last: Vec<(Slot, Refused)>,
+    untold: Vec<Refused>,
+}
+
+impl Refusals {
+    /// Notes how a picture in `slot` went: `None` shown, else why not. A
+    /// cause is told once, until the slot shows a picture again or is
+    /// turned down for another reason: a stream of pictures turned down
+    /// alike is one error, not one a frame.
+    fn note(&mut self, slot: Slot, refused: Option<Refused>) {
+        let Some(refused) = refused else {
+            self.last.retain(|(s, _)| *s != slot);
+            return;
+        };
+        if self.last.iter().any(|(s, r)| *s == slot && *r == refused) {
+            return;
+        }
+        tracing::warn!(?slot, ?refused, "the graphics device turned a video picture down");
+        self.last.retain(|(s, _)| *s != slot);
+        self.last.push((slot, refused.clone()));
+        self.untold.push(refused);
+    }
+
+    fn take(&mut self) -> Vec<diag::AppError> {
+        self.untold.drain(..).map(|r| r.error()).collect()
+    }
 }
 
 impl Slots {
@@ -214,8 +251,21 @@ pub fn install(render_state: Option<&egui_wgpu::RenderState>) -> Option<u32> {
     state.renderer.write().callback_resources.insert(Slots {
         target: state.target_format,
         shown: vec![(Slot::MAIN, main)],
+        refusals: Refusals::default(),
     });
     Some(state.device.limits().max_texture_dimension_2d)
+}
+
+/// The pictures turned down since last asked, explained: one error for
+/// each new cause, not one for every picture. Ask once a frame and show
+/// them as any other error. Nothing when [`install`] wasn't called.
+pub fn refusals(render_state: &egui_wgpu::RenderState) -> Vec<diag::AppError> {
+    render_state
+        .renderer
+        .write()
+        .callback_resources
+        .get_mut::<Slots>()
+        .map_or_else(Vec::new, |slots| slots.refusals.take())
 }
 
 /// One picture for the viewer. Make a new one for every picture decoded;
@@ -313,6 +363,11 @@ impl egui_wgpu::CallbackTrait for Draw {
     ) -> Vec<wgpu::CommandBuffer> {
         let fresh = self.fresh.lock().ok().and_then(|mut fresh| fresh.take());
         if let (Some(fresh), Some(slots)) = (fresh, resources.get_mut::<Slots>()) {
+            let refused = match &fresh {
+                Fresh::Memory(image) => Refused::of_image(image, device.limits().max_texture_dimension_2d),
+                Fresh::Textures(planes) => Refused::of_planes(planes),
+                Fresh::Composed(_) => None,
+            };
             let shown = slots.get_or_make(self.slot, device);
             let started = std::time::Instant::now();
             shown.composed = None;
@@ -337,6 +392,7 @@ impl egui_wgpu::CallbackTrait for Draw {
                 shown = taken,
                 "video planes handed to the renderer"
             );
+            slots.refusals.note(self.slot, refused);
         }
         // The part shown, every frame: zooming and panning change it
         // without a new picture.
@@ -425,6 +481,59 @@ mod tests {
         assert_eq!(image((320, 180), 270).upright_size(), (180, 320));
         assert_eq!(VideoPicture::new(image((320, 180), 90)).size(), (180, 320));
         assert_eq!(VideoPicture::new(image((320, 180), 180)).size(), (320, 180));
+    }
+
+    /// Pictures turned down frame after frame for one cause are one error;
+    /// a new cause, or the same after a picture was shown, is another.
+    #[test]
+    fn a_refused_picture_is_told_once_per_cause() {
+        let mut refusals = Refusals::default();
+        let large = Refused::Size {
+            luma: (20_000, 10_000),
+            largest: 8192,
+        };
+        for _ in 0..100 {
+            refusals.note(Slot::MAIN, Some(large.clone()));
+        }
+        let told = refusals.take();
+        assert_eq!(told.len(), 1);
+        assert_eq!(told[0].what(), "The viewer can't show this picture");
+        assert!(told[0].why_text().is_some_and(|why| why.contains("20000×10000")));
+        refusals.note(Slot::MAIN, Some(large.clone()));
+        assert!(refusals.take().is_empty(), "told already");
+        // Another slot, another cause, or the same after a picture shown.
+        refusals.note(Slot(1), Some(large.clone()));
+        refusals.note(Slot::MAIN, Some(Refused::Bytes { has: 3, needs: 6 }));
+        refusals.note(Slot::MAIN, None);
+        refusals.note(Slot::MAIN, Some(large));
+        assert_eq!(refusals.take().len(), 3);
+    }
+
+    #[test]
+    fn a_picture_too_large_or_short_of_bytes_is_refused_with_the_reason() {
+        let image = |luma_size: (u32, u32), bytes: usize| YuvImage {
+            luma_size,
+            layout: ChromaLayout::Planar,
+            planes: Box::new(vec![0u8; bytes]),
+            to_rgb: [[0.0; 4]; 3],
+            rotation: 0,
+        };
+        assert_eq!(Refused::of_image(&image((4, 4), 24), 8192), None);
+        assert_eq!(
+            Refused::of_image(&image((4, 4), 20), 8192),
+            Some(Refused::Bytes { has: 20, needs: 24 })
+        );
+        assert_eq!(
+            Refused::of_image(&image((16, 4), 96), 8),
+            Some(Refused::Size {
+                luma: (16, 4),
+                largest: 8
+            })
+        );
+        assert!(matches!(
+            Refused::of_image(&image((0, 4), 0), 8192),
+            Some(Refused::Size { .. })
+        ));
     }
 
     #[test]

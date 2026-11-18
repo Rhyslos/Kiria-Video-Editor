@@ -8,10 +8,71 @@
 //! size or layout changes. Planes that are textures already
 //! ([`PlaneTextures`]: a picture decoded on the graphics card) are drawn
 //! from as they are, with nothing written at all.
+//!
+//! A picture that can't be shown is turned down with the reason
+//! ([`Refused`]), which [`Refused::error`] explains to the person.
 
 use crate::video_picture::{ChromaLayout, PlaneTextures, YuvImage, texture_axes};
 use egui_wgpu::wgpu;
 use render::WHOLE;
+
+/// Why the renderer turned a picture down.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Refused {
+    /// A plane is larger (or emptier) than the graphics device takes.
+    Size { luma: (u32, u32), largest: u32 },
+    /// The planes in memory don't hold what their size needs.
+    Bytes { has: usize, needs: usize },
+    /// Textures handed over aren't a one-byte luma texture with a two-byte
+    /// colour texture of half its size.
+    Textures,
+}
+
+impl Refused {
+    /// Why a picture in memory can't be shown on a device whose textures
+    /// take at most `largest` pixels a side, or `None` when it can.
+    pub fn of_image(image: &YuvImage, largest: u32) -> Option<Refused> {
+        let fits = |(w, h): (u32, u32)| (1..=largest).contains(&w) && (1..=largest).contains(&h);
+        if !fits(image.luma_size) || !fits(image.chroma_size()) {
+            return Some(Refused::Size {
+                luma: image.luma_size,
+                largest,
+            });
+        }
+        let has = image.bytes().len();
+        let needs = image.bytes_needed();
+        (has != needs).then_some(Refused::Bytes { has, needs })
+    }
+
+    /// Why textures handed over can't be shown, or `None` when they can.
+    pub fn of_planes(planes: &PlaneTextures) -> Option<Refused> {
+        let luma = (planes.luma.width(), planes.luma.height());
+        let fits = planes.luma.format() == wgpu::TextureFormat::R8Unorm
+            && planes.chroma.format() == wgpu::TextureFormat::Rg8Unorm
+            && (planes.chroma.width(), planes.chroma.height()) == (luma.0.div_ceil(2), luma.1.div_ceil(2));
+        (!fits).then_some(Refused::Textures)
+    }
+
+    /// The refusal explained.
+    pub fn error(&self) -> diag::AppError {
+        let error = diag::AppError::new("The viewer can't show this picture");
+        match self {
+            Refused::Size { luma: (w, h), largest } => error
+                .why(format!(
+                    "The picture is {w}×{h} pixels, and this graphics card takes pictures of at most {largest} pixels a side."
+                ))
+                .fix("Use a proxy for this file: Settings › Proxies, or \"Build proxy now\" on the file."),
+            Refused::Bytes { has, needs } => error
+                .why(format!(
+                    "The decoder handed over {has} bytes for a picture that needs {needs}."
+                ))
+                .fix("Try playing from another point, or use a proxy for this file. If it keeps happening, send the details with a bug report."),
+            Refused::Textures => error
+                .why("The graphics card decoded the picture in a layout the viewer doesn't draw.")
+                .fix("Try another graphics system in Settings › Graphics, and send the details with a bug report."),
+        }
+    }
+}
 
 /// What the textures in use were made for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -162,9 +223,7 @@ impl YuvRenderer {
             layout: image.layout,
         };
         let bytes = image.planes.as_ref().as_ref();
-        let largest = device.limits().max_texture_dimension_2d;
-        let fits = |(w, h): (u32, u32)| (1..=largest).contains(&w) && (1..=largest).contains(&h);
-        if !fits(shape.luma) || !fits(shape.chroma) || bytes.len() != image.bytes_needed() {
+        if Refused::of_image(image, device.limits().max_texture_dimension_2d).is_some() {
             self.textures = None;
             return false;
         }
@@ -200,10 +259,7 @@ impl YuvRenderer {
             chroma: (luma.0.div_ceil(2), luma.1.div_ceil(2)),
             layout: ChromaLayout::Interleaved,
         };
-        let fits = planes.luma.format() == wgpu::TextureFormat::R8Unorm
-            && planes.chroma.format() == wgpu::TextureFormat::Rg8Unorm
-            && (planes.chroma.width(), planes.chroma.height()) == shape.chroma;
-        if !fits {
+        if Refused::of_planes(planes).is_some() {
             self.textures = None;
             return false;
         }

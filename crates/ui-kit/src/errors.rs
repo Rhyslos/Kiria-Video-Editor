@@ -1,10 +1,14 @@
 //! Showing explained errors: an inline message with a fix button, and the
-//! Diagnostics window that lists every error of the session.
+//! Diagnostics window that lists the session's errors.
+//!
+//! An error equal to one listed already (the same what and why) is folded
+//! into it, counted, instead of added: something failing every frame is one
+//! line, not thousands. The list keeps the newest [`ErrorCenter::KEPT`].
 
 use crate::theme::{Theme, status};
 use diag::{AppError, FixAction};
 use egui::{Color32, CornerRadius, Frame, Margin, RichText, Stroke};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 /// An error as the interface shows it.
 #[derive(Debug, Clone)]
@@ -15,8 +19,27 @@ pub struct ShownError {
     pub action: Option<FixAction>,
     /// Everything, for "Copy details" and bug reports.
     pub details: String,
+    /// When it last happened.
     pub at: SystemTime,
+    /// How many times it happened (1 for once).
+    pub count: u32,
     pub dismissed: bool,
+}
+
+impl ShownError {
+    /// The same problem: the same what and why.
+    fn same_as(&self, other: &ShownError) -> bool {
+        self.what == other.what && self.why == other.why
+    }
+
+    /// The headline, with how many times it happened when more than once.
+    fn headline(&self) -> String {
+        if self.count > 1 {
+            format!("{} (×{})", self.what, self.count)
+        } else {
+            self.what.clone()
+        }
+    }
 }
 
 impl From<&AppError> for ShownError {
@@ -28,6 +51,7 @@ impl From<&AppError> for ShownError {
             action: err.fix_action().cloned(),
             details: err.report(),
             at: SystemTime::now(),
+            count: 1,
             dismissed: false,
         }
     }
@@ -50,10 +74,47 @@ pub struct ErrorCenter {
 }
 
 impl ErrorCenter {
-    /// Records an error, logs it, and shows it inline until dismissed.
+    /// How many errors the list keeps; the oldest go first.
+    pub const KEPT: usize = 200;
+
+    /// How long an error must have been quiet for a repeat of it to show
+    /// again once dismissed. A repeat sooner only adds to its count.
+    pub const QUIET: Duration = Duration::from_secs(10);
+
+    /// Records an error, logs it, and shows it inline until dismissed. An
+    /// error equal to one listed already is counted on that one, which
+    /// becomes the newest; dismissed, it shows again only after
+    /// [`ErrorCenter::QUIET`] without it.
     pub fn push(&mut self, err: &AppError) {
-        tracing::warn!("{}", err.report());
-        self.errors.push(ShownError::from(err));
+        if self.record(ShownError::from(err)) {
+            tracing::warn!("{}", err.report());
+        } else {
+            tracing::debug!("again: {}", err.what());
+        }
+    }
+
+    /// Adds `shown`, or folds it into the same error listed already. True
+    /// when it is new, or a repeat after a quiet spell.
+    fn record(&mut self, mut shown: ShownError) -> bool {
+        let fresh = match self.errors.iter().rposition(|e| e.same_as(&shown)) {
+            Some(index) => {
+                let old = self.errors.remove(index);
+                let quiet = shown
+                    .at
+                    .duration_since(old.at)
+                    .is_ok_and(|gap| gap >= Self::QUIET);
+                shown.count = old.count.saturating_add(1);
+                shown.dismissed = old.dismissed && !quiet;
+                quiet
+            }
+            None => true,
+        };
+        self.errors.push(shown);
+        if self.errors.len() > Self::KEPT {
+            let over = self.errors.len() - Self::KEPT;
+            self.errors.drain(..over);
+        }
+        fresh
     }
 
     pub fn all(&self) -> &[ShownError] {
@@ -79,7 +140,10 @@ impl ErrorCenter {
             .map(|(name, value)| format!("{name}: {value}"))
             .collect();
         let facts = (!facts.is_empty()).then(|| facts.join("\n"));
-        let errors = self.errors.iter().map(|e| e.details.clone());
+        let errors = self.errors.iter().map(|e| match e.count {
+            1 => e.details.clone(),
+            n => format!("{}\n(happened {n} times)", e.details),
+        });
         facts.into_iter().chain(errors).collect::<Vec<_>>().join("\n\n")
     }
 
@@ -122,7 +186,7 @@ impl ErrorCenter {
                     let text_width = (ui.available_width() - buttons).max(200.0);
                     ui.vertical(|ui| {
                         ui.set_max_width(text_width);
-                        ui.label(RichText::new(&error.what).family(crate::fonts::semibold()));
+                        ui.label(RichText::new(error.headline()).family(crate::fonts::semibold()));
                         if let Some(why) = &error.why {
                             ui.label(RichText::new(why).color(theme.text_secondary));
                         }
@@ -152,7 +216,9 @@ impl ErrorCenter {
         response
     }
 
-    /// The Diagnostics window: every error this session, with copyable details.
+    /// The Diagnostics window: the session's errors, newest first, with
+    /// copyable details. Only the rows in sight are laid out, so it costs
+    /// the same however long the list is.
     pub fn diagnostics_window(&mut self, ctx: &egui::Context, open: &mut bool, theme: &Theme) {
         egui::Window::new("Diagnostics")
             .open(open)
@@ -177,23 +243,37 @@ impl ErrorCenter {
                 if ui.button("Copy all details").clicked() {
                     ctx.copy_text(self.all_details());
                 }
-                egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
-                    for error in self.errors.iter().rev() {
-                        ui.separator();
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                RichText::new(humantime_ago(error.at))
-                                    .font(crate::fonts::mono(11.0))
-                                    .color(theme.muted),
-                            );
-                            ui.label(RichText::new(&error.what).family(crate::fonts::semibold()));
-                        });
-                        ui.label(RichText::new(&error.details).font(crate::fonts::mono(11.0)));
-                        if ui.small_button("Copy details").clicked() {
-                            ctx.copy_text(error.details.clone());
+                // One row an error: when, what (and how often), and a button
+                // that copies its details, which show as the row's tooltip.
+                let row_height = ui.spacing().interact_size.y + ui.spacing().item_spacing.y;
+                let errors = &self.errors;
+                egui::ScrollArea::vertical().max_height(420.0).show_rows(
+                    ui,
+                    row_height,
+                    errors.len(),
+                    |ui, rows| {
+                        for error in errors.iter().rev().skip(rows.start).take(rows.len()) {
+                            ui.horizontal(|ui| {
+                                ui.set_height(ui.spacing().interact_size.y);
+                                ui.label(
+                                    RichText::new(humantime_ago(error.at))
+                                        .font(crate::fonts::mono(11.0))
+                                        .color(theme.muted),
+                                );
+                                if ui.small_button("Copy details").clicked() {
+                                    ctx.copy_text(error.details.clone());
+                                }
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(error.headline()).family(crate::fonts::semibold()),
+                                    )
+                                    .truncate(),
+                                )
+                                .on_hover_text(RichText::new(&error.details).font(crate::fonts::mono(11.0)));
+                            });
                         }
-                    }
-                });
+                    },
+                );
             });
     }
 }
@@ -251,6 +331,97 @@ mod tests {
         center.push(&AppError::new("Export can't start").fix("Relink them"));
         let details = center.all_details();
         assert!(details.starts_with("Graphics: two\nTried first: another\n\nExport can't start"));
+    }
+
+    fn at(err: &AppError, secs: u64) -> ShownError {
+        ShownError {
+            at: SystemTime::UNIX_EPOCH + Duration::from_secs(secs),
+            ..ShownError::from(err)
+        }
+    }
+
+    #[test]
+    fn a_repeat_is_counted_on_the_error_listed_already() {
+        let mut center = ErrorCenter::default();
+        let save = AppError::new("Couldn't save")
+            .why("The disk is full")
+            .fix("Free some room");
+        let other = AppError::new("Couldn't save")
+            .why("The folder is gone")
+            .fix("Save elsewhere");
+        assert!(center.record(at(&save, 0)));
+        assert!(center.record(at(&other, 1)));
+        for frame in 2..1000 {
+            center.record(at(&save, frame / 60 + 1));
+        }
+        let all = center.all();
+        assert_eq!(all.len(), 2, "one line per problem");
+        assert_eq!(
+            all[1].why.as_deref(),
+            Some("The disk is full"),
+            "the repeat is the newest"
+        );
+        assert_eq!(all[1].count, 999);
+        assert_eq!(all[1].at, SystemTime::UNIX_EPOCH + Duration::from_secs(17));
+        assert_eq!(all[0].count, 1);
+        assert!(center.all_details().contains("(happened 999 times)"));
+    }
+
+    #[test]
+    fn the_list_keeps_the_newest_errors() {
+        let mut center = ErrorCenter::default();
+        for n in 0..ErrorCenter::KEPT + 50 {
+            center.push(&AppError::new(format!("Problem {n}")).fix("None"));
+        }
+        let all = center.all();
+        assert_eq!(all.len(), ErrorCenter::KEPT);
+        assert_eq!(all[0].what, "Problem 50");
+        assert_eq!(
+            all[ErrorCenter::KEPT - 1].what,
+            format!("Problem {}", ErrorCenter::KEPT + 49)
+        );
+    }
+
+    /// A dismissed error happening again every frame stays dismissed; after
+    /// a quiet spell it shows again.
+    #[test]
+    fn a_quick_repeat_does_not_show_a_dismissed_error_again() {
+        let mut center = ErrorCenter::default();
+        let err = AppError::new("The preview can't be drawn").fix("Restart");
+        assert!(center.record(at(&err, 100)));
+        center.errors[0].dismissed = true;
+        for secs in 101..110 {
+            assert!(!center.record(at(&err, secs)), "only counted");
+            assert!(center.all()[0].dismissed);
+        }
+        assert!(
+            center.record(at(&err, 109 + ErrorCenter::QUIET.as_secs())),
+            "shown anew"
+        );
+        assert!(!center.all()[0].dismissed);
+        assert_eq!(center.all()[0].count, 11);
+    }
+
+    /// Only the rows in sight are laid out: the window's cost stays put.
+    #[test]
+    fn the_diagnostics_window_draws_a_long_list() {
+        let ctx = egui::Context::default();
+        let mut center = ErrorCenter::default();
+        for n in 0..ErrorCenter::KEPT {
+            center.push(
+                &AppError::new(format!("Problem {n}"))
+                    .why("x".repeat(500))
+                    .fix("None"),
+            );
+        }
+        let mut open = true;
+        for _ in 0..2 {
+            let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                center.diagnostics_window(ui.ctx(), &mut open, &Theme::ASH);
+            });
+            output.drop_without_applying_deltas();
+        }
+        assert!(open);
     }
 
     /// The error floats over the page: what is laid out after it starts
