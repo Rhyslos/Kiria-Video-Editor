@@ -205,7 +205,7 @@ fn spectrogram(ui: &mut Ui, theme: &Theme, r: Rect, band: &mut Band) {
         note(ui, theme, r, "And the last few seconds here");
         return;
     }
-    let id = egui::Id::new("audio band spectrogram");
+    let id = egui::Id::unique("audio band spectrogram");
     let mut texture: Option<egui::TextureHandle> = ui.data(|d| d.get_temp(id));
     if band.columns_changed || texture.is_none() {
         let mut image = egui::ColorImage::filled([COLUMNS, COUNT], heat(0.0));

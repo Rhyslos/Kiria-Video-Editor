@@ -375,10 +375,12 @@ mod tests {
         // About 33 s played: the last 30 kept, one every tenth.
         let first = band.loudness.front().expect("readings").at;
         assert!(at - first <= LOUDNESS_SECONDS + 0.01, "{first}");
+        // A reading every tenth or the first frame after it.
         assert!(
-            (290..=302).contains(&band.loudness.len()),
-            "{}",
-            band.loudness.len()
+            band.loudness
+                .iter()
+                .zip(band.loudness.iter().skip(1))
+                .all(|(a, b)| (EVERY..EVERY + 1.0 / 59.0).contains(&(b.at - a.at)))
         );
         let (role, track) = &band.tracks[&TrackId(4)];
         assert_eq!(*role, TrackRole::Dialogue);
