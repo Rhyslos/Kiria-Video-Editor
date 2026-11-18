@@ -39,6 +39,8 @@ struct Shared {
     error: Option<diag::AppError>,
     /// Snapshots synced so far, so the interface can tell when its edits are in.
     synced: u64,
+    /// Messages handled so far, counted once their wake (if any) was made.
+    handled: u64,
 }
 
 /// The index, running on its own thread.
@@ -49,6 +51,8 @@ pub struct Live {
     followed: Option<Project>,
     asked: HashMap<Asker, Query>,
     sent: u64,
+    /// Every message sent to the worker so far.
+    messages: u64,
 }
 
 impl std::fmt::Debug for Live {
@@ -84,6 +88,7 @@ impl Live {
             followed: None,
             asked: HashMap::new(),
             sent: 0,
+            messages: 0,
         }
     }
 
@@ -101,14 +106,14 @@ impl Live {
         }
         self.followed = Some(project.clone());
         self.sent += 1;
-        let _ = self.send.send(Message::Sync(Box::new(project.clone())));
+        self.post(Message::Sync(Box::new(project.clone())));
     }
 
     /// Drops the project (it was closed): answers are forgotten.
     pub fn forget(&mut self) {
         self.followed = None;
         self.asked.clear();
-        let _ = self.send.send(Message::Forget);
+        self.post(Message::Forget);
     }
 
     /// Asks `query` for `asker`, unless it is what that asker asked last.
@@ -117,7 +122,24 @@ impl Live {
             return;
         }
         self.asked.insert(asker, query.clone());
-        let _ = self.send.send(Message::Ask(asker, query.clone()));
+        self.post(Message::Ask(asker, query.clone()));
+    }
+
+    fn post(&mut self, message: Message) {
+        self.messages += 1;
+        let _ = self.send.send(message);
+    }
+
+    /// How many messages (snapshots, queries, a close) were sent to the
+    /// worker so far: what `follow` and `ask` cost. For tests.
+    pub fn messages_sent(&self) -> u64 {
+        self.messages
+    }
+
+    /// Whether the worker has handled every message sent to it, the wake
+    /// that followed included. Tests wait on this rather than sleeping.
+    pub fn caught_up(&self) -> bool {
+        lock(&self.shared).handled == self.messages
     }
 
     /// The newest answer for `asker`: perhaps to an earlier query, or from
@@ -164,7 +186,9 @@ fn run(receive: &Receiver<Message>, shared: &Mutex<Shared>, wake: &dyn Fn()) {
         let mut synced = 0;
         let mut asked: Vec<Asker> = Vec::new();
         let mut forget = false;
+        let mut taken = 0;
         for message in std::iter::once(first).chain(receive.try_iter()) {
+            taken += 1;
             match message {
                 Message::Sync(p) => {
                     project = Some(p);
@@ -235,5 +259,6 @@ fn run(receive: &Receiver<Message>, shared: &Mutex<Shared>, wake: &dyn Fn()) {
         if changed || synced > 0 {
             wake();
         }
+        lock(shared).handled += taken;
     }
 }

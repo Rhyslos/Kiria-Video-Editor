@@ -723,8 +723,23 @@ mod tests {
         assert_eq!(interface.folders().unwrap().len(), 1);
     }
 
+    /// Two hundred projects are listed, within a bound generous enough for
+    /// a slow, busy machine running the debug build.
     #[test]
+    fn two_hundred_projects_list() {
+        two_hundred_projects_listed_within(std::time::Duration::from_secs(5));
+    }
+
+    /// The launcher's list comes quickly. A measurement, so run by hand in a
+    /// release build: `cargo test -p project-index --release --
+    /// two_hundred_projects_list_quickly --ignored`.
+    #[test]
+    #[ignore = "a measurement: run by hand in a release build"]
     fn two_hundred_projects_list_quickly() {
+        two_hundred_projects_listed_within(std::time::Duration::from_millis(50));
+    }
+
+    fn two_hundred_projects_listed_within(limit: std::time::Duration) {
         let index = Index::open_in_memory().unwrap();
         for i in 0..200 {
             index
@@ -739,10 +754,6 @@ mod tests {
         let started = std::time::Instant::now();
         let projects = index.projects().unwrap();
         assert_eq!(projects.len(), 200);
-        assert!(
-            started.elapsed() < std::time::Duration::from_millis(50),
-            "{:?}",
-            started.elapsed()
-        );
+        assert!(started.elapsed() < limit, "{:?}", started.elapsed());
     }
 }

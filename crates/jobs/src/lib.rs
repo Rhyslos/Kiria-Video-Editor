@@ -312,8 +312,9 @@ mod tests {
         let jobs = system(1, BackgroundPolicy::Always);
         // One thread, kept busy, so everything after it waits in the queue.
         let (go, gate) = std::sync::mpsc::channel::<()>();
+        // It ends when told (or when the test gives up and drops `go`).
         let busy = jobs.submit(PoolKind::Export, Priority::Interactive, "busy", move |_| {
-            let _ = gate.recv_timeout(Duration::from_secs(10));
+            let _ = gate.recv();
             Ok(())
         });
         let ran = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -333,19 +334,22 @@ mod tests {
             w.store(true, std::sync::atomic::Ordering::SeqCst);
             Ok(())
         });
-        let started = Instant::now();
-        // Closing starts while the busy job still runs; then it ends.
+        // Closing starts while the busy job still runs. Once it has given
+        // up the queued reads (a given-up job's handle hears so at once),
+        // the busy job ends; however slow the machine, no read can have
+        // started before.
         let closing = std::thread::spawn(move || drop(jobs));
-        std::thread::sleep(Duration::from_millis(100));
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let last = reads.last().unwrap();
+        while last.try_result().is_none() {
+            assert!(Instant::now() < deadline, "closing gives up the queued reads");
+            std::thread::sleep(Duration::from_millis(5));
+        }
         let _ = go.send(());
         closing.join().unwrap();
         assert!(busy.wait().is_ok(), "a job under way finishes");
         assert!(save.wait().is_ok() && written.load(std::sync::atomic::Ordering::SeqCst));
-        assert!(
-            started.elapsed() < Duration::from_secs(1),
-            "the reads were not waited for"
-        );
-        assert_eq!(ran.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(ran.load(std::sync::atomic::Ordering::SeqCst), 0, "no read ran");
         for read in reads {
             assert!(read.wait().is_err(), "a job given up says so");
         }
@@ -377,25 +381,28 @@ mod tests {
         let jobs = system(2, BackgroundPolicy::PauseWhilePlaying);
         let (started, running) = std::sync::mpsc::channel();
         let (go_on, wait) = std::sync::mpsc::channel::<()>();
+        let (held_seen, seen) = std::sync::mpsc::channel();
+        let waited = Arc::new(AtomicBool::new(false));
+        let done_waiting = Arc::clone(&waited);
         let job = jobs.submit(PoolKind::Analysis, Priority::Background, "long", move |ctx| {
             started.send(ctx.is_held_back()).unwrap();
             wait.recv().unwrap();
-            let held = ctx.is_held_back();
-            let since = Instant::now();
+            held_seen.send(ctx.is_held_back()).unwrap();
             ctx.wait_while_held_back();
-            Ok((held, since.elapsed()))
+            done_waiting.store(true, Ordering::SeqCst);
+            Ok(())
         });
         assert!(!running.recv().unwrap(), "not held back before playing");
         jobs.set_playing(true);
         go_on.send(()).unwrap();
+        assert!(seen.recv().unwrap(), "held back while playing");
+        // However long the job takes to get to waiting, it can't be done
+        // waiting while the timeline still plays.
         std::thread::sleep(Duration::from_millis(150));
+        assert!(!waited.load(Ordering::SeqCst), "waits while playing");
         jobs.set_playing(false);
-        let (held, waited) = job.wait().unwrap();
-        assert!(held, "held back while playing");
-        assert!(
-            waited >= Duration::from_millis(50),
-            "waited until playing stopped"
-        );
+        job.wait().unwrap();
+        assert!(waited.load(Ordering::SeqCst), "waited until playing stopped");
         let other = jobs.submit(PoolKind::Analysis, Priority::Interactive, "now", |ctx| {
             Ok(ctx.is_held_back())
         });
@@ -541,21 +548,21 @@ mod tests {
             reporting(Arc::clone(&gate)),
         );
         let start = Instant::now();
-        while first.progress() != JobProgress::Running(0.25) && start.elapsed() < Duration::from_secs(5) {
+        while first.progress() != JobProgress::Running(0.25) && start.elapsed() < Duration::from_secs(60) {
             std::thread::sleep(Duration::from_millis(1));
         }
         assert_eq!(first.progress(), JobProgress::Running(0.25));
         assert_eq!(second.progress(), JobProgress::Waiting, "still in the queue");
         gate.store(true, Ordering::Relaxed);
         while first.try_result().is_none() || second.try_result().is_none() {
-            assert!(start.elapsed() < Duration::from_secs(5));
+            assert!(start.elapsed() < Duration::from_secs(60));
             std::thread::sleep(Duration::from_millis(1));
         }
         assert_eq!(first.progress(), JobProgress::Running(1.0), "kept within 0 to 1");
         // A job that reports nothing is running at 0 once it has started.
         let quiet = jobs.submit(PoolKind::Analysis, Priority::Interactive, "quiet", |_| Ok(()));
         while quiet.try_result().is_none() {
-            assert!(start.elapsed() < Duration::from_secs(5));
+            assert!(start.elapsed() < Duration::from_secs(60));
             std::thread::sleep(Duration::from_millis(1));
         }
         assert_eq!(quiet.progress(), JobProgress::Running(0.0));

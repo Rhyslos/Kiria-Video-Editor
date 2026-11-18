@@ -83,9 +83,12 @@ type Stamp = (u64, Option<std::time::SystemTime>);
 static PROBED: std::sync::Mutex<Option<std::collections::HashMap<PathBuf, (Stamp, Starts)>>> =
     std::sync::Mutex::new(None);
 
-/// Opens from the header alone, counted for the tests.
+// Opens from the header alone, counted for the tests on the thread that
+// opened, so tests running beside each other don't count each other's.
 #[cfg(test)]
-static FROM_HEADER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+thread_local! {
+    static FROM_HEADER: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 
 fn stamp(path: &Path) -> Option<Stamp> {
     let meta = std::fs::metadata(path).ok()?;
@@ -111,7 +114,7 @@ fn open_input(path: &Path, stream: u32) -> Result<(Input, Starts), crate::ffi::O
         && unsafe { header_suffices(input.raw(), stream, starts.streams.len()) }
     {
         #[cfg(test)]
-        FROM_HEADER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        FROM_HEADER.with(|n| n.set(n.get() + 1));
         return Ok((input, starts));
     }
     let input = Input::open(path)?;
@@ -987,8 +990,27 @@ mod tests {
         (all, seeks, d.origin, d.file_start)
     }
 
+    /// Held by the tests that empty [`PROBED`], so one never empties it
+    /// between another's probe and its open from the header. (Other tests
+    /// only add to it, which changes nothing these look at.)
+    static EMPTIES_PROBED: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn hold_probed() -> std::sync::MutexGuard<'static, ()> {
+        EMPTIES_PROBED.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Empties [`PROBED`]; only while [`hold_probed`]'s guard is held.
+    fn empty_probed(_held: &std::sync::MutexGuard<'static, ()>) {
+        PROBED.lock().unwrap_or_else(|p| p.into_inner()).take();
+    }
+
+    fn opened_from_header() -> usize {
+        FROM_HEADER.with(std::cell::Cell::get)
+    }
+
     #[test]
     fn a_file_opened_again_from_its_header_reads_the_same_samples() {
+        let held = hold_probed();
         // An MP3's header doesn't say its rate: it is probed each time.
         for (name, streams, from_header) in [
             ("game-3-audio.mkv", &[1u32, 2, 3][..], true),
@@ -1001,7 +1023,7 @@ mod tests {
             let path = fixture(name);
             for &stream in streams {
                 // Probed (kept), then from the header with what was kept.
-                PROBED.lock().unwrap().take();
+                empty_probed(&held);
                 let probed = read_through(&path, stream);
                 assert!(
                     PROBED
@@ -1010,13 +1032,10 @@ mod tests {
                         .as_ref()
                         .is_some_and(|p| p.contains_key(&path))
                 );
-                let before = FROM_HEADER.load(std::sync::atomic::Ordering::Relaxed);
+                let before = opened_from_header();
                 let header = read_through(&path, stream);
                 if from_header {
-                    assert!(
-                        FROM_HEADER.load(std::sync::atomic::Ordering::Relaxed) > before,
-                        "{name}: from the header"
-                    );
+                    assert!(opened_from_header() > before, "{name}: from the header");
                 }
                 assert!(!probed.0.is_empty(), "{name} {stream} has sound");
                 assert!(probed == header, "{name} stream {stream} reads the same");
@@ -1027,14 +1046,12 @@ mod tests {
     #[test]
     fn after_the_import_check_a_files_sound_opens_from_its_header() {
         let path = fixture("game-3-audio.mkv");
-        PROBED.lock().unwrap().take();
+        let held = hold_probed();
+        empty_probed(&held);
         crate::check::check(&path).unwrap();
-        let before = FROM_HEADER.load(std::sync::atomic::Ordering::Relaxed);
+        let before = opened_from_header();
         AudioDecoder::open(&path, 1, 48_000).unwrap();
-        assert!(
-            FROM_HEADER.load(std::sync::atomic::Ordering::Relaxed) > before,
-            "what the check probed is kept"
-        );
+        assert!(opened_from_header() > before, "what the check probed is kept");
     }
 
     #[test]
