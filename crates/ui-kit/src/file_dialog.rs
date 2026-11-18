@@ -1,17 +1,19 @@
 //! The system's file chooser, and saying so when there is none.
 //!
 //! Every "Browse…", "Open…", "Import…" and "Find them…" asks the system's
-//! own file chooser (on its own thread: it blocks). On Linux that is the
-//! desktop's file chooser service (xdg-desktop-portal), with zenity as the
-//! fallback; a system with neither opens nothing at all, and the person
-//! would only see a button that does nothing. [`run`] wraps the asking: when
-//! no chooser can open it leaves a note in the window's context, and the
-//! window turns [`take_problem`] into an explained error in its error strip.
+//! own file chooser (on its own thread: it blocks; [`ask`] starts one). On
+//! Linux that is the desktop's file chooser service (xdg-desktop-portal),
+//! with zenity as the fallback; a system with neither opens nothing at
+//! all, and the person would only see a button that does nothing. [`run`]
+//! wraps the asking: when no chooser can open it leaves a note in the
+//! window's context, and the window turns [`take_problem`] into an
+//! explained error in its error strip.
 //!
 //! There is no typed path field to fall back on: on Windows (the first
 //! platform) the chooser is always there, on Linux the fix is one package,
 //! and the editor also takes files dropped on its window.
 
+use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
 
 /// A chooser that answers "nothing picked" faster than this never opened:
@@ -37,6 +39,41 @@ pub fn run<T>(ctx: &egui::Context, ask: impl FnOnce() -> Option<T>) -> Option<T>
         report(ctx);
     }
     picked
+}
+
+/// Asks the system's file chooser with `f` on a thread of its own named
+/// `name` (the chooser blocks), through [`run`]. The answer arrives on the
+/// receiver, and the window is asked to redraw then. When the thread can't
+/// start, that is logged and the answer is `None` at once, as if the
+/// chooser had been closed.
+pub fn ask<T: Send + 'static>(
+    ctx: &egui::Context,
+    name: &str,
+    f: impl FnOnce() -> Option<T> + Send + 'static,
+) -> Receiver<Option<T>> {
+    let asker = ctx.clone();
+    answer_on_thread(ctx, name, move || run(&asker, f))
+}
+
+/// Runs `work` on a thread named `name` and sends its answer, then asks
+/// `ctx` to redraw. A thread that can't start answers `None`.
+fn answer_on_thread<T: Send + 'static>(
+    ctx: &egui::Context,
+    name: &str,
+    work: impl FnOnce() -> Option<T> + Send + 'static,
+) -> Receiver<Option<T>> {
+    let (tell, answer) = channel();
+    let (sender, ctx) = (tell.clone(), ctx.clone());
+    let started = std::thread::Builder::new().name(name.to_owned()).spawn(move || {
+        // The window may have stopped waiting; then nobody needs it.
+        let _ = sender.send(work());
+        ctx.request_repaint();
+    });
+    if let Err(err) = started {
+        tracing::error!("the file chooser's thread ({name}) could not start: {err}");
+        let _ = tell.send(None);
+    }
+    answer
 }
 
 fn report(ctx: &egui::Context) {
@@ -138,6 +175,30 @@ mod tests {
         };
         assert!(zenity.can_open());
         assert!(!zenity.never_opened(true, Duration::from_millis(20)));
+    }
+
+    fn wait<T>(answer: &Receiver<Option<T>>) -> Option<T> {
+        answer
+            .recv_timeout(Duration::from_secs(10))
+            .expect("an answer arrives")
+    }
+
+    #[test]
+    fn the_answer_arrives_from_a_thread_of_its_own() {
+        let ctx = egui::Context::default();
+        let answer = answer_on_thread(&ctx, "test chooser", || {
+            Some(std::thread::current().name().map(str::to_owned))
+        });
+        assert_eq!(wait(&answer), Some(Some("test chooser".to_owned())));
+    }
+
+    #[test]
+    fn a_closed_chooser_answers_none() {
+        let ctx = egui::Context::default();
+        let answer = answer_on_thread(&ctx, "test chooser", || None::<std::path::PathBuf>);
+        assert_eq!(wait(&answer), None);
+        let asked = ask(&ctx, "test chooser", || None::<std::path::PathBuf>);
+        assert_eq!(wait(&asked), None);
     }
 
     #[test]

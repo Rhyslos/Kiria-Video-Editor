@@ -29,7 +29,7 @@ pub use queue::Unfinished;
 use queue::{Job, Queue, State};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use std::time::Duration;
 use ui_kit::{Theme, layout};
 pub use words::Pace;
@@ -67,6 +67,8 @@ pub struct ExportPage {
     folder_dialog: Option<Receiver<Option<PathBuf>>>,
     /// A folder being made ("Make it").
     making: Option<Receiver<diag::Result<()>>>,
+    /// Folders being shown in the file manager, until each has started.
+    showing: Vec<Receiver<diag::Result<()>>>,
     own: OwnPresets,
     /// The presets file couldn't be read: it is never written over.
     own_read_only: bool,
@@ -121,6 +123,7 @@ impl ExportPage {
             finding: None,
             folder_dialog: None,
             making: None,
+            showing: Vec::new(),
             own,
             own_read_only,
             saving_as: None,
@@ -199,6 +202,16 @@ impl ExportPage {
                 errors.push(err);
             }
         }
+        self.showing.retain(|showing| match showing.try_recv() {
+            Ok(shown) => {
+                if let Err(err) = shown {
+                    errors.push(err);
+                }
+                false
+            }
+            Err(TryRecvError::Empty) => true,
+            Err(TryRecvError::Disconnected) => false,
+        });
         if let Some(err) = self.own_keeper.take_failure() {
             errors.push(err);
         }
@@ -307,7 +320,7 @@ impl ExportPage {
         layout::panel(ui, theme, right, |ui| {
             self.summary_ui(ui, theme, project, &plan, devices, &mut asked);
         });
-        layout::panel(ui, theme, bottom, |ui| self.queue_ui(ui, theme, &mut asked));
+        layout::panel(ui, theme, bottom, |ui| self.queue_ui(ui, theme));
         ui.allocate_rect(page, egui::Sense::hover());
 
         if plan.checks.iter().any(|c| c.level == Level::Waiting) || self.queue.busy() {
@@ -1102,7 +1115,7 @@ impl ExportPage {
         Some(format!("{}, {how}", p.name))
     }
 
-    fn queue_ui(&mut self, ui: &mut egui::Ui, theme: &Theme, asked: &mut Asked) {
+    fn queue_ui(&mut self, ui: &mut egui::Ui, theme: &Theme) {
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Queue").family(ui_kit::fonts::semibold()));
             ui.label(
@@ -1110,10 +1123,9 @@ impl ExportPage {
                     .color(theme.muted),
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("Open export folder").clicked()
-                    && let Err(err) = show_folder(Path::new(self.folder.trim()))
-                {
-                    asked.problem = Some(err);
+                if ui.button("Open export folder").clicked() {
+                    let folder = PathBuf::from(self.folder.trim());
+                    self.showing.push(show_folder(ui.ctx(), folder));
                 }
             });
         });
@@ -1158,9 +1170,8 @@ impl ExportPage {
                     }
                 }
                 JobAct::Show(path) => {
-                    if let Err(err) = show_folder(path.parent().unwrap_or(&path)) {
-                        asked.problem = Some(err);
-                    }
+                    let folder = path.parent().unwrap_or(&path).to_path_buf();
+                    self.showing.push(show_folder(ui.ctx(), folder));
                 }
             }
         }
@@ -1435,35 +1446,34 @@ fn quality_about(quality: Quality) -> &'static str {
 
 /// Opens the folder picker on its own thread; the choice arrives later.
 fn ask_folder(ctx: &egui::Context, now: &Path) -> Receiver<Option<PathBuf>> {
-    let (tell, chosen) = channel();
-    let ctx = ctx.clone();
     let now = now.to_path_buf();
-    std::thread::spawn(move || {
+    ui_kit::file_dialog::ask(ctx, "export folder dialog", move || {
         let mut dialog = rfd::FileDialog::new().set_title("Save the export in");
         if now.is_dir() {
             dialog = dialog.set_directory(now);
         }
-        let _ = tell.send(ui_kit::file_dialog::run(&ctx, || dialog.pick_folder()));
-        ctx.request_repaint();
-    });
-    chosen
+        dialog.pick_folder()
+    })
 }
 
-fn show_folder(folder: &Path) -> diag::Result<()> {
-    let program = if cfg!(windows) { "explorer" } else { "xdg-open" };
-    std::process::Command::new(program)
-        .arg(folder)
-        .spawn()
-        .map_err(|err| {
-            AppError::new("The folder can't be shown")
-                .why(format!(
-                    "Starting the file manager for {} failed.",
-                    folder.display()
-                ))
-                .fix("Open the folder yourself; its path is on the Export page.")
-                .source(err)
-        })?;
-    Ok(())
+/// Shows `folder` in the file manager on a thread of its own (it looks at
+/// the disk and starts a program); how it went arrives later.
+fn show_folder(ctx: &egui::Context, folder: PathBuf) -> Receiver<diag::Result<()>> {
+    let (tell, shown) = channel();
+    let (sender, ctx) = (tell.clone(), ctx.clone());
+    let started = std::thread::Builder::new()
+        .name("show export folder".into())
+        .spawn(move || {
+            let _ = sender.send(os::show_folder(&folder));
+            ctx.request_repaint();
+        });
+    if let Err(err) = started {
+        let _ = tell.send(Err(AppError::new("The folder can't be shown")
+            .why("The system would not start a thread to ask the file manager.")
+            .fix("Try again in a moment, or open the folder yourself.")
+            .source(err)));
+    }
+    shown
 }
 
 #[cfg(test)]

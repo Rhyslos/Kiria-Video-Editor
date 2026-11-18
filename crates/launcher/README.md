@@ -20,7 +20,7 @@ Phase 2 in progress. Done: the project browser (folder tree, project grid, searc
 4. Opening a project starts the editor with its path, notes the time in the index and closes the window. A download still running finishes before the process exits.
 5. In an installed copy the launcher then waits, without a window, up to 20 seconds for the editor to report that its first window is on screen (`updater::health`). Two failed starts in a row switch back to the previous version, mark the failed one so it is never offered again, and open the launcher to explain (with Report the problem and Show crash reports).
 5. Only one launcher updates at a time (`updater::UpdateLock`): installing a waiting update, downloading one and the check after the editor's start each take the lock first. Opening two projects at once starts two launchers; the one that finds the lock taken skips that step this time, notes it in the log, shows no error (the version panel says "Updating in another window") and opens normally.
-5. Finding projects on disk, renames, moves, deletes, file dialogs and update checks all run on worker threads (`work.rs`), and update choices are written to `updates.ron` by a `project::disk::Keeper` on a thread of its own (whole or not at all, flushed before the process exits); the interface thread only reads the index.
+5. Finding projects on disk, renames, moves, deletes, showing a folder in the file manager and update checks all run on worker threads (`work.rs`), file dialogs on threads of their own (`ui_kit::file_dialog::ask`), and update choices are written to `updates.ron` by a `project::disk::Keeper` on a thread of its own (whole or not at all, flushed before the process exits); the interface thread only reads the index.
 
 ## Renaming, moving and deleting a project
 
@@ -85,7 +85,7 @@ Preferences are read from `<data folder>/updates.ron` (defaults: automatic, Stab
 | `src/files.rs` | Creating, renaming and moving project files; the files that belong to a project move along. Moving a packaged project's file alone (its media stays behind) first makes its relative media paths full ones, in the project and its saved versions, so they are still found |
 | `src/delete.rs` | Deleting a project: `plan` lists what would go, `run` moves it to the `Bin` (the system's recycle bin, or a folder for sample projects and tests) |
 | `src/delete_dialog.rs` | The Delete project question and its steps: look for the files, ask with the list, move them |
-| `src/editor_start.rs` | Starting the editor; showing a folder in the file manager |
+| `src/editor_start.rs` | Starting the editor; showing a folder (or the folder holding a file) in the file manager with `os::show_folder` (run as a `Task`) |
 | `src/thumbnails.rs` | The pictures on the cards: read on a worker (four at a time) when a card first shows, and again when its project changes |
 | `src/work.rs` | `Task`: run work on a thread, pick the result up on a later frame |
 | `src/demo.rs` | Sample projects in a temporary folder for screenshots and tests; the first has every kind of file a project keeps beside it |

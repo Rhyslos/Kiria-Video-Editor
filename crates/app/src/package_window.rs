@@ -18,7 +18,7 @@ use project::package::{self, Outcome, Plan};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 use ui_kit::Theme;
 
@@ -89,18 +89,11 @@ impl PackageWindow {
     }
 
     fn pick(&mut self, ctx: &egui::Context) {
-        let (tx, rx) = channel();
-        let ctx = ctx.clone();
-        std::thread::spawn(move || {
-            let picked = ui_kit::file_dialog::run(&ctx, || {
-                rfd::FileDialog::new()
-                    .set_title("Where should the package go?")
-                    .pick_folder()
-            });
-            let _ = tx.send(picked);
-            ctx.request_repaint();
-        });
-        self.picking = Some(rx);
+        self.picking = Some(ui_kit::file_dialog::ask(ctx, "package dialog", || {
+            rfd::FileDialog::new()
+                .set_title("Where should the package go?")
+                .pick_folder()
+        }));
     }
 
     fn start_plan(&mut self, jobs: &JobSystem, project: &Project, project_file: &Path, into: PathBuf) {
