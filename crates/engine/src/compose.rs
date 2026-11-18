@@ -65,8 +65,36 @@ impl Composed {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Refused;
 
+/// Why a frame was not put together.
+#[derive(Debug)]
+pub(crate) enum NotComposed {
+    /// The renderer could not take a picture decoded on the window's device.
+    Refused,
+    /// The graphics library refused the work (a size over the card's limit,
+    /// the card out of memory): told for this frame; the composer starts
+    /// afresh with the next.
+    Graphics(diag::AppError),
+}
+
 /// Frames kept for drawing into again once nobody shows them any more.
 const FRAMES_KEPT: usize = 4;
+
+/// Frames in a row that need fewer upload slots than are kept before the
+/// slots past what they need are let go (about a second of playback).
+const UPLOADS_IDLE_FOR: u32 = 30;
+
+/// How long the small copy for the scopes may take to come back.
+const SAMPLE_PATIENCE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// A graphics error as an explained error for one frame.
+fn graphics_error(what: &str, error: &wgpu::Error) -> diag::AppError {
+    diag::AppError::new(what)
+        .why(format!(
+            "The graphics library refused the work: {}.",
+            render::caught::describe(error)
+        ))
+        .fix("Try again. If it keeps happening, lower the timeline's picture size or update the graphics driver.")
+}
 
 pub(crate) struct Composer {
     effects: render::Effects,
@@ -76,6 +104,11 @@ pub(crate) struct Composer {
     frames: Vec<Arc<Frame>>,
     /// By layer: the textures planes in memory were last written into.
     uploads: Vec<Option<Upload>>,
+    /// Frames in a row that needed fewer upload slots than `uploads` has.
+    uploads_idle: u32,
+    /// The small copy for the scopes and the buffer it is read back through,
+    /// kept while the size stays the same.
+    scope_copy: Option<ScopeCopy>,
     /// Pictures of nested timelines, and of what is below adjustment
     /// layers, from the last frame: drawn into again for the next.
     spare: Vec<Frame>,
@@ -90,8 +123,37 @@ impl Composer {
             composing,
             frames: Vec::new(),
             uploads: Vec::new(),
+            uploads_idle: 0,
+            scope_copy: None,
             spare: Vec::new(),
         }
+    }
+
+    /// Lets go of everything kept between frames, after a graphics error
+    /// that may have left some of it broken: the next frame makes it afresh.
+    fn start_afresh(&mut self) {
+        self.frames.clear();
+        self.uploads.clear();
+        self.uploads_idle = 0;
+        self.scope_copy = None;
+        self.spare.clear();
+    }
+
+    /// Keeps upload slots for the layers of a frame of `layers` layers: the
+    /// slots past those are let go once frames have needed fewer for a while
+    /// (each holds textures the size of a decoded picture).
+    fn keep_uploads_for(&mut self, layers: usize) {
+        let needed = layers * 2;
+        if self.uploads.len() > needed {
+            self.uploads_idle += 1;
+            if self.uploads_idle >= UPLOADS_IDLE_FOR {
+                self.uploads.truncate(needed);
+                self.uploads_idle = 0;
+            }
+        } else {
+            self.uploads_idle = 0;
+        }
+        self.uploads.resize_with(self.uploads.len().max(needed), || None);
     }
 
     /// Draws the picture `description` describes into a frame of its size,
@@ -103,7 +165,31 @@ impl Composer {
     /// (see-through where nothing is) and drawn as one layer; an adjustment
     /// layer has what is below it put together first and drawn again,
     /// coloured, over itself (see `Drawing`).
+    ///
+    /// A graphics error on the way is returned for this frame
+    /// (`NotComposed::Graphics`) rather than ending the thread.
     pub fn compose(
+        &mut self,
+        description: &FrameDescription,
+        pictures: Vec<(usize, Decoded, Option<Decoded>)>,
+    ) -> Result<Composed, NotComposed> {
+        let device = self.composing.device.clone();
+        match render::caught(&device, || self.compose_checked(description, pictures)) {
+            Ok(Ok(composed)) => Ok(composed),
+            Ok(Err(Refused)) => Err(NotComposed::Refused),
+            Err(error) => {
+                tracing::warn!("a frame could not be put together: {error}");
+                self.start_afresh();
+                Err(NotComposed::Graphics(graphics_error(
+                    "A frame of the timeline could not be put together on the graphics card.",
+                    &error,
+                )))
+            }
+        }
+    }
+
+    /// `compose`, with graphics errors left to the caller to catch.
+    fn compose_checked(
         &mut self,
         description: &FrameDescription,
         pictures: Vec<(usize, Decoded, Option<Decoded>)>,
@@ -114,8 +200,7 @@ impl Composer {
         let mut on_device = false;
         let mut placed: Vec<Option<Placed>> = Vec::new();
         placed.resize_with(description.layers.len(), || None);
-        self.uploads
-            .resize_with(self.uploads.len().max(description.layers.len() * 2), || None);
+        self.keep_uploads_for(description.layers.len());
         for (index, decoded, next) in pictures {
             if index >= placed.len() {
                 continue;
@@ -168,34 +253,45 @@ impl Composer {
     }
 
     /// `composed` drawn at about `width` pixels across and read back as
-    /// display values, for the scopes. Waits for the graphics card: on the
-    /// preview's worker only. `None` when it couldn't be read.
+    /// display values, for the scopes. Waits for the graphics card (a few
+    /// seconds at most, without keeping the device from the window): on the
+    /// preview's worker only. `None` when it couldn't be read; a graphics
+    /// error is logged and the next sample starts afresh.
     pub fn sample(&mut self, composed: &Composed, width: u32) -> Option<crate::scope::Sampled> {
+        let device = self.composing.device.clone();
+        match render::caught(&device, || self.sample_checked(composed, width)) {
+            Ok(sampled) => sampled,
+            Err(error) => {
+                tracing::warn!("the picture for the scopes could not be read back: {error}");
+                self.scope_copy = None;
+                None
+            }
+        }
+    }
+
+    /// `sample`, with graphics errors left to the caller to catch.
+    fn sample_checked(&mut self, composed: &Composed, width: u32) -> Option<crate::scope::Sampled> {
         let (device, queue) = (&self.composing.device, &self.composing.queue);
         let (fw, fh) = composed.size();
         let w = width.min(fw).max(1);
         let h = ((u64::from(fh) * u64::from(w)) / u64::from(fw.max(1))).max(1) as u32;
-        let mut small = self.compositor.frame(device, (w, h));
+        // The copy and its buffer from last time when the size is the same.
+        let mut copy = match self.scope_copy.take() {
+            Some(kept) if kept.small.size() == (w, h) => kept,
+            _ => ScopeCopy::new(&self.compositor, device, (w, h)),
+        };
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("a small copy for the scopes"),
         });
         let whole = Area::fitted((w, h), (w, h));
         let drawn = [made(&composed.frame, whole, Part::WHOLE, 1.0, Colour::NEUTRAL)];
         self.compositor
-            .draw(device, queue, &mut encoder, &mut small, &drawn);
-        let linear = small.working() == Working::Linear;
-        let bytes = if linear { 8 } else { 4 };
-        let row = (w * bytes).div_ceil(256) * 256;
-        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("scope read back"),
-            size: u64::from(row * h),
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
+            .draw(device, queue, &mut encoder, &mut copy.small, &drawn);
+        let (linear, bytes, row) = (copy.linear(), copy.bytes(), copy.row());
         encoder.copy_texture_to_buffer(
-            small.texture().as_image_copy(),
+            copy.small.texture().as_image_copy(),
             wgpu::TexelCopyBufferInfo {
-                buffer: &buffer,
+                buffer: &copy.buffer,
                 layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(row),
@@ -209,33 +305,41 @@ impl Composer {
             },
         );
         queue.submit([encoder.finish()]);
-        let (sender, ready) = std::sync::mpsc::channel();
-        buffer.map_async(wgpu::MapMode::Read, .., move |result| {
-            let _ = sender.send(result.is_ok());
-        });
-        device.poll(wgpu::PollType::wait_indefinitely()).ok()?;
-        if !ready.recv().unwrap_or(false) {
-            return None;
-        }
-        let mapped = buffer.get_mapped_range(..).ok()?;
-        let mut rgb = Vec::with_capacity((w * h) as usize);
-        for line in mapped.chunks(row as usize) {
-            for p in line[..(w * bytes) as usize].chunks(bytes as usize) {
-                rgb.push(match linear {
-                    true => {
-                        let channel = |k: usize| half(u16::from_le_bytes([p[2 * k], p[2 * k + 1]]));
-                        let alpha = channel(3).max(1e-5);
-                        [0, 1, 2].map(|k| (channel(k) / alpha).clamp(0.0, 1.0).powf(1.0 / 2.4))
+        // On an error the buffer is let go of by `read_back` and can be used again.
+        let read = render::read_back(device, &[&copy.buffer], SAMPLE_PATIENCE);
+        let sampled = match read {
+            Ok(()) => {
+                let sampled = copy.buffer.get_mapped_range(..).ok().map(|mapped| {
+                    let mut rgb = Vec::with_capacity((w * h) as usize);
+                    for line in mapped.chunks(row as usize) {
+                        for p in line[..(w * bytes) as usize].chunks(bytes as usize) {
+                            rgb.push(match linear {
+                                true => {
+                                    let channel =
+                                        |k: usize| half(u16::from_le_bytes([p[2 * k], p[2 * k + 1]]));
+                                    let alpha = channel(3).max(1e-5);
+                                    [0, 1, 2].map(|k| (channel(k) / alpha).clamp(0.0, 1.0).powf(1.0 / 2.4))
+                                }
+                                false => [0, 1, 2].map(|k| f32::from(p[k]) / 255.0),
+                            });
+                        }
                     }
-                    false => [0, 1, 2].map(|k| f32::from(p[k]) / 255.0),
+                    crate::scope::Sampled {
+                        width: w as usize,
+                        height: h as usize,
+                        rgb,
+                    }
                 });
+                copy.buffer.unmap();
+                sampled
             }
-        }
-        Some(crate::scope::Sampled {
-            width: w as usize,
-            height: h as usize,
-            rgb,
-        })
+            Err(error) => {
+                tracing::debug!("the picture for the scopes did not come back: {error:?}");
+                None
+            }
+        };
+        self.scope_copy = Some(copy);
+        sampled
     }
 
     /// One decoded picture as textures on the device, written into upload
@@ -299,6 +403,52 @@ impl Composer {
         }
         Arc::new(self.compositor.frame(&self.composing.device, size))
     }
+}
+
+/// The small copy of a frame for the scopes, and the buffer it is read
+/// back through.
+struct ScopeCopy {
+    small: Frame,
+    buffer: wgpu::Buffer,
+}
+
+impl ScopeCopy {
+    fn new(compositor: &Compositor, device: &wgpu::Device, size: (u32, u32)) -> ScopeCopy {
+        let small = compositor.frame(device, size);
+        let row = row_bytes(size.0, small.working() == Working::Linear);
+        ScopeCopy {
+            small,
+            buffer: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("scope read back"),
+                size: u64::from(row) * u64::from(size.1),
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            }),
+        }
+    }
+
+    fn linear(&self) -> bool {
+        self.small.working() == Working::Linear
+    }
+
+    /// Bytes a pixel takes: 16-bit floats in linear light, else 8 bits.
+    fn bytes(&self) -> u32 {
+        pixel_bytes(self.linear())
+    }
+
+    fn row(&self) -> u32 {
+        row_bytes(self.small.size().0, self.linear())
+    }
+}
+
+fn pixel_bytes(linear: bool) -> u32 {
+    if linear { 8 } else { 4 }
+}
+
+/// Bytes a row of `width` pixels takes in a read-back buffer (rows start at
+/// multiples of 256).
+fn row_bytes(width: u32, linear: bool) -> u32 {
+    (width * pixel_bytes(linear)).div_ceil(256) * 256
 }
 
 /// One layer's decoded picture on the device, ready to draw.

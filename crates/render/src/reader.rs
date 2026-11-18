@@ -14,12 +14,14 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
 /// Why a frame could not be read back.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReadError {
     /// The graphics card did not hand the pixels over.
     Refused,
     /// It did not answer in time.
     TimedOut,
+    /// The graphics library refused the work, in its words.
+    Graphics(String),
 }
 
 /// How long one frame may take to come back.
@@ -128,6 +130,8 @@ impl Reader {
     /// Reads `frame` (made in `working`) into `out`: brightness rows, then
     /// colour rows, without padding. Waits until the card has drawn and
     /// handed over, without keeping the device from anyone else meanwhile.
+    /// A graphics error on the way is returned (`ReadError::Graphics`), not
+    /// the end of the thread, and the reader can be used again after any error.
     pub fn read(
         &mut self,
         device: &wgpu::Device,
@@ -136,6 +140,44 @@ impl Reader {
         working: Working,
         out: &mut Vec<u8>,
     ) -> Result<(), ReadError> {
+        self.read_within(device, queue, frame, working, out, PATIENCE)
+    }
+
+    /// `read`, giving up after `patience`.
+    pub(crate) fn read_within(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        frame: &wgpu::TextureView,
+        working: Working,
+        out: &mut Vec<u8>,
+        patience: Duration,
+    ) -> Result<(), ReadError> {
+        let caught = crate::caught::caught(device, || {
+            self.draw(device, queue, frame, working);
+            let buffers = [&self.luma.buffer, &self.chroma.buffer];
+            read_back(device, &buffers, patience)?;
+            out.clear();
+            out.reserve(self.bytes());
+            let mut result = Ok(());
+            for plane in [&self.luma, &self.chroma] {
+                match plane.buffer.get_mapped_range(..) {
+                    Ok(mapped) => {
+                        for row in mapped.chunks(plane.stride as usize) {
+                            out.extend_from_slice(&row[..plane.row as usize]);
+                        }
+                    }
+                    Err(_) => result = Err(ReadError::Refused),
+                }
+                plane.buffer.unmap();
+            }
+            result
+        });
+        caught.unwrap_or_else(|error| Err(ReadError::Graphics(crate::caught::describe(&error))))
+    }
+
+    /// Draws both planes and copies them into their buffers.
+    fn draw(&self, device: &wgpu::Device, queue: &wgpu::Queue, frame: &wgpu::TextureView, working: Working) {
         let linear = if working == Working::Linear { 1.0f32 } else { 0.0 };
         let flags: Vec<u8> = [linear, 0.0, 0.0, 0.0]
             .iter()
@@ -193,57 +235,57 @@ impl Reader {
             );
         }
         queue.submit([encoder.finish()]);
+    }
+}
 
-        // Both planes are asked for, then waited for together.
-        let states = [&self.luma, &self.chroma].map(|plane| {
+/// Asks for `buffers` (copied into on the card, submitted already) to be
+/// handed over for reading and waits for all of them, at most `patience`,
+/// without keeping the device from anyone else meanwhile: on `Ok` every one
+/// is mapped, to be read and unmapped by the caller. On an error none is
+/// left mapped or waiting, so the buffers can be copied into again.
+pub fn read_back(
+    device: &wgpu::Device,
+    buffers: &[&wgpu::Buffer],
+    patience: Duration,
+) -> Result<(), ReadError> {
+    let states: Vec<Arc<AtomicU8>> = buffers
+        .iter()
+        .map(|buffer| {
             let state = Arc::new(AtomicU8::new(WAITING));
             let told = state.clone();
-            plane.buffer.map_async(wgpu::MapMode::Read, .., move |result| {
+            buffer.map_async(wgpu::MapMode::Read, .., move |result| {
                 told.store(if result.is_ok() { READY } else { FAILED }, Ordering::Release);
             });
             state
-        });
-        let give_up = Instant::now() + PATIENCE;
-        loop {
-            // Looked at again and again rather than waited on: a wait would
-            // hold the device while the window wants to draw.
-            let _ = device.poll(wgpu::PollType::Poll);
-            let now = states.each_ref().map(|state| state.load(Ordering::Acquire));
-            if now.contains(&FAILED) {
-                self.unmap(&now);
-                return Err(ReadError::Refused);
-            }
-            if now == [READY, READY] {
-                break;
-            }
-            if Instant::now() >= give_up {
-                return Err(ReadError::TimedOut);
-            }
-            std::thread::sleep(Duration::from_micros(150));
+        })
+        .collect();
+    let give_up = Instant::now() + patience;
+    loop {
+        if Instant::now() >= give_up {
+            let_go(buffers, &states);
+            return Err(ReadError::TimedOut);
         }
-        out.clear();
-        out.reserve(self.bytes());
-        let mut result = Ok(());
-        for plane in [&self.luma, &self.chroma] {
-            match plane.buffer.get_mapped_range(..) {
-                Ok(mapped) => {
-                    for row in mapped.chunks(plane.stride as usize) {
-                        out.extend_from_slice(&row[..plane.row as usize]);
-                    }
-                }
-                Err(_) => result = Err(ReadError::Refused),
-            }
-            plane.buffer.unmap();
+        // Looked at again and again rather than waited on: a wait would
+        // hold the device while the window wants to draw.
+        let _ = device.poll(wgpu::PollType::Poll);
+        let now: Vec<u8> = states.iter().map(|state| state.load(Ordering::Acquire)).collect();
+        if now.contains(&FAILED) {
+            let_go(buffers, &states);
+            return Err(ReadError::Refused);
         }
-        result
+        if now.iter().all(|state| *state == READY) {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_micros(150));
     }
+}
 
-    /// Lets go of the planes that did come back when another failed.
-    fn unmap(&self, states: &[u8; 2]) {
-        for (plane, state) in [&self.luma, &self.chroma].into_iter().zip(states) {
-            if *state == READY {
-                plane.buffer.unmap();
-            }
+/// Unmaps the buffers that came back or are still being waited for (which
+/// stops the wait); the ones that failed are not mapped.
+fn let_go(buffers: &[&wgpu::Buffer], states: &[Arc<AtomicU8>]) {
+    for (buffer, state) in buffers.iter().zip(states) {
+        if state.load(Ordering::Acquire) != FAILED {
+            buffer.unmap();
         }
     }
 }
