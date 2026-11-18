@@ -727,26 +727,30 @@ enum Gone {
 }
 
 /// A sound card: a thread calling the mix at real-time pace through the
-/// same [`Held`] the real callback uses, until it goes away `after` a while
-/// (it stays alive, not calling, until let go, as a stuck driver does).
+/// same [`Held`] the real callback uses, until it goes away after `calls`
+/// calls (it stays alive, not calling, until let go, as a stuck driver does).
 struct FakeCard {
     stop: Arc<std::sync::atomic::AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl FakeCard {
-    fn start(slot: Slot, shared: Arc<Shared>, gone: Gone, after: Duration) -> FakeCard {
+    /// Frames handed to the mix per call: 10 ms at [`RATE`].
+    const FRAMES: usize = 480;
+
+    fn start(slot: Slot, shared: Arc<Shared>, gone: Gone, calls: usize) -> FakeCard {
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let stopped = Arc::clone(&stop);
         let thread = std::thread::spawn(move || {
             let mut held = Held::new(slot);
-            let mut buffer = vec![0f32; 480 * 2];
-            let started = Instant::now();
+            let mut buffer = vec![0f32; FakeCard::FRAMES * 2];
+            let mut called = 0;
             while !stopped.load(Ordering::Acquire) {
-                if started.elapsed() < after {
+                if called < calls {
                     if let Some(output) = held.output() {
                         output.render(&mut buffer, 2);
                     }
+                    called += 1;
                 } else if matches!(gone, Gone::Saying) {
                     shared.lost.store(true, Ordering::Release);
                 }
@@ -769,56 +773,65 @@ impl Drop for FakeCard {
     }
 }
 
-/// When the sound card goes away mid-play, playback carries on unheard from
-/// where it was, the clock and meters moving, and jumps stay quick.
-fn plays_on_when_the_sound_card_goes_away(gone: Gone) {
-    let project = recording();
+/// Longer than [`poll`] waits: a jump that waits this long for a sound card
+/// fails the test however fast the machine, so a jump taken at all wasn't
+/// held up by the card.
+const NEVER: Duration = Duration::from_secs(60);
+
+/// Plays `project` from `from` through a [`FakeCard`] that goes away
+/// (`gone`) after `calls` calls, the audio thread waiting on it as `limits`
+/// say.
+fn with_fake_card(project: Project, from: Time, gone: Gone, calls: usize, limits: Limits) -> Playback {
     let seq = project.active_sequence;
-    let from = Time::from_ratio(1, 4).unwrap();
     let (send, inbox) = channel();
-    let mut playback = Playback::with_audio(seq, from, send, move |clock| {
-        let (session, output) = prepare(project, seq, from, (RATE, 2), clock).unwrap();
+    Playback::with_audio(seq, from, send, move |clock| {
+        let (mut session, output) = prepare(project, seq, from, (RATE, 2), clock).unwrap();
+        session.limits = limits;
         let slot: Slot = Arc::new(Mutex::new(Some(output)));
-        let card = FakeCard::start(
-            Arc::clone(&slot),
-            Arc::clone(&clock.output),
-            gone,
-            Duration::from_millis(500),
-        );
+        let card = FakeCard::start(Arc::clone(&slot), Arc::clone(&clock.output), gone, calls);
         clock.follow_sound();
         let heard = Heard {
             stream: Box::new(card),
             slot,
         };
         play(session, Some(heard), (RATE, 2), clock, &inbox);
-    });
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !playback.unheard() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    assert!(playback.unheard(), "{gone:?}: playing on unheard");
+    })
+}
+
+/// When the sound card goes away mid-play, playback carries on unheard from
+/// where it was, the clock and meters moving, and jumps don't wait for the
+/// card any more.
+fn plays_on_when_the_sound_card_goes_away(gone: Gone) {
+    let from = Time::from_ratio(1, 4).unwrap();
+    let begun = Instant::now();
+    // Half a second of sound, then gone. A jump never gives up on the card
+    // by itself.
+    let limits = Limits {
+        jump_patience: NEVER,
+        ..Limits::PLAYING
+    };
+    let mut playback = with_fake_card(recording(), from, gone, 50, limits);
+    poll(|| playback.unheard().then_some(()));
     assert!(!playback.has_sound());
-    // The clock goes on from where the card left it, at real-time pace.
+    // The clock goes on from where the card left it.
     let a = playback.position();
     assert!(a > from + tenth(), "{gone:?}: it played first: {a:?}");
-    std::thread::sleep(Duration::from_millis(300));
-    let moved = (playback.position() - a).as_secs_f64();
-    assert!((0.15..0.6).contains(&moved), "{gone:?}: moved {moved} s in 0.3 s");
+    poll(|| playback.levels().momentary.is_finite().then_some(()));
+    // At real-time pace: it moves on, and is never ahead of the time passed
+    // by more than what the card and the paced thread were handed ahead
+    // (a call's frames and a buffer of 512).
+    let b = poll(|| Some(playback.position()).filter(|b| *b - a > tenth()));
+    let passed = begun.elapsed().as_secs_f64();
+    let played = (b - from).as_secs_f64();
+    let ahead = (FakeCard::FRAMES + 512) as f64 / f64::from(RATE);
     assert!(
-        playback.levels().momentary.is_finite(),
-        "{gone:?}: the meter moves"
+        played <= passed + ahead,
+        "{gone:?}: {played} s played in {passed} s"
     );
-    // A jump is taken at once, not after waiting for the card.
-    let asked = Instant::now();
+    // A jump is taken by the paced thread, not left waiting for the card.
     playback.jump(Time::seconds(1));
-    while playback.position() <= Time::seconds(1) && asked.elapsed() < Duration::from_secs(5) {
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    assert!(
-        asked.elapsed() < Duration::from_millis(800),
-        "{gone:?}: the jump took {:?}",
-        asked.elapsed()
-    );
+    poll(|| (playback.position() > Time::seconds(1)).then_some(()));
+    assert!(playback.unheard(), "{gone:?}");
 }
 
 #[test]
@@ -835,37 +848,16 @@ fn playback_goes_on_unheard_when_the_sound_card_says_it_is_gone() {
 /// goes on unheard, and is not held up for the jump's whole patience.
 #[test]
 fn a_jump_while_the_sound_card_goes_away_is_not_held_up() {
-    let project = recording();
-    let seq = project.active_sequence;
-    let (send, inbox) = channel();
-    let mut playback = Playback::with_audio(seq, Time::ZERO, send, move |clock| {
-        let (session, output) = prepare(project, seq, Time::ZERO, (RATE, 2), clock).unwrap();
-        let slot: Slot = Arc::new(Mutex::new(Some(output)));
-        // Gone before it ever calls.
-        let card = FakeCard::start(
-            Arc::clone(&slot),
-            Arc::clone(&clock.output),
-            Gone::Quietly,
-            Duration::ZERO,
-        );
-        clock.follow_sound();
-        let heard = Heard {
-            stream: Box::new(card),
-            slot,
-        };
-        play(session, Some(heard), (RATE, 2), clock, &inbox);
-    });
+    // Gone before it ever calls; found gone long before a jump would give
+    // up on it.
+    let limits = Limits {
+        jump_patience: NEVER,
+        quiet: Duration::from_millis(50),
+    };
+    let mut playback = with_fake_card(recording(), Time::ZERO, Gone::Quietly, 0, limits);
     playback.jump(Time::seconds(1));
-    let asked = Instant::now();
-    while playback.position() <= Time::seconds(1) && asked.elapsed() < Duration::from_secs(10) {
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    poll(|| (playback.position() > Time::seconds(1)).then_some(()));
     assert!(playback.unheard());
-    assert!(
-        asked.elapsed() < Duration::from_millis(1_900),
-        "the jump took {:?}",
-        asked.elapsed()
-    );
 }
 
 #[test]

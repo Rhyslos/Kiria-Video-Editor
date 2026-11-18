@@ -62,6 +62,24 @@ const QUIET_LIMIT: Duration = Duration::from_secs(1);
 /// that went away before it plays on by the wall clock.
 const GIVE_BACK_PATIENCE: Duration = Duration::from_secs(2);
 
+/// How long the audio thread waits on a sound card: [`JUMP_PATIENCE`] and
+/// [`QUIET_LIMIT`] when playing. Tests set them far apart, so that whether
+/// a jump was held up shows without timing it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Limits {
+    /// The longest a jump waits for the sound card to take it.
+    jump_patience: Duration,
+    /// A sound card quiet for this long has gone away.
+    quiet: Duration,
+}
+
+impl Limits {
+    const PLAYING: Limits = Limits {
+        jump_patience: JUMP_PATIENCE,
+        quiet: QUIET_LIMIT,
+    };
+}
+
 /// Audio threads that have not ended yet, across every playback of this
 /// run. Stopping never waits for them; closing the app does, briefly
 /// ([`wait_until_quiet`]).
@@ -437,6 +455,8 @@ struct Session {
     /// A jump the sound card went away during, made again once the mix
     /// plays on unheard.
     pending: Option<(Time, u64)>,
+    /// How long it waits on the sound card.
+    limits: Limits,
 }
 
 /// Makes the mixer for `sequence` at `rate`, adds every track, sends it to
@@ -494,6 +514,7 @@ fn prepare(
             analysed: None,
             card: false,
             pending: None,
+            limits: Limits::PLAYING,
         },
         output,
     ))
@@ -570,8 +591,8 @@ impl Session {
         match self.controller.locate(sample) {
             Ok(located) => {
                 // The callback takes the jump at its next call, and says so.
-                let give_up = Instant::now() + JUMP_PATIENCE;
-                let mut quiet = Quiet::new(out, Instant::now());
+                let give_up = Instant::now() + self.limits.jump_patience;
+                let mut quiet = Quiet::new(out, Instant::now(), self.limits.quiet);
                 while out.heard_after.load(Ordering::Acquire) < located && !clock.stopped() {
                     if self.card && (out.lost.load(Ordering::Acquire) || quiet.too_long(out, Instant::now()))
                     {
@@ -668,7 +689,7 @@ fn play(
     inbox: &Receiver<Message>,
 ) {
     let out = &clock.output;
-    let mut quiet = Quiet::new(out, Instant::now());
+    let mut quiet = Quiet::new(out, Instant::now(), session.limits.quiet);
     while !clock.stopped() {
         session.card = heard.is_some();
         if heard.is_some() && (out.lost.load(Ordering::Acquire) || quiet.too_long(out, Instant::now())) {
@@ -720,17 +741,20 @@ fn play_unheard(output: Output, shape: (u32, usize), clock: &Arc<Clock>) {
 struct Quiet {
     calls: u64,
     since: Instant,
+    /// How long quiet is too long ([`QUIET_LIMIT`] when playing).
+    limit: Duration,
 }
 
 impl Quiet {
-    fn new(out: &Shared, now: Instant) -> Quiet {
+    fn new(out: &Shared, now: Instant, limit: Duration) -> Quiet {
         Quiet {
             calls: out.calls.load(Ordering::Acquire),
             since: now,
+            limit,
         }
     }
 
-    /// Whether the callback hasn't been called for [`QUIET_LIMIT`] by `now`.
+    /// Whether the callback hasn't been called for `limit` by `now`.
     fn too_long(&mut self, out: &Shared, now: Instant) -> bool {
         let calls = out.calls.load(Ordering::Acquire);
         if calls != self.calls {
@@ -738,7 +762,7 @@ impl Quiet {
             self.since = now;
             return false;
         }
-        now.duration_since(self.since) >= QUIET_LIMIT
+        now.duration_since(self.since) >= self.limit
     }
 }
 
