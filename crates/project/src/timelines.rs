@@ -131,10 +131,23 @@ pub(crate) fn add(p: &mut Project, name: &str, settings: SequenceSettings) -> di
     Ok(())
 }
 
+/// Refuses, explained, a picture size or sound rate a timeline can't have:
+/// a side of zero or over [`SequenceSettings::MOST_SIDE`], or a sound rate
+/// outside [`SequenceSettings::SAMPLE_RATES`].
 pub(crate) fn check_settings(settings: &SequenceSettings) -> diag::Result<()> {
-    if settings.width == 0 || settings.height == 0 || settings.sample_rate == 0 {
-        return Err(AppError::new("Those timeline settings can't be used")
-            .why("The picture size and sound rate must be above zero."));
+    let most = SequenceSettings::MOST_SIDE;
+    let (lowest, highest) = SequenceSettings::SAMPLE_RATES;
+    let sides = [settings.width, settings.height];
+    if sides.iter().any(|side| !(1..=most).contains(side))
+        || !(lowest..=highest).contains(&settings.sample_rate)
+    {
+        return Err(
+            AppError::new("Those timeline settings can't be used").why(format!(
+                "The picture's sides go from 1 to {most} pixels and the sound rate from {} to {} kHz.",
+                lowest / 1000,
+                highest / 1000
+            )),
+        );
     }
     Ok(())
 }

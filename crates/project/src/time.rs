@@ -207,11 +207,35 @@ impl Time {
 }
 
 /// How fast a clip plays its file, as an exact fraction: 1/2 is half speed
-/// (slow motion), 2/1 twice as fast.
+/// (slow motion), 2/1 twice as fast. Read from a file through
+/// [`Speed::new`], so a speed it refuses (zero, or outside 1/100 to 100)
+/// never loads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "SpeedFields")]
 pub struct Speed {
     num: u32,
     den: u32,
+}
+
+/// A speed as written in a file, before [`Speed::new`] has checked it.
+/// Named like [`Speed`] so files that name their structs read the same.
+#[derive(Deserialize)]
+#[serde(rename = "Speed")]
+struct SpeedFields {
+    num: u32,
+    den: u32,
+}
+
+impl TryFrom<SpeedFields> for Speed {
+    type Error = String;
+    fn try_from(fields: SpeedFields) -> Result<Self, Self::Error> {
+        Speed::new(fields.num, fields.den).map_err(|_| {
+            format!(
+                "a speed of {}/{} (a clip plays from 1/100 to 100 times as fast)",
+                fields.num, fields.den
+            )
+        })
+    }
 }
 
 impl Speed {

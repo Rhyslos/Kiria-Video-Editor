@@ -40,6 +40,11 @@ pub struct SequenceSettings {
 }
 
 impl SequenceSettings {
+    /// The longest side a timeline's picture can have, pixels.
+    pub const MOST_SIDE: u32 = 16_384;
+    /// The lowest and highest sound rates a timeline can have, Hz.
+    pub const SAMPLE_RATES: (u32, u32) = (8_000, 768_000);
+
     /// 1920×1080 at 60 fps, 48 kHz: the "Game clip" preset.
     pub const GAME_CLIP: SequenceSettings = SequenceSettings {
         width: 1920,
@@ -73,14 +78,32 @@ impl SequenceSettings {
     ];
 
     /// Settings matching a video: its upright size and frame rate, and the
-    /// sound rate of its first sound stream (48 kHz when it has none).
+    /// sound rate of its first sound stream (48 kHz when it has none). A
+    /// picture larger than [`SequenceSettings::MOST_SIDE`] is made smaller,
+    /// keeping its shape, and the sound rate is kept within
+    /// [`SequenceSettings::SAMPLE_RATES`].
     pub fn matching(video: &VideoStream, audio: &[AudioStream]) -> SequenceSettings {
         let (width, height) = video.display_size();
+        let largest = width.max(height);
+        let (width, height) = match largest > SequenceSettings::MOST_SIDE {
+            false => (width, height),
+            true => {
+                let fit = |side: u32| {
+                    let side = u64::from(side) * u64::from(SequenceSettings::MOST_SIDE) / u64::from(largest);
+                    u32::try_from(side).unwrap_or(SequenceSettings::MOST_SIDE).max(1)
+                };
+                (fit(width), fit(height))
+            }
+        };
+        let (lowest, highest) = SequenceSettings::SAMPLE_RATES;
         SequenceSettings {
             width,
             height,
             frame_rate: video.frame_rate,
-            sample_rate: audio.first().map_or(48_000, |a| a.sample_rate).max(8_000),
+            sample_rate: audio
+                .first()
+                .map_or(48_000, |a| a.sample_rate)
+                .clamp(lowest, highest),
         }
     }
 
@@ -432,9 +455,99 @@ pub enum FrameBlend {
     Blend,
 }
 
+impl Track {
+    /// The volume a track or a whole mix can have, in decibels.
+    pub const GAINS_DB: std::ops::RangeInclusive<f32> = -60.0..=12.0;
+
+    /// What is wrong with the track's own settings (its volume and sound),
+    /// in plain words, each starting with `place`. Its clips are checked
+    /// one by one with [`Clip::problems`].
+    pub fn problems(&self, place: &str) -> Vec<String> {
+        let mut problems = Vec::new();
+        if !Track::GAINS_DB.contains(&self.gain_db) {
+            problems.push(format!("{place} has a volume out of range"));
+        }
+        if let Err(err) = self.sound.check() {
+            problems.push(format!("{place}: {err}"));
+        }
+        problems
+    }
+}
+
 impl Clip {
     pub fn end(&self) -> Time {
         self.start + self.duration
+    }
+
+    /// What is wrong with the clip itself, wherever it is kept (a
+    /// project's timeline or a template), in plain words, each starting
+    /// with `place`: its kind on a track of `track` kind, its length and
+    /// place, and every setting it carries (sound, lines, keyframes, speed
+    /// ramp, effects, grade, title, transition). Whether what it plays
+    /// exists and whether it overlaps others is for what holds it. Its
+    /// look is not checked here: projects saved with a quick colour past
+    /// the sliders' range still open (the stored samples have one), and a
+    /// look's numbers are only ever drawn with, never counted with.
+    pub fn problems(&self, place: &str, track: TrackKind) -> Vec<String> {
+        let mut problems = Vec::new();
+        match self.kind {
+            ClipKind::File | ClipKind::Timeline(_) => {}
+            ClipKind::Adjustment => {
+                if track == TrackKind::Audio {
+                    problems.push(format!("{place} is an adjustment layer on an audio track"));
+                }
+            }
+            ClipKind::Title => {
+                if track == TrackKind::Audio {
+                    problems.push(format!("{place} is a title on an audio track"));
+                }
+                match &self.title {
+                    None => problems.push(format!("{place} is a title with no words")),
+                    Some(title) => {
+                        if let Err(err) = title.check() {
+                            problems.push(format!("{place}: {err}"));
+                        }
+                    }
+                }
+            }
+        }
+        if !self.is_file() && self.media != MediaId::NONE {
+            problems.push(format!("{place} plays no file but names {}", self.media));
+        }
+        if self.duration <= Time::ZERO {
+            problems.push(format!("{place} has no length"));
+        }
+        if self.start.is_negative() || self.starts_before_its_source() {
+            problems.push(format!("{place} starts before zero"));
+        }
+        if self.sound != self.sound.within_limits() {
+            problems.push(format!("{place} has a volume or pan out of range"));
+        }
+        if !self.sound.fits(self.duration) {
+            problems.push(format!("{place} has fades longer than itself"));
+        }
+        if let Err(err) = self.lines.check() {
+            problems.push(format!("{place}: {err}"));
+        }
+        problems.extend(self.keyframes.problems(place));
+        problems.extend(self.ramp.problems(place));
+        if track == TrackKind::Audio && !self.keyframes.is_empty() {
+            problems.push(format!("{place} is sound but has picture keyframes"));
+        }
+        if !self.effects.is_empty()
+            && let Err(err) = self.effects.check()
+        {
+            problems.push(format!("{place}: {err}"));
+        }
+        if let Err(err) = self.grade.check() {
+            problems.push(format!("{place}: {err}"));
+        }
+        // Whether a clip ends where it starts is up to edits (a transition
+        // with none waits, unused), so only its own length is checked here.
+        if self.transition.is_some_and(|t| t.length <= Time::ZERO) {
+            problems.push(format!("{place} has a transition of no length"));
+        }
+        problems
     }
 
     /// The timeline it plays, when it is a nested timeline.
@@ -673,8 +786,14 @@ impl Project {
             }
         }
         for sequence in &self.sequences {
-            if sequence.settings.width == 0 || sequence.settings.height == 0 {
-                problems.push(format!("{} has no picture size", sequence.name));
+            if let Err(err) = crate::timelines::check_settings(&sequence.settings) {
+                problems.push(format!("{}: {err}", sequence.name));
+            }
+            if !Track::GAINS_DB.contains(&sequence.master_gain_db) {
+                problems.push(format!("{} has a master volume out of range", sequence.name));
+            }
+            if let Err(err) = sequence.master_sound.check() {
+                problems.push(format!("{}'s master: {err}", sequence.name));
             }
             if let Some(region) = sequence.region
                 && region.start >= region.end
@@ -692,6 +811,7 @@ impl Project {
                     if track.kind != kind {
                         problems.push(format!("track {} is in the wrong area", track.name));
                     }
+                    problems.extend(track.problems(&format!("{} › {}", sequence.name, track.name)));
                     self.check_clips(sequence, track, &mut problems);
                 }
             }
@@ -768,45 +888,9 @@ impl Project {
                         problems.push(format!("{place} plays the timeline it is on"));
                     }
                 }
-                ClipKind::Adjustment => {
-                    if track.kind == TrackKind::Audio {
-                        problems.push(format!("{place} is an adjustment layer on an audio track"));
-                    }
-                }
-                ClipKind::Title => {
-                    if track.kind == TrackKind::Audio {
-                        problems.push(format!("{place} is a title on an audio track"));
-                    }
-                    match &clip.title {
-                        None => problems.push(format!("{place} is a title with no words")),
-                        Some(title) => {
-                            if let Err(err) = title.check() {
-                                problems.push(format!("{place}: {err}"));
-                            }
-                        }
-                    }
-                }
+                ClipKind::Adjustment | ClipKind::Title => {}
             }
-            if !clip.is_file() && clip.media != MediaId::NONE {
-                problems.push(format!("{place} plays no file but names {}", clip.media));
-            }
-            if clip.duration <= Time::ZERO {
-                problems.push(format!("{place} has no length"));
-            }
-            if clip.start.is_negative() || clip.starts_before_its_source() {
-                problems.push(format!("{place} starts before zero"));
-            }
-            if clip.sound != clip.sound.within_limits() {
-                problems.push(format!("{place} has a volume or pan out of range"));
-            }
-            if !clip.sound.fits(clip.duration) {
-                problems.push(format!("{place} has fades longer than itself"));
-            }
-            problems.extend(clip.keyframes.problems(&place));
-            problems.extend(clip.ramp.problems(&place));
-            if track.kind == TrackKind::Audio && !clip.keyframes.is_empty() {
-                problems.push(format!("{place} is sound but has picture keyframes"));
-            }
+            problems.extend(clip.problems(&place, track.kind));
             if previous_end.is_some_and(|end| clip.start < end) {
                 problems.push(format!("{place} overlaps the clip before it"));
             }
