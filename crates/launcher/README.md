@@ -20,7 +20,7 @@ Phase 2 in progress. Done: the project browser (folder tree, project grid, searc
 4. Opening a project starts the editor with its path, notes the time in the index and closes the window. A download still running finishes before the process exits.
 5. In an installed copy the launcher then waits, without a window, up to 20 seconds for the editor to report that its first window is on screen (`updater::health`). Two failed starts in a row switch back to the previous version, mark the failed one so it is never offered again, and open the launcher to explain (with Report the problem and Show crash reports).
 5. Only one launcher updates at a time (`updater::UpdateLock`): installing a waiting update, downloading one and the check after the editor's start each take the lock first. Opening two projects at once starts two launchers; the one that finds the lock taken skips that step this time, notes it in the log, shows no error (the version panel says "Updating in another window") and opens normally.
-5. Finding projects on disk, renames, moves, deletes, file dialogs and update checks all run on worker threads (`work.rs`); the interface thread only reads the index.
+5. Finding projects on disk, renames, moves, deletes, file dialogs and update checks all run on worker threads (`work.rs`), and update choices are written to `updates.ron` by a `project::disk::Keeper` on a thread of its own (whole or not at all, flushed before the process exits); the interface thread only reads the index.
 
 ## Renaming, moving and deleting a project
 

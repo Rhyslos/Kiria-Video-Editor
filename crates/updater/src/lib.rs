@@ -13,6 +13,8 @@
 //!   previous one, which it never offers again.
 //! - [`lock::UpdateLock`] lets one launcher at a time download, install or
 //!   check a start; another skips updating that time.
+//! - [`state_file`] writes the small state files whole or not at all and
+//!   keeps an unreadable one aside.
 
 pub mod apply;
 pub mod download;
@@ -23,6 +25,7 @@ pub mod lock;
 pub mod manifest;
 pub mod prefs;
 pub mod release;
+pub mod state_file;
 
 pub use download::Progress;
 pub use fetch::{ReadyUpdate, fetch, fetch_with_progress};

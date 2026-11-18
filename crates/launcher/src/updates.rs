@@ -5,10 +5,12 @@
 //! Skip this version), a download bar, then "Update ready" (Restart now or
 //! Later). With automatic updates on it opens straight at the download bar.
 //! Closing it never cancels anything; the version panel keeps the same
-//! choices. The network work runs on worker threads.
+//! choices. The network work runs on worker threads, and the choices are
+//! written to `updates.ron` on a thread of their own (a `project::disk::Keeper`).
 
 use crate::work::{Poll, Task};
 use egui::RichText;
+use project::disk::Keeper;
 use std::path::PathBuf;
 use ui_kit::{Theme, status};
 use updater::{Channel, CheckResult, Progress, ReadyUpdate, Release, UpdateLock, UpdatePrefs};
@@ -46,6 +48,8 @@ pub struct Updates {
     version: String,
     data_dir: PathBuf,
     prefs: UpdatePrefs,
+    /// Writes `updates.ron` off the interface thread, newest choices last.
+    prefs_keeper: Keeper,
     state: UpdateState,
     task: Option<Task<Message>>,
     problem: Option<diag::AppError>,
@@ -67,10 +71,15 @@ impl Updates {
     /// Starts checking in the background if `check` is set.
     pub fn start(ctx: &egui::Context, version: String, data_dir: PathBuf, check: bool) -> Updates {
         let prefs = UpdatePrefs::load(&data_dir);
+        let prefs_keeper = Keeper::new(
+            data_dir.join(updater::prefs::PREFS_FILE_NAME),
+            "Your update choices",
+        );
         let mut updates = Updates {
             version,
             data_dir,
             prefs,
+            prefs_keeper,
             state: UpdateState::NotChecking,
             task: None,
             problem: None,
@@ -123,6 +132,9 @@ impl Updates {
 
     /// Picks up finished work. Call once per frame.
     pub fn poll(&mut self, ctx: &egui::Context) {
+        if let Some(err) = self.prefs_keeper.take_failure() {
+            self.problem = Some(err);
+        }
         let Some(task) = &self.task else {
             return;
         };
@@ -185,14 +197,19 @@ impl Updates {
         }
     }
 
+    /// Hands the choices to the keeper, which writes them whole on its own
+    /// thread; a failure shows on a later frame ([`Updates::poll`]).
     fn save_prefs(&mut self) {
-        if let Err(err) = self.prefs.save(&self.data_dir) {
-            self.problem = Some(err);
-        }
+        let prefs = self.prefs.clone();
+        self.prefs_keeper.keep(move || prefs.to_text());
     }
 
-    /// Lets a running download finish (the window has closed). Checks are dropped.
+    /// Lets a running download finish (the window has closed), and the
+    /// choices reach the disk. Checks are dropped.
     pub fn finish_download(self) {
+        if let Err(err) = self.prefs_keeper.flush() {
+            tracing::warn!("{}", err.report());
+        }
         if matches!(self.state, UpdateState::Downloading(_))
             && let Some(task) = self.task
         {
@@ -456,5 +473,18 @@ mod tests {
     fn megabytes_read_naturally() {
         assert_eq!(mb(0), "0.0");
         assert_eq!(mb(63_500_000), "63.5");
+    }
+
+    #[test]
+    fn choices_are_written_off_the_interface_thread_and_kept_on_closing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = egui::Context::default();
+        let mut updates = Updates::start(&ctx, "0.1.0".into(), tmp.path().to_path_buf(), false);
+        updates.set_automatic(&ctx, false);
+        updates.set_channel(&ctx, Channel::Beta);
+        updates.finish_download();
+        let saved = UpdatePrefs::load(tmp.path());
+        assert!(!saved.automatic);
+        assert_eq!(saved.channel, Channel::Beta);
     }
 }
