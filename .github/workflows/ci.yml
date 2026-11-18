@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
 
+# The token only reads: nothing here writes to the repository.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -19,11 +23,11 @@ jobs:
         os: [windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       # rust-toolchain.toml pins the Rust version; rustup installs it on first use.
       - name: Install pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: libclang for the FFmpeg bindings (Windows)
         if: runner.os == 'Windows'
         shell: bash
@@ -50,10 +54,10 @@ jobs:
         os: [windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Install pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: libclang for the FFmpeg bindings (Windows)
         if: runner.os == 'Windows'
         shell: bash
@@ -89,7 +93,7 @@ jobs:
           xvfb-run -a -s "-screen 0 1600x1000x24" target/debug/editor --screenshot editor.png
           xvfb-run -a -s "-screen 0 1600x1000x24" target/debug/launcher --demo 14 --screenshot launcher.png
           xvfb-run -a -s "-screen 0 1600x1000x24" target/debug/launcher --demo 14 --update-window downloading --screenshot update-window.png
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: runner.os == 'Linux'
         with:
           name: screenshots
@@ -102,5 +106,5 @@ jobs:
     name: Dependency licences
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: EmbarkStudios/cargo-deny-action@70f81531115945ba6eb6b941ec9d39d063438eb9 # v2.1.2
