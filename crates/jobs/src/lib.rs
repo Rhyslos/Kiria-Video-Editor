@@ -18,7 +18,7 @@ use pool::Pool;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::mpsc::{Receiver, TryRecvError};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError};
 
 /// How urgent a job is. Lower variants run first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -143,6 +143,17 @@ impl<T> JobHandle<T> {
     /// Waits for the result. Never call this on the interface thread.
     pub fn wait(self) -> diag::Result<T> {
         self.receiver.recv().unwrap_or_else(|_| Err(lost()))
+    }
+
+    /// Waits at most `within` for the result; `None` if the job is still
+    /// queued or running then. For closing, which may wait a little for a
+    /// write; never on the interface thread otherwise.
+    pub fn wait_within(&self, within: std::time::Duration) -> Option<diag::Result<T>> {
+        match self.receiver.recv_timeout(within) {
+            Ok(result) => Some(result),
+            Err(RecvTimeoutError::Timeout) => None,
+            Err(RecvTimeoutError::Disconnected) => Some(Err(lost())),
+        }
     }
 
     /// Asks the job to stop early. A job that has not started yet still runs,
@@ -353,6 +364,22 @@ mod tests {
         for read in reads {
             assert!(read.wait().is_err(), "a job given up says so");
         }
+    }
+
+    #[test]
+    fn waiting_within_a_time_gives_the_result_or_none() {
+        let jobs = system(1, BackgroundPolicy::Always);
+        let (go, gate) = std::sync::mpsc::channel::<()>();
+        let job = jobs.submit(PoolKind::Analysis, Priority::Interactive, "slow", move |_| {
+            let _ = gate.recv();
+            Ok(7)
+        });
+        assert!(
+            job.wait_within(Duration::from_millis(50)).is_none(),
+            "still running"
+        );
+        go.send(()).unwrap();
+        assert_eq!(job.wait_within(Duration::from_secs(60)).unwrap().unwrap(), 7);
     }
 
     #[cfg(target_os = "linux")]

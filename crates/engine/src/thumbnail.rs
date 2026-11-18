@@ -102,11 +102,13 @@ pub fn save_frame(project: &Project, sequence: SequenceId, at: Time, out: &Path)
     )
 }
 
-/// Writes beside `out`, then renames, so nobody reads half a file.
+/// Writes the picture whole or not at all (see [`project::disk::write_atomic`]):
+/// through a temporary file of this write's own, so nobody reads half a
+/// file and two writes of one picture at once never share one.
 fn save_png(rgba: &[u8], w: u32, h: u32, out: &Path, what: &str) -> diag::Result<()> {
-    let partial = out.with_extension("partial.png");
-    image::save_buffer_with_format(
-        &partial,
+    let mut png = Vec::new();
+    image::write_buffer_with_format(
+        &mut std::io::Cursor::new(&mut png),
         rgba,
         w,
         h,
@@ -115,13 +117,13 @@ fn save_png(rgba: &[u8], w: u32, h: u32, out: &Path, what: &str) -> diag::Result
     )
     .map_err(|e| {
         AppError::new(what)
-            .why(format!("Writing {} failed: {e}.", partial.display()))
-            .fix("Check that the folder can be written to and the drive has space.")
+            .why(format!("Making the PNG failed: {e}."))
+            .fix("Try again. If it keeps happening, report it with the Diagnostics details.")
     })?;
-    std::fs::rename(&partial, out).or_explain(|| {
+    project::disk::write_atomic(out, &png).or_explain(|| {
         AppError::new(what)
-            .why(format!("Renaming it to {} failed.", out.display()))
-            .fix("Check that the folder can be written to.")
+            .why(format!("Writing {} failed.", out.display()))
+            .fix("Check that the folder can be written to and the drive has space.")
     })
 }
 
@@ -156,6 +158,35 @@ mod tests {
         };
         assert_eq!(px(WIDTH / 2, HEIGHT / 2), [255, 0, 0, 255]);
         assert_eq!(px(0, 0), [0, 0, 0, 255]);
+    }
+
+    /// Two writes of one picture at once (a save's and closing's) never
+    /// share a temporary file: both finish and leave a whole PNG.
+    #[test]
+    fn two_writes_at_once_leave_a_whole_picture() {
+        let dir = std::env::temp_dir().join(format!("thumb-twice-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("p.thumbnail.png");
+        let picture = |shade: u8| [shade, 0, 0, 255].repeat((WIDTH * HEIGHT) as usize);
+        for _ in 0..20 {
+            let writers: Vec<_> = [40u8, 200]
+                .into_iter()
+                .map(|shade| {
+                    let out = out.clone();
+                    std::thread::spawn(move || save_png(&picture(shade), WIDTH, HEIGHT, &out, "test"))
+                })
+                .collect();
+            for writer in writers {
+                writer.join().unwrap().unwrap();
+            }
+            let img = image::open(&out).unwrap().to_rgba8();
+            assert_eq!((img.width(), img.height()), (WIDTH, HEIGHT));
+            let first = img.get_pixel(0, 0).0;
+            assert!(img.pixels().all(|p| p.0 == first), "one write's picture, whole");
+        }
+        let left: Vec<_> = std::fs::read_dir(&dir).unwrap().collect();
+        assert_eq!(left.len(), 1, "no temporary file left behind");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
