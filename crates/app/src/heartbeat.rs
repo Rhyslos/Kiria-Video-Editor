@@ -62,17 +62,38 @@ pub struct Heartbeat {
 
 #[derive(Debug)]
 struct Shared {
-    start: Instant,
-    /// Milliseconds from `start` when the last frame began.
+    clock: Clock,
+    /// The clock's milliseconds when the last frame began.
     last: AtomicU64,
     step: AtomicUsize,
+}
+
+/// Milliseconds since some start: the wall clock in the program, a clock
+/// moved by hand in tests, so they don't depend on how busy the machine is.
+struct Clock(Box<dyn Fn() -> u64 + Send + Sync>);
+
+impl Clock {
+    fn wall() -> Clock {
+        let start = Instant::now();
+        Clock(Box::new(move || start.elapsed().as_millis() as u64))
+    }
+
+    fn now(&self) -> u64 {
+        (self.0)()
+    }
+}
+
+impl std::fmt::Debug for Clock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Clock")
+    }
 }
 
 impl Heartbeat {
     /// Starts the watching thread, which lives as long as the program.
     pub fn start() -> Heartbeat {
         let shared = Arc::new(Shared {
-            start: Instant::now(),
+            clock: Clock::wall(),
             last: AtomicU64::new(0),
             step: AtomicUsize::new(0),
         });
@@ -88,7 +109,7 @@ impl Heartbeat {
 
     /// A frame is beginning.
     pub fn beat(&self) {
-        let now = self.shared.start.elapsed().as_millis() as u64;
+        let now = self.shared.clock.now();
         self.shared.last.store(now, Ordering::Relaxed);
         self.step(Step::Frame);
     }
@@ -100,35 +121,58 @@ impl Heartbeat {
     }
 }
 
-/// Looks every half second (a tenth of `stall` in tests) while `go_on`
-/// says so, telling `log` when no frame has begun for `stall` and when one
-/// begins again.
+/// Looks every half second (an eighth of `stall` when that is shorter)
+/// while `go_on` says so, telling `log` when no frame has begun for `stall`
+/// and when one begins again.
 fn watch(shared: &Shared, stall: Duration, log: impl Fn(String), go_on: impl Fn() -> bool) {
     let look = (stall / 8).min(Duration::from_millis(500));
-    let mut stopped: Option<u64> = None;
+    let mut watcher = Watcher::new(stall);
     while go_on() {
         std::thread::sleep(look);
-        let now = shared.start.elapsed().as_millis() as u64;
+        if let Some(line) = watcher.look(shared) {
+            log(line);
+        }
+    }
+}
+
+/// What the watching thread remembers between looks.
+struct Watcher {
+    stall: u64,
+    /// When the last frame began before the window stopped, while stopped.
+    stopped: Option<u64>,
+}
+
+impl Watcher {
+    fn new(stall: Duration) -> Watcher {
+        Watcher {
+            stall: stall.as_millis() as u64,
+            stopped: None,
+        }
+    }
+
+    /// One look at the clock and the last frame: the line to log, if any.
+    fn look(&mut self, shared: &Shared) -> Option<String> {
+        let now = shared.clock.now();
         let last = shared.last.load(Ordering::Relaxed);
         let quiet = now.saturating_sub(last);
         let step = Step::ALL[shared.step.load(Ordering::Relaxed).min(Step::ALL.len() - 1)];
-        match stopped {
-            None if quiet >= stall.as_millis() as u64 && step != Step::Minimized => {
-                log(format!(
+        match self.stopped {
+            None if quiet >= self.stall && step != Step::Minimized => {
+                self.stopped = Some(last);
+                Some(format!(
                     "The window has not drawn for {:.1} s; it was {}",
                     quiet as f64 / 1000.0,
                     step.name()
-                ));
-                stopped = Some(last);
+                ))
             }
             Some(since) if last != since => {
-                log(format!(
+                self.stopped = None;
+                Some(format!(
                     "The window draws again, after {:.1} s",
                     last.saturating_sub(since) as f64 / 1000.0
-                ));
-                stopped = None;
+                ))
             }
-            _ => {}
+            _ => None,
         }
     }
 }
@@ -137,54 +181,75 @@ fn watch(shared: &Shared, stall: Duration, log: impl Fn(String), go_on: impl Fn(
 mod tests {
     use super::*;
     use std::sync::Mutex;
-    use std::sync::atomic::AtomicBool;
 
-    #[test]
-    fn a_stopped_window_is_logged_with_its_step_and_once_more_when_it_draws_again() {
+    /// A heartbeat on a clock moved by hand, and that clock.
+    fn by_hand() -> (Heartbeat, Arc<AtomicU64>) {
+        let ms = Arc::new(AtomicU64::new(0));
+        let read = Arc::clone(&ms);
         let beat = Heartbeat {
             shared: Arc::new(Shared {
-                start: Instant::now(),
+                clock: Clock(Box::new(move || read.load(Ordering::Relaxed))),
                 last: AtomicU64::new(0),
                 step: AtomicUsize::new(0),
             }),
         };
-        let lines = Arc::new(Mutex::new(Vec::<String>::new()));
-        let running = Arc::new(AtomicBool::new(true));
-        let watcher = {
-            let (shared, lines, running) =
-                (Arc::clone(&beat.shared), Arc::clone(&lines), Arc::clone(&running));
-            std::thread::spawn(move || {
-                watch(
-                    &shared,
-                    Duration::from_millis(200),
-                    |line| lines.lock().unwrap().push(line),
-                    || running.load(Ordering::Relaxed),
-                )
-            })
+        (beat, ms)
+    }
+
+    #[test]
+    fn a_stopped_window_is_logged_with_its_step_and_once_more_when_it_draws_again() {
+        let (beat, ms) = by_hand();
+        let mut watcher = Watcher::new(Duration::from_millis(200));
+        let mut lines = Vec::new();
+        let mut wait = |by: u64| {
+            ms.fetch_add(by, Ordering::Relaxed);
+            lines.extend(watcher.look(&beat.shared));
         };
-        // Drawing steadily: nothing to say.
+        // Drawing steadily: nothing to say, up to a millisecond short of
+        // the stall between frames.
         for _ in 0..10 {
             beat.beat();
-            std::thread::sleep(Duration::from_millis(30));
+            wait(199);
         }
-        assert!(lines.lock().unwrap().is_empty());
-        // Stuck while asking to fill the screen.
+        // Stuck while asking to fill the screen: said once, however long.
         beat.step(Step::AskingFullScreen);
-        std::thread::sleep(Duration::from_millis(400));
+        for _ in 0..4 {
+            wait(100);
+        }
         beat.beat();
-        std::thread::sleep(Duration::from_millis(100));
-        running.store(false, Ordering::Relaxed);
-        watcher.join().unwrap();
-        let lines = lines.lock().unwrap();
+        wait(25);
+        wait(25);
         assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(lines[0].contains("not drawn for 0.3 s"), "{}", lines[0]);
         assert!(lines[0].contains("fill the screen"), "{}", lines[0]);
-        assert!(lines[1].starts_with("The window draws again"), "{}", lines[1]);
+        assert_eq!(lines[1], "The window draws again, after 0.6 s");
+    }
+
+    #[test]
+    fn the_watching_thread_reads_the_clock_it_is_given() {
+        let (beat, ms) = by_hand();
+        ms.store(1_000, Ordering::Relaxed);
+        let lines = Mutex::new(Vec::<String>::new());
+        let looks = std::sync::atomic::AtomicU32::new(0);
+        watch(
+            &beat.shared,
+            Duration::from_millis(80),
+            |line| lines.lock().unwrap().push(line),
+            || looks.fetch_add(1, Ordering::Relaxed) < 3,
+        );
+        let lines = lines.lock().unwrap();
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            lines[0].starts_with("The window has not drawn for 1.0 s"),
+            "{}",
+            lines[0]
+        );
     }
 
     #[test]
     fn a_window_put_away_is_no_stop() {
         let shared = Arc::new(Shared {
-            start: Instant::now(),
+            clock: Clock::wall(),
             last: AtomicU64::new(0),
             step: AtomicUsize::new(Step::ALL.iter().position(|s| *s == Step::Minimized).unwrap()),
         });
