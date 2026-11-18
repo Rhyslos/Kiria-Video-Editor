@@ -11,7 +11,7 @@ use crate::work::{Poll, Task};
 use egui::RichText;
 use std::path::PathBuf;
 use ui_kit::{Theme, status};
-use updater::{Channel, CheckResult, Progress, ReadyUpdate, Release, UpdatePrefs};
+use updater::{Channel, CheckResult, Progress, ReadyUpdate, Release, UpdateLock, UpdatePrefs};
 
 /// Where the update check has got to.
 #[derive(Debug, Clone, PartialEq)]
@@ -28,11 +28,16 @@ pub enum UpdateState {
     Ready(String),
     /// The check or download failed. Never blocks anything.
     Failed(String),
+    /// Another launcher (another project opened at the same time) is
+    /// updating, so this one leaves it alone this time.
+    Elsewhere,
 }
 
 enum Message {
     Checked(diag::Result<CheckResult>),
     Fetched(diag::Result<ReadyUpdate>),
+    /// Not downloaded: another launcher holds the update lock.
+    Elsewhere,
 }
 
 /// The version panel's state.
@@ -100,7 +105,11 @@ impl Updates {
         self.state = UpdateState::Downloading(release.version.to_string());
         self.progress = Progress::new();
         let progress = self.progress.clone();
+        let data_dir = self.data_dir.clone();
         self.task = Some(Task::spawn(ctx, move || {
+            let Some(_lock) = UpdateLock::for_step(&data_dir, "downloading an update") else {
+                return Message::Elsewhere;
+            };
             Message::Fetched(updater::fetch_with_progress(&release, &downloads, &progress))
         }));
     }
@@ -148,6 +157,11 @@ impl Updates {
                 self.state = UpdateState::Ready(ready.version);
                 // The restart prompt, even if the download window was hidden.
                 self.window_open = true;
+            }
+            Message::Elsewhere => {
+                // Nothing to show: the other launcher's download is the same update.
+                self.state = UpdateState::Elsewhere;
+                self.window_open = false;
             }
             Message::Fetched(Err(err)) => {
                 tracing::warn!("{}", err.report());
@@ -272,6 +286,7 @@ impl Updates {
             ),
             UpdateState::Ready(v) => (format!("{v} downloaded and verified"), status::GOOD),
             UpdateState::Failed(what) => (what.clone(), theme.muted),
+            UpdateState::Elsewhere => ("Updating in another window".to_owned(), theme.muted),
         }
     }
 
@@ -403,7 +418,8 @@ impl Updates {
                 UpdateState::NotChecking
                 | UpdateState::Checking
                 | UpdateState::UpToDate
-                | UpdateState::Skipped(_) => close = true,
+                | UpdateState::Skipped(_)
+                | UpdateState::Elsewhere => close = true,
             }
         });
         if close || modal.should_close() {
