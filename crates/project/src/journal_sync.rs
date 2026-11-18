@@ -7,7 +7,8 @@
 //! hundreds of files writes a journal line for each). So that wait happens
 //! here: [`JournalSync::request`] hands the thread a handle to the journal
 //! and returns at once; requests that come while the disk is busy are put
-//! on it together. A failure is kept and reported by the next request.
+//! on it together. A failure is kept and reported by the next request; the
+//! document tells the person and goes on (the line was written whole).
 
 use std::fs::File;
 use std::io;
@@ -78,6 +79,12 @@ impl JournalSync {
             result?;
         }
         Ok(())
+    }
+
+    /// Makes the next request report a failure, as a disk that failed would.
+    #[cfg(test)]
+    pub(crate) fn fail_next(&self) {
+        lock(&self.shared.state).failed = Some(io::Error::other("the disk did not answer"));
     }
 
     /// Waits until every request so far is on the disk; returns how many

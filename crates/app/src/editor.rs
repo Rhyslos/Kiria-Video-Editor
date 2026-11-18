@@ -1918,6 +1918,11 @@ impl Editor {
                 }
             }
         }
+        // A journal that can't be written keeps the edit on screen; the
+        // person is told here, once.
+        if let Some(err) = document.take_journal_problem() {
+            self.errors.push(&err);
+        }
         if let Some(job) = document.tick(now, idle) {
             self.submit_save(job, false);
         }

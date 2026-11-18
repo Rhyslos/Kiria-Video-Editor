@@ -10,6 +10,7 @@
 
 use egui::{Color32, Context, Id, Painter, Rect, Shape, pos2};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
 /// The loudest of each two peaks, of each two of those, and so on: worked
@@ -72,71 +73,157 @@ impl Levels {
 /// Fewer peaks than this are folded as they are: quicker than the levels.
 const FEW: usize = 4_096;
 
-/// Levels for peaks, each kept with the peaks they were made of (so the
-/// address they are known by can't be another's) and the pass they were
-/// last used in. They are made on a thread of their own (a few
-/// milliseconds for hours of sound), filled in once ready.
+/// Seconds a waveform's levels are kept after it was last drawn.
+const KEPT_FOR: f64 = 60.0;
+
+/// The levels of every waveform drawn lately, one entry per waveform (the
+/// `Id` its page gives it, the same while its file is read), so a waveform
+/// whose peaks grow while they are read has one entry, not one per copy.
+/// Levels are made on a thread of their own (a few milliseconds for hours
+/// of sound), one at a time per waveform: peaks that arrive while one is
+/// being made wait, and only the newest of them is made next.
 #[derive(Clone, Default)]
-struct Kept(HashMap<usize, Entry>);
+struct Kept {
+    waveforms: HashMap<Id, Entry>,
+    /// Workers making levels right now (for tests).
+    workers: Arc<AtomicUsize>,
+}
 
-/// The peaks, their levels once made, the pass last drawn in.
-type Entry = (Arc<[f32]>, Arc<OnceLock<Arc<Levels>>>, u64);
+/// Peaks, and the cell their levels go in once made.
+type Making = (Arc<[f32]>, Arc<OnceLock<Arc<Levels>>>);
 
-/// Passes a set of levels is kept unused before it is let go.
-const KEPT_FOR: u64 = 600;
+/// One waveform's levels. Each set of peaks is kept with what was made of
+/// it, so the peaks are known by an `Arc` that can't be another's.
+#[derive(Clone, Default)]
+struct Entry {
+    /// The newest levels made, and of which peaks.
+    made: Option<(Arc<[f32]>, Arc<Levels>)>,
+    /// Levels being made, and of which peaks.
+    making: Option<Making>,
+    /// When it was last drawn (the interface's clock, seconds).
+    used: f64,
+}
 
-/// The levels of `peaks`, made in the background the first time they are
-/// drawn and kept while they are; `None` until they are ready (the peaks
-/// are then folded as they are) and for a few peaks.
-pub fn levels_for(ctx: &Context, peaks: &Arc<[f32]>) -> Option<Arc<Levels>> {
+impl Kept {
+    /// The levels of `peaks` drawn as waveform `id` at `now`, if made.
+    fn levels(&mut self, ctx: &Context, id: Id, peaks: &Arc<[f32]>, now: f64) -> Option<Arc<Levels>> {
+        self.let_go(now);
+        let entry = self.waveforms.entry(id).or_default();
+        entry.used = now;
+        // Levels just made take the place of the ones before.
+        if let Some((of, cell)) = &entry.making
+            && let Some(levels) = cell.get()
+        {
+            entry.made = Some((Arc::clone(of), Arc::clone(levels)));
+            entry.making = None;
+        }
+        if let Some((of, levels)) = &entry.made {
+            if Arc::ptr_eq(of, peaks) {
+                return Some(Arc::clone(levels));
+            }
+            // Made of other peaks (fewer, read earlier): no use any more.
+            entry.made = None;
+        }
+        // Peaks drawn while others are being made wait for the draw after
+        // those are made (the worker asks for one): the newest drawn then is
+        // the next made, the ones in between never.
+        if entry.making.is_none() {
+            entry.making = Some(make(ctx, peaks, &self.workers));
+        }
+        None
+    }
+
+    /// Lets go of the waveforms not drawn for `KEPT_FOR` seconds.
+    fn let_go(&mut self, now: f64) {
+        self.waveforms.retain(|_, entry| entry.used + KEPT_FOR >= now);
+    }
+}
+
+/// Starts making the levels of `peaks` on a thread of its own; the cell
+/// they go in.
+fn make(ctx: &Context, peaks: &Arc<[f32]>, workers: &Arc<AtomicUsize>) -> Making {
+    let cell = Arc::new(OnceLock::new());
+    let (made, of, ctx, busy) = (
+        Arc::clone(&cell),
+        Arc::clone(peaks),
+        ctx.clone(),
+        Arc::clone(workers),
+    );
+    busy.fetch_add(1, Ordering::SeqCst);
+    let spawned = std::thread::Builder::new()
+        .name("waveform levels".into())
+        .spawn(move || {
+            let _ = made.set(Arc::new(Levels::of(&of)));
+            busy.fetch_sub(1, Ordering::SeqCst);
+            ctx.request_repaint();
+        });
+    if let Err(err) = spawned {
+        workers.fetch_sub(1, Ordering::SeqCst);
+        tracing::debug!("waveform levels not made: {err}");
+    }
+    (Arc::clone(peaks), cell)
+}
+
+/// Whether the context lets go of unused levels at the end of each pass.
+#[derive(Clone, Copy, Default)]
+struct Hooked(bool);
+
+/// Where the levels are kept in the context's memory.
+fn kept_id() -> Id {
+    Id::unique("waveform levels")
+}
+
+/// The levels of `peaks`, drawn as waveform `id` (the same `Id` for one
+/// stream of one file, also while its peaks grow as it is read), made in
+/// the background the first time these peaks are drawn and kept while they
+/// are; `None` until they are ready (the peaks are then folded as they are)
+/// and for a few peaks. Waveforms not drawn for a minute are let go, at the
+/// end of every pass.
+pub fn levels_for(ctx: &Context, id: Id, peaks: &Arc<[f32]>) -> Option<Arc<Levels>> {
     if peaks.len() < FEW {
         return None;
     }
-    let pass = ctx.cumulative_pass_nr();
-    let key = Arc::as_ptr(peaks).cast::<f32>() as usize;
-    let ready = ctx.data_mut(|data| {
-        let kept = data.get_temp_mut_or_default::<Kept>(Id::unique("waveform levels"));
-        if pass.is_multiple_of(60) {
-            kept.0
-                .retain(|_, (_, _, used)| used.saturating_add(KEPT_FOR) >= pass);
-        }
-        let entry = kept.0.entry(key).or_insert_with(|| {
-            let cell = Arc::new(OnceLock::new());
-            let (made, of, ctx) = (Arc::clone(&cell), Arc::clone(peaks), ctx.clone());
-            let spawned = std::thread::Builder::new()
-                .name("waveform levels".into())
-                .spawn(move || {
-                    let _ = made.set(Arc::new(Levels::of(&of)));
-                    ctx.request_repaint();
-                });
-            if let Err(err) = spawned {
-                tracing::debug!("waveform levels not made: {err}");
-            }
-            (Arc::clone(peaks), cell, pass)
-        });
-        entry.2 = pass;
-        Arc::clone(&entry.1)
+    let now = ctx.input(|input| input.time);
+    let (levels, first) = ctx.data_mut(|data| {
+        let hooked = data.get_temp_mut_or_default::<Hooked>(kept_id());
+        let first = !std::mem::replace(&mut hooked.0, true);
+        let kept = data.get_temp_mut_or_default::<Kept>(kept_id());
+        (kept.levels(ctx, id, peaks, now), first)
     });
-    ready.get().cloned()
+    if first {
+        // Let go of what is no longer drawn even when nothing is drawn.
+        ctx.on_end_pass(
+            "waveform levels",
+            Arc::new(|ui: &mut egui::Ui| {
+                let now = ui.input(|input| input.time);
+                ui.ctx().data_mut(|data| {
+                    data.get_temp_mut_or_default::<Kept>(kept_id()).let_go(now);
+                });
+            }),
+        );
+    }
+    levels
 }
 
-/// The loudest of `peaks[from..to]` (0 for none), through `levels` when
-/// there are any.
+/// The loudest of `peaks[from..to]` (0 for none, as when `from` is past
+/// `to`), through `levels` when there are any.
 pub fn loudest(peaks: &[f32], levels: Option<&Levels>, from: usize, to: usize) -> f32 {
     match levels {
         Some(levels) => levels.loudest(peaks, from, to),
-        None => peaks[from.min(peaks.len())..to.min(peaks.len())]
+        None => peaks[from.min(to).min(peaks.len())..to.min(peaks.len())]
             .iter()
             .fold(0f32, |m, v| m.max(*v)),
     }
 }
 
 /// Draws `peaks` (`per_second` of them per second, 0 to 1) of a file
-/// `length` seconds long across `rect`, centred on its middle line. Peaks
+/// `length` seconds long across `rect`, centred on its middle line; `id`
+/// says which stream of which file it is (see `levels_for`). Peaks
 /// still being read leave the rest of the rectangle empty.
 pub fn paint(
     painter: &Painter,
     rect: Rect,
+    id: Id,
     peaks: &Arc<[f32]>,
     per_second: f32,
     length: f64,
@@ -145,7 +232,7 @@ pub fn paint(
     if rect.width() < 1.0 || rect.height() < 2.0 || peaks.is_empty() || length <= 0.0 || per_second <= 0.0 {
         return;
     }
-    let levels = levels_for(painter.ctx(), peaks);
+    let levels = levels_for(painter.ctx(), id, peaks);
     let mut mesh = egui::Mesh::default();
     let (mid, half) = (rect.center().y, rect.height() / 2.0);
     let columns = rect.width().floor().max(1.0) as usize;
@@ -209,19 +296,23 @@ mod tests {
     #[test]
     fn long_peaks_get_levels_made_in_the_background_and_kept() {
         let ctx = Context::default();
+        let id = Id::unique("a stream");
         let short: Arc<[f32]> = vec![0.5f32; 100].into();
-        assert!(levels_for(&ctx, &short).is_none(), "a few are folded as they are");
+        assert!(
+            levels_for(&ctx, id, &short).is_none(),
+            "a few are folded as they are"
+        );
         let long: Arc<[f32]> = (0..100_000u32).map(|i| (i % 97) as f32 / 97.0).collect();
         let give_up = std::time::Instant::now() + std::time::Duration::from_secs(10);
         let levels = loop {
-            if let Some(levels) = levels_for(&ctx, &long) {
+            if let Some(levels) = levels_for(&ctx, id, &long) {
                 break levels;
             }
             assert!(std::time::Instant::now() < give_up, "made in time");
             std::thread::sleep(std::time::Duration::from_millis(5));
         };
         assert_eq!(levels.loudest(&long, 0, 100_000), 96.0 / 97.0);
-        let again = levels_for(&ctx, &long).unwrap();
+        let again = levels_for(&ctx, id, &long).unwrap();
         assert!(Arc::ptr_eq(&levels, &again), "kept, not made again");
     }
 
@@ -256,5 +347,56 @@ mod tests {
             loudest(&peaks, None, 10, 900)
         );
         assert_eq!(Levels::of(&[0.3]).loudest(&[0.3], 0, 1), 0.3);
+    }
+
+    #[test]
+    fn peaks_growing_as_they_are_read_keep_one_entry_and_one_worker() {
+        let ctx = Context::default();
+        let id = Id::unique("a stream being read");
+        let mut kept = Kept::default();
+        let mut now = 0.0;
+        let mut most_workers = 0;
+        // A long recording read a little at a time: a new, longer copy of
+        // its peaks every pass, as the page hands them over while reading.
+        let all: Vec<f32> = (0..400_000u32).map(|i| (i % 89) as f32 / 89.0).collect();
+        let mut last: Arc<[f32]> = Arc::from(&all[..FEW]);
+        for read in (FEW..=all.len()).step_by(2_000) {
+            last = Arc::from(&all[..read]);
+            let _ = kept.levels(&ctx, id, &last, now);
+            most_workers = most_workers.max(kept.workers.load(Ordering::SeqCst));
+            now += 0.1;
+        }
+        assert_eq!(kept.waveforms.len(), 1, "one entry for the stream");
+        assert!(most_workers <= 1, "{most_workers} workers at once");
+        // Read to the end: its levels come, made of all of it.
+        let give_up = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let levels = loop {
+            if let Some(levels) = kept.levels(&ctx, id, &last, now) {
+                break levels;
+            }
+            assert!(std::time::Instant::now() < give_up, "made in time");
+            assert!(kept.workers.load(Ordering::SeqCst) <= 1);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        assert_eq!(levels.loudest(&last, 0, last.len()), 88.0 / 89.0);
+        let entry = &kept.waveforms[&id];
+        assert!(entry.making.is_none(), "nothing else being made");
+        // Another stream drawn a minute later: the first is let go.
+        let other: Arc<[f32]> = Arc::from(&all[..FEW]);
+        let _ = kept.levels(&ctx, Id::unique("another"), &other, now + KEPT_FOR + 1.0);
+        assert_eq!(kept.waveforms.len(), 1);
+        assert!(
+            !kept.waveforms.contains_key(&id),
+            "not drawn for a minute: let go"
+        );
+    }
+
+    #[test]
+    fn loudest_of_nothing_is_nothing_whichever_way_round() {
+        let peaks = vec![0.2f32, 0.7, 0.4];
+        assert_eq!(loudest(&peaks, None, 2, 1), 0.0);
+        assert_eq!(loudest(&peaks, None, 9, 1), 0.0);
+        let levels = Levels::of(&peaks);
+        assert_eq!(loudest(&peaks, Some(&levels), 2, 1), 0.0);
     }
 }

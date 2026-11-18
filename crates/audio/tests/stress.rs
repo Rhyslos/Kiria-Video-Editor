@@ -1,10 +1,11 @@
 //! 32 tracks with every effect on, and the master: how long each block
 //! takes against the time it lasts (5.3 ms at 48 kHz).
 //!
-//! `cargo test -p audio --test stress` runs two seconds and only fails far
-//! over the budget (test builds are barely optimised and test machines are
-//! busy); it prints the numbers either way. The full run, ten seconds in a
-//! release build, is by hand:
+//! `cargo test -p audio --test stress` runs two seconds and checks what
+//! the mix does (every ring fed, the limiter holding its ceiling); it prints
+//! the times but never judges them, as test builds are barely optimised and
+//! test machines are busy. The timing checks are by hand, in a release
+//! build on a quiet machine:
 //!
 //! ```sh
 //! cargo test -p audio --release --test stress -- --ignored --nocapture
@@ -72,17 +73,23 @@ fn report(t: &Times) -> f64 {
 }
 
 #[test]
-fn thirty_two_tracks_fit_in_the_block_time() {
+fn thirty_two_tracks_hold_the_ceiling() {
     let t = run(2);
-    let share = report(&t);
+    report(&t);
     assert!(
         t.true_peak_max <= -1.0,
         "the limiter holds the ceiling: {}",
         t.true_peak_max
     );
-    // Lenient: a release build took about a quarter of a block on a busy
-    // two-core cloud machine; a barely optimised test build on a busy
-    // machine is allowed the whole block on average.
+}
+
+#[test]
+#[ignore = "timing run, by hand in a release build"]
+fn thirty_two_tracks_fit_in_the_block_time() {
+    let t = run(2);
+    let share = report(&t);
+    // A release build took about a quarter of a block on a busy two-core
+    // cloud machine; the whole block on average is the limit.
     assert!(share < 1.0, "mean {:?} is over the block's time", t.mean);
 }
 

@@ -245,9 +245,13 @@ mod tests {
         .unwrap()
     }
 
-    /// Follows until the band has settled (or gives up).
+    /// Follows until the band has settled, or gives up after a generous
+    /// 30 s of wall time (the check is a real job, slow on a loaded
+    /// machine). The band's own clock (`now`) moves 50 ms per look, so the
+    /// playhead's rest is counted the same however fast the machine is.
     fn settle(band: &mut ClarityBand, jobs: &JobSystem, p: &Project, at: Time, mut now: Instant) -> Instant {
-        for _ in 0..500 {
+        let give_up = Instant::now() + Duration::from_secs(30);
+        while Instant::now() < give_up {
             assert!(band.follow(jobs, p, false, at, now).is_none());
             if band.settled() {
                 return now;

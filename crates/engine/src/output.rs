@@ -9,12 +9,14 @@
 //! sound ready, and during a jump, it hands out silence and only lets the
 //! mixer take its commands (`audio::Mixer::idle`), so nothing is owed.
 //!
-//! Nothing here allocates, frees, locks or waits (a test counts).
+//! Nothing here allocates, frees, locks or waits (a test counts). The card
+//! is handed samples within full scale, never NaN.
 //!
 //! Without a sound card, [`Paced`] stands in for its callback: a thread of
 //! its own hands the same [`Output`] a buffer at real-time pace and throws
 //! the sound away, so the meters, the loudness count and ducking work as
-//! when the sound is heard.
+//! when the sound is heard. It also takes over the same [`Output`] when the
+//! sound card goes away while playing ([`Shared::lost`], [`Shared::calls`]).
 
 use audio::{BlockAdapter, Mixer};
 use std::sync::Arc;
@@ -40,6 +42,12 @@ pub struct Shared {
     pub heard_after: AtomicU64,
     /// Frames of silence played because a track's sound was late.
     pub dry: AtomicU64,
+    /// How many times [`Output::render`] has been called: a sound card
+    /// that stops calling it has gone away.
+    pub calls: AtomicU64,
+    /// The sound card said it has gone away (unplugged, turned off, the
+    /// stream no longer valid); playback goes on without it.
+    pub lost: AtomicBool,
 }
 
 /// The sound card's end.
@@ -83,6 +91,7 @@ impl Output {
     /// Fills `out` (interleaved, `channels` per frame) with the next sound.
     pub fn render(&mut self, out: &mut [f32], channels: usize) {
         os::float::denormals_as_zero();
+        self.shared.calls.fetch_add(1, Ordering::Relaxed);
         if self.shared.stop.load(Ordering::Acquire) {
             out.fill(0.0);
             return;
@@ -90,7 +99,7 @@ impl Output {
         if self.shared.primed.load(Ordering::Acquire) {
             self.adapter.render(&mut self.mixer, out, channels);
             for sample in out.iter_mut() {
-                *sample = sample.clamp(-1.0, 1.0);
+                *sample = for_the_card(*sample);
             }
         } else {
             self.adapter.clear();
@@ -123,6 +132,17 @@ impl Output {
             }
         }
         self.converted = converted;
+    }
+}
+
+/// A sample as the sound card is handed it: within full scale, and 0 for
+/// one that is not a number (`clamp` keeps NaN, which a card may play as a
+/// loud click or treat as an error).
+fn for_the_card(sample: f32) -> f32 {
+    if sample.is_nan() {
+        0.0
+    } else {
+        sample.clamp(-1.0, 1.0)
     }
 }
 
@@ -195,5 +215,20 @@ impl Paced {
                     .why("The thread that mixes without a sound card could not start.")
                     .fix("Close a few programs and play again.")
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::for_the_card;
+
+    #[test]
+    fn the_card_is_never_handed_nan_or_more_than_full_scale() {
+        assert_eq!(for_the_card(f32::NAN), 0.0);
+        assert_eq!(for_the_card(-f32::NAN), 0.0);
+        assert_eq!(for_the_card(f32::INFINITY), 1.0);
+        assert_eq!(for_the_card(f32::NEG_INFINITY), -1.0);
+        assert_eq!(for_the_card(1.5), 1.0);
+        assert_eq!(for_the_card(-0.25), -0.25);
     }
 }

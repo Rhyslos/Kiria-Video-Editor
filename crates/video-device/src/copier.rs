@@ -559,13 +559,15 @@ mod tests {
         let Some(device) = crate::testing::device() else {
             return;
         };
-        let started = std::time::Instant::now();
         let mut copier = Copier::new(&device).unwrap();
+        // Nothing was submitted, so there is no fence to sit out (an
+        // unsignalled one would hold `wait` and the drop for the whole
+        // timeout, then fail): a decoder that the device turned down at its
+        // first picture closes at once.
+        assert!(!copier.under_way, "no copy under way");
         copier.wait().unwrap();
+        assert!(!copier.under_way);
         drop(copier);
-        // Nothing was submitted, so there is no fence to sit out: a decoder
-        // that the device turned down at its first picture closes at once.
-        assert!(started.elapsed() < std::time::Duration::from_secs(2));
     }
 
     #[test]

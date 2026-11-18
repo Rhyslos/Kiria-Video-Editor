@@ -66,7 +66,12 @@ mod tests {
         assert_eq!(from_system(None), SystemKeyboard::default());
     }
 
+    /// A measurement against the wall clock, so it is left out of the
+    /// ordinary run (a loaded machine would fail it for no fault of the
+    /// code). Run it by hand on a quiet machine:
+    /// `cargo test -p app --release -- --ignored polling_never_waits`.
     #[test]
+    #[ignore = "a measurement, run by hand on a quiet machine"]
     fn polling_never_waits() {
         let mut follower = Follower::start();
         let started = std::time::Instant::now();

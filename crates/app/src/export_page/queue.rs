@@ -421,9 +421,10 @@ mod tests {
         let mut queue = Queue::default();
         let id = queue.add(sound_job(dir.path().join("a.wav"), recording()), true);
         queue.pause(id, true);
-        std::thread::sleep(Duration::from_millis(100));
-        queue.poll();
-        assert!(queue.jobs()[0].progress().is_some_and(|p| p.paused));
+        // The worker says it paused when it next looks: waited for, however
+        // loaded the machine is.
+        until(&mut queue, |q| q.jobs()[0].progress().is_some_and(|p| p.paused));
+        assert!(queue.jobs()[0].state.is_running(), "paused, not over");
         assert!(queue.remove(id).is_none(), "a running job can't be removed");
         queue.cancel(id);
         until(&mut queue, |q| q.jobs()[0].state.is_over());

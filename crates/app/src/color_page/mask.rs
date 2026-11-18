@@ -125,8 +125,10 @@ pub fn outline(mask: &Mask, frame: egui::Rect) -> [Vec<egui::Pos2>; 2] {
 /// `mask` moved by `by` on screen over the picture `frame`.
 pub fn dragged(mask: &Mask, frame: egui::Rect, by: egui::Vec2) -> Mask {
     let one = f64::from(ONE);
-    let moved =
-        |v: i32, by: f32, size: f32| (v + (f64::from(by / size.max(1.0)) * one).round() as i32).clamp(0, ONE);
+    let moved = |v: i32, by: f32, size: f32| {
+        v.saturating_add((f64::from(by / size.max(1.0)) * one).round() as i32)
+            .clamp(0, ONE)
+    };
     Mask {
         x: moved(mask.x, by.x, frame.width()),
         y: moved(mask.y, by.y, frame.height()),
@@ -153,5 +155,20 @@ mod tests {
         assert_eq!((moved.x, moved.y), (750_000, 400_000));
         let far = dragged(&rectangle, frame, egui::vec2(1000.0, 0.0));
         assert_eq!(far.x, ONE, "kept on the picture");
+    }
+
+    #[test]
+    fn dragging_a_mask_with_values_at_the_ends_of_the_numbers_neither_wraps_nor_panics() {
+        let frame = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(400.0, 200.0));
+        // Values no slider makes, as a file or a paste could hold them.
+        let odd = Mask {
+            x: i32::MAX,
+            y: i32::MIN,
+            ..Mask::MIDDLE
+        };
+        let moved = dragged(&odd, frame, egui::vec2(100.0, -100.0));
+        assert_eq!((moved.x, moved.y), (ONE, 0), "held on the picture");
+        let back = dragged(&odd, frame, egui::vec2(-1.0e9, 1.0e9));
+        assert!((0..=ONE).contains(&back.x) && (0..=ONE).contains(&back.y));
     }
 }

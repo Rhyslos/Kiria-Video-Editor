@@ -666,7 +666,7 @@ mod tests {
     fn the_marker_goes_after_the_first_frames_and_not_before() {
         let tmp = tempfile::tempdir().unwrap();
         let (startup, _) = prepare_on(Platform::Windows, Program::Launcher, tmp.path(), RunKind::Normal);
-        let marker = StartMarker::in_dir(Program::Launcher, tmp.path());
+        let marker = startup.marker.clone();
         marker.write().unwrap(); // as `open_window` does before trying Vulkan
         let mut window = WindowGraphics::from_parts("Vulkan".into(), startup.opened(Vulkan, Vec::new()));
         let ctx = egui::Context::default();
