@@ -14,7 +14,7 @@
 use jobs::{JobHandle, JobSystem, PoolKind, Priority};
 use project::{MediaId, Project};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::mpsc::Receiver;
 
 /// What a search came back with.
 pub struct Found {
@@ -178,18 +178,11 @@ impl Relinker {
         if self.dialog.is_some() || self.searching.is_some() {
             return;
         }
-        let (tx, rx) = channel();
-        let ctx = ctx.clone();
-        std::thread::spawn(move || {
-            let picked = ui_kit::file_dialog::run(&ctx, || {
-                rfd::FileDialog::new()
-                    .set_title("Where are the missing files?")
-                    .pick_folder()
-            });
-            let _ = tx.send(picked);
-            ctx.request_repaint();
-        });
-        self.dialog = Some(rx);
+        self.dialog = Some(ui_kit::file_dialog::ask(ctx, "relink dialog", || {
+            rfd::FileDialog::new()
+                .set_title("Where are the missing files?")
+                .pick_folder()
+        }));
     }
 
     /// Starts the search once a folder is picked, and returns its result

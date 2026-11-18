@@ -16,7 +16,7 @@ use jobs::{JobHandle, JobSystem, PoolKind, Priority};
 use project::{MediaKind, MediaRef, SequenceSettings};
 use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::mpsc::{Receiver, TryRecvError, channel};
+use std::sync::mpsc::{Receiver, TryRecvError};
 
 /// File types offered in the dialog (the same the media folders are
 /// watched for). Anything FFmpeg reads can still be dropped in.
@@ -25,7 +25,7 @@ const EXTENSIONS: &[&str] = library::watch::EXTENSIONS;
 #[derive(Default)]
 pub struct Importer {
     /// The file dialog, and whether what it picks goes on the timeline too.
-    dialog: Option<(Receiver<Vec<PathBuf>>, bool)>,
+    dialog: Option<(Receiver<Option<Vec<PathBuf>>>, bool)>,
     /// Files being read, in the order they were chosen, with their batch.
     reading: VecDeque<Reading>,
     /// Files picked or dropped together, while any is being read.
@@ -163,19 +163,12 @@ impl Importer {
         if self.dialog.is_some() {
             return;
         }
-        let (tx, rx) = channel();
-        let ctx = ctx.clone();
-        std::thread::spawn(move || {
-            let picked = ui_kit::file_dialog::run(&ctx, || {
-                rfd::FileDialog::new()
-                    .set_title("Import media")
-                    .add_filter("Video, sound and pictures", EXTENSIONS)
-                    .add_filter("All files", &["*"])
-                    .pick_files()
-            })
-            .unwrap_or_default();
-            let _ = tx.send(picked);
-            ctx.request_repaint();
+        let rx = ui_kit::file_dialog::ask(ctx, "import dialog", || {
+            rfd::FileDialog::new()
+                .set_title("Import media")
+                .add_filter("Video, sound and pictures", EXTENSIONS)
+                .add_filter("All files", &["*"])
+                .pick_files()
         });
         self.dialog = Some((rx, place));
     }
@@ -276,7 +269,7 @@ impl Importer {
             match rx.try_recv() {
                 Ok(paths) => {
                     self.dialog = None;
-                    self.start(jobs, ctx, paths, How::Check, place);
+                    self.start(jobs, ctx, paths.unwrap_or_default(), How::Check, place);
                 }
                 Err(TryRecvError::Disconnected) => self.dialog = None,
                 Err(TryRecvError::Empty) => {}

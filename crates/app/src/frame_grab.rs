@@ -4,7 +4,7 @@
 use jobs::{JobHandle, JobSystem, PoolKind, Priority};
 use project::{Project, Time};
 use std::path::PathBuf;
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::mpsc::Receiver;
 
 #[derive(Default)]
 pub struct FrameGrab {
@@ -25,18 +25,12 @@ impl FrameGrab {
         if self.dialog.is_some() || self.saving.is_some() {
             return;
         }
-        let (tx, rx) = channel();
-        let ctx = ctx.clone();
-        std::thread::spawn(move || {
-            let picked = ui_kit::file_dialog::run(&ctx, || {
-                rfd::FileDialog::new()
-                    .set_title("Save this frame as a picture")
-                    .set_file_name(default_name)
-                    .add_filter("PNG picture", &["png"])
-                    .save_file()
-            });
-            let _ = tx.send(picked);
-            ctx.request_repaint();
+        let rx = ui_kit::file_dialog::ask(ctx, "save frame dialog", || {
+            rfd::FileDialog::new()
+                .set_title("Save this frame as a picture")
+                .set_file_name(default_name)
+                .add_filter("PNG picture", &["png"])
+                .save_file()
         });
         self.dialog = Some((rx, project.clone(), at));
     }
