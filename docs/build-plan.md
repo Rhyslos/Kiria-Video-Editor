@@ -558,7 +558,7 @@ Phase 7 builds the grading pipeline and the Color page from the mockup: one tool
 **7.3 Page (as in the mockup)**
 
 - [ ] Large viewport with Compare and Display menus; one scope on the right with a dropdown. (Done but a split or wipe Compare: the viewport has the shared viewer's Display menu, one scope on the right with its dropdown, and Before to see the clip without its grade.)
-- [ ] Tool switcher under the picture: Basic, Wheels, Curves, Color range, Masks, Looks; only one shown. (Basic and Wheels are in: white balance, exposure, highlights, shadows, contrast and pivot, saturation; the four wheels with their brightness.)
+- [ ] Tool switcher under the picture: Basic, Wheels, Curves, Color range, Masks, Looks; only one shown. (Basic, Wheels and Curves are in: white balance, exposure, highlights, shadows, contrast and pivot, saturation; the four wheels with their brightness; master, red, green and blue curves (format 29). Color range, Masks and Looks are next.)
 - [x] Layer dropdown; Simple / Advanced toggle next to it.
 - [x] Simple wheels: white balance left, four wheels (Shadows, Midtones, Highlights, Overall) with brightness sliders, tone right. Advanced: large wheels with typed R, G, B and brightness values. (Done as two tools: white balance and tone are on Basic, the wheels on Wheels.)
 - [ ] Timeline: video clips with a dot on graded ones, all audio as one view-only bar; Apply to (this clip, all clips with a label, whole timeline), Copy grade, Paste, Match to, Reset. (Done but Match to: the sound is folded into the clips as in the rough cut view.)

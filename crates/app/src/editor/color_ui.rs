@@ -24,10 +24,10 @@ impl Editor {
         let graded_id = color_page::graded_clip(seq, &self.selected, self.viewer.playhead);
         let shown = self.color_page.shown(p, graded_id);
         let shown_p = shown.as_ref().unwrap_or(p);
-        let tools_h = if self.color_page.advanced && self.color_page.tool == color_page::Tool::Wheels {
-            290.0
-        } else {
-            230.0
+        let tools_h = match self.color_page.tool {
+            color_page::Tool::Wheels if self.color_page.advanced => 290.0,
+            color_page::Tool::Curves => 300.0,
+            _ => 230.0,
         };
         let timeline_h = (page.height() * 0.26).clamp(150.0, 320.0);
         let top_h = (page.height() - tools_h - timeline_h - 2.0 * GAP).max(200.0);

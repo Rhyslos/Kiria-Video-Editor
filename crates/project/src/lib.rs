@@ -66,7 +66,7 @@ pub use command::{Command, Edge};
 pub use document::{Document, OpenCheck, Opened, Recovery, thumbnail_path, view_path};
 pub use effects::{Effect, EffectId, EffectKind, Effects};
 pub use global_labels::{GlobalLabel, GlobalLabels};
-pub use grade::{Grade, GradeLayer, Primary, Wheel};
+pub use grade::{Curve, Curves, Grade, GradeLayer, Primary, Wheel};
 pub use history::History;
 pub use ids::{ClipId, LabelId, LinkId, MediaId, MediaLabelId, MediaListId, SequenceId, TrackId};
 pub use keyframes::{Ease, Keyframe, Keyframes, LookField};

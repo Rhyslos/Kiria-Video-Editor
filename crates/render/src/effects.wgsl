@@ -20,6 +20,9 @@ struct Pass {
     // contrast, pivot and saturation, then the white balance's gains and
     // highlights, then shadows.
     grade: array<vec4<f32>, 7>,
+    // A grade's curves, sampled at 33 even places from 0 to 1: master,
+    // red, green and blue at each (used when grade[6].y is 1).
+    curves: array<vec4<f32>, 33>,
 };
 
 @group(0) @binding(0) var<uniform> it: Pass;
@@ -204,6 +207,16 @@ fn luma(rgb: vec3<f32>) -> f32 {
     return dot(rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
 }
 
+// Curve `k` (0 master, 1 red, 2 green, 3 blue) at `v`, between its
+// samples; past 1 it goes on as it ends.
+fn curve(v: f32, k: i32) -> f32 {
+    let x = clamp(v, 0.0, 1.0) * 32.0;
+    let i = min(i32(floor(x)), 31);
+    let f = x - f32(i);
+    let y = mix(it.curves[i][k], it.curves[i + 1][k], f);
+    return y + max(v - 1.0, 0.0);
+}
+
 // 10: a grade's primary corrections, on light. Exposure and white balance
 // as gains; highlights and shadows as stops by how bright a pixel is;
 // contrast around the pivot; the wheels on display-like values (light to
@@ -234,6 +247,10 @@ fn graded(light: vec3<f32>) -> vec3<f32> {
     v = v * gain + lift * (vec3<f32>(1.0) - v);
     v = pow(max(v, vec3<f32>(0.0)), gamma);
     v = v + offset;
+    if (more.y > 0.5) {
+        v = vec3<f32>(curve(v.r, 0), curve(v.g, 0), curve(v.b, 0));
+        v = vec3<f32>(curve(v.r, 1), curve(v.g, 2), curve(v.b, 3));
+    }
     rgb = pow(max(v, vec3<f32>(0.0)), vec3<f32>(2.4));
     let grey = luma(rgb);
     return max(mix(vec3<f32>(grey), rgb, tone.w), vec3<f32>(0.0));

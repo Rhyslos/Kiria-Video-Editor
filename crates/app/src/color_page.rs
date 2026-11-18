@@ -1,11 +1,12 @@
 //! The Color page: the picture large, one tool at a time under it (Basic or
-//! Wheels for now), a layer dropdown with a Simple / Advanced switch, and
+//! Wheels or Curves for now), a layer dropdown with a Simple / Advanced switch, and
 //! the bar of what is being graded with Apply to, Copy grade, Paste and
 //! Reset. A clip's grade is `project::Grade`; every change is one undo
 //! step (`Command::SetGrades`), a value being dragged is shown at once
 //! (`ColorPage::shown`) and becomes one when let go.
 
 mod basic;
+mod curves;
 mod wheels;
 
 use project::{ClipId, Command, Grade, Primary, Project, SequenceId, Time};
@@ -17,15 +18,17 @@ pub enum Tool {
     #[default]
     Basic,
     Wheels,
+    Curves,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 2] = [Tool::Basic, Tool::Wheels];
+    pub const ALL: [Tool; 3] = [Tool::Basic, Tool::Wheels, Tool::Curves];
 
     pub fn name(self) -> &'static str {
         match self {
             Tool::Basic => "Basic",
             Tool::Wheels => "Wheels",
+            Tool::Curves => "Curves",
         }
     }
 }
@@ -59,6 +62,8 @@ pub struct ColorPage {
     pub scope: engine::scope::ScopeKind,
     /// How much of Auto white balance's correction is used, 0 to 1.
     pub auto_strength: f64,
+    /// The curve the Curves tool shows.
+    curve_channel: curves::Channel,
     /// "Pick white" is on: the next click on the picture picks.
     pub picking_white: bool,
     /// The picture is shown as it was before its grade.
@@ -91,6 +96,7 @@ impl Default for ColorPage {
             scope_picture: None,
             auto_strength: 1.0,
             picking_white: false,
+            curve_channel: curves::Channel::default(),
             before: false,
             balancing: None,
         }
@@ -300,6 +306,19 @@ impl ColorPage {
                 basic.busy
             }
             Tool::Wheels => wheels::ui(ui, theme, &mut primary, self.advanced),
+            Tool::Curves => {
+                let before = grade
+                    .0
+                    .get(self.layer)
+                    .map(|l| l.curves.clone())
+                    .unwrap_or_default();
+                let mut bent = before.clone();
+                let busy = curves::ui(ui, theme, &mut bent, &mut self.curve_channel);
+                if bent != before {
+                    grade.layer_mut(self.layer).curves = bent;
+                }
+                busy
+            }
         };
         // Auto's answer goes into the sliders, as a change of their own.
         if let Some((id, work)) = &self.balancing
