@@ -226,6 +226,128 @@ impl Curves {
     }
 }
 
+/// Where a layer applies, by colour (format 30): pixels whose hue,
+/// saturation and lightness (on display-like values) are in range, fading
+/// out over `softness` past its edges. Whole millionths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ColorRange {
+    /// The hue in the middle, 0 to 1 round the wheel (0 red, a third green).
+    pub hue: i32,
+    /// How far either side of it, 0 to a half (all hues).
+    pub hue_width: i32,
+    /// Saturation and lightness from and to, 0 to 1.
+    pub saturation_low: i32,
+    pub saturation_high: i32,
+    pub lightness_low: i32,
+    pub lightness_high: i32,
+    /// How soft its edges are, 0 to 1.
+    pub softness: i32,
+}
+
+impl ColorRange {
+    /// Skin, roughly: orange hues, some colour, not too dark or bright.
+    pub const SKIN: ColorRange = ColorRange {
+        hue: 70_000,
+        hue_width: 60_000,
+        saturation_low: 150_000,
+        saturation_high: 750_000,
+        lightness_low: 200_000,
+        lightness_high: 900_000,
+        softness: 300_000,
+    };
+
+    /// Refuses a range that can't be used.
+    pub fn check(&self) -> diag::Result<()> {
+        let fine = (0..=ONE).contains(&self.hue)
+            && (0..=ONE / 2).contains(&self.hue_width)
+            && [
+                self.saturation_low,
+                self.saturation_high,
+                self.lightness_low,
+                self.lightness_high,
+                self.softness,
+            ]
+            .iter()
+            .all(|v| (0..=ONE).contains(v))
+            && self.saturation_low <= self.saturation_high
+            && self.lightness_low <= self.lightness_high;
+        match fine {
+            true => Ok(()),
+            false => {
+                Err(AppError::new("That colour range can't be used").why("Its numbers are out of range."))
+            }
+        }
+    }
+}
+
+impl Default for ColorRange {
+    fn default() -> ColorRange {
+        ColorRange::SKIN
+    }
+}
+
+/// A mask's shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum MaskShape {
+    #[default]
+    Ellipse,
+    Rectangle,
+}
+
+/// Where a layer applies, by place (format 30): inside a shape on the
+/// picture, fading out over `feather`, or outside it when inverted. Whole
+/// millionths of the picture's width and height.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Mask {
+    pub shape: MaskShape,
+    /// Its middle, 0 to 1 across and down.
+    pub x: i32,
+    pub y: i32,
+    /// Its size, 0 to 1 of the picture.
+    pub width: i32,
+    pub height: i32,
+    /// Turned clockwise, in millionths of a degree (-180 to 180 degrees).
+    pub turn: i32,
+    /// How soft its edge is, 0 to 1 of its size.
+    pub feather: i32,
+    /// Outside it rather than inside.
+    pub invert: bool,
+}
+
+impl Mask {
+    /// A soft ellipse in the middle.
+    pub const MIDDLE: Mask = Mask {
+        shape: MaskShape::Ellipse,
+        x: ONE / 2,
+        y: ONE / 2,
+        width: ONE / 2,
+        height: ONE * 6 / 10,
+        turn: 0,
+        feather: ONE * 3 / 10,
+        invert: false,
+    };
+
+    /// Refuses a mask that can't be used.
+    pub fn check(&self) -> diag::Result<()> {
+        let fine = [self.x, self.y, self.width, self.height, self.feather]
+            .iter()
+            .all(|v| (0..=ONE).contains(v))
+            && (-180 * ONE..=180 * ONE).contains(&self.turn);
+        match fine {
+            true => Ok(()),
+            false => Err(AppError::new("That mask can't be used").why("Its numbers are out of range.")),
+        }
+    }
+}
+
+impl Default for Mask {
+    fn default() -> Mask {
+        Mask::MIDDLE
+    }
+}
+
 /// One layer of a grade.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct GradeLayer {
@@ -238,6 +360,14 @@ pub struct GradeLayer {
     /// Its curves (format 29), applied after the primary corrections.
     #[serde(default, skip_serializing_if = "crate::defaults::is_default")]
     pub curves: Curves,
+    /// Only where its colour is in this range (format 30); everywhere
+    /// when missing.
+    #[serde(default, skip_serializing_if = "crate::defaults::is_default")]
+    pub range: Option<ColorRange>,
+    /// Only inside (or outside) this shape (format 30); everywhere when
+    /// missing.
+    #[serde(default, skip_serializing_if = "crate::defaults::is_default")]
+    pub mask: Option<Mask>,
 }
 
 impl GradeLayer {
@@ -248,6 +378,8 @@ impl GradeLayer {
             off: false,
             primary: Primary::PLAIN,
             curves: Curves::default(),
+            range: None,
+            mask: None,
         }
     }
 }
@@ -295,7 +427,9 @@ impl Grade {
         }
         self.0.iter().try_for_each(|l| {
             l.primary.check()?;
-            l.curves.all().iter().try_for_each(|c| c.check())
+            l.curves.all().iter().try_for_each(|c| c.check())?;
+            l.range.as_ref().map_or(Ok(()), ColorRange::check)?;
+            l.mask.as_ref().map_or(Ok(()), Mask::check)
         })
     }
 }
@@ -338,6 +472,26 @@ mod tests {
             Curve(vec![(500_000, 100), (400_000, 100)]).check().is_err(),
             "out of order"
         );
+    }
+
+    #[test]
+    fn a_colour_range_and_a_mask_are_checked() {
+        let mut grade = Grade::default();
+        grade.layer_mut(0).range = Some(ColorRange::SKIN);
+        grade.layer_mut(0).mask = Some(Mask::MIDDLE);
+        assert!(grade.check().is_ok());
+        grade.layer_mut(0).range = Some(ColorRange {
+            saturation_low: 800_000,
+            saturation_high: 200_000,
+            ..ColorRange::SKIN
+        });
+        assert!(grade.check().is_err(), "from more than to");
+        grade.layer_mut(0).range = None;
+        grade.layer_mut(0).mask = Some(Mask {
+            width: 2 * ONE,
+            ..Mask::MIDDLE
+        });
+        assert!(grade.check().is_err());
     }
 
     #[test]

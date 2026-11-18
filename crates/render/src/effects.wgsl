@@ -23,6 +23,12 @@ struct Pass {
     // A grade's curves, sampled at 33 even places from 0 to 1: master,
     // red, green and blue at each (used when grade[6].y is 1).
     curves: array<vec4<f32>, 33>,
+    // Where a grade applies (pass 10): [0] the colour range's hue, hue
+    // width, softness and whether it is on; [1] its saturation and
+    // lightness from and to; [2] the mask's middle and size (shares of
+    // the picture); [3] its turn (radians), feather, whether inverted, and
+    // its shape (0 none, 1 ellipse, 2 rectangle).
+    limits: array<vec4<f32>, 4>,
 };
 
 @group(0) @binding(0) var<uniform> it: Pass;
@@ -217,6 +223,72 @@ fn curve(v: f32, k: i32) -> f32 {
     return y + max(v - 1.0, 0.0);
 }
 
+// How far round the wheel `a` is from `b` (0 to a half).
+fn hue_apart(a: f32, b: f32) -> f32 {
+    let d = abs(fract(a - b + 0.5) - 0.5);
+    return d;
+}
+
+// 1 inside [low, high], falling to 0 over `soft` outside it.
+fn in_band(v: f32, low: f32, high: f32, soft: f32) -> f32 {
+    let s = max(soft, 0.0001);
+    return clamp(1.0 + min(v - low, high - v) / s, 0.0, 1.0);
+}
+
+// How much a grade applies to the light `light` at `at` (0 to 1 of the
+// picture): its colour range times its mask.
+fn grade_where(light: vec3<f32>, at: vec2<f32>) -> f32 {
+    var weight = 1.0;
+    let range = it.limits[0];
+    if (range.w > 0.5) {
+        let v = pow(clamp(light, vec3<f32>(0.0), vec3<f32>(1.0)), vec3<f32>(1.0 / 2.4));
+        let most = max(v.r, max(v.g, v.b));
+        let least = min(v.r, min(v.g, v.b));
+        let chroma = most - least;
+        var hue = 0.0;
+        if (chroma > 0.00001) {
+            if (most == v.r) {
+                hue = fract(((v.g - v.b) / chroma) / 6.0);
+            } else if (most == v.g) {
+                hue = ((v.b - v.r) / chroma + 2.0) / 6.0;
+            } else {
+                hue = ((v.r - v.g) / chroma + 4.0) / 6.0;
+            }
+        }
+        let lightness = (most + least) / 2.0;
+        let saturation = select(0.0, chroma / max(1.0 - abs(2.0 * lightness - 1.0), 0.00001), chroma > 0.00001);
+        let soft = range.z * 0.25;
+        let by_hue = select(clamp(1.0 + (range.y - hue_apart(hue, range.x)) / max(soft, 0.0001), 0.0, 1.0), 1.0, range.y >= 0.5);
+        let sl = it.limits[1];
+        weight = by_hue * in_band(saturation, sl.x, sl.y, soft) * in_band(lightness, sl.z, sl.w, soft);
+    }
+    let shape = it.limits[3];
+    if (shape.w > 0.5) {
+        let place = it.limits[2];
+        let size = vec2<f32>(it.linear_size_seed.y, it.linear_size_seed.z);
+        // In the picture's pixels, so a turn keeps the shape's proportions.
+        var d = (at - place.xy) * size;
+        let c = cos(-shape.x);
+        let s = sin(-shape.x);
+        d = vec2<f32>(c * d.x - s * d.y, s * d.x + c * d.y);
+        let half = max(place.zw * size * 0.5, vec2<f32>(0.5));
+        let q = abs(d) / half;
+        var r = 0.0;
+        if (shape.w < 1.5) {
+            r = length(q);
+        } else {
+            r = max(q.x, q.y);
+        }
+        let feather = max(shape.y, 0.0001);
+        var inside = clamp((1.0 - r) / feather + 0.5, 0.0, 1.0);
+        if (shape.z > 0.5) {
+            inside = 1.0 - inside;
+        }
+        weight = weight * inside;
+    }
+    return weight;
+}
+
 // 10: a grade's primary corrections, on light. Exposure and white balance
 // as gains; highlights and shadows as stops by how bright a pixel is;
 // contrast around the pivot; the wheels on display-like values (light to
@@ -281,7 +353,7 @@ fn effect(in: Corner) -> @location(0) vec4<f32> {
         case 2: { rgb = sharpen(p, in.at); }
         case 3: { rgb = bright(p); }
         case 6: { rgb = add(p, in.at); }
-        case 10: { rgb = graded(p.rgb); }
+        case 10: { rgb = mix(p.rgb, graded(p.rgb), grade_where(p.rgb, in.at)); }
         default: {}
     }
     return stored(rgb, p.a);

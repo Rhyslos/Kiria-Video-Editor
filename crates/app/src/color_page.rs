@@ -1,5 +1,5 @@
-//! The Color page: the picture large, one tool at a time under it (Basic or
-//! Wheels or Curves for now), a layer dropdown with a Simple / Advanced switch, and
+//! The Color page: the picture large, one tool at a time under it (Basic,
+//! Wheels, Curves, Range or Mask), a layer dropdown with a Simple / Advanced switch, and
 //! the bar of what is being graded with Apply to, Copy grade, Paste and
 //! Reset. A clip's grade is `project::Grade`; every change is one undo
 //! step (`Command::SetGrades`), a value being dragged is shown at once
@@ -7,8 +7,11 @@
 
 mod basic;
 mod curves;
+mod mask;
+mod range;
 mod wheels;
 
+pub use mask::{dragged as mask_dragged, outline as mask_outline};
 use project::{ClipId, Command, Grade, Primary, Project, SequenceId, Time};
 use ui_kit::Theme;
 
@@ -19,16 +22,22 @@ pub enum Tool {
     Basic,
     Wheels,
     Curves,
+    /// The colours a layer reaches.
+    Range,
+    /// The shape a layer reaches.
+    Mask,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 3] = [Tool::Basic, Tool::Wheels, Tool::Curves];
+    pub const ALL: [Tool; 5] = [Tool::Basic, Tool::Wheels, Tool::Curves, Tool::Range, Tool::Mask];
 
     pub fn name(self) -> &'static str {
         match self {
             Tool::Basic => "Basic",
             Tool::Wheels => "Wheels",
             Tool::Curves => "Curves",
+            Tool::Range => "Range",
+            Tool::Mask => "Mask",
         }
     }
 }
@@ -66,6 +75,10 @@ pub struct ColorPage {
     curve_channel: curves::Channel,
     /// "Pick white" is on: the next click on the picture picks.
     pub picking_white: bool,
+    /// "Pick from the picture" (Range) is on: the next click picks.
+    pub picking_range: bool,
+    /// The mask is being dragged on the picture.
+    mask_held: bool,
     /// The picture is shown as it was before its grade.
     pub before: bool,
     /// Auto white balance looking at a clip: which, and the work.
@@ -96,6 +109,8 @@ impl Default for ColorPage {
             scope_picture: None,
             auto_strength: 1.0,
             picking_white: false,
+            picking_range: false,
+            mask_held: false,
             curve_channel: curves::Channel::default(),
             before: false,
             balancing: None,
@@ -209,6 +224,82 @@ impl ColorPage {
         asked
     }
 
+    /// "Pick from the picture": the shown layer's colour range goes round
+    /// the colour at `at` (0 to 1 across and down) of `sampled`.
+    pub fn pick_range(
+        &mut self,
+        sequence: SequenceId,
+        clip: &project::Clip,
+        sampled: &engine::scope::Sampled,
+        at: (f32, f32),
+    ) -> Asked {
+        self.picking_range = false;
+        let mut asked = Asked::default();
+        let Some(light) = sampled.light_around(at, 1) else {
+            return asked;
+        };
+        let mut grade = clip.grade.clone();
+        let layer = grade.layer_mut(self.layer);
+        let softness = layer.range.map(|r| r.softness);
+        let mut picked = range::around(light);
+        if let Some(softness) = softness {
+            picked.softness = softness;
+        }
+        layer.range = Some(picked);
+        asked.status = Some(
+            "The layer now reaches colours like the one you picked: widen or narrow it with the sliders"
+                .into(),
+        );
+        asked.commands.push(Command::SetGrades {
+            sequence,
+            grades: vec![(clip.id, grade)],
+        });
+        asked
+    }
+
+    /// The mask of the layer shown on `clip`, as it is now (being
+    /// dragged or not), while the Mask tool is open.
+    pub fn mask_shown(&self, clip: &project::Clip) -> Option<project::Mask> {
+        if self.tool != Tool::Mask {
+            return None;
+        }
+        let grade = match &self.changing {
+            Some((id, grade)) if *id == clip.id => grade,
+            _ => &clip.grade,
+        };
+        grade.0.get(self.layer)?.mask
+    }
+
+    /// The mask dragged on the picture to `mask`: shown at once, one undo
+    /// step when `done`.
+    pub fn drag_mask(
+        &mut self,
+        sequence: SequenceId,
+        clip: &project::Clip,
+        mask: project::Mask,
+        done: bool,
+    ) -> Asked {
+        let mut grade = match &self.changing {
+            Some((id, grade)) if *id == clip.id => grade.clone(),
+            _ => clip.grade.clone(),
+        };
+        grade.layer_mut(self.layer).mask = Some(mask);
+        self.mask_held = !done;
+        let mut asked = Asked::default();
+        if !done {
+            self.changing = Some((clip.id, grade));
+        } else {
+            self.changing = None;
+            if grade != clip.grade {
+                asked.commands.push(Command::SetGrades {
+                    sequence,
+                    grades: vec![(clip.id, grade)],
+                });
+            }
+        }
+        asked
+    }
+
     /// The tools for `clip`'s grade: the switcher, the layer dropdown and
     /// the Simple / Advanced switch, then the tool shown.
     pub fn tools_ui(
@@ -319,7 +410,29 @@ impl ColorPage {
                 }
                 busy
             }
+            Tool::Range => {
+                let before = grade.0.get(self.layer).and_then(|l| l.range);
+                let mut range = before;
+                let busy = range::ui(ui, theme, &mut range, &mut self.picking_range);
+                if range != before {
+                    grade.layer_mut(self.layer).range = range;
+                }
+                busy
+            }
+            Tool::Mask => {
+                let before = grade.0.get(self.layer).and_then(|l| l.mask);
+                let mut mask = before;
+                let busy = mask::ui(ui, theme, &mut mask);
+                if mask != before {
+                    grade.layer_mut(self.layer).mask = mask;
+                }
+                busy
+            }
         };
+        // A pick waits only while its tool is open.
+        self.picking_white &= self.tool == Tool::Basic;
+        self.picking_range &= self.tool == Tool::Range;
+        let busy = busy || self.mask_held;
         // Auto's answer goes into the sliders, as a change of their own.
         if let Some((id, work)) = &self.balancing
             && let Some(answer) = work.answer()
@@ -628,6 +741,55 @@ mod tests {
             "{}",
             primary.temperature
         );
+    }
+
+    #[test]
+    fn picking_a_colour_puts_the_layers_range_round_it() {
+        let p = project_with_two_files();
+        let clip = p.active().expect("a timeline").video_tracks[0].clips[0].clone();
+        let skin = [0.6f32, 0.35, 0.25];
+        let sampled = engine::scope::Sampled {
+            width: 4,
+            height: 4,
+            rgb: vec![skin.map(|light| light.powf(1.0 / 2.4)); 16],
+        };
+        let mut page = ColorPage {
+            tool: Tool::Range,
+            picking_range: true,
+            ..ColorPage::default()
+        };
+        let asked = page.pick_range(p.active_sequence, &clip, &sampled, (0.5, 0.5));
+        assert!(!page.picking_range, "one pick");
+        let Some(Command::SetGrades { grades, .. }) = asked.commands.first() else {
+            panic!("a grade set");
+        };
+        let range = grades[0].1.0[0].range.expect("a range");
+        let (hue, _, _) = range::hsl(skin);
+        assert!((f64::from(range.hue) / 1_000_000.0 - hue).abs() < 0.001);
+    }
+
+    #[test]
+    fn dragging_the_mask_is_shown_at_once_and_one_undo_step_when_let_go() {
+        let p = project_with_two_files();
+        let clip = p.active().expect("a timeline").video_tracks[0].clips[0].clone();
+        let mut page = ColorPage {
+            tool: Tool::Mask,
+            ..ColorPage::default()
+        };
+        assert_eq!(page.mask_shown(&clip), None, "no mask yet");
+        let moved = project::Mask {
+            x: 300_000,
+            ..project::Mask::MIDDLE
+        };
+        let held = page.drag_mask(p.active_sequence, &clip, moved, false);
+        assert!(held.commands.is_empty(), "nothing kept while held");
+        assert_eq!(page.mask_shown(&clip), Some(moved), "shown at once");
+        let shown = page.shown(&p, Some(clip.id)).expect("shown");
+        let seq = shown.active().expect("a timeline");
+        assert_eq!(seq.video_tracks[0].clips[0].grade.0[0].mask, Some(moved));
+        let done = page.drag_mask(p.active_sequence, &clip, moved, true);
+        assert_eq!(done.commands.len(), 1, "one undo step");
+        assert!(page.shown(&p, Some(clip.id)).is_none());
     }
 
     #[test]

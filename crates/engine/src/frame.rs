@@ -451,7 +451,37 @@ pub fn grade_numbers(layer: &project::GradeLayer) -> render::GradeNumbers {
         highlights: fraction(p.highlights),
         shadows: fraction(p.shadows),
         curves: curve_samples(&layer.curves),
+        limits: limits(layer),
     }
+}
+
+/// Where a grade layer applies, as the shader's `limits` rows.
+fn limits(layer: &project::GradeLayer) -> [[f32; 4]; 4] {
+    let mut rows = [[0.0f32; 4]; 4];
+    if let Some(r) = &layer.range {
+        rows[0] = [fraction(r.hue), fraction(r.hue_width), fraction(r.softness), 1.0];
+        rows[1] = [
+            fraction(r.saturation_low),
+            fraction(r.saturation_high),
+            fraction(r.lightness_low),
+            fraction(r.lightness_high),
+        ];
+    }
+    if let Some(m) = &layer.mask {
+        rows[2] = [
+            fraction(m.x),
+            fraction(m.y),
+            fraction(m.width),
+            fraction(m.height),
+        ];
+        let shape = match m.shape {
+            project::MaskShape::Ellipse => 1.0,
+            project::MaskShape::Rectangle => 2.0,
+        };
+        let turn = (f64::from(m.turn) / 1_000_000.0).to_radians() as f32;
+        rows[3] = [turn, fraction(m.feather), if m.invert { 1.0 } else { 0.0 }, shape];
+    }
+    rows
 }
 
 /// A clip's own picture effects, as passes.

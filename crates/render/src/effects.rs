@@ -73,6 +73,9 @@ pub struct GradeNumbers {
     /// Its curves sampled at [`CURVE_SAMPLES`] even places from 0 to 1,
     /// master, red, green and blue at each; none when they are straight.
     pub curves: Option<[[f32; 4]; CURVE_SAMPLES]>,
+    /// Where it applies: a colour range and a mask, as the shader's
+    /// `limits` rows; all zero applies everywhere.
+    pub limits: [[f32; 4]; 4],
 }
 
 /// How many places a grade's curves are sampled at.
@@ -105,6 +108,7 @@ impl GradeNumbers {
         highlights: 0.0,
         shadows: 0.0,
         curves: None,
+        limits: [[0.0; 4]; 4],
     };
 
     fn rows(&self) -> [[f32; 4]; 7] {
@@ -236,6 +240,14 @@ impl Pass {
         }
     }
 
+    /// The pass's limit rows: where a grade applies, everywhere for others.
+    fn limits(self) -> [[f32; 4]; 4] {
+        match self {
+            Pass::Grade(numbers) => numbers.limits,
+            _ => [[0.0; 4]; 4],
+        }
+    }
+
     /// The pass's grade rows: a grade's numbers, plain for every other.
     fn grade(self) -> [[f32; 4]; 7] {
         match self {
@@ -245,7 +257,7 @@ impl Pass {
     }
 }
 
-const PASS_BYTES: u64 = 48 + 7 * 16 + CURVE_SAMPLES as u64 * 16;
+const PASS_BYTES: u64 = 48 + 7 * 16 + CURVE_SAMPLES as u64 * 16 + 4 * 16;
 
 /// The effect passes for pictures made in one working space.
 #[derive(Debug)]
@@ -433,10 +445,12 @@ impl Effects {
             grade[6],
         ];
         let curves = pass.curves();
+        let limits = pass.limits();
         let bytes: Vec<u8> = rows
             .as_flattened()
             .iter()
             .chain(curves.as_flattened())
+            .chain(limits.as_flattened())
             .flat_map(|n| n.to_ne_bytes())
             .collect();
         let uniforms = uniform_buffer(device, PASS_BYTES);

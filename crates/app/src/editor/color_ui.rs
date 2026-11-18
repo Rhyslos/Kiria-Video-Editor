@@ -27,6 +27,7 @@ impl Editor {
         let tools_h = match self.color_page.tool {
             color_page::Tool::Wheels if self.color_page.advanced => 290.0,
             color_page::Tool::Curves => 300.0,
+            color_page::Tool::Range | color_page::Tool::Mask => 210.0,
             _ => 230.0,
         };
         let timeline_h = (page.height() * 0.26).clamp(150.0, 320.0);
@@ -40,8 +41,18 @@ impl Editor {
         );
         let timeline = egui::Rect::from_min_max(egui::pos2(page.left(), tools.bottom() + GAP), page.max);
 
-        let picking = self.color_page.picking_white;
+        let graded = graded_id.and_then(|id| {
+            seq.video_tracks
+                .iter()
+                .flat_map(|t| t.clips.iter())
+                .find(|c| c.id == id)
+        });
+        let picking = self.color_page.picking_white || self.color_page.picking_range;
         let mut picked: Option<(f32, f32)> = None;
+        // The Mask tool's shape, drawn over the picture and moved by a drag.
+        let mask = graded.and_then(|c| self.color_page.mask_shown(c));
+        let mut mask_moved: Option<(project::Mask, bool)> = None;
+        let mask_colour = self.theme.accent;
         // The picture, as it is graded (with what is being dragged).
         let needle = (!self.settings.edit_at_playhead).then_some(seq.edit_needle);
         let display_state = self.display_state(false);
@@ -76,19 +87,36 @@ impl Editor {
                             (at.y - frame.top()) / frame.height(),
                         ));
                     }
+                } else if let Some(mask) = mask {
+                    let painter = ui.painter_at(frame);
+                    let [edge, feather] = color_page::mask_outline(&mask, frame);
+                    painter.add(egui::Shape::line(edge, egui::Stroke::new(1.5, mask_colour)));
+                    painter.add(egui::Shape::dashed_line(
+                        &feather,
+                        egui::Stroke::new(1.0, mask_colour.gamma_multiply(0.6)),
+                        4.0,
+                        4.0,
+                    ));
+                    if ui.rect_contains_pointer(frame) {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::Move);
+                    }
+                    if response.dragged() || response.drag_stopped() {
+                        let moved = color_page::mask_dragged(&mask, frame, response.drag_delta());
+                        mask_moved = Some((moved, response.drag_stopped()));
+                    }
                 }
             },
         );
 
-        let graded = graded_id.and_then(|id| {
-            seq.video_tracks
-                .iter()
-                .flat_map(|t| t.clips.iter())
-                .find(|c| c.id == id)
-        });
         let mut asked = Vec::new();
         if let (Some(at), Some(clip), Some(sampled)) = (picked, graded, self.viewer.sampled.clone()) {
-            asked.push(self.color_page.pick_white(seq.id, clip, &sampled, at));
+            asked.push(match self.color_page.picking_range {
+                true => self.color_page.pick_range(seq.id, clip, &sampled, at),
+                false => self.color_page.pick_white(seq.id, clip, &sampled, at),
+            });
+        }
+        if let (Some((mask, done)), Some(clip)) = (mask_moved, graded) {
+            asked.push(self.color_page.drag_mask(seq.id, clip, mask, done));
         }
         let panel = |ui: &mut egui::Ui, rect: egui::Rect| {
             ui.new_child(

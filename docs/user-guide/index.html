@@ -993,7 +993,7 @@ footer p { color: var(--muted); }
 <h3>How the page is laid out<a class="anchor" href="#color-layout" aria-label="Link to this section">#</a></h3>
 <ul>
 <li>The picture, large, with the transport, on the left; on the right, the clip being graded with <strong>Apply</strong>, <strong>Copy grade</strong>, <strong>Paste</strong> and <strong>Reset</strong>, and under them one scope of the picture as it will be exported: <strong>Waveform</strong> (brightness up the side, across the picture), <strong>RGB parade</strong> (the same for red, green and blue side by side), <strong>Vectorscope</strong> (colour: hue around, saturation outwards) or <strong>Histogram</strong>, with a line on what is clipped ("Nothing is clipped").</li>
-<li>Under them, one tool at a time: <strong>Basic</strong>, <strong>Wheels</strong> or <strong>Curves</strong>. Next to the switcher is the layer dropdown (a grade can have several layers, applied in order; <strong>+ Add a layer</strong> adds one, and <strong>On</strong> switches one off to compare) and, for the wheels, <strong>Simple</strong> or <strong>Advanced</strong>.</li>
+<li>Under them, one tool at a time: <strong>Basic</strong>, <strong>Wheels</strong>, <strong>Curves</strong>, <strong>Range</strong> or <strong>Mask</strong>. Next to the switcher is the layer dropdown (a grade can have several layers, applied in order; <strong>+ Add a layer</strong> adds one, and <strong>On</strong> switches one off to compare) and, for the wheels, <strong>Simple</strong> or <strong>Advanced</strong>.</li>
 <li>The timeline at the bottom, with the sound folded into the clips. Graded clips have a small dot in their bottom left corner.</li>
 </ul>
 <p>The clip being graded is the selected one, or, with nothing selected, the top one under the playhead. <kbd>↑</kbd> and <kbd>↓</kbd> go to the clip before and the next one and select it, so you can step through a timeline shot by shot (on the other pages they go to the cut before and after). <strong>Before</strong> under the clip's name shows the picture without its grade; click it again for after. Every change is one undo step; a slider or wheel being dragged shows in the picture at once and becomes one step when you let go.</p>
@@ -1017,6 +1017,16 @@ footer p { color: var(--muted); }
 <section id="color-curves">
 <h3>Curves<a class="anchor" href="#color-curves" aria-label="Link to this section">#</a></h3>
 <p>One curve at a time: <strong>Master</strong> (brightness), <strong>Red</strong>, <strong>Green</strong> or <strong>Blue</strong>, the others faint behind it. Left to right is how bright a part of the picture is, bottom to top how bright it becomes. Click the curve to add a point, drag a point to move it, double-click one to take it away; the two ends move only up and down. A gentle S (the dark part a little down, the bright part a little up) adds contrast; pulling the Blue curve's middle down warms the middle tones. <strong>Reset curve</strong> straightens the one shown. The curves come after the layer's Basic and Wheels.</p>
+</section>
+
+<section id="color-limits">
+<h3>Range and Mask: grading one part of the picture<a class="anchor" href="#color-limits" aria-label="Link to this section">#</a></h3>
+<p>A layer can be kept to some colours, to a shape, or to both, so it changes a face, a sky or the edges and leaves the rest. Add a layer for it (<strong>+ Add a layer</strong>), set where it reaches with these two tools, then make the change with Basic, Wheels or Curves on that layer.</p>
+<ul>
+<li><strong>Range</strong>: tick <strong>Only these colours</strong>, then <strong>Pick from the picture</strong> and click the colour you want (a cheek, the sky), or start from <strong>Skin</strong>. The sliders say which colours are in: the <strong>Hue</strong> and how far <strong>Either side</strong> of it, how much colour (<strong>Saturation from</strong> and <strong>to</strong>) and how bright (<strong>Lightness from</strong> and <strong>to</strong>), with <strong>Softness</strong> fading the edges so there is no hard line. Switch the layer off and on (<strong>On</strong>) to see what it reaches.</li>
+<li><strong>Mask</strong>: tick <strong>Only in a shape</strong> and choose <strong>Ellipse</strong> or <strong>Rectangle</strong>. The shape is drawn over the picture (its soft edge dashed); drag on the picture to move it. <strong>Across</strong>, <strong>Down</strong>, <strong>Width</strong>, <strong>Height</strong> and <strong>Turn</strong> place it, <strong>Feather</strong> softens its edge, and <strong>Outside it</strong> changes everything but the shape: a darker layer outside a soft ellipse is a vignette that brings the eye to the middle.</li>
+</ul>
+<p>With both, the layer reaches the colours in its range that are also in its shape.</p>
 </section>
 
 <section id="color-apply">

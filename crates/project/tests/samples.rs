@@ -196,6 +196,12 @@ fn rich_project() -> Project {
     };
     // A gentle S on its brightness (format 29).
     grade.0[0].curves.master = project::Curve(vec![(250_000, 220_000), (750_000, 790_000)]);
+    // A second layer brightening skin inside a soft ellipse (format 30).
+    let skin = grade.layer_mut(1);
+    skin.name = "Face".into();
+    skin.primary.exposure = 300_000;
+    skin.range = Some(project::ColorRange::SKIN);
+    skin.mask = Some(project::Mask::MIDDLE);
     seq.video_tracks[0].clips.push_back(Clip {
         grade,
         look,
@@ -665,6 +671,28 @@ fn version_27_sample_opens_ungraded() {
     for seq in project.sequences.iter() {
         assert!(seq.tracks().all(|t| t.clips.iter().all(|c| !c.grade.is_graded())));
     }
+}
+
+#[test]
+fn version_29_sample_opens_with_layers_everywhere() {
+    let project = file::load(&sample_path(29)).expect("the version 29 sample opens");
+    let clip = &project.active().expect("a timeline").video_tracks[0].clips[0];
+    assert!(
+        clip.grade
+            .0
+            .iter()
+            .all(|layer| layer.range.is_none() && layer.mask.is_none())
+    );
+}
+
+#[test]
+fn the_current_sample_has_a_layer_on_skin_in_an_ellipse() {
+    let project = file::load(&sample_path(FORMAT_VERSION)).expect("the sample opens");
+    let clip = &project.active().expect("a timeline").video_tracks[0].clips[0];
+    let face = &clip.grade.0[1];
+    assert_eq!(face.name, "Face");
+    assert_eq!(face.range, Some(project::ColorRange::SKIN));
+    assert_eq!(face.mask, Some(project::Mask::MIDDLE));
 }
 
 #[test]
