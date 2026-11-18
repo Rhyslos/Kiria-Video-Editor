@@ -12,9 +12,9 @@
 //!   so the newest always wins and an older one never lands after it. A
 //!   failure is kept until asked for.
 //!
-//! The project file, the autosave journal's starting point, settings,
-//! export presets, the labels for every project, templates and the
-//! timeline's layout file are all written this way.
+//! The project file, its backup before an upgrade, the autosave journal's
+//! starting point, settings, export presets, the labels for every project,
+//! templates and the timeline's layout file are all written this way.
 
 use diag::{AppError, Explain};
 use std::fs::{self, File, OpenOptions};
