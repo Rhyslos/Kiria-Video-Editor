@@ -291,8 +291,9 @@ impl Inspector {
     }
 
     /// Changes left hanging on a clip that is no longer the one shown
-    /// (another was selected mid-drag) are finished first: the look, the
-    /// effects and the sound, each an undo step only if it changes something.
+    /// (another was selected mid-drag, or none) are finished first: the
+    /// look, the effects, a title's words and the sound, each an undo step
+    /// only if it changes something.
     fn finish_left_behind(&mut self, project: &Project, target: Option<ShownClip<'_>>) -> Vec<Command> {
         let mut commands = Vec::new();
         let sequence = project.active_sequence;
@@ -317,6 +318,16 @@ impl Inspector {
                 effects: Box::new(effects),
             });
         }
+        if let Some((clip, title)) = self.pending_title.finish_on_change(
+            |clip| Some(*clip) == showing,
+            |clip| clip_in(project, *clip).and_then(|c| c.title.as_deref().cloned()),
+        ) {
+            commands.push(Command::SetTitle {
+                sequence,
+                clip,
+                title: Box::new(title),
+            });
+        }
         let hearing: Vec<ClipId> = target
             .map(|(seq, _, clip)| sound_clips(seq, clip).iter().map(|c| c.id).collect())
             .unwrap_or_default();
@@ -332,21 +343,11 @@ impl Inspector {
         commands
     }
 
-    /// The Title section, on a title. Words typed into another title, left
-    /// by selecting this clip, are finished first.
+    /// The Title section, on a title. Words typed into another title are
+    /// finished before it, by [`Inspector::finish_left_behind`].
     fn title_step(&mut self, ui: &mut egui::Ui, theme: &Theme, at: &Shown) -> Vec<Command> {
-        let (project, clip, sequence) = (at.project, at.clip, at.sequence);
+        let (clip, sequence) = (at.clip, at.sequence);
         let mut commands = Vec::new();
-        if let Some((id, title)) = self.pending_title.finish_on_change(
-            |id| *id == clip.id,
-            |id| clip_in(project, *id).and_then(|c| c.title.as_deref().cloned()),
-        ) {
-            commands.push(Command::SetTitle {
-                sequence,
-                clip: id,
-                title: Box::new(title),
-            });
-        }
         if let Some(stored) = clip.title.as_deref().filter(|_| clip.is_title()) {
             let shown = self.pending_title.value_for(&clip.id).unwrap_or(stored).clone();
             let asked = title::section(ui, theme, sequence, clip.id, stored, &shown);
@@ -1268,6 +1269,39 @@ pub(crate) mod tests {
         assert!(inspector.pending.get().is_none());
         // With the clip selected and nothing touched, nothing is changed.
         assert!(frame(&mut inspector, &project, &[clip]).is_empty());
+    }
+
+    #[test]
+    fn words_left_in_a_title_when_nothing_is_selected_become_its_undo_step() {
+        use project::titles::{Title, TitleStyle};
+        let project = project_with_a_clip();
+        let project = Command::AddTitle {
+            sequence: project.active_sequence,
+            at: Time::ZERO,
+            length: Time::seconds(4),
+            track: None,
+            title: Box::new(Title::new(TitleStyle::Centred)),
+        }
+        .apply(&project)
+        .unwrap();
+        let clip = project.active().unwrap().video_tracks[1].clips[0].id;
+        let mut words = Title::new(TitleStyle::Centred);
+        words.text = "Round two".into();
+        let mut inspector = Inspector::default();
+        // Typed with the field still focused, then the timeline's empty
+        // space clicked: nothing is selected.
+        inspector.pending_title.set(clip, words.clone());
+        let commands = frame(&mut inspector, &project, &[]);
+        assert_eq!(
+            commands,
+            vec![Command::SetTitle {
+                sequence: project.active_sequence,
+                clip,
+                title: Box::new(words),
+            }]
+        );
+        assert!(inspector.pending_title.get().is_none());
+        assert!(frame(&mut inspector, &project, &[]).is_empty(), "only once");
     }
 
     #[test]
