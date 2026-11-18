@@ -178,19 +178,17 @@ impl Shelf {
     }
 
     /// Where the proxy of picture stream `stream` of the recording with
-    /// this fingerprint is kept.
-    pub fn file_for(&self, fingerprint: &Fingerprint, stream: u32) -> PathBuf {
-        self.folder.join(format!(
-            "{}-{}-{stream}.{EXTENSION}",
-            fingerprint.size, fingerprint.sample_hash
-        ))
+    /// this fingerprint is kept; `None` for a fingerprint the app does not
+    /// make, which never has a proxy ([`crate::naming`]).
+    pub fn file_for(&self, fingerprint: &Fingerprint, stream: u32) -> Option<PathBuf> {
+        crate::naming::stem(fingerprint).map(|stem| self.folder.join(format!("{stem}-{stream}.{EXTENSION}")))
     }
 
     /// The proxy, if it has been built. Looks at the disk: not for every
     /// frame of the interface (the preview worker remembers the answer
     /// until [`Shelf::generation`] changes).
     pub fn ready(&self, fingerprint: &Fingerprint, stream: u32) -> Option<PathBuf> {
-        let path = self.file_for(fingerprint, stream);
+        let path = self.file_for(fingerprint, stream)?;
         (path.is_file() && !self.retiring().contains(&path)).then_some(path)
     }
 
@@ -227,6 +225,11 @@ impl Shelf {
         workers: usize,
         steps: &Steps<'_>,
     ) -> diag::Result<Written> {
+        let done = self.file_for(fingerprint, stream).ok_or_else(|| {
+            AppError::new("The proxy can't be made")
+                .why("The file's fingerprint in the project is not one this app makes, so no proxy can be named after it.")
+                .fix("Find the file again (relink it), or import it again.")
+        })?;
         std::fs::create_dir_all(&self.folder).or_explain(|| {
             AppError::new("The proxy can't be made")
                 .why(format!(
@@ -239,7 +242,6 @@ impl Shelf {
         if let Err(err) = self.unmark_cleared(fingerprint, stream) {
             tracing::warn!("a cleared proxy's mark could not be taken off: {}", err.report());
         }
-        let done = self.file_for(fingerprint, stream);
         let building = done.with_extension(format!("{}.{BUILDING}", std::process::id()));
         let written = media::proxy::write(
             original, stream, length, &building, decoding, false, workers, steps,
@@ -260,10 +262,9 @@ impl Shelf {
     /// while a preview worker that has it open lets go of it (a file that
     /// is open can't be removed on every system), so run this on a worker.
     pub fn delete(&self, fingerprint: &Fingerprint, stream: u32) -> diag::Result<bool> {
-        let path = self.file_for(fingerprint, stream);
-        if !path.exists() {
+        let Some(path) = self.file_for(fingerprint, stream).filter(|path| path.exists()) else {
             return Ok(false);
-        }
+        };
         self.retiring().insert(path.clone());
         self.changed();
         let removed = remove_waiting(&path).map_err(|err| {
@@ -353,16 +354,21 @@ impl Shelf {
     /// not built again by itself (only when asked for by hand, which takes
     /// the mark off). Reads a small file: run it on a worker.
     pub fn is_cleared(&self, fingerprint: &Fingerprint, stream: u32) -> bool {
+        let Some(name) = self.name_for(fingerprint, stream) else {
+            return false;
+        };
         let _held = self.marks();
-        let name = self.name_for(fingerprint, stream);
         self.cleared_names().contains(&name)
     }
 
     /// Takes the "cleared on purpose" mark off a recording's proxy.
     pub fn unmark_cleared(&self, fingerprint: &Fingerprint, stream: u32) -> diag::Result<()> {
+        let Some(name) = self.name_for(fingerprint, stream) else {
+            return Ok(());
+        };
         let _held = self.marks();
         let mut names = self.cleared_names();
-        if names.remove(&self.name_for(fingerprint, stream)) {
+        if names.remove(&name) {
             self.write_cleared(&names)?;
         }
         Ok(())
@@ -384,8 +390,8 @@ impl Shelf {
     }
 
     /// The name a proxy's file has without its extension.
-    fn name_for(&self, fingerprint: &Fingerprint, stream: u32) -> String {
-        proxy_name(&self.file_for(fingerprint, stream)).unwrap_or_default()
+    fn name_for(&self, fingerprint: &Fingerprint, stream: u32) -> Option<String> {
+        proxy_name(&self.file_for(fingerprint, stream)?)
     }
 
     /// The proxies cleared on purpose, as the list in the folder says
@@ -561,11 +567,11 @@ mod tests {
             .join(name)
     }
 
-    fn print(n: u64) -> Fingerprint {
-        Fingerprint {
-            size: n,
-            sample_hash: format!("{n:032x}"),
-        }
+    use crate::naming::print;
+
+    /// Where `shelf` keeps the proxy of stream `stream` of recording `n`.
+    fn file(shelf: &Shelf, n: u64, stream: u32) -> PathBuf {
+        shelf.file_for(&print(n), stream).unwrap()
     }
 
     fn quietly() -> Steps<'static> {
@@ -593,9 +599,9 @@ mod tests {
     #[test]
     fn a_proxy_is_kept_by_fingerprint_and_stream() {
         let shelf = Shelf::new("/cache/proxies", ProxyMode::Auto);
-        let a = shelf.file_for(&print(1), 0);
-        assert_ne!(a, shelf.file_for(&print(2), 0));
-        assert_ne!(a, shelf.file_for(&print(1), 1));
+        let a = file(&shelf, 1, 0);
+        assert_ne!(a, file(&shelf, 2, 0));
+        assert_ne!(a, file(&shelf, 1, 1));
         assert!(a.starts_with("/cache/proxies"));
         assert!(shelf.ready(&print(1), 0).is_none());
     }
@@ -630,12 +636,12 @@ mod tests {
         let now = SystemTime::now();
         // Four proxies of 100 bytes, used one, two, three and four hours ago.
         for n in 1..=4u64 {
-            let path = shelf.file_for(&print(n), 0);
+            let path = file(&shelf, n, 0);
             std::fs::write(&path, vec![0u8; 100]).unwrap();
             let file = std::fs::File::options().write(true).open(&path).unwrap();
             file.set_modified(now - Duration::from_secs(3600 * n)).unwrap();
         }
-        let oldest = shelf.file_for(&print(4), 0);
+        let oldest = file(&shelf, 4, 0);
         // Room for two, and the oldest is in use by the open project.
         assert_eq!(shelf.trim(200, std::slice::from_ref(&oldest)), 2);
         assert!(oldest.exists(), "kept: in use");
@@ -662,12 +668,8 @@ mod tests {
     fn a_projects_proxies_or_all_are_measured_and_cleared_and_nothing_else() {
         let dir = tempfile::tempdir().unwrap();
         let shelf = Shelf::new(dir.path(), ProxyMode::Auto);
-        let print = |n: u64| Fingerprint {
-            size: n,
-            sample_hash: format!("{n:x}"),
-        };
-        let ours = shelf.file_for(&print(1), 0);
-        let theirs = shelf.file_for(&print(2), 0);
+        let ours = file(&shelf, 1, 0);
+        let theirs = file(&shelf, 2, 0);
         std::fs::write(&ours, vec![0u8; 1000]).unwrap();
         std::fs::write(&theirs, vec![0u8; 4000]).unwrap();
         // Not proxies: never measured, never removed.
@@ -722,15 +724,11 @@ mod tests {
     #[test]
     fn a_cleared_proxy_stays_marked_until_built_on_purpose() {
         let dir = tempfile::tempdir().unwrap();
-        let print = |n: u64| Fingerprint {
-            size: n,
-            sample_hash: format!("{n:x}"),
-        };
         let shelf = Shelf::new(dir.path(), ProxyMode::On);
         assert!(!shelf.is_cleared(&print(1), 0), "nothing cleared yet");
-        std::fs::write(shelf.file_for(&print(1), 0), b"proxy").unwrap();
-        std::fs::write(shelf.file_for(&print(2), 0), b"proxy").unwrap();
-        shelf.clear(Some(&[shelf.file_for(&print(1), 0)]));
+        std::fs::write(file(&shelf, 1, 0), b"proxy").unwrap();
+        std::fs::write(file(&shelf, 2, 0), b"proxy").unwrap();
+        shelf.clear(Some(&[file(&shelf, 1, 0)]));
         assert!(shelf.is_cleared(&print(1), 0));
         assert!(!shelf.is_cleared(&print(2), 0), "only what was cleared");
         assert!(!shelf.is_cleared(&print(1), 1), "per picture stream");
@@ -746,8 +744,36 @@ mod tests {
         assert!(!later.is_cleared(&print(1), 0));
         assert!(later.is_cleared(&print(2), 0));
         // "Delete proxy" is on purpose too: the same mark.
-        std::fs::write(later.file_for(&print(1), 0), b"proxy").unwrap();
+        std::fs::write(file(&later, 1, 0), b"proxy").unwrap();
         assert!(later.delete(&print(1), 0).unwrap());
         assert!(later.is_cleared(&print(1), 0));
+    }
+
+    #[test]
+    fn a_fingerprint_the_app_does_not_make_is_never_read_or_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let shelf = Shelf::new(dir.path().join("cache/proxies"), ProxyMode::On);
+        let original = fixture("vfr-60.mkv");
+        // A file a crafted name would reach.
+        let escaped = dir.path().join("escaped.mp4");
+        std::fs::write(&escaped, b"not a proxy").unwrap();
+        for fingerprint in crate::naming::hostile() {
+            assert_eq!(shelf.file_for(&fingerprint, 0), None, "{fingerprint:?}");
+            assert_eq!(shelf.ready(&fingerprint, 0), None);
+            assert!(!shelf.is_cleared(&fingerprint, 0));
+            shelf.unmark_cleared(&fingerprint, 0).unwrap();
+            assert!(!shelf.delete(&fingerprint, 0).unwrap());
+            assert!(
+                shelf
+                    .build(&original, 0, 2.0, &fingerprint, Decoding::Software, 1, &quietly())
+                    .is_err()
+            );
+        }
+        assert!(escaped.exists(), "never deleted");
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            1,
+            "nothing written"
+        );
     }
 }

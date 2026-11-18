@@ -9,9 +9,16 @@
 //!   around in, kept in the app's cache folder by the recording's
 //!   fingerprint, within the disk budget.
 //!
+//! - [`loudness`]: a file's loudness readings, a few bytes a recording.
+//!
+//! - [`naming`]: the one place a fingerprint becomes a file name; every
+//!   store refuses one the app does not make (nothing read or written).
+//!
 //! Still to come: the RAM frame cache and the disk render cache. (Frames
 //! kept on the graphics card are `engine::frames`.)
 
+pub mod loudness;
+pub mod naming;
 pub mod proxy;
 pub mod thumbs;
 pub mod waveform;

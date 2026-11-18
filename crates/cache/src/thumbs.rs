@@ -145,20 +145,20 @@ impl Store {
         Store { folder }
     }
 
-    fn file_for(&self, fingerprint: &Fingerprint, stream: u32) -> PathBuf {
+    fn file_for(&self, fingerprint: &Fingerprint, stream: u32) -> Option<PathBuf> {
         self.file_named(fingerprint, stream, PICTURES)
     }
 
-    fn file_named(&self, fingerprint: &Fingerprint, stream: u32, kind: &str) -> PathBuf {
-        self.folder.join(format!(
-            "{}-{}-{stream}.{kind}",
-            fingerprint.size, fingerprint.sample_hash
-        ))
+    /// Where this stream's file of `kind` is kept; `None` for a
+    /// fingerprint the app does not make (nothing is kept for it,
+    /// [`crate::naming`]).
+    fn file_named(&self, fingerprint: &Fingerprint, stream: u32, kind: &str) -> Option<PathBuf> {
+        crate::naming::stem(fingerprint).map(|stem| self.folder.join(format!("{stem}-{stream}.{kind}")))
     }
 
     /// The cover kept for this stream, if any.
     pub fn load_cover(&self, fingerprint: &Fingerprint, stream: u32) -> Option<Frame> {
-        let path = self.file_named(fingerprint, stream, COVER);
+        let path = self.file_named(fingerprint, stream, COVER)?;
         let mut strip = decode(&std::fs::read(&path).ok()?, false)?;
         touch(&path);
         strip.frames.pop()
@@ -170,13 +170,15 @@ impl Store {
             every: 0.0,
             frames: vec![cover.clone()],
         };
-        self.write(&self.file_named(fingerprint, stream, COVER), &strip, false);
+        if let Some(path) = self.file_named(fingerprint, stream, COVER) {
+            self.write(&path, &strip, false);
+        }
     }
 
     /// The strip kept for this stream, if any, readable and taken the same
     /// way (`exact` frames or not).
     pub fn load(&self, fingerprint: &Fingerprint, stream: u32, exact: bool) -> Option<Strip> {
-        let path = self.file_for(fingerprint, stream);
+        let path = self.file_for(fingerprint, stream)?;
         let bytes = std::fs::read(&path).ok()?;
         let strip = decode(&bytes, exact);
         if strip.is_some() {
@@ -188,7 +190,9 @@ impl Store {
     /// Keeps `strip` (taken `exact`ly or not) for this stream. Failing only
     /// costs reading it again.
     pub fn save(&self, fingerprint: &Fingerprint, stream: u32, exact: bool, strip: &Strip) {
-        self.write(&self.file_for(fingerprint, stream), strip, exact);
+        if let Some(path) = self.file_for(fingerprint, stream) {
+            self.write(&path, strip, exact);
+        }
     }
 
     fn write(&self, path: &Path, strip: &Strip, exact: bool) {
@@ -419,6 +423,33 @@ mod tests {
             "not a strip"
         );
         assert_eq!(store.clear(), 1, "cleared with the strips");
+    }
+
+    #[test]
+    fn a_fingerprint_the_app_does_not_make_is_never_read_or_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("cache/pictures"));
+        let frame = Frame {
+            time: 0.0,
+            width: 2,
+            height: 2,
+            rgba: vec![128; 16],
+        };
+        let strip = Strip {
+            every: 2.0,
+            frames: vec![frame.clone()],
+        };
+        for fingerprint in crate::naming::hostile() {
+            store.save(&fingerprint, 0, false, &strip);
+            store.save_cover(&fingerprint, 0, &frame);
+            assert!(store.load(&fingerprint, 0, false).is_none(), "{fingerprint:?}");
+            assert!(store.load_cover(&fingerprint, 0).is_none(), "{fingerprint:?}");
+        }
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            0,
+            "nothing written"
+        );
     }
 
     #[test]
