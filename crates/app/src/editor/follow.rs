@@ -1,7 +1,7 @@
 //! "Follow it from here" on a blur or pixelate box: the box's Left and Top
 //! keyframes from the playhead to the clip's end, found on a thread of its
 //! own (`engine::track`) while the page goes on. The status line says how
-//! far it is; Escape stops it, keeping what it found. What it finds is one
+//! far it is; the command bound to Escape stops it, keeping what it found. What it finds is one
 //! undo step on the effect.
 
 use super::Editor;
@@ -15,6 +15,13 @@ pub struct FollowJob {
     clip: ClipId,
     effect: EffectId,
     following: Following,
+}
+
+impl FollowJob {
+    /// Stops following; what it found so far comes as its news.
+    pub(super) fn stop(&self) {
+        self.following.stop();
+    }
 }
 
 /// Millionths in one whole.
@@ -64,24 +71,26 @@ impl Editor {
             effect,
             following,
         });
-        self.status = "Following the box… (Escape stops it)".into();
+        self.status = format!("Following the box…{}", super::stops_it(&self.shortcuts));
         Ok(())
     }
 
     /// Takes in what a follow under way says; once it is done, sets the
-    /// box's keyframes (one undo step). Escape stops it.
+    /// box's keyframes (one undo step). The command bound to Escape stops
+    /// it (`Editor::stop_tasks`).
     pub(super) fn follow_news(&mut self, ctx: &egui::Context) {
         let Some(job) = self.following.as_ref() else {
             return;
         };
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-            job.following.stop();
-        }
         ctx.request_repaint_after(std::time::Duration::from_millis(100));
         match job.following.news() {
             None => {}
             Some(Followed::Going(done)) => {
-                self.status = format!("Following the box… {:.0} % (Escape stops it)", done * 100.0);
+                self.status = format!(
+                    "Following the box… {:.0} %{}",
+                    done * 100.0,
+                    super::stops_it(&self.shortcuts)
+                );
             }
             Some(Followed::Failed(why)) => {
                 self.following = None;

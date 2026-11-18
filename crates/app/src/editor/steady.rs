@@ -1,6 +1,7 @@
 //! "Analyse the clip" on a Stabilise effect: how the camera moves over the
 //! whole clip is found on a thread of its own (`engine::steady`) while the
-//! page goes on; the status line says how far it is and Escape stops it
+//! page goes on; the status line says how far it is and the command bound
+//! to Escape stops it
 //! (nothing set). What it finds becomes the effect's view keyframes and
 //! zoom, one undo step.
 
@@ -16,6 +17,13 @@ pub struct SteadyJob {
     clip: ClipId,
     effect: EffectId,
     analysing: Analysing,
+}
+
+impl SteadyJob {
+    /// Stops the analysis; nothing is set.
+    pub(super) fn stop(&self) {
+        self.analysing.stop();
+    }
 }
 
 /// Millionths in one whole.
@@ -60,26 +68,28 @@ impl Editor {
             effect,
             analysing,
         });
-        self.status = "Analysing the camera's movement… (Escape stops it)".into();
+        self.status = format!(
+            "Analysing the camera's movement…{}",
+            super::stops_it(&self.shortcuts)
+        );
         Ok(())
     }
 
     /// Takes in what an analysis under way says; once it is done, sets the
-    /// effect's view and zoom (one undo step).
+    /// effect's view and zoom (one undo step). The command bound to Escape
+    /// stops it (`Editor::stop_tasks`).
     pub(super) fn steady_news(&mut self, ctx: &egui::Context) {
         let Some(job) = self.steadying.as_ref() else {
             return;
         };
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-            job.analysing.stop();
-        }
         ctx.request_repaint_after(std::time::Duration::from_millis(100));
         match job.analysing.news() {
             None => {}
             Some(Analysed::Going(done)) => {
                 self.status = format!(
-                    "Analysing the camera's movement… {:.0} % (Escape stops it)",
-                    done * 100.0
+                    "Analysing the camera's movement… {:.0} %{}",
+                    done * 100.0,
+                    super::stops_it(&self.shortcuts)
                 );
             }
             Some(Analysed::Stopped) => {
