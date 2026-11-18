@@ -8,8 +8,11 @@
 //! a thread of its own handed a buffer at real-time pace
 //! ([`crate::output::Paced`]): nothing is heard, but the clock, the meters,
 //! the loudness count and ducking work as with sound
-//! ([`Playback::unheard`]). Only when even the mix can't be made does a
-//! steady wall clock take over.
+//! ([`Playback::unheard`]). The same happens when the sound card goes away
+//! while playing (unplugged, turned off, its stream no longer valid, or its
+//! callback simply no longer called for [`QUIET_LIMIT`]): the mix is taken
+//! back from the callback and played on unheard, from where it was. Only
+//! when even the mix can't be made does a steady wall clock take over.
 //!
 //! Two threads per playback:
 //!
@@ -51,6 +54,13 @@ const AHEAD: f64 = 0.5;
 const PRIME: f64 = 0.1;
 /// The longest a jump waits for the sound card to take it.
 const JUMP_PATIENCE: Duration = Duration::from_secs(2);
+/// A sound card that hasn't called for sound for this long has gone away
+/// (some systems say nothing: the callback simply stops). Far longer than
+/// any device's buffer, even a wireless one's.
+const QUIET_LIMIT: Duration = Duration::from_secs(1);
+/// The longest playback waits for the mix to come back from a sound card
+/// that went away before it plays on by the wall clock.
+const GIVE_BACK_PATIENCE: Duration = Duration::from_secs(2);
 
 /// Audio threads that have not ended yet, across every playback of this
 /// run. Stopping never waits for them; closing the app does, briefly
@@ -407,6 +417,12 @@ struct Session {
     analyser: Analyser,
     /// What it listens to, sent again when tracks change slots.
     analysed: Option<Listen>,
+    /// The mix is in a sound card's callback, which may go away: a jump
+    /// stops waiting for it when it does.
+    card: bool,
+    /// A jump the sound card went away during, made again once the mix
+    /// plays on unheard.
+    pending: Option<(Time, u64)>,
 }
 
 /// Makes the mixer for `sequence` at `rate`, adds every track, sends it to
@@ -462,6 +478,8 @@ fn prepare(
             master,
             analyser,
             analysed: None,
+            card: false,
+            pending: None,
         },
         output,
     ))
@@ -483,7 +501,7 @@ impl Session {
                 Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
             }
         }
-        if let Some((at, number)) = jump {
+        if let Some((at, number)) = jump.or_else(|| self.pending.take()) {
             self.jump(at, number, clock);
         }
         self.controller.collect();
@@ -539,7 +557,15 @@ impl Session {
             Ok(located) => {
                 // The callback takes the jump at its next call, and says so.
                 let give_up = Instant::now() + JUMP_PATIENCE;
+                let mut quiet = Quiet::new(out, Instant::now());
                 while out.heard_after.load(Ordering::Acquire) < located && !clock.stopped() {
+                    if self.card && (out.lost.load(Ordering::Acquire) || quiet.too_long(out, Instant::now()))
+                    {
+                        // Made again once the mix plays on without the card.
+                        out.lost.store(true, Ordering::Release);
+                        self.pending = Some((at, number));
+                        return;
+                    }
                     if Instant::now() >= give_up {
                         tracing::warn!("the sound card didn't take a jump in time");
                         break;
@@ -588,7 +614,7 @@ fn audio_thread(
     let shape = device
         .as_ref()
         .map_or(crate::output::PACED_SHAPE, |d| (d.rate, d.channels));
-    let (mut session, output) = match prepare(project, sequence, from, shape, clock) {
+    let (session, output) = match prepare(project, sequence, from, shape, clock) {
         Ok(ready) => ready,
         Err(err) => {
             tracing::warn!("{}", err.report());
@@ -598,52 +624,204 @@ fn audio_thread(
     };
     // The sound card when it opens; otherwise the same mix at real-time
     // pace, unheard, so the meters still work.
-    let mut stream = None;
+    let mut heard = None;
     let mut output = Some(output);
     if let Some(device) = &device {
-        match device.start(output.take()) {
-            Started::Playing(s) => {
-                stream = Some(s);
+        match device.start(output.take(), Arc::clone(&clock.output)) {
+            Started::Playing(card) => {
+                heard = Some(card);
                 clock.follow_sound();
             }
             Started::Refused(back) => output = back.map(|o| *o),
         }
     }
     if let Some(output) = output {
-        match crate::output::Paced::new(output, shape).run(Arc::clone(&clock.output)) {
-            Ok(_thread) => {
-                tracing::info!("no sound output: mixing unheard, so the meters still work");
-                clock.follow_paced();
-            }
-            Err(err) => {
-                tracing::warn!("{}", err.report());
-                clock.follow_time();
-            }
-        }
-    } else if stream.is_none() {
+        tracing::info!("no sound output: mixing unheard, so the meters still work");
+        play_unheard(output, shape, clock);
+    } else if heard.is_none() {
         clock.follow_time();
     }
+    play(session, heard, shape, clock, inbox);
+}
+
+/// Feeds the mix until playback stops. When the sound card `heard` goes
+/// away, the mix is taken back from it and played on unheard.
+fn play(
+    mut session: Session,
+    mut heard: Option<Heard>,
+    shape: (u32, usize),
+    clock: &Clock,
+    inbox: &Receiver<Message>,
+) {
+    let out = &clock.output;
+    let mut quiet = Quiet::new(out, Instant::now());
     while !clock.stopped() {
+        session.card = heard.is_some();
+        if heard.is_some() && (out.lost.load(Ordering::Acquire) || quiet.too_long(out, Instant::now())) {
+            if let Some(card) = heard.take() {
+                tracing::warn!("the sound output went away: playing on unheard, so the meters still work");
+                match card.give_back() {
+                    Some(output) => play_unheard(output, shape, clock),
+                    None => {
+                        tracing::warn!(
+                            "the mix didn't come back from the sound output; the clock goes by time"
+                        );
+                        clock.follow_time();
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
         if session.step(inbox, clock) == 0 {
             std::thread::sleep(Duration::from_millis(2));
         }
     }
-    let dry = clock.output.dry.load(Ordering::Relaxed);
+    let dry = out.dry.load(Ordering::Relaxed);
     if dry > 0 {
         tracing::info!(
             "{dry} frames of silence were played because a track's sound was late ({} ms over all tracks)",
             dry * 1000 / u64::from(shape.0.max(1))
         );
     }
-    drop(stream);
+    drop(heard);
+}
+
+/// Runs `output` at real-time pace on a thread of its own, unheard, and
+/// has the clock follow it (or time itself, when the thread won't start).
+fn play_unheard(output: Output, shape: (u32, usize), clock: &Clock) {
+    match crate::output::Paced::new(output, shape).run(Arc::clone(&clock.output)) {
+        Ok(_thread) => clock.follow_paced(),
+        Err(err) => {
+            tracing::warn!("{}", err.report());
+            clock.follow_time();
+        }
+    }
+}
+
+/// Watches whether the sound card still calls for sound.
+struct Quiet {
+    calls: u64,
+    since: Instant,
+}
+
+impl Quiet {
+    fn new(out: &Shared, now: Instant) -> Quiet {
+        Quiet {
+            calls: out.calls.load(Ordering::Acquire),
+            since: now,
+        }
+    }
+
+    /// Whether the callback hasn't been called for [`QUIET_LIMIT`] by `now`.
+    fn too_long(&mut self, out: &Shared, now: Instant) -> bool {
+        let calls = out.calls.load(Ordering::Acquire);
+        if calls != self.calls {
+            self.calls = calls;
+            self.since = now;
+            return false;
+        }
+        now.duration_since(self.since) >= QUIET_LIMIT
+    }
+}
+
+/// Whether a sound card's error means its stream won't play any more.
+/// Others (a buffer played late, a route changed and followed, real-time
+/// priority refused) are only logged.
+fn ends_the_stream(kind: cpal::ErrorKind) -> bool {
+    matches!(
+        kind,
+        cpal::ErrorKind::DeviceNotAvailable
+            | cpal::ErrorKind::StreamInvalidated
+            | cpal::ErrorKind::HostUnavailable
+    )
+}
+
+/// The slot the callback takes the mix from, and puts it back in when it
+/// is let go ([`Held`]).
+type Slot = Arc<Mutex<Option<Output>>>;
+
+/// A sound card playing the mix.
+struct Heard {
+    /// The stream (a `cpal::Stream`): letting go of it ends its callback.
+    stream: Box<dyn Send>,
+    slot: Slot,
+}
+
+impl Heard {
+    /// Lets go of the stream and takes the mix back, at most
+    /// [`GIVE_BACK_PATIENCE`] later. The stream is let go on a thread of its
+    /// own, so a driver that stopped answering can't hold playback up.
+    fn give_back(self) -> Option<Output> {
+        let Heard { stream, slot } = self;
+        let running = Running::new();
+        let closing = std::thread::Builder::new()
+            .name("sound-closing".into())
+            .spawn(move || {
+                let _running = running;
+                drop(stream);
+            });
+        if let Err(e) = closing {
+            // The stream was let go here, with the thread that wouldn't start.
+            tracing::warn!("the sound output was closed on the audio thread: {e}");
+        }
+        let give_up = Instant::now() + GIVE_BACK_PATIENCE;
+        loop {
+            if let Some(output) = slot.try_lock().ok().and_then(|mut o| o.take()) {
+                return Some(output);
+            }
+            if Instant::now() >= give_up {
+                return None;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+}
+
+/// The mix inside the sound card's callback. It takes the mix from its slot
+/// on the first call (a `try_lock`, never waiting; once taken the slot is
+/// not touched again from the callback) and puts it back when the callback
+/// is let go, which is never during a call: so a stream that won't start,
+/// or a sound card that went away, gives the mix back to be run unheard.
+struct Held {
+    output: Option<Output>,
+    slot: Slot,
+}
+
+impl Held {
+    fn new(slot: Slot) -> Held {
+        Held { output: None, slot }
+    }
+
+    /// The mix, once the slot has handed it over.
+    fn output(&mut self) -> Option<&mut Output> {
+        if self.output.is_none() {
+            // Never waits: the slot is only locked here and once the
+            // callback is let go.
+            self.output = self.slot.try_lock().ok().and_then(|mut o| o.take());
+        }
+        self.output.as_mut()
+    }
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        if let Some(output) = self.output.take() {
+            let mut slot = self
+                .slot
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *slot = Some(output);
+        }
+    }
 }
 
 /// What became of the mix handed to the sound card.
 enum Started {
     /// The sound card plays it; keep the stream alive.
-    Playing(cpal::Stream),
-    /// The sound card would not open or start (logged). The mix comes back
-    /// when its callback never took it, to be run unheard.
+    Playing(Heard),
+    /// The sound card would not open or start (logged). The mix comes back,
+    /// to be run unheard.
     Refused(Option<Box<Output>>),
 }
 
@@ -720,12 +898,12 @@ fn takes_stereo(device: &cpal::Device, config: &cpal::SupportedStreamConfig) -> 
 impl Device {
     /// Opens the stream with `output` in its callback and starts it.
     ///
-    /// The callback takes `output` from a slot on its first call (a
-    /// `try_lock`, never waiting; once taken the slot is never touched
-    /// again), so when the stream won't open or start the mix is still in
-    /// the slot and comes back in [`Started::Refused`].
-    fn start(&self, output: Option<Output>) -> Started {
-        let slot = Arc::new(Mutex::new(output));
+    /// The callback holds `output` in a [`Held`], so when the stream won't
+    /// open or start the mix is back in the slot and comes back in
+    /// [`Started::Refused`]. An error that ends the stream sets
+    /// `shared.lost`.
+    fn start(&self, output: Option<Output>, shared: Arc<Shared>) -> Started {
+        let slot: Slot = Arc::new(Mutex::new(output));
         let channels = self.channels;
         let config = cpal::StreamConfig {
             channels: cpal::ChannelCount::try_from(channels).unwrap_or(2),
@@ -733,18 +911,18 @@ impl Device {
         };
         let take = Arc::clone(&slot);
         let stream = match self.config.sample_format() {
-            cpal::SampleFormat::F32 => {
-                self.build(config, take, move |o, out: &mut [f32]| o.render(out, channels))
-            }
-            cpal::SampleFormat::I16 => {
-                self.build(config, take, move |o, out: &mut [i16]| o.render_as(out, channels))
-            }
-            cpal::SampleFormat::U16 => {
-                self.build(config, take, move |o, out: &mut [u16]| o.render_as(out, channels))
-            }
-            cpal::SampleFormat::I32 => {
-                self.build(config, take, move |o, out: &mut [i32]| o.render_as(out, channels))
-            }
+            cpal::SampleFormat::F32 => self.build(config, take, &shared, move |o, out: &mut [f32]| {
+                o.render(out, channels)
+            }),
+            cpal::SampleFormat::I16 => self.build(config, take, &shared, move |o, out: &mut [i16]| {
+                o.render_as(out, channels)
+            }),
+            cpal::SampleFormat::U16 => self.build(config, take, &shared, move |o, out: &mut [u16]| {
+                o.render_as(out, channels)
+            }),
+            cpal::SampleFormat::I32 => self.build(config, take, &shared, move |o, out: &mut [i32]| {
+                o.render_as(out, channels)
+            }),
             other => {
                 tracing::warn!("sound output format {other:?} isn't supported; playing unheard");
                 None
@@ -770,35 +948,38 @@ impl Device {
             format = ?self.config.sample_format(),
             "sound output open"
         );
-        Started::Playing(stream)
+        Started::Playing(Heard {
+            stream: Box::new(stream),
+            slot,
+        })
     }
 
     fn build<T>(
         &self,
         config: cpal::StreamConfig,
-        slot: Arc<Mutex<Option<Output>>>,
+        slot: Slot,
+        shared: &Arc<Shared>,
         render: impl Fn(&mut Output, &mut [T]) + Send + 'static,
     ) -> Option<cpal::Stream>
     where
         T: SizedSample + FromSample<f32>,
     {
-        let mut output: Option<Output> = None;
+        let mut held = Held::new(slot);
+        let shared = Arc::clone(shared);
         self.device
             .build_output_stream(
                 config,
-                move |out: &mut [T], _| {
-                    if output.is_none() {
-                        // Never waits: the slot is only locked here and
-                        // after the stream is dropped.
-                        output = slot.try_lock().ok().and_then(|mut o| o.take());
-                    }
-                    match output.as_mut() {
-                        Some(o) => render(o, out),
-                        None => out.fill(T::EQUILIBRIUM),
-                    }
+                move |out: &mut [T], _| match held.output() {
+                    Some(o) => render(o, out),
+                    None => out.fill(T::EQUILIBRIUM),
                 },
                 // Also where the system's refusal of the sound's priority is said.
-                |e| tracing::warn!("sound output: {e}"),
+                move |e| {
+                    tracing::warn!("sound output: {e}");
+                    if ends_the_stream(e.kind()) {
+                        shared.lost.store(true, Ordering::Release);
+                    }
+                },
                 None,
             )
             .map_err(|e| tracing::warn!("sound output can't open: {e}"))

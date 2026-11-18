@@ -655,3 +655,164 @@ fn the_paced_thread_never_allocates() {
     let ahead = waited.as_secs_f64();
     assert!((0.5..0.56).contains(&ahead), "{ahead}");
 }
+
+/// How a fake sound card goes away while playing.
+#[derive(Debug, Clone, Copy)]
+enum Gone {
+    /// The system stops calling it and says nothing.
+    Quietly,
+    /// It says the device is no longer there, then stops calling.
+    Saying,
+}
+
+/// A sound card: a thread calling the mix at real-time pace through the
+/// same [`Held`] the real callback uses, until it goes away `after` a while
+/// (it stays alive, not calling, until let go, as a stuck driver does).
+struct FakeCard {
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl FakeCard {
+    fn start(slot: Slot, shared: Arc<Shared>, gone: Gone, after: Duration) -> FakeCard {
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stopped = Arc::clone(&stop);
+        let thread = std::thread::spawn(move || {
+            let mut held = Held::new(slot);
+            let mut buffer = vec![0f32; 480 * 2];
+            let started = Instant::now();
+            while !stopped.load(Ordering::Acquire) {
+                if started.elapsed() < after {
+                    if let Some(output) = held.output() {
+                        output.render(&mut buffer, 2);
+                    }
+                } else if matches!(gone, Gone::Saying) {
+                    shared.lost.store(true, Ordering::Release);
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        });
+        FakeCard {
+            stop,
+            thread: Some(thread),
+        }
+    }
+}
+
+impl Drop for FakeCard {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(thread) = self.thread.take() {
+            thread.join().unwrap();
+        }
+    }
+}
+
+/// When the sound card goes away mid-play, playback carries on unheard from
+/// where it was, the clock and meters moving, and jumps stay quick.
+fn plays_on_when_the_sound_card_goes_away(gone: Gone) {
+    let project = recording();
+    let seq = project.active_sequence;
+    let from = Time::from_ratio(1, 4).unwrap();
+    let (send, inbox) = channel();
+    let mut playback = Playback::with_audio(seq, from, send, move |clock| {
+        let (session, output) = prepare(project, seq, from, (RATE, 2), clock).unwrap();
+        let slot: Slot = Arc::new(Mutex::new(Some(output)));
+        let card = FakeCard::start(
+            Arc::clone(&slot),
+            Arc::clone(&clock.output),
+            gone,
+            Duration::from_millis(500),
+        );
+        clock.follow_sound();
+        let heard = Heard {
+            stream: Box::new(card),
+            slot,
+        };
+        play(session, Some(heard), (RATE, 2), clock, &inbox);
+    });
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !playback.unheard() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(playback.unheard(), "{gone:?}: playing on unheard");
+    assert!(!playback.has_sound());
+    // The clock goes on from where the card left it, at real-time pace.
+    let a = playback.position();
+    assert!(a > from + tenth(), "{gone:?}: it played first: {a:?}");
+    std::thread::sleep(Duration::from_millis(300));
+    let moved = (playback.position() - a).as_secs_f64();
+    assert!((0.15..0.6).contains(&moved), "{gone:?}: moved {moved} s in 0.3 s");
+    assert!(
+        playback.levels().momentary.is_finite(),
+        "{gone:?}: the meter moves"
+    );
+    // A jump is taken at once, not after waiting for the card.
+    let asked = Instant::now();
+    playback.jump(Time::seconds(1));
+    while playback.position() <= Time::seconds(1) && asked.elapsed() < Duration::from_secs(5) {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        asked.elapsed() < Duration::from_millis(800),
+        "{gone:?}: the jump took {:?}",
+        asked.elapsed()
+    );
+}
+
+#[test]
+fn playback_goes_on_unheard_when_the_sound_card_stops_calling() {
+    plays_on_when_the_sound_card_goes_away(Gone::Quietly);
+}
+
+#[test]
+fn playback_goes_on_unheard_when_the_sound_card_says_it_is_gone() {
+    plays_on_when_the_sound_card_goes_away(Gone::Saying);
+}
+
+/// A jump made while the sound card goes away is made again once playback
+/// goes on unheard, and is not held up for the jump's whole patience.
+#[test]
+fn a_jump_while_the_sound_card_goes_away_is_not_held_up() {
+    let project = recording();
+    let seq = project.active_sequence;
+    let (send, inbox) = channel();
+    let mut playback = Playback::with_audio(seq, Time::ZERO, send, move |clock| {
+        let (session, output) = prepare(project, seq, Time::ZERO, (RATE, 2), clock).unwrap();
+        let slot: Slot = Arc::new(Mutex::new(Some(output)));
+        // Gone before it ever calls.
+        let card = FakeCard::start(
+            Arc::clone(&slot),
+            Arc::clone(&clock.output),
+            Gone::Quietly,
+            Duration::ZERO,
+        );
+        clock.follow_sound();
+        let heard = Heard {
+            stream: Box::new(card),
+            slot,
+        };
+        play(session, Some(heard), (RATE, 2), clock, &inbox);
+    });
+    playback.jump(Time::seconds(1));
+    let asked = Instant::now();
+    while playback.position() <= Time::seconds(1) && asked.elapsed() < Duration::from_secs(10) {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(playback.unheard());
+    assert!(
+        asked.elapsed() < Duration::from_millis(1_900),
+        "the jump took {:?}",
+        asked.elapsed()
+    );
+}
+
+#[test]
+fn only_errors_that_end_the_stream_give_up_on_the_sound_card() {
+    use cpal::ErrorKind as K;
+    assert!(ends_the_stream(K::DeviceNotAvailable));
+    assert!(ends_the_stream(K::StreamInvalidated));
+    assert!(!ends_the_stream(K::Xrun));
+    assert!(!ends_the_stream(K::DeviceChanged));
+    assert!(!ends_the_stream(K::RealtimeDenied));
+}

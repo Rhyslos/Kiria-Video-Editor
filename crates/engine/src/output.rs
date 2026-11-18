@@ -14,7 +14,8 @@
 //! Without a sound card, [`Paced`] stands in for its callback: a thread of
 //! its own hands the same [`Output`] a buffer at real-time pace and throws
 //! the sound away, so the meters, the loudness count and ducking work as
-//! when the sound is heard.
+//! when the sound is heard. It also takes over the same [`Output`] when the
+//! sound card goes away while playing ([`Shared::lost`], [`Shared::calls`]).
 
 use audio::{BlockAdapter, Mixer};
 use std::sync::Arc;
@@ -40,6 +41,12 @@ pub struct Shared {
     pub heard_after: AtomicU64,
     /// Frames of silence played because a track's sound was late.
     pub dry: AtomicU64,
+    /// How many times [`Output::render`] has been called: a sound card
+    /// that stops calling it has gone away.
+    pub calls: AtomicU64,
+    /// The sound card said it has gone away (unplugged, turned off, the
+    /// stream no longer valid); playback goes on without it.
+    pub lost: AtomicBool,
 }
 
 /// The sound card's end.
@@ -83,6 +90,7 @@ impl Output {
     /// Fills `out` (interleaved, `channels` per frame) with the next sound.
     pub fn render(&mut self, out: &mut [f32], channels: usize) {
         os::float::denormals_as_zero();
+        self.shared.calls.fetch_add(1, Ordering::Relaxed);
         if self.shared.stop.load(Ordering::Acquire) {
             out.fill(0.0);
             return;
