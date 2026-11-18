@@ -7,6 +7,7 @@ mod follow;
 mod keyframe_clipboard;
 mod library_ui;
 mod region_cuts;
+mod script;
 mod settings_ui;
 mod steady;
 mod timelines;
@@ -61,13 +62,8 @@ pub struct Start {
     pub report: Arc<Mutex<RunReport>>,
     /// Problems found before the window opened, shown once it has.
     pub problems: Vec<AppError>,
-    /// A scripted pointer, for screenshots of pointing and dragging.
-    pub pointer: Option<crate::fake_pointer::FakePointer>,
-    /// Open the keyboard shortcuts page in this state, for screenshots.
-    pub shortcuts_page: Option<ui_kit::keyboard::Preview>,
-    /// Open Settings at this id, with these words searched, for screenshots.
-    pub settings_at: Option<String>,
-    pub settings_search: Option<String>,
+    /// What an automated run scripts (nothing in a normal run).
+    pub automation: crate::run_mode::Automation,
 }
 
 pub struct Editor {
@@ -142,8 +138,6 @@ pub struct Editor {
     drawer: crate::media_drawer::MediaDrawer,
     /// The Library page: its tabs, filters, the file in its panel and its player.
     library_page: crate::library_page::LibraryPage,
-    /// `--library-tab`: the tab to open once the project is in.
-    library_tab: Option<String>,
     /// The page shown last frame, to notice it being left.
     shown_page: Page,
     /// The selected clip's settings, on the right of the Edit page.
@@ -154,17 +148,8 @@ pub struct Editor {
     export_page: crate::export_page::ExportPage,
     /// The question before closing while exports are unfinished.
     close_prompt: crate::close_prompt::ClosePrompt,
-    /// Ask it as soon as an export is unfinished (`--close-request`, for
-    /// screenshots of the question).
-    close_request: bool,
     /// The Audio page: its tool, track, filter, mixer and counting.
     audio_page: crate::audio_page::AudioPage,
-    /// What the command line asked of the Audio page and is still to do
-    /// (its track, the demo tracks once imports are in).
-    audio_start: crate::audio_page::Start,
-    /// The frame the `--audio-tracks` demo was made on: the responsiveness
-    /// test starts counting a few frames after it, not during its set-up.
-    audio_demo_made: Option<u64>,
     /// The master's meter as last read while playing, shown after.
     audio_held_master: Option<audio::dsp::loudness::Measured>,
     /// The status line has said that this playback is unheard (no sound
@@ -187,8 +172,6 @@ pub struct Editor {
     prune: crate::prune_window::PruneWindow,
     /// Package project: the project and its media, copied into one folder.
     package: crate::package_window::PackageWindow,
-    /// `--package-to`: open Package project with this folder, once.
-    package_to: Option<PathBuf>,
     /// Package project was asked for; the folder dialog opens on the next frame.
     package_requested: bool,
     shortcuts_page: Option<ui_kit::keyboard::ShortcutsPage>,
@@ -200,11 +183,6 @@ pub struct Editor {
     user_guide: ui_kit::user_guide::UserGuide,
     /// The user guide was asked for; it opens on the next frame.
     user_guide_requested: bool,
-    /// Commands asked for on the command line, run on the first frames.
-    startup_actions: Vec<Action>,
-    /// Commands asked for on the command line, run once the scripted
-    /// pointer has done its part (`--then`).
-    actions_after_pointer: Vec<Action>,
     /// Keyframe marks copied (Copy), to paste on a picture clip.
     copied_keyframes: Option<project::CopiedKeyframes>,
     /// Clips copied (Copy or Cut with clips selected), to paste at the
@@ -221,14 +199,8 @@ pub struct Editor {
     /// When the window was last asked to fill the screen or come back, until
     /// the first frame after it has been drawn (for the log).
     full_screen_asked: Option<Instant>,
-    /// `--select-first-clip`: still to be done, once there is a clip.
-    select_first_clip: bool,
-    /// `--sync-by-sound`: still to be done, once the imports are in.
-    sync_when_ready: bool,
     /// Save this frame was asked for; the dialog opens on the next frame.
     save_frame_requested: bool,
-    /// `--play`: start playing as soon as the imports are in.
-    play_when_ready: bool,
     show_timeline_settings: bool,
     show_settings: bool,
     /// The Settings window's tab, search and row to jump to.
@@ -260,25 +232,18 @@ pub struct Editor {
     looping: bool,
     last_input: Instant,
     mode: RunMode,
-    /// `--pointer`: a scripted pointer for screenshots.
-    pointer: Option<crate::fake_pointer::FakePointer>,
+    /// What an automated run still has to do by itself (`script::step`).
+    script: script::Script,
     frames: u64,
     probe: Probe,
-    /// The longest a screenshot waits for what it is of.
-    screenshot_wait: Duration,
     report: Arc<Mutex<RunReport>>,
 }
 
-/// The longest a screenshot waits for imports and the viewer's picture.
 /// Room between the viewer and the inspector beside it.
 const INSPECTOR_GAP: f32 = 12.0;
 
 /// How long each frame may spend adding imported files to the project.
 const IMPORT_BUDGET: Duration = Duration::from_millis(2);
-
-const SCREENSHOT_WAIT: Duration = Duration::from_secs(20);
-/// How long a scripted pointer rests before the screenshot, so tooltips are up.
-const POINTER_REST: Duration = Duration::from_millis(1500);
 
 /// Measurements for the automated runs.
 #[derive(Default)]
@@ -305,11 +270,13 @@ impl Editor {
             mode,
             report,
             problems,
-            pointer,
-            shortcuts_page,
-            settings_at,
-            settings_search,
+            automation,
         } = start;
+        // Most of what is scripted acts on the project: without one, only
+        // what is about the window.
+        let automation = automation.for_project(project.is_some());
+        let mut settings = settings;
+        script::settings(&mut settings, &automation.audio);
         ui_kit::setup(&cc.egui_ctx, settings.theme);
         let machine = jobs::Machine::detect();
         let jobs = JobSystem::new(settings.resources.resolve(&machine));
@@ -319,82 +286,15 @@ impl Editor {
         }
         let graphics = graphics::WindowGraphics::new(cc, opened, &mut errors);
         let imports = project.as_ref().map(|p| p.import.clone()).unwrap_or_default();
-        let start_at = project.as_ref().and_then(|p| p.playhead);
-        let play_when_ready = project.as_ref().is_some_and(|p| p.play);
-        let drawer_open = project.as_ref().is_some_and(|p| p.media_drawer);
-        let find = project.as_ref().and_then(|p| p.find.clone()).unwrap_or_default();
-        let watch_folders = project
-            .as_ref()
-            .map(|p| p.watch_folders.clone())
-            .unwrap_or_default();
-        let export_queue = project.as_ref().is_some_and(|p| p.export_queue);
-        let close_request = project.as_ref().is_some_and(|p| p.close_request);
-        let start_page = match project.as_ref() {
-            Some(p) if p.export_page || p.export_queue => Page::Export,
-            Some(p) => p.page.unwrap_or_default(),
-            None => Page::default(),
-        };
-        let library_tab = project.as_ref().and_then(|p| p.library_tab.clone());
-        let mut library_page = crate::library_page::LibraryPage::selecting(
-            project.as_ref().and_then(|p| p.library_select.clone()),
-        );
-        let full_screen = project.as_ref().is_some_and(|p| p.full_screen);
-        let audio_start = project.as_ref().map(|p| p.audio).unwrap_or_default();
-        let mut settings = settings;
-        if let Some(band) = audio_start.band {
-            settings.audio_band = band;
-        }
-        if let Some(sizes) = audio_start.sizes {
-            settings.audio_heights = sizes;
-        }
-        if let Some((bottom, way)) = audio_start.view {
-            settings.audio_bottom = bottom;
-            if let Some(way) = way {
-                settings.audio_split = way;
-            }
-        }
-        let mut audio_page = crate::audio_page::AudioPage::default();
-        audio_page.tool = audio_start.tool.unwrap_or_default();
-        let select_first_clip = project.as_ref().is_some_and(|p| p.select_first_clip);
-        let effects_drawer = project.as_ref().is_some_and(|p| p.effects_drawer);
-        let sync_when_ready = project.as_ref().is_some_and(|p| p.sync_by_sound);
-        let hold_reading = project.as_ref().and_then(|p| p.hold_reading);
-        let screenshot_wait = project
-            .as_ref()
-            .and_then(|p| p.screenshot_wait)
-            .map_or(SCREENSHOT_WAIT, Duration::from_secs_f64);
-        let hold_proxy = project.as_ref().and_then(|p| p.hold_proxy);
-        let package_to = project.as_ref().and_then(|p| p.package_to.clone());
-        let hold_package = project.as_ref().and_then(|p| p.hold_package);
-        let convert = crate::video_picture::conversion(
-            cc.wgpu_render_state.as_ref(),
-            project.as_ref().is_some_and(|p| p.cpu_colour),
-        );
+        let mut library_page = crate::library_page::LibraryPage::selecting(automation.library_select.clone());
+        let holds = automation.holds;
+        let convert = crate::video_picture::conversion(cc.wgpu_render_state.as_ref(), automation.cpu_colour);
         let decoding =
             crate::device_decoding::WindowDecoding::new(&graphics, cc.wgpu_render_state.as_ref(), convert);
         // The usual shortcuts, with the ones changed on the shortcuts page.
         let mut shortcuts = ShortcutTable::restored(&settings.shortcuts);
         let system_keyboard = crate::system_keyboard::Follower::start();
         shortcuts.set_layout(settings.keyboard.resolve(system_keyboard.now()));
-        let shortcuts_page =
-            shortcuts_page.map(|state| ui_kit::keyboard::ShortcutsPage::preview(state, &shortcuts));
-        let named = |names: &[String]| -> Vec<Action> {
-            names
-                .iter()
-                .filter_map(|name| {
-                    let found = Action::from_name(name);
-                    if found.is_none() {
-                        tracing::warn!("--action {name}: no such command");
-                    }
-                    found
-                })
-                .collect()
-        };
-        let startup_actions = project.as_ref().map(|p| named(&p.actions)).unwrap_or_default();
-        let actions_after_pointer = project
-            .as_ref()
-            .map(|p| named(&p.then_actions))
-            .unwrap_or_default();
         let document = project.and_then(|p| match open_or_create(&p.path, p.recovery) {
             Ok(doc) => {
                 let undo = shortcuts.keys_or_name(Action::Undo);
@@ -448,19 +348,19 @@ impl Editor {
         }
         let mut viewer = Viewer::new(
             &cc.egui_ctx,
-            start_at,
+            automation.playhead,
             convert,
             decoding,
             cc.wgpu_render_state
                 .as_ref()
                 .map(|state| (state.device.clone(), state.queue.clone())),
         );
-        let mut pictures = crate::clip_pictures::ClipPictures::holding_at(hold_reading);
+        let mut pictures = crate::clip_pictures::ClipPictures::holding_at(holds.reading);
         pictures.set_exact(settings.clip_pictures == crate::settings::ClipPictureWay::Exact);
         // Waveforms are kept beside the proxies, in the app's cache folder.
         let waveforms = crate::waveforms::Waveforms::new(
             proxy_dir.parent().map(|cache| cache.join("waveforms")),
-            hold_reading,
+            holds.reading,
         );
         waveforms.trim(&jobs);
         // Files' loudness readings and clip pictures too.
@@ -472,35 +372,21 @@ impl Editor {
             proxy_dir,
             settings.proxies,
             jobs.budgets().disk_cache_gb,
-            hold_proxy,
+            holds.proxy,
         );
         // Before the split view's Source is made: it takes the shelf from here.
         viewer.set_proxies(Some(proxies.shelf()));
         viewer.set_key_frame_first(settings.jump_picture.key_frame_first());
         let display = crate::display::ViewerDisplay::new(settings.split_view, &viewer);
         let global_labels = crate::global_labels::Everywhere::load(&data_dir, &mut errors);
-        let mut export_page =
-            crate::export_page::ExportPage::new(&data_dir, settings.export_pace, &mut errors);
-        if export_queue {
-            export_page.demo_queue();
-        }
+        let export_page = crate::export_page::ExportPage::new(&data_dir, settings.export_pace, &mut errors);
         let settings_keeper = crate::settings::SettingsKeeper::new(&data_dir, &settings, Instant::now());
-        let mut settings_view = ui_kit::settings::SettingsView::default();
-        let show_settings = settings_at.is_some() || settings_search.is_some();
-        if let Some(id) = &settings_at
-            && !settings_view.open_at(settings_ui::CATEGORIES, id)
-        {
-            tracing::warn!("--settings: no tab or setting is called {id}");
-        }
-        if let Some(words) = settings_search {
-            settings_view.set_query(words);
-        }
-        Editor {
+        let mut editor = Editor {
             theme: settings.theme.theme(),
             settings,
             data_dir,
             graphics,
-            page: start_page,
+            page: Page::default(),
             shortcuts,
             errors,
             jobs,
@@ -538,61 +424,45 @@ impl Editor {
             versions: crate::versions_window::VersionsWindow::default(),
             templates: crate::templates_window::TemplatesWindow::default(),
             prune: crate::prune_window::PruneWindow::default(),
-            package: crate::package_window::PackageWindow::holding_at(hold_package),
-            package_to,
+            package: crate::package_window::PackageWindow::holding_at(holds.package),
             package_requested: false,
-            shortcuts_page,
+            shortcuts_page: None,
             system_keyboard,
             cheat_sheet: crate::cheat_sheet::CheatSheet::default(),
             user_guide: ui_kit::user_guide::UserGuide::default(),
             user_guide_requested: false,
-            startup_actions,
-            actions_after_pointer,
             copied_keyframes: None,
             copied_clips: None,
             clipboard_text: None,
-            full_screen,
-            full_screen_changed: full_screen,
+            full_screen: false,
+            full_screen_changed: false,
             heartbeat: crate::heartbeat::Heartbeat::start(),
             full_screen_asked: None,
-            select_first_clip,
             following: None,
             color_page: Default::default(),
             steadying: None,
-            sync_when_ready,
             save_frame_requested: false,
             global_labels,
-            media_folders: crate::media_folders::MediaFolders::new(watch_folders),
+            media_folders: crate::media_folders::MediaFolders::new(automation.watch_folders.clone()),
             library: {
                 let ctx = cc.egui_ctx.clone();
                 library::Live::start(move || ctx.request_repaint())
             },
-            drawer: {
-                let mut drawer = crate::media_drawer::MediaDrawer::new(drawer_open || effects_drawer, find);
-                if effects_drawer {
-                    drawer.tab = ui_kit::drawer::DrawerTab::Effects;
-                }
-                drawer
-            },
+            drawer: Default::default(),
             library_page,
-            library_tab,
-            shown_page: start_page,
+            shown_page: Page::default(),
             inspector: crate::inspector::Inspector::default(),
             picture_handles: crate::picture_handles::PictureHandles::default(),
             export_page,
             close_prompt: Default::default(),
-            close_request,
-            audio_page,
-            audio_start,
+            audio_page: Default::default(),
             audio_held_master: None,
             unheard_said: false,
-            audio_demo_made: None,
             lines_on: false,
             lines: ui_kit::LinesShown::default(),
-            play_when_ready,
             show_timeline_settings: false,
-            show_settings,
-            settings_view,
+            show_settings: false,
+            settings_view: Default::default(),
             machine,
             cache_cleanup: Default::default(),
             settings_were_open: false,
@@ -609,12 +479,13 @@ impl Editor {
             looping: false,
             last_input: Instant::now(),
             mode,
-            pointer,
+            script: script::Script::new(&automation),
             frames: 0,
             probe: Probe::default(),
-            screenshot_wait,
             report,
-        }
+        };
+        script::arrange(&mut editor, &automation);
+        editor
     }
 
     fn run_action(&mut self, action: Action) {
@@ -2151,10 +2022,6 @@ impl Editor {
         if std::mem::take(&mut self.package_requested) {
             self.package.open(ctx);
         }
-        if let Some(into) = self.package_to.take() {
-            self.package
-                .open_into(&self.jobs, document.project(), document.path(), into);
-        }
         if self.package.busy() {
             ctx.request_repaint_after(Duration::from_millis(200));
         }
@@ -3624,17 +3491,15 @@ impl Editor {
                     && self.relink.settled()
                     && self.package.settled()
                     && self.sync.settled()
-                    && !self.sync_when_ready
+                    && !self.script.syncing()
                     && (self.page != Page::Export || self.document.is_none() || self.export_page.settled())
                     && (self.page != Page::Audio
                         || self.document.is_none()
-                        || (self.audio_start.tracks.is_none() && self.audio_page.clarity.settled())))
-                    || now.duration_since(since) > self.screenshot_wait;
+                        || (!self.script.making_tracks() && self.audio_page.clarity.settled())))
+                    || self.script.waited_too_long(now.duration_since(since));
                 // A scripted pointer has done its part, and rested long
                 // enough for a tooltip to come up.
-                let pointed = self.pointer.is_none_or(|p| {
-                    self.frames >= p.settled_at() && now.duration_since(since) > POINTER_REST
-                });
+                let pointed = self.script.pointed(self.frames, now.duration_since(since));
                 if self.frames >= 10 && ready && pointed && !self.probe.screenshot_requested {
                     self.probe.screenshot_requested = true;
                     let (path, saved, report) = (
@@ -3660,8 +3525,7 @@ impl Editor {
                 ctx.request_repaint();
                 // A project being made for the test (`--audio-tracks`) is
                 // set-up, not use: counting starts a few frames after it.
-                let setting_up = self.audio_start.tracks.is_some()
-                    || self.audio_demo_made.is_some_and(|made| self.frames < made + 5);
+                let setting_up = self.script.setting_up(self.frames);
                 let probe = &mut self.probe;
                 if probe.job.is_none() && setting_up {
                     return;
@@ -3742,7 +3606,7 @@ impl Editor {
 
 impl eframe::App for Editor {
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
-        if let Some(pointer) = &self.pointer {
+        if let Some(pointer) = self.script.pointer() {
             pointer.apply(self.frames, &mut raw_input.events);
         }
     }
@@ -3763,11 +3627,6 @@ impl eframe::App for Editor {
             ctx.request_repaint_after(again);
         }
         self.graphics.frame(&ctx, self.frames);
-        if self.frames == 2 {
-            for action in std::mem::take(&mut self.startup_actions) {
-                self.run_action(action);
-            }
-        }
         // A keyboard switched on the system: keys are written for it from now
         // on (the page draws it too). The window repaints twice a second, so
         // a switch shows within a moment even without input.
@@ -3793,13 +3652,6 @@ impl eframe::App for Editor {
                 self.run_action(action);
             }
         }
-        if !self.actions_after_pointer.is_empty()
-            && self.pointer.is_none_or(|p| self.frames >= p.settled_at())
-        {
-            for action in std::mem::take(&mut self.actions_after_pointer) {
-                self.run_action(action);
-            }
-        }
         if let Some(text) = self.clipboard_text.take() {
             ctx.copy_text(text);
         }
@@ -3807,30 +3659,7 @@ impl eframe::App for Editor {
         self.follow_news(&ctx);
         self.steady_news(&ctx);
         self.follow_open_timeline();
-        if self.select_first_clip
-            && self.importer.busy() == 0
-            && let Some(clip) = self
-                .document
-                .as_ref()
-                .and_then(|d| d.project().active())
-                .and_then(timeline_panel::first_clip)
-        {
-            self.select_first_clip = false;
-            self.selected = vec![clip];
-        }
-        if self.sync_when_ready
-            && self.importer.busy() == 0
-            && let Some(seq) = self.document.as_ref().and_then(|d| d.project().active())
-            && seq.tracks().any(|t| !t.clips.is_empty())
-        {
-            self.sync_when_ready = false;
-            self.selected = seq.tracks().flat_map(|t| t.clips.iter().map(|c| c.id)).collect();
-            self.run_action(Action::SyncBySound);
-        }
-        if self.play_when_ready && self.importer.busy() == 0 && self.document.is_some() {
-            self.play_when_ready = false;
-            self.run_action(Action::PlayPause);
-        }
+        script::step(self);
         self.follow_playback(&ctx);
         self.viewer.looping = self.looping;
         self.waveforms.poll(&ctx, now);
@@ -3856,7 +3685,6 @@ impl eframe::App for Editor {
         self.library_index(&ctx);
         self.follow_audio_page();
         self.follow_library_page(&ctx);
-        self.audio_demo();
         self.frame_grabs(&ctx);
         if let Some(err) = self.viewer.poll(&ctx, self.settings.preview_quality)
             && !self.relink.explains_errors()
@@ -3936,10 +3764,6 @@ impl eframe::App for Editor {
         self.package_window(&ctx);
         self.shortcuts_window(&ctx);
         let unfinished = self.export_page.unfinished();
-        if self.close_request && unfinished.is_some() {
-            self.close_request = false;
-            self.close_prompt.ask();
-        }
         self.close_prompt.frame(&ctx, &self.theme, unfinished);
         if let Some(err) = self.graphics.show_warning(&ctx, &self.theme) {
             self.errors.push(&err);
@@ -4233,56 +4057,6 @@ pub struct ProjectToOpen {
     pub recovery: Recovery,
     /// Media files to import once it is open.
     pub import: Vec<PathBuf>,
-    /// Where the playhead starts, in seconds.
-    pub playhead: Option<f64>,
-    /// Start playing once imports are done.
-    pub play: bool,
-    /// Start with the media drawer open.
-    pub media_drawer: bool,
-    /// Words to start with in the drawer's "Find a file".
-    pub find: Option<String>,
-    /// Folders watched for new recordings besides the launcher's media folders.
-    pub watch_folders: Vec<PathBuf>,
-    /// Start on the Export page.
-    pub export_page: bool,
-    /// Start on the Export page with its queue filled (for screenshots).
-    pub export_queue: bool,
-    /// Ask about closing once an export is unfinished, as if the window's
-    /// close button had been pressed (for screenshots).
-    pub close_request: bool,
-    /// Start on this page.
-    pub page: Option<Page>,
-    /// Open this tab of the Library page (a type or a list's name).
-    pub library_tab: Option<String>,
-    /// Show the file with this name in the Library page's detail panel.
-    pub library_select: Option<String>,
-    /// Start with the viewer full screen.
-    pub full_screen: bool,
-    /// Select the first clip of the top video track that has one, once
-    /// imports are done.
-    pub select_first_clip: bool,
-    /// Open the media drawer on its Effects side.
-    pub effects_drawer: bool,
-    /// Select every clip once imports are done, and run Sync by sound.
-    pub sync_by_sound: bool,
-    /// Commands to run once open, by name.
-    pub actions: Vec<String>,
-    /// Commands to run once the scripted pointer has done its part, by name.
-    pub then_actions: Vec<String>,
-    /// Convert the viewer's colour on the CPU even when the GPU could.
-    pub cpu_colour: bool,
-    /// Stop background reading at this share, for screenshots of it in progress.
-    pub hold_reading: Option<f32>,
-    /// How long a screenshot waits at most, in seconds (`SCREENSHOT_WAIT` unless given).
-    pub screenshot_wait: Option<f64>,
-    /// Stop proxy builds at this share, for screenshots of one in progress.
-    pub hold_proxy: Option<f32>,
-    /// Open Package project with this folder chosen, for screenshots.
-    pub package_to: Option<PathBuf>,
-    /// Also start packaging and stop copying at this share.
-    pub hold_package: Option<f32>,
-    /// What the Audio page starts with.
-    pub audio: crate::audio_page::Start,
 }
 
 /// Opens a project, or creates it if it doesn't exist.

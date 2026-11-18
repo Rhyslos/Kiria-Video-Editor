@@ -11,7 +11,7 @@
 use super::Editor;
 use crate::audio_page::{self, Bottom, Live, SplitWay, heights, lines, roles};
 use crate::timeline_panel;
-use project::{Command, Time};
+use project::Command;
 use std::time::Instant;
 use ui_kit::{Action, Page, layout};
 
@@ -683,87 +683,4 @@ fn video_reference(video: Vec<ui_kit::TimelineTrack>) -> Option<ui_kit::Timeline
     first.name = "Video".into();
     first.hidden = false;
     Some(first)
-}
-
-impl Editor {
-    /// What the command line asked of the Audio page once the project and
-    /// its imports are in: many audio tracks (`--audio-tracks`), and the
-    /// track the tools start on (`--audio-track`).
-    pub(super) fn audio_demo(&mut self) {
-        if self.importer.busy() > 0 {
-            return;
-        }
-        if let Some(n) = self.audio_start.tracks {
-            let Some(p) = self.document.as_ref().map(|d| d.project()) else {
-                return;
-            };
-            let has_sound = p
-                .active()
-                .is_some_and(|s| s.audio_tracks.iter().any(|t| !t.clips.is_empty()));
-            if !has_sound {
-                return; // Its imports are not in yet.
-            }
-            self.audio_start.tracks = None;
-            self.audio_demo_made = Some(self.frames);
-            if let Some(project) = audio_page::start::many_tracks(p, n) {
-                if let Err(err) = self.with_document(|d| {
-                    d.apply(Command::Restore {
-                        project: Box::new(project),
-                    })
-                }) {
-                    self.errors.push(&err);
-                }
-                // The first track's noise, learned from its first two seconds,
-                // so the Clean-up tool has a profile to show.
-                if let Some((track, document)) = self
-                    .document
-                    .as_ref()
-                    .and_then(|d| Some((d.project().active()?.audio_tracks.front()?.id, d)))
-                {
-                    self.audio_page.learn(
-                        &self.jobs,
-                        document.project(),
-                        track,
-                        (Time::ZERO, Time::seconds(2)),
-                    );
-                }
-                // Looked at from the top, fitted, as a project opened so.
-                let mut fresh = ui_kit::TimelineView::default();
-                fresh.zoom = self.audio_page.timeline.zoom;
-                self.audio_page.timeline = fresh;
-                self.audio_page.fitted = false;
-            }
-        }
-        if self.audio_start.clarity_region && self.audio_start.tracks.is_none() {
-            self.audio_start.clarity_region = false;
-            let whole = self.document.as_ref().and_then(|d| {
-                let seq = d.project().active()?;
-                (seq.region.is_none() && seq.length() > Time::ZERO).then(|| Command::SetRegion {
-                    sequence: seq.id,
-                    region: Some(project::Region {
-                        start: Time::ZERO,
-                        end: seq.length(),
-                    }),
-                })
-            });
-            if let Some(command) = whole
-                && let Err(err) = self.with_document(|d| d.apply(command))
-            {
-                self.errors.push(&err);
-            }
-            self.audio_page.clarity.scope = audio_page::clarity::Scope::Region;
-        }
-        if let Some(n) = self.audio_start.track {
-            let track = self
-                .document
-                .as_ref()
-                .and_then(|d| d.project().active())
-                .and_then(|s| s.audio_tracks.get(n.saturating_sub(1)))
-                .map(|t| t.id);
-            if track.is_some() {
-                self.audio_page.track = track;
-                self.audio_start.track = None;
-            }
-        }
-    }
 }
