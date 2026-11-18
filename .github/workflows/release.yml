@@ -12,7 +12,9 @@ name: Release
 # "windows" from the run's artifacts). They are never signed: the signing key
 # is only handed to runs of main and v* tags (the `release` environment,
 # RELEASING.md), so a pull request's code never sees it and its unmerged build
-# never carries a valid signature.
+# never carries a valid signature. Nor do they ever get a token that may
+# write: the publishing job is skipped for them, and what it would remove is
+# listed by a job of its own that only reads.
 on:
   push:
     tags: ["v*"]
@@ -40,7 +42,8 @@ concurrency:
   group: release-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
-# The token only reads unless a job asks for more (publish writes releases).
+# The token only reads unless a job asks for more (publish writes releases,
+# and never runs for a pull request).
 permissions:
   contents: read
 
@@ -231,12 +234,15 @@ jobs:
           -Version "${{ needs.sign.outputs.version }}"
           -Dist dist
 
+  # The only job whose token may write. Pull requests never come here: it
+  # checks out and runs the commit's own scripts, so a change that was not
+  # merged gets no token that could delete releases or push to a branch
+  # (old-betas below lists for them, reading only).
   publish:
     name: Publish the release
     needs: [windows, sign, update-drill]
     # The drill is skipped for unsigned test runs and the rollback-test build; a failed drill stops here.
-    # Pull requests skip signing and come here only to list what would go (nothing is published without a tag).
-    if: ${{ !cancelled() && needs.windows.result == 'success' && (needs.sign.result == 'success' || (github.event_name == 'pull_request' && needs.sign.result == 'skipped')) && (needs.update-drill.result == 'success' || needs.update-drill.result == 'skipped') }}
+    if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.windows.result == 'success' && needs.sign.result == 'success' && (needs.update-drill.result == 'success' || needs.update-drill.result == 'skipped') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -269,7 +275,7 @@ jobs:
           gh release create "$RELEASE_TAG" $prerelease --target "${{ github.sha }}" \
             --title "$APP_NAME $APP_VERSION" "${notes[@]}" dist/*
       # Only the newest automatic betas stay on the releases page (see the
-      # script for why). A pull request's run only says what would go.
+      # script for why). A run without a tag only says what would go.
       - name: Remove old automatic betas
         env:
           GH_TOKEN: ${{ github.token }}
@@ -280,6 +286,24 @@ jobs:
           else
             packaging/prune-betas.sh "${{ github.repository }}" --dry-run || echo "::warning::Old betas could not be listed."
           fi
+
+  # A pull request's run says which old betas publishing would remove, with
+  # the read-only token (listing releases needs nothing more), and checks the
+  # script's choice of them.
+  old-betas:
+    name: Old betas that would be removed
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - name: List old automatic betas
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          packaging/prune-betas.sh --self-test
+          packaging/prune-betas.sh "${{ github.repository }}" --dry-run || echo "::warning::Old betas could not be listed."
 
   # Once it is out: an installed copy of the previous release asks GitHub
   # itself, as everybody's copy does, and must end up on this release.

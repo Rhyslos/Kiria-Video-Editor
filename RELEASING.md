@@ -8,7 +8,7 @@ Every pull request runs the same Release workflow without publishing anything. I
 
 A test build has the version an automatic beta of it would have (`<next patch>-beta.<run number>`), so its installer goes over the newest beta, and it follows later betas by itself.
 
-A pull request's build is never signed: its run skips the signing job, so the code of a change that was not merged never sees the signing key, and no installed copy would ever take its build as an update. Install it from the `windows` artifact by hand. Because the drill below needs a signed build, a pull request's run skips the drill too; the first push to `main` after merging runs it before that beta is published.
+A pull request's build is never signed: its run skips the signing job, so the code of a change that was not merged never sees the signing key, and no installed copy would ever take its build as an update. Nor does it ever get a token that may write: the publishing job, the only one allowed to write releases, is skipped for pull requests, and a job of its own lists the old betas publishing would remove using the read-only token. Install it from the `windows` artifact by hand. Because the drill below needs a signed build, a pull request's run skips the drill too; the first push to `main` after merging runs it before that beta is published.
 
 ## The update drill
 
@@ -26,7 +26,7 @@ The Linux AppImage is paused for now: releases and betas are Windows only. The w
 
 Every push to `main` (except documentation-only changes) publishes a beta release with no manual step: version `<next patch>-beta.<run number>`, for example `0.1.1-beta.12` after `0.1.0`. Beta builds follow betas by themselves, so a copy installed from a beta picks up every merged feature on its next start. Stable copies only see betas when *Betas too* is chosen in the launcher's settings.
 
-Only the ten newest automatic betas stay on the releases page: after publishing, the workflow removes older ones and their tags (`packaging/prune-betas.sh`). Stable releases are never removed.
+Only the ten newest automatic betas stay on the releases page: after publishing, the workflow removes older ones and their tags (`packaging/prune-betas.sh`). A pull request's run only lists the ones that would go. Stable releases are never removed.
 
 ## When a version needs a newer launcher
 
