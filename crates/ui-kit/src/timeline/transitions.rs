@@ -38,15 +38,26 @@ pub fn cut_near(track: &TimelineTrack, t: f64) -> Option<(u64, f64)> {
 
 /// Draws a transition across a cut, from `x0` to `x1` on screen, in `row`.
 pub fn draw(p: &Painter, row: Rect, x0: f32, x1: f32, colour: Color32, fill: Color32) {
-    let width = (x1 - x0).max(8.0);
-    let middle = (x0 + x1) / 2.0;
-    let r = Rect::from_min_max(
-        pos2(middle - width / 2.0, row.top() + 3.0),
-        pos2(middle + width / 2.0, row.bottom() - 3.0),
-    );
+    let (left, right) = box_x(x0, x1);
+    let r = Rect::from_min_max(pos2(left, row.top() + 3.0), pos2(right, row.bottom() - 3.0));
     p.rect_filled(r, 3.0, fill);
     p.line_segment([r.left_bottom(), r.right_top()], Stroke::new(1.0, colour));
     p.rect_stroke(r, 3.0, Stroke::new(1.0, colour), egui::StrokeKind::Inside);
+}
+
+/// Whether a transition from `x0` to `x1` on screen shows inside `seen`
+/// at all: those out of view are not drawn.
+pub fn in_view(x0: f32, x1: f32, seen: Rect) -> bool {
+    let (left, right) = box_x(x0, x1);
+    right >= seen.left() && left <= seen.right()
+}
+
+/// The left and right edge of a transition's box: from `x0` to `x1`, at
+/// least 8 points wide around their middle.
+fn box_x(x0: f32, x1: f32) -> (f32, f32) {
+    let width = (x1 - x0).max(8.0);
+    let middle = (x0 + x1) / 2.0;
+    (middle - width / 2.0, middle + width / 2.0)
 }
 
 /// Where a dragged transition would go: a lit band across the cut.

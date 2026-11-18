@@ -6,7 +6,7 @@
 
 use std::time::Instant;
 use ui_kit::timeline::{CacheBar, CacheRange, CacheState};
-use ui_kit::{Theme, TimelineClip, TimelineData, TimelineTrack, TimelineView};
+use ui_kit::{Theme, TimelineClip, TimelineData, TimelineEvent, TimelineMarker, TimelineTrack, TimelineView};
 
 fn tracks(count: usize, clips_each: usize, clip_len: f64) -> Vec<TimelineTrack> {
     (0..count)
@@ -116,6 +116,104 @@ fn timeline_frame_cost() {
             "{:>6} clips{}: median {:.2} ms, worst {:.2} ms per frame",
             clips_each * 4,
             if zoomed_out { ", all on screen" } else { "" },
+            times[times.len() / 2],
+            times[times.len() - 1]
+        );
+    }
+}
+
+/// Every clip selected (Ctrl+A) and dragged along, with snapping on, on
+/// timelines of growing size: each pointer move snaps the dragged edges and
+/// asks whether a clip is in the way, which must not grow with the clips
+/// off screen.
+#[test]
+#[ignore = "a measurement, not a check; run by hand"]
+fn drag_everything_frame_cost() {
+    let theme = Theme::ASH;
+    let size = egui::vec2(1920.0, 400.0);
+    for (clips_each, labels) in [(25, 10), (250, 100), (2_500, 1_000)] {
+        let mut video = tracks(2, clips_each, 4.0);
+        let mut audio = tracks(2, clips_each, 4.0);
+        for c in video.iter_mut().chain(&mut audio).flat_map(|t| &mut t.clips) {
+            c.selected = true;
+            c.transition_in = Some(0.5);
+        }
+        let markers: Vec<TimelineMarker> = (0..labels)
+            .map(|i| TimelineMarker {
+                id: i as u64,
+                at: i as f64 * 10.0 + 0.3,
+                name: format!("Label {i}"),
+                colour: egui::Color32::YELLOW,
+            })
+            .collect();
+        let length = clips_each as f64 * 4.0;
+        let ctx = egui::Context::default();
+        let mut view = TimelineView::default();
+        // On the first clip of V1 (it runs from x = 140 to 356).
+        let from = egui::pos2(200.0, 190.0);
+        let mut frame = |events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                events,
+                ..Default::default()
+            };
+            let mut out = Vec::new();
+            let started = Instant::now();
+            let mut output = ctx.run_ui(input, |ui| {
+                let data = TimelineData {
+                    video: &video,
+                    audio: &audio,
+                    length,
+                    fps: 60.0,
+                    playhead: 2.0,
+                    needle: Some(10.0),
+                    region: None,
+                    highlights: &[],
+                    spans: &[],
+                    markers: &markers,
+                    follow: false,
+                    cache: CacheBar {
+                        ranges: &[],
+                        about: "",
+                    },
+                    keyframe_eases: &["Linear", "Hold", "Smooth"],
+                    roles: &[],
+                };
+                out = view.show(ui, &theme, &data, size);
+            });
+            let _meshes = ctx.tessellate(std::mem::take(&mut output.shapes), output.pixels_per_point);
+            let took = started.elapsed().as_secs_f64() * 1000.0;
+            // Nothing draws these frames.
+            output.drop_without_applying_deltas();
+            (took, out)
+        };
+        frame(vec![egui::Event::PointerMoved(from)]);
+        frame(vec![egui::Event::PointerButton {
+            pos: from,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        }]);
+        let mut times = Vec::new();
+        let mut to = from;
+        for step in 1..=60 {
+            to = from + egui::vec2(step as f32 * 3.0, 0.0);
+            times.push(frame(vec![egui::Event::PointerMoved(to)]).0);
+        }
+        let (_, events) = frame(vec![egui::Event::PointerButton {
+            pos: to,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        }]);
+        assert!(
+            events.iter().any(|e| matches!(e, TimelineEvent::Move { .. })),
+            "the drag moved the clips: {events:?}"
+        );
+        times.sort_by(f64::total_cmp);
+        println!(
+            "{:>6} clips, all dragged: median {:.2} ms, worst {:.2} ms per frame",
+            clips_each * 4,
             times[times.len() / 2],
             times[times.len() - 1]
         );
