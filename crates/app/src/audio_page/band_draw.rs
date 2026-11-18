@@ -157,12 +157,27 @@ fn spectrum(ui: &mut Ui, theme: &Theme, r: Rect, band: &mut Band, cx: &Context<'
             theme.muted,
         );
     }
-    for db in [-60.0, -30.0] {
+    // A taller band has room for more levels, written at the left.
+    let levels: &[f32] = if plot.height() >= 150.0 {
+        &[-75.0, -60.0, -45.0, -30.0, -15.0]
+    } else {
+        &[-60.0, -30.0]
+    };
+    for &db in levels {
         let y = y_of(db);
         p.line_segment(
             [pos2(plot.left(), y), pos2(plot.right(), y)],
             Stroke::new(1.0, theme.line),
         );
+        if plot.height() >= 70.0 {
+            p.text(
+                pos2(plot.left() + 2.0, y - 1.0),
+                Align2::LEFT_BOTTOM,
+                format!("{db:.0}").replace('-', "\u{2212}"),
+                small.clone(),
+                theme.muted,
+            );
+        }
     }
     match band.levels {
         Some(levels) => {
@@ -425,7 +440,8 @@ fn tracks(ui: &mut Ui, theme: &Theme, r: Rect, band: &Band, cx: &Context<'_>) {
 /// Stereo: left against right as a picture, how alike the channels are
 /// and which side is louder, in words.
 fn stereo(ui: &mut Ui, theme: &Theme, r: Rect, band: &mut Band, cx: &Context<'_>) {
-    let side = r.height();
+    // The square grows with the band, leaving room beside it for the meters.
+    let side = r.height().min(r.width() - 360.0).max(r.height().min(120.0));
     let square = Rect::from_min_size(r.min, vec2(side, side));
     let p = ground(ui, theme, square);
     let c = square.center();

@@ -238,6 +238,9 @@ for view in spectrum tracks; do
   BACKGROUND=Always editor_shot "audio-band-$view" "$DEMO" --page audio --audio-tool compressor --audio-track 2 \
     --audio-band "$view" --playhead 4 --play
 done
+# The parts dragged to new heights: a small viewer, a tall band.
+BACKGROUND=Always editor_shot audio-resized "$DEMO" --page audio --audio-tool compressor --audio-track 2 \
+  --audio-band spectrum --audio-sizes 0.32,0.36 --playhead 4 --play
 editor_shot audio-lines "$DEMO" --page audio --audio-tool loudness --audio-track 4 --playhead 27.5 --action VolumeLines
 if wanted audio-clarity; then
   clarity=$(copy_of clarity)

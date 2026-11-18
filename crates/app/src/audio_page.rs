@@ -22,6 +22,7 @@ pub mod counting;
 mod ducking;
 mod dynamics;
 mod eq;
+pub mod heights;
 mod leveller;
 pub mod lines;
 mod overview;

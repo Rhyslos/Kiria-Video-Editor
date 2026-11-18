@@ -9,7 +9,7 @@
 //! left.
 
 use super::Editor;
-use crate::audio_page::{self, Bottom, Live, SplitWay, lines, roles};
+use crate::audio_page::{self, Bottom, Live, SplitWay, heights, lines, roles};
 use crate::timeline_panel;
 use project::{Command, Time};
 use std::time::Instant;
@@ -17,14 +17,8 @@ use ui_kit::{Action, Page, layout};
 
 /// The tools' panel's width beside the viewer.
 pub const TOOLS_WIDTH: f32 = layout::TOOLS_WIDTH;
-/// The band across the middle (the clarity check or a live picture).
-const CLARITY_HEIGHT: f32 = 112.0;
-/// The bar over the bottom views.
-const BAR_HEIGHT: f32 = 30.0;
-/// Room between the page's parts.
+/// Room between the viewer and the tools.
 const GAP: f32 = 10.0;
-/// How many timeline tracks show above the mixer when Split is stacked.
-const STACKED_TRACKS: f32 = 3.0;
 
 impl Editor {
     /// Every frame, on every page: what the Audio page follows.
@@ -142,8 +136,22 @@ impl Editor {
         let shown = self.audio_page.shown(p);
         let shown_p = shown.as_ref().unwrap_or(p);
         let Some(shown_seq) = shown_p.active() else { return };
-        let top_h = (page.height() * 0.36).clamp(230.0, 420.0);
-        let top = egui::Rect::from_min_size(page.min, egui::vec2(page.width(), top_h));
+        // The parts' heights, with a handle in each gap between them; where
+        // they were dragged is a setting (the settings keeper writes it).
+        let (bottom_view, way) = (self.settings.audio_bottom, self.settings.audio_split);
+        let mut parts = heights::parts(page.height(), &self.settings.audio_heights, bottom_view, way);
+        let (rects, _) = ui_kit::splitter::stack(
+            ui,
+            &self.theme,
+            page,
+            heights::GAP,
+            &mut parts,
+            heights::tips(bottom_view, way),
+        );
+        heights::keep(&parts, &mut self.settings.audio_heights);
+        let places = heights::places(&rects, bottom_view, way);
+        let top = places.top;
+        let top_h = top.height();
         let tools = egui::Rect::from_min_max(egui::pos2(top.right() - TOOLS_WIDTH, top.top()), top.max);
         let viewer = egui::Rect::from_min_max(top.min, egui::pos2(tools.left() - GAP, top.bottom()));
 
@@ -206,10 +214,7 @@ impl Editor {
         ) {
             self.errors.push(&err);
         }
-        let clarity = egui::Rect::from_min_size(
-            egui::pos2(page.left(), top.bottom() + GAP),
-            egui::vec2(page.width(), CLARITY_HEIGHT),
-        );
+        let clarity = places.band;
         let roles: Vec<(project::TrackId, project::TrackRole)> =
             seq.audio_tracks.iter().map(|t| (t.id, t.sound.role)).collect();
         let stereo = self
@@ -249,45 +254,8 @@ impl Editor {
         );
 
         // The bar over the bottom views.
-        let bar = egui::Rect::from_min_size(
-            egui::pos2(page.left(), clarity.bottom() + GAP),
-            egui::vec2(page.width(), BAR_HEIGHT),
-        );
-        self.audio_bar(ui, bar, shown_seq, &live);
-        let bottom = egui::Rect::from_min_max(egui::pos2(page.left(), bar.bottom() + 6.0), page.max);
-        let (timeline_rect, mixer_rect) = match self.settings.audio_bottom {
-            Bottom::Timeline => (Some(bottom), None),
-            Bottom::Mixer => (None, Some(bottom)),
-            Bottom::Split => match self.settings.audio_split {
-                SplitWay::SideBySide => {
-                    let strips = ((bottom.width() * 0.42).max(ui_kit::mixer::STRIP_WIDTH * 3.0))
-                        .min(bottom.width() - 400.0);
-                    let mixer = egui::Rect::from_min_size(
-                        bottom.min,
-                        egui::vec2(
-                            strips + layout::MASTER_WIDTH + audio_page::MASTER_SETTINGS + 8.0,
-                            bottom.height(),
-                        ),
-                    );
-                    let timeline =
-                        egui::Rect::from_min_max(egui::pos2(mixer.right() + GAP, bottom.top()), bottom.max);
-                    (Some(timeline), Some(mixer))
-                }
-                SplitWay::Stacked => {
-                    let tracks_h =
-                        26.0 + 18.0 + 30.0 + STACKED_TRACKS * ui_kit::timeline::AUDIO_TRACK * 0.7 + 14.0;
-                    let timeline = egui::Rect::from_min_size(
-                        bottom.min,
-                        egui::vec2(bottom.width(), tracks_h.min(bottom.height() * 0.55)),
-                    );
-                    let mixer = egui::Rect::from_min_max(
-                        egui::pos2(bottom.left(), timeline.bottom() + GAP),
-                        bottom.max,
-                    );
-                    (Some(timeline), Some(mixer))
-                }
-            },
-        };
+        self.audio_bar(ui, places.bar, shown_seq, &live);
+        let (timeline_rect, mixer_rect) = (places.timeline, places.mixer);
         let mut events = Vec::new();
         if let Some(r) = timeline_rect {
             events = self.audio_timeline(ui, r, p, shown_seq);

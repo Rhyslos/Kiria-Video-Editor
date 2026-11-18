@@ -338,6 +338,9 @@ impl Editor {
         if let Some(band) = audio_start.band {
             settings.audio_band = band;
         }
+        if let Some(sizes) = audio_start.sizes {
+            settings.audio_heights = sizes;
+        }
         if let Some((bottom, way)) = audio_start.view {
             settings.audio_bottom = bottom;
             if let Some(way) = way {

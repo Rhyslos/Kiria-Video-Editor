@@ -87,6 +87,10 @@ pub struct Settings {
     /// What the Audio page's band across the middle shows: the clarity
     /// check, or the spectrum, loudness, tracks or stereo picture.
     pub audio_band: crate::audio_page::band::View,
+    /// How the Audio page shares its height between the viewer, the band
+    /// and the bottom (and stacked Split's timeline and mixer): the
+    /// handles between them.
+    pub audio_heights: crate::audio_page::heights::Heights,
     /// How the Audio page's loudness overview counts integrated loudness,
     /// range and peaks: every play, until reset, or in the region.
     pub loudness_counting: crate::audio_page::Counting,
@@ -524,6 +528,29 @@ mod tests {
         };
         settings.save(tmp.path()).unwrap();
         assert_eq!(Settings::load(tmp.path()).0.viewer_split.0, 0.7);
+    }
+
+    #[test]
+    fn the_audio_pages_heights_are_remembered() {
+        let tmp = tempfile::tempdir().unwrap();
+        let settings = Settings {
+            audio_heights: crate::audio_page::heights::Heights {
+                top: Some(0.3),
+                band: Some(0.4),
+                timeline: None,
+            },
+            ..Settings::default()
+        };
+        settings.save(tmp.path()).unwrap();
+        assert_eq!(Settings::load(tmp.path()).0, settings);
+        // Settings from before the handles: the usual heights.
+        std::fs::write(Settings::path(tmp.path()), "(audio_band: Spectrum)").unwrap();
+        let (loaded, problem) = Settings::load(tmp.path());
+        assert!(problem.is_none());
+        assert_eq!(
+            loaded.audio_heights,
+            crate::audio_page::heights::Heights::default()
+        );
     }
 
     #[test]
