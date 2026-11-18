@@ -265,11 +265,30 @@ fn the_worker_answers_without_being_waited_for() {
     assert!(live.take_error().is_none());
 }
 
-/// The phase 5 gate, in code: 10 000 files with labels, lists and notes;
-/// every kind of query answers in under 100 ms (and the build itself is
-/// reported). In practice they take a few milliseconds.
+/// 10 000 files with labels, lists and notes: every kind of query finds
+/// what it should, and none takes long. The bound here is generous, so a
+/// slow or busy machine running the debug build never fails it; the
+/// phase 5 gate's 100 ms is checked by
+/// `ten_thousand_files_answer_in_under_100_ms`, by hand.
 #[test]
+fn ten_thousand_files_are_searched() {
+    ten_thousand_files(Duration::from_secs(5));
+}
+
+/// The phase 5 gate, in code: every kind of query on 10 000 files answers
+/// in under 100 ms (and the build itself is reported). In practice they
+/// take a few milliseconds. A measurement, so run by hand in a release
+/// build: `cargo test -p library --release --test index --
+/// ten_thousand_files_answer_in_under_100_ms --ignored --nocapture`.
+#[test]
+#[ignore = "a measurement: run by hand in a release build"]
 fn ten_thousand_files_answer_in_under_100_ms() {
+    ten_thousand_files(Duration::from_millis(100));
+}
+
+/// Builds and indexes 10 000 files, then runs every kind of query, each
+/// within `limit`.
+fn ten_thousand_files(limit: Duration) {
     let mut p = Project::new_automatic("Big");
     let words = [
         "match",
@@ -354,7 +373,7 @@ fn ten_thousand_files_answer_in_under_100_ms() {
         let found = index.search(query).unwrap();
         let took = started.elapsed();
         eprintln!("{query:?}: {} found in {took:?}", found.len());
-        assert!(took < Duration::from_millis(100), "{query:?} took {took:?}");
+        assert!(took < limit, "{query:?} took {took:?}");
     }
     assert_eq!(index.search(&Query::text("drone")).unwrap().len(), 1_250);
     assert_eq!(
@@ -474,18 +493,27 @@ fn following_an_unchanged_project_wakes_nobody() {
     });
     live.ask("drawer", &Query::text("drone"));
     live.follow(&s.project);
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !live.is_current("drawer") {
-        assert!(Instant::now() < deadline, "the worker answers");
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    std::thread::sleep(Duration::from_millis(200));
+    wait_until_caught_up(&live);
+    assert!(live.is_current("drawer"), "the worker answered");
     let settled = wakes.load(std::sync::atomic::Ordering::SeqCst);
+    assert!(settled > 0, "the answer woke the window");
+    let sent = live.messages_sent();
     for _ in 0..50 {
         live.follow(&s.project.clone());
         live.ask("drawer", &Query::text("drone"));
     }
-    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(live.messages_sent(), sent, "nothing more was sent");
+    wait_until_caught_up(&live);
     assert_eq!(wakes.load(std::sync::atomic::Ordering::SeqCst), settled);
     assert!(live.is_current("drawer"));
+}
+
+/// Waits (a minute at most, for a slow machine) until the worker has
+/// handled everything sent to it, its wakes included.
+fn wait_until_caught_up(live: &Live) {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !live.caught_up() {
+        assert!(Instant::now() < deadline, "the worker catches up");
+        std::thread::sleep(Duration::from_millis(5));
+    }
 }
