@@ -6,10 +6,8 @@
 //! free, and a track is made when there is none. So putting one picture
 //! over another never cuts or moves the sound that is already there.
 
-use crate::command::{
-    insert_clip, missing, picture_track, placeable_length, placed_streams, sequence_mut, sequence_ref,
-    track_mut, with_linked, wrong_kind_of_track,
-};
+use crate::clip_edits::{picture_track, placeable_length, placed_streams, wrong_kind_of_track};
+use crate::command::{insert_clip, missing, sequence_mut, sequence_ref, track_mut, with_linked};
 use crate::ids::{ClipId, LinkId, MediaId, SequenceId, TrackId};
 use crate::look::Look;
 use crate::model::{Clip, Project, Track, TrackKind};

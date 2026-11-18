@@ -19,6 +19,7 @@
 //! )
 //! ```
 
+use crate::file::FileKind;
 use crate::library::NAME_LIMIT;
 use crate::model::LabelColor;
 use diag::{AppError, Explain};
@@ -57,10 +58,18 @@ struct FileIn {
     labels: Vec<GlobalLabel>,
 }
 
-#[derive(Deserialize)]
-struct Header {
-    format_version: u32,
-}
+/// How the file is named when it is refused. Format 1 is the first, so
+/// there is nothing to upgrade from yet.
+const LABELS: FileKind =
+    FileKind {
+        newer: |version, current| {
+            AppError::new("Labels for every project were saved by a newer version")
+            .why(format!("They use format {version}; this version reads up to format {current}."))
+            .fix("Update the app. Until then each project's own labels work, and the file is left as it is.")
+        },
+        damaged,
+        no_step: |_| damaged(),
+    };
 
 /// Where the file is.
 pub fn path(data_dir: &Path) -> PathBuf {
@@ -86,15 +95,7 @@ impl GlobalLabels {
 
     /// Parses the file's text.
     pub fn parse(text: &str) -> diag::Result<GlobalLabels> {
-        let version = ron::from_str::<Header>(text).or_explain(damaged)?.format_version;
-        if version > FORMAT_VERSION {
-            return Err(AppError::new("Labels for every project were saved by a newer version")
-                .why(format!(
-                    "They use format {version}; this version reads up to format {FORMAT_VERSION}."
-                ))
-                .fix("Update the app. Until then each project's own labels work, and the file is left as it is."));
-        }
-        let file: FileIn = ron::from_str(text).or_explain(damaged)?;
+        let file: FileIn = crate::file::versioned_from_str(text, FORMAT_VERSION, &[], &LABELS)?;
         Ok(GlobalLabels { labels: file.labels })
     }
 

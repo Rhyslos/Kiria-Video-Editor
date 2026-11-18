@@ -19,7 +19,8 @@
 //! paste where nothing fits is refused with the reason. Copied clips that
 //! were linked are linked to each other again, never to the originals.
 
-use crate::command::{insert_clip, missing, sequence_mut, sequence_ref, settle_automatic, with_linked};
+use crate::clip_edits::settle_automatic;
+use crate::command::{insert_clip, missing, sequence_mut, sequence_ref, with_linked};
 use crate::ids::{ClipId, LinkId, SequenceId};
 use crate::model::{Clip, ClipKind, MediaKind, Project, Track, TrackKind};
 use crate::time::Time;
