@@ -541,10 +541,15 @@ fn start(
 }
 
 /// Looks at the folder, its drive's free space and the file on a worker,
-/// when they change and every few seconds.
+/// when they change and every few seconds. One look at a time: a path
+/// typed while one runs waits for it, and a path is looked at once it has
+/// stayed the same for `DISK_SETTLE`, so typing a name starts no look per key.
 #[derive(Debug, Default)]
 pub struct DiskWatch {
+    /// The folder and file last looked at (or being looked at), and when.
     asked: Option<(PathBuf, PathBuf, Instant)>,
+    /// The folder and file asked for now, and since when.
+    wanted: Option<(PathBuf, PathBuf, Instant)>,
     looking: Option<Receiver<Disk>>,
     found: Option<Disk>,
 }
@@ -552,29 +557,13 @@ pub struct DiskWatch {
 /// How often the free space is looked at again while the page is open.
 const LOOK_AGAIN: Duration = Duration::from_secs(5);
 
+/// How long a changed folder or name stays the same before it is looked at.
+const DISK_SETTLE: Duration = Duration::from_millis(300);
+
 impl DiskWatch {
     pub fn look(&mut self, folder: &Path, file: &Path, notify: impl Fn() + Send + 'static) -> Option<Disk> {
-        if let Some(looking) = &self.looking
-            && let Ok(found) = looking.try_recv()
-        {
-            self.found = Some(found);
-            self.looking = None;
-        }
-        let changed = self
-            .asked
-            .as_ref()
-            .is_none_or(|(f, p, _)| f != folder || p != file);
-        let stale = self
-            .asked
-            .as_ref()
-            .is_some_and(|(.., at)| at.elapsed() > LOOK_AGAIN);
-        if changed {
-            self.found = None;
-        }
-        if (changed || stale) && (self.looking.is_none() || changed) {
+        self.look_at(folder, file, Instant::now(), |folder, file| {
             let (tell, answer) = channel();
-            let (folder, file) = (folder.to_path_buf(), file.to_path_buf());
-            self.asked = Some((folder.clone(), file.clone(), Instant::now()));
             let spawned = std::thread::Builder::new()
                 .name("export disk".into())
                 .spawn(move || {
@@ -586,11 +575,69 @@ impl DiskWatch {
                     notify();
                 });
             match spawned {
-                Ok(_) => self.looking = Some(answer),
-                Err(err) => tracing::error!("the disk check could not start: {err}"),
+                Ok(_) => Some(answer),
+                Err(err) => {
+                    tracing::error!("the disk check could not start: {err}");
+                    None
+                }
+            }
+        })
+    }
+
+    /// `look` at the time `now`, a look started with `start`.
+    fn look_at(
+        &mut self,
+        folder: &Path,
+        file: &Path,
+        now: Instant,
+        start: impl FnOnce(PathBuf, PathBuf) -> Option<Receiver<Disk>>,
+    ) -> Option<Disk> {
+        let is_now = |(f, p, _): &(PathBuf, PathBuf, Instant)| f == folder && p == file;
+        if let Some(looking) = &self.looking {
+            match looking.try_recv() {
+                Ok(found) => {
+                    // An answer about a path no longer asked for is dropped.
+                    if self.asked.as_ref().is_some_and(is_now) {
+                        self.found = Some(found);
+                    }
+                    self.looking = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.looking = None,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
         }
+        if !self.wanted.as_ref().is_some_and(is_now) {
+            self.wanted = Some((folder.to_path_buf(), file.to_path_buf(), now));
+            self.found = None;
+        }
+        let due = match (&self.asked, &self.wanted) {
+            (None, _) => true,
+            // Back to the path asked about: looked at again unless that
+            // look is still running.
+            (Some(asked), _) if is_now(asked) => {
+                self.found.is_none() || now.saturating_duration_since(asked.2) > LOOK_AGAIN
+            }
+            (Some(_), Some((.., since))) => now.saturating_duration_since(*since) >= DISK_SETTLE,
+            (Some(_), None) => true,
+        };
+        if due && self.looking.is_none() {
+            self.asked = Some((folder.to_path_buf(), file.to_path_buf(), now));
+            self.looking = start(folder.to_path_buf(), file.to_path_buf());
+        }
         self.found.clone()
+    }
+
+    /// How long until a changed folder or name is looked at, when one is
+    /// waiting: the page draws itself again then.
+    pub fn wait(&self) -> Option<Duration> {
+        let (folder, file, since) = self.wanted.as_ref()?;
+        let waiting = self
+            .looking
+            .is_none()
+            .then_some(self.asked.as_ref())
+            .flatten()
+            .is_some_and(|(f, p, _)| f != folder || p != file);
+        waiting.then(|| DISK_SETTLE.saturating_sub(since.elapsed()))
     }
 
     /// Looks again at once (after a folder was made).
@@ -805,5 +852,79 @@ mod tests {
             None,
             "asked again"
         );
+    }
+
+    /// Keys typed into the name, 50 ms apart, then a pause: one look, at
+    /// the last name; while it runs, a new name waits for it.
+    #[test]
+    fn the_disk_is_looked_at_once_for_a_burst_of_keys() {
+        let folder = Path::new("/out");
+        let disk = Disk {
+            folder_exists: true,
+            free: Some(1),
+            file_exists: false,
+        };
+        let mut watch = DiskWatch::default();
+        let t0 = Instant::now();
+        let mut started: Vec<PathBuf> = Vec::new();
+        let answers: std::cell::RefCell<Vec<std::sync::mpsc::Sender<Disk>>> = Default::default();
+        let look = |watch: &mut DiskWatch, file: &str, ms: u64, started: &mut Vec<PathBuf>| {
+            watch.look_at(
+                folder,
+                Path::new(file),
+                t0 + Duration::from_millis(ms),
+                |_, file| {
+                    started.push(file);
+                    let (tell, answer) = channel();
+                    answers.borrow_mut().push(tell);
+                    Some(answer)
+                },
+            )
+        };
+        // The page opens: looked at at once.
+        assert_eq!(look(&mut watch, "/out/T.mp4", 0, &mut started), None);
+        assert_eq!(started.len(), 1);
+        answers.borrow()[0].send(disk.clone()).unwrap();
+        assert_eq!(
+            look(&mut watch, "/out/T.mp4", 10, &mut started),
+            Some(disk.clone())
+        );
+        // A burst of keys: nothing is looked at while they come.
+        for (n, name) in ["/out/Tr.mp4", "/out/Tri.mp4", "/out/Trip.mp4"]
+            .iter()
+            .enumerate()
+        {
+            assert_eq!(look(&mut watch, name, 100 + 50 * n as u64, &mut started), None);
+        }
+        assert!(watch.wait().is_some(), "a look is waiting");
+        assert_eq!(look(&mut watch, "/out/Trip.mp4", 350, &mut started), None);
+        assert_eq!(started.len(), 1, "not yet settled");
+        assert_eq!(look(&mut watch, "/out/Trip.mp4", 500, &mut started), None);
+        assert_eq!(
+            started,
+            [PathBuf::from("/out/T.mp4"), PathBuf::from("/out/Trip.mp4")]
+        );
+        assert_eq!(watch.wait(), None);
+        // More keys while that look runs: they wait for it; its answer,
+        // about a name no longer asked for, is dropped.
+        assert_eq!(look(&mut watch, "/out/Trip2.mp4", 600, &mut started), None);
+        assert_eq!(look(&mut watch, "/out/Trip2.mp4", 1000, &mut started), None);
+        assert_eq!(started.len(), 2, "one look at a time");
+        answers.borrow()[1].send(disk.clone()).unwrap();
+        assert_eq!(look(&mut watch, "/out/Trip2.mp4", 1010, &mut started), None);
+        assert_eq!(
+            started.last(),
+            Some(&PathBuf::from("/out/Trip2.mp4")),
+            "the newest, once free"
+        );
+        answers.borrow()[2].send(disk.clone()).unwrap();
+        assert_eq!(
+            look(&mut watch, "/out/Trip2.mp4", 1020, &mut started),
+            Some(disk.clone())
+        );
+        // Every few seconds it is looked at again.
+        assert_eq!(started.len(), 3);
+        look(&mut watch, "/out/Trip2.mp4", 7000, &mut started);
+        assert_eq!(started.len(), 4);
     }
 }

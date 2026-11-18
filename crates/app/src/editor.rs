@@ -115,6 +115,8 @@ pub struct Editor {
     selected: Vec<project::ClipId>,
     /// The tabs of the project's timelines, above the timeline.
     tabs: ui_kit::timeline_tabs::TimelineTabs,
+    /// The tabs' contents, kept until a timeline changes.
+    tabs_cache: timelines::TabsCache,
     /// The timeline shown last frame, to notice another one opening.
     shown_sequence: Option<project::SequenceId>,
     /// Where the playhead was in each timeline left this session.
@@ -515,6 +517,7 @@ impl Editor {
             view_keeper,
             selected: Vec::new(),
             tabs: Default::default(),
+            tabs_cache: Default::default(),
             shown_sequence: None,
             playheads: Default::default(),
             fitted: false,
@@ -2499,7 +2502,7 @@ impl Editor {
         let found = answer.as_ref().map(|a| a.media.as_slice());
         let new_files = match &self.document {
             Some(document) => self.media_folders.new_files(document.project()),
-            None => Vec::new(),
+            None => Default::default(),
         };
         let importer = &self.importer;
         let new_files = crate::new_files::NewFiles {
@@ -3162,7 +3165,7 @@ impl Editor {
             ui.allocate_rect(top, egui::Sense::hover());
             ui.add_space(8.0);
             let new_tip = self.shortcuts.tip(Action::NewTimeline);
-            let shown_tabs = timelines::tabs(p);
+            let shown_tabs = self.tabs_cache.tabs(p);
             ui.horizontal(|ui| {
                 tabs_events = self.tabs.show(ui, &self.theme, &shown_tabs, &new_tip);
             });
@@ -3271,7 +3274,7 @@ impl Editor {
                 tip(Action::RoughCut),
             ];
             let new_tip = self.shortcuts.tip(Action::NewTimeline);
-            let shown_tabs = timelines::tabs(p);
+            let shown_tabs = self.tabs_cache.tabs(p);
             ui.horizontal(|ui| {
                 toolbar_click = ui_kit::timeline::toolbar(
                     ui,

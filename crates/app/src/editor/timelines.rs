@@ -4,6 +4,7 @@
 
 use super::{Editor, seconds};
 use project::{ClipId, Command, Project, SequenceId, Time, TrackId};
+use std::sync::Arc;
 use ui_kit::timeline_tabs::{TabsEvent, TimelineTab};
 
 /// The tabs for `project`'s timelines, in the project's order.
@@ -30,6 +31,31 @@ pub(crate) fn tabs(project: &Project) -> Vec<TimelineTab> {
             },
         })
         .collect()
+}
+
+/// The tabs kept from frame to frame: made again only when a timeline
+/// changed or another one opened, so the tabs' text and which timelines
+/// can be placed are not worked out every frame.
+#[derive(Default)]
+pub(crate) struct TabsCache {
+    /// The timelines and the open one the tabs were made from (a cheap
+    /// copy that shares them, so a change to any timeline is seen).
+    made_from: Option<(imbl::Vector<project::Sequence>, SequenceId)>,
+    tabs: Arc<[TimelineTab]>,
+}
+
+impl TabsCache {
+    /// The tabs for `project`, as `tabs` makes them.
+    pub(crate) fn tabs(&mut self, project: &Project) -> Arc<[TimelineTab]> {
+        let same = self.made_from.as_ref().is_some_and(|(sequences, open)| {
+            *open == project.active_sequence && sequences.ptr_eq(&project.sequences)
+        });
+        if !same {
+            self.tabs = tabs(project).into();
+            self.made_from = Some((project.sequences.clone(), project.active_sequence));
+        }
+        Arc::clone(&self.tabs)
+    }
 }
 
 impl Editor {
@@ -338,5 +364,76 @@ mod tests {
         assert!(shown[1].cannot_place.is_some(), "the open one");
         assert!(shown[0].cannot_place.is_none());
         assert!(shown[1].info.starts_with("1080×1920"), "{}", shown[1].info);
+    }
+
+    #[test]
+    fn the_kept_tabs_are_made_again_only_when_a_timeline_changes() {
+        let p = Project::new("T", project::SequenceSettings::GAME_CLIP);
+        let p = Command::AddSequence {
+            name: "Short".into(),
+            settings: project::SequenceSettings::VERTICAL_SHORT,
+        }
+        .apply(&p)
+        .unwrap();
+        let mut kept = TabsCache::default();
+        let first = kept.tabs(&p);
+        assert_eq!(*first, *tabs(&p));
+        assert!(Arc::ptr_eq(&first, &kept.tabs(&p)), "nothing changed");
+        assert!(
+            Arc::ptr_eq(&first, &kept.tabs(&p.clone())),
+            "a copy of the same project"
+        );
+        // Another timeline opened.
+        let mut other = p.clone();
+        other.active_sequence = p.sequences[0].id;
+        let opened = kept.tabs(&other);
+        assert!(!Arc::ptr_eq(&first, &opened));
+        assert_eq!(*opened, *tabs(&other));
+        assert!(opened[0].open);
+        // A timeline renamed.
+        let renamed = Command::RenameSequence {
+            sequence: other.sequences[1].id,
+            name: "Vertical".into(),
+        }
+        .apply(&other)
+        .unwrap();
+        let shown = kept.tabs(&renamed);
+        assert_eq!(shown[1].name, "Vertical");
+        assert_eq!(*shown, *tabs(&renamed));
+    }
+
+    /// Prints how long the tabs take per frame for 20 timelines of 5 000
+    /// clips each, made afresh against kept.
+    #[test]
+    #[ignore = "a measurement: cargo test -p app -- --ignored --nocapture tabs_per_frame"]
+    fn tabs_per_frame_made_afresh_and_kept() {
+        let mut p = crate::inspector::tests::project_with_a_clip();
+        let full = crate::editor::undo_says::tests::many_clips(1000, 5000);
+        let open = p.active_sequence;
+        let at = p.sequences.iter().position(|s| s.id == open).unwrap();
+        p.sequences.set(at, full);
+        for n in 0..19 {
+            p = Command::DuplicateSequence {
+                sequence: open,
+                name: format!("Copy {n}"),
+            }
+            .apply(&p)
+            .unwrap();
+        }
+        p.active_sequence = open;
+        let frames = 100u32;
+        let start = std::time::Instant::now();
+        for _ in 0..frames {
+            std::hint::black_box(tabs(&p));
+        }
+        let afresh = start.elapsed() / frames;
+        let mut kept = TabsCache::default();
+        kept.tabs(&p);
+        let start = std::time::Instant::now();
+        for _ in 0..frames {
+            std::hint::black_box(kept.tabs(&p));
+        }
+        let cached = start.elapsed() / frames;
+        println!("timeline tabs per frame, 20 x 5 000 clips: afresh {afresh:?}, kept {cached:?}");
     }
 }

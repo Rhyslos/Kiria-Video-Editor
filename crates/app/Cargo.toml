@@ -19,7 +19,9 @@ brand = { path = "../brand" }
 diag = { path = "../diag" }
 eframe = "0.37"
 engine = { path = "../engine" }
-egui = "0.37"
+# `bytemuck`: a picture's bytes taken as colours without a copy (the viewer).
+egui = { version = "0.37", features = ["bytemuck"] }
+bytemuck = { version = "1", features = ["extern_crate_alloc"] }
 graphics = { path = "../graphics" }
 imbl = "7"
 image = { version = "0.25", default-features = false, features = ["png"] }
