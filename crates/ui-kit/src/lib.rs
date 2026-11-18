@@ -42,7 +42,7 @@ pub use shortcuts::{Action, Context, Shortcut, ShortcutTable};
 pub use theme::{Theme, ThemeName, status};
 pub use timeline::{
     ClickMoves, ClipEdge, ClipPictures, ClipShows, ClipSound, ClipWaveform, DraggedEffect, DraggedMedia,
-    DraggedTimeline, DraggedTitle, DraggedTransition, KeyframeMark, LineKind, LineOwner, LinesShown,
+    DraggedTimeline, DraggedTitle, DraggedTransition, Gap, KeyframeMark, LineKind, LineOwner, LinesShown,
     RegionCut, SlipRoom, SourceMap, SpeedCurve, TimelineClip, TimelineData, TimelineEvent, TimelineMarker,
     TimelineSpan, TimelineTrack, TimelineView, Tool, ViewStep,
 };
