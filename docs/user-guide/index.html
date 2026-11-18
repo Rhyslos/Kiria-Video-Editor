@@ -996,13 +996,13 @@ footer p { color: var(--muted); }
 <li>Under them, one tool at a time: <strong>Basic</strong> or <strong>Wheels</strong>. Next to the switcher is the layer dropdown (a grade can have several layers, applied in order; <strong>+ Add a layer</strong> adds one, and <strong>On</strong> switches one off to compare) and, for the wheels, <strong>Simple</strong> or <strong>Advanced</strong>.</li>
 <li>The timeline at the bottom, with the sound folded into the clips. Graded clips have a small dot in their bottom left corner.</li>
 </ul>
-<p>The clip being graded is the selected one, or, with nothing selected, the top one under the playhead. Every change is one undo step; a slider or wheel being dragged shows in the picture at once and becomes one step when you let go.</p>
+<p>The clip being graded is the selected one, or, with nothing selected, the top one under the playhead. <kbd>↑</kbd> and <kbd>↓</kbd> go to the clip before and the next one and select it, so you can step through a timeline shot by shot (on the other pages they go to the cut before and after). <strong>Before</strong> under the clip's name shows the picture without its grade; click it again for after. Every change is one undo step; a slider or wheel being dragged shows in the picture at once and becomes one step when you let go.</p>
 </section>
 
 <section id="color-basic">
 <h3>Basic<a class="anchor" href="#color-basic" aria-label="Link to this section">#</a></h3>
 <ul>
-<li><strong>Temperature</strong> and <strong>Tint</strong>: warmer or cooler, greener or more magenta. <strong>Auto</strong> beside White balance looks at frames across the clip, finds the colour of the light, and sets them to take it back to neutral; the number beside it is how much of that correction is used. It is meant for facecams and camera clips: a game clip with colours of its own is mostly left alone (it says when too little is neutral to tell). It never runs by itself.</li>
+<li><strong>Temperature</strong> and <strong>Tint</strong>: warmer or cooler, greener or more magenta. <strong>Auto</strong> beside White balance looks at frames across the clip, finds the colour of the light, and sets them to take it back to neutral; the number beside it is how much of that correction is used. <strong>Pick white</strong> beside it is the other way: click it, then click something on the picture that should be white or grey (a wall, a shirt, a sheet of paper), and Temperature and Tint change so it is. It is meant for facecams and camera clips: a game clip with colours of its own is mostly left alone (it says when too little is neutral to tell). It never runs by itself.</li>
 <li><strong>Exposure</strong>: brighter or darker, in stops (one stop doubles or halves the light). <strong>Highlights</strong> and <strong>Shadows</strong>: the brightest and darkest parts alone.</li>
 <li><strong>Contrast</strong> around the <strong>Pivot</strong> (the light level that stays where it is), and <strong>Saturation</strong>.</li>
 </ul>
@@ -1432,6 +1432,8 @@ footer p { color: var(--muted); }
 <tr><td>Go to the end</td><td><kbd>End</kbd></td></tr>
 <tr><td>Back to the selected clip's previous keyframe</td><td><kbd>Alt</kbd>+<kbd>←</kbd></td></tr>
 <tr><td>On to the selected clip's next keyframe</td><td><kbd>Alt</kbd>+<kbd>→</kbd></td></tr>
+<tr><td>Back to the previous cut between pictures (on the Color page, the clip before, selected)</td><td><kbd>↑</kbd></td></tr>
+<tr><td>On to the next cut between pictures (on the Color page, the next clip, selected)</td><td><kbd>↓</kbd></td></tr>
 <tr><td>Loop playback inside the region</td><td><kbd>L</kbd></td></tr>
 <tr><td>Mark in: where the region begins (Edit page), or where the part of a file to add begins (Library)</td><td><kbd>I</kbd></td></tr>
 <tr><td>Mark out: where the region ends (Edit page), or where the part of a file to add ends (Library)</td><td><kbd>O</kbd></td></tr>

@@ -191,6 +191,8 @@ const USUAL: &[(Action, Shortcut)] = &[
     // Alt with the frame keys: a keyframe back or on.
     (Action::PreviousKeyframe, Shortcut::alt(Key::ArrowLeft)),
     (Action::NextKeyframe, Shortcut::alt(Key::ArrowRight)),
+    (Action::PreviousCut, Shortcut::key(Key::ArrowUp)),
+    (Action::NextCut, Shortcut::key(Key::ArrowDown)),
     (Action::ClearSelection, Shortcut::key(Key::Escape)),
     (Action::ZoomToFit, Shortcut::key(Key::Backslash)),
     // The key with = and +, with or without Shift, and the one beside it.

@@ -205,6 +205,28 @@ impl Sampled {
         }
     }
 
+    /// The light (display values undone) around `at` (0 to 1 across and
+    /// down), the mean of the pixels within `reach` of it.
+    pub fn light_around(&self, at: (f32, f32), reach: usize) -> Option<[f32; 3]> {
+        if self.rgb.is_empty() || !(0.0..=1.0).contains(&at.0) || !(0.0..=1.0).contains(&at.1) {
+            return None;
+        }
+        let x = ((at.0 * self.width as f32) as usize).min(self.width - 1);
+        let y = ((at.1 * self.height as f32) as usize).min(self.height - 1);
+        let mut sum = [0.0f32; 3];
+        let mut n = 0.0;
+        for row in y.saturating_sub(reach)..(y + reach + 1).min(self.height) {
+            for col in x.saturating_sub(reach)..(x + reach + 1).min(self.width) {
+                let p = self.rgb[row * self.width + col];
+                for k in 0..3 {
+                    sum[k] += p[k].powf(2.4);
+                }
+                n += 1.0;
+            }
+        }
+        Some(sum.map(|s| s / n))
+    }
+
     /// One line on what is clipped: "Nothing is clipped", or how much of
     /// the picture is lost at white or at black.
     pub fn reading(&self) -> String {
@@ -266,6 +288,17 @@ mod tests {
             picture([0.0, 0.0, 0.0]).reading(),
             "100 % of the picture is crushed to black"
         );
+    }
+
+    #[test]
+    fn the_light_around_a_point_is_the_mean_of_its_pixels() {
+        let mut p = picture([1.0, 1.0, 1.0]);
+        p.rgb[0] = [0.0, 0.0, 0.0];
+        let corner = p.light_around((0.0, 0.0), 0).expect("inside");
+        assert_eq!(corner, [0.0, 0.0, 0.0]);
+        let middle = p.light_around((0.6, 0.6), 0).expect("inside");
+        assert_eq!(middle, [1.0, 1.0, 1.0]);
+        assert_eq!(p.light_around((1.5, 0.5), 1), None);
     }
 
     #[test]

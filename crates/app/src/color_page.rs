@@ -59,6 +59,10 @@ pub struct ColorPage {
     pub scope: engine::scope::ScopeKind,
     /// How much of Auto white balance's correction is used, 0 to 1.
     pub auto_strength: f64,
+    /// "Pick white" is on: the next click on the picture picks.
+    pub picking_white: bool,
+    /// The picture is shown as it was before its grade.
+    pub before: bool,
     /// Auto white balance looking at a clip: which, and the work.
     balancing: Option<(ClipId, engine::white_balance::Balancing)>,
     /// The scope's picture on the card, and what it was made from.
@@ -86,6 +90,8 @@ impl Default for ColorPage {
             scope: engine::scope::ScopeKind::default(),
             scope_picture: None,
             auto_strength: 1.0,
+            picking_white: false,
+            before: false,
             balancing: None,
         }
     }
@@ -150,14 +156,51 @@ pub fn reached(project: &Project, seq: &project::Sequence, clip: ClipId, to: &Ap
 
 impl ColorPage {
     /// The project with the grade being dragged, for the viewer.
-    pub fn shown(&self, project: &Project) -> Option<Project> {
-        let (clip, grade) = self.changing.as_ref()?;
+    /// The project as the viewer shows it: with the grade being dragged,
+    /// or with `graded`'s grade taken away while Before is on.
+    pub fn shown(&self, project: &Project, graded: Option<ClipId>) -> Option<Project> {
+        let grades = match (self.before, graded, &self.changing) {
+            (true, Some(clip), _) => vec![(clip, Grade::default())],
+            (_, _, Some((clip, grade))) => vec![(*clip, grade.clone())],
+            _ => return None,
+        };
         Command::SetGrades {
             sequence: project.active_sequence,
-            grades: vec![(*clip, grade.clone())],
+            grades,
         }
         .apply(project)
         .ok()
+    }
+
+    /// "Pick white": the picture at `at` (0 to 1 across and down) should
+    /// be neutral, so the shown layer's Temperature and Tint change by what
+    /// makes it so, read from `sampled` (the picture as it is now).
+    pub fn pick_white(
+        &mut self,
+        sequence: SequenceId,
+        clip: &project::Clip,
+        sampled: &engine::scope::Sampled,
+        at: (f32, f32),
+    ) -> Asked {
+        self.picking_white = false;
+        let mut asked = Asked::default();
+        let Some(light) = sampled.light_around(at, 2) else {
+            return asked;
+        };
+        let (temperature, tint) = engine::white_balance::sliders(light);
+        let mut grade = clip.grade.clone();
+        let primary = &mut grade.layer_mut(self.layer).primary;
+        let moved =
+            |value: i32, by: f32| (value + (by * 1_000_000.0).round() as i32).clamp(-1_000_000, 1_000_000);
+        primary.temperature = moved(primary.temperature, temperature);
+        primary.tint = moved(primary.tint, tint);
+        asked.status =
+            Some("White balance set from what you picked: fine-tune it with Temperature and Tint".into());
+        asked.commands.push(Command::SetGrades {
+            sequence,
+            grades: vec![(clip.id, grade)],
+        });
+        asked
     }
 
     /// The tools for `clip`'s grade: the switcher, the layer dropdown and
@@ -225,7 +268,14 @@ impl ColorPage {
         let mut asked = Asked::default();
         let busy = match self.tool {
             Tool::Basic => {
-                let basic = basic::ui(ui, theme, &mut primary, &mut self.auto_strength, working);
+                let basic = basic::ui(
+                    ui,
+                    theme,
+                    &mut primary,
+                    &mut self.auto_strength,
+                    working,
+                    &mut self.picking_white,
+                );
                 if basic.auto {
                     match media.and_then(|m| Some((m, m.info.video.as_ref()?))) {
                         Some((media, video)) if clip.is_file() => {
@@ -373,6 +423,9 @@ impl ColorPage {
             .color(theme.muted)
             .size(12.0),
         );
+        ui.add_space(4.0);
+        ui.toggle_value(&mut self.before, "Before")
+            .on_hover_text("Shows the picture without its grade, to compare; click again for after");
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             let labels: Vec<(project::MediaLabelId, String)> = project
@@ -504,6 +557,58 @@ mod tests {
         assert_eq!(graded_clip(seq, &[], Time::seconds(5)), Some(clips[1]));
         assert_eq!(graded_clip(seq, &[clips[0]], Time::seconds(5)), Some(clips[0]));
         assert_eq!(graded_clip(seq, &[], Time::seconds(30)), None, "past the end");
+    }
+
+    #[test]
+    fn before_shows_the_picture_without_its_grade() {
+        let p = project_with_two_files();
+        let first = p.active().expect("a timeline").video_tracks[0].clips[0].id;
+        let mut warm = Grade::default();
+        warm.layer_mut(0).primary.temperature = 400_000;
+        let p = Command::SetGrades {
+            sequence: p.active_sequence,
+            grades: vec![(first, warm)],
+        }
+        .apply(&p)
+        .expect("graded");
+        let mut page = ColorPage::default();
+        assert!(page.shown(&p, Some(first)).is_none(), "as it is");
+        page.before = true;
+        let before = page.shown(&p, Some(first)).expect("shown before");
+        assert!(
+            !before.active().expect("a timeline").video_tracks[0].clips[0]
+                .grade
+                .is_graded()
+        );
+    }
+
+    #[test]
+    fn picking_a_warm_grey_cools_the_clip_until_it_is_neutral() {
+        let p = project_with_two_files();
+        let clip = p.active().expect("a timeline").video_tracks[0].clips[0].clone();
+        // A grey lit warm: more red than blue.
+        let warm = [0.6f32, 0.5, 0.4].map(|light| light.powf(1.0 / 2.4));
+        let sampled = engine::scope::Sampled {
+            width: 4,
+            height: 4,
+            rgb: vec![warm; 16],
+        };
+        let mut page = ColorPage {
+            picking_white: true,
+            ..ColorPage::default()
+        };
+        let asked = page.pick_white(p.active_sequence, &clip, &sampled, (0.5, 0.5));
+        assert!(!page.picking_white, "one pick");
+        let Some(Command::SetGrades { grades, .. }) = asked.commands.first() else {
+            panic!("a grade set");
+        };
+        let primary = grades[0].1.0[0].primary;
+        let right = (0.4f32 / 0.6).log2();
+        assert!(
+            (primary.temperature as f32 / 1_000_000.0 - right).abs() < 0.02,
+            "{}",
+            primary.temperature
+        );
     }
 
     #[test]
