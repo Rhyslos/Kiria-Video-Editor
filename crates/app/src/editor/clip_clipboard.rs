@@ -254,6 +254,7 @@ mod tests {
         let scanning = start.elapsed();
         assert_eq!(found, scanned);
         println!("pasted clips, 5 000 clips: set {now:?}, list scan {scanning:?}");
+    }
 
     /// A gap after sound lined up to the sample (its end off the frames)
     /// closes at that exact end, even with another clip's end less than a
