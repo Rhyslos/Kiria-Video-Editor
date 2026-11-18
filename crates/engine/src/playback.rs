@@ -515,7 +515,10 @@ impl Session {
                 Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
             }
         }
-        if let Some((at, number)) = jump.or_else(|| self.pending.take()) {
+        // A newer jump replaces one the sound card went away during: the
+        // older one is dropped, never made after it.
+        let pending = self.pending.take();
+        if let Some((at, number)) = jump.or(pending) {
             self.jump(at, number, clock);
         }
         self.controller.collect();
