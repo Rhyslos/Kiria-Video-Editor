@@ -9,7 +9,8 @@
 # already on the machine, and versions before 0.1.1-beta.103 only look at
 # the first 20 releases GitHub lists, in an order that is not newest first.
 #
-# Needs the GitHub CLI and a token that may write releases (GH_TOKEN).
+# Needs the GitHub CLI and a token that may write releases (GH_TOKEN);
+# --dry-run only reads, so a read-only token is enough for it.
 set -euo pipefail
 
 repo=${1:?"usage: prune-betas.sh <owner/repo> [--dry-run]"}
