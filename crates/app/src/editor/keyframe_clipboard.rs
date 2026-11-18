@@ -74,11 +74,15 @@ pub(crate) fn described(copied: &CopiedKeyframes) -> String {
 impl Editor {
     /// Copy: the chosen keyframe marks of the open timeline, all their numbers.
     pub(super) fn copy_keyframes(&mut self) -> diag::Result<()> {
+        let marks = self
+            .shown_view()
+            .chosen_keyframes()
+            .map(|(clip, at)| (clip, at.to_vec()));
         let Some(seq) = self.document.as_ref().and_then(|d| d.project().active()) else {
             return Ok(());
         };
         let rate = seq.settings.frame_rate;
-        let chosen = self.timeline.chosen_keyframes().and_then(|(clip, at)| {
+        let chosen = marks.and_then(|(clip, at)| {
             let clip = seq
                 .video_tracks
                 .iter()
@@ -137,7 +141,7 @@ impl Editor {
                 keyframes: copied,
             })
         })?;
-        self.timeline.choose_keyframes(clip.0, landed);
+        self.shown_view().choose_keyframes(clip.0, landed);
         self.status = says;
         Ok(())
     }

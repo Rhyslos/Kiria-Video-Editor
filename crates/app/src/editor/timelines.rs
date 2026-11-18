@@ -82,6 +82,7 @@ impl Editor {
         }
         self.selected.clear();
         self.fitted = false;
+        self.audio_page.fitted = false;
         let at = self.playheads.get(&open).copied().unwrap_or(Time::ZERO);
         self.go_to(at);
     }

@@ -979,10 +979,7 @@ impl Editor {
 
     /// The timeline the page shown has: the Audio page's own, or the Edit page's.
     fn shown_view(&mut self) -> &mut ui_kit::TimelineView {
-        match self.page {
-            Page::Audio => &mut self.audio_page.timeline,
-            _ => &mut self.timeline,
-        }
+        view_on(self.page, &mut self.timeline, &mut self.audio_page.timeline)
     }
 
     fn with_document(&mut self, f: impl FnOnce(&mut Document) -> diag::Result<()>) -> diag::Result<()> {
@@ -4334,6 +4331,19 @@ fn cut_times(spans: impl Iterator<Item = (Time, Time)>) -> Vec<f64> {
     cuts.into_iter().map(|t| t.as_secs_f64()).collect()
 }
 
+/// The timeline view `page` shows: the Audio page's own (`audio`), or the
+/// Edit page's (`edit`), which the other pages share.
+fn view_on<'a>(
+    page: Page,
+    edit: &'a mut ui_kit::TimelineView,
+    audio: &'a mut ui_kit::TimelineView,
+) -> &'a mut ui_kit::TimelineView {
+    match page {
+        Page::Audio => audio,
+        _ => edit,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4369,6 +4379,21 @@ mod tests {
             (Time::ZERO, Time::ZERO),
             "nothing before"
         );
+    }
+
+    /// Actions on the timeline (closing a selected gap, choosing keyframe
+    /// marks) act on the view of the page on screen: on the Audio page its
+    /// own, so the gap closed there is the one let go.
+    #[test]
+    fn the_audio_page_acts_on_its_own_timeline_view() {
+        let mut edit = ui_kit::TimelineView::default();
+        let mut audio = ui_kit::TimelineView::default();
+        let shown = view_on(Page::Audio, &mut edit, &mut audio) as *const _;
+        assert!(std::ptr::eq(shown, &audio), "the Audio page's own");
+        for page in [Page::Edit, Page::Color, Page::Library, Page::Export] {
+            let shown = view_on(page, &mut edit, &mut audio) as *const _;
+            assert!(std::ptr::eq(shown, &edit), "{page:?}: the Edit page's");
+        }
     }
 
     #[test]
