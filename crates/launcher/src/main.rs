@@ -185,9 +185,12 @@ pub(crate) fn install_root() -> std::path::PathBuf {
 
 /// Starts the (new) launcher, with this run's arguments if `same_args`, and ends this one.
 pub(crate) fn restart_launcher(same_args: bool) -> ExitCode {
-    let program = std::env::var_os("APPIMAGE")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| install_root().join(updater::apply::launcher_file_name()));
+    // The AppImage file only when this launcher really runs from it: an
+    // inherited `APPIMAGE` names some other program.
+    let program = match updater::apply::InstallKind::detect(&install_root()) {
+        updater::apply::InstallKind::AppImage(file) => file,
+        _ => install_root().join(updater::apply::launcher_file_name()),
+    };
     tracing::info!(launcher = %program.display(), "restarting with the new version");
     let mut command = std::process::Command::new(&program);
     if same_args {
