@@ -2389,6 +2389,7 @@ dependencies = [
  "egui",
  "graphics",
  "image",
+ "os",
  "project",
  "project-index",
  "rfd",
@@ -3252,7 +3253,9 @@ dependencies = [
 name = "os"
 version = "0.1.0"
 dependencies = [
+ "diag",
  "libc",
+ "tempfile",
  "tracing",
  "windows-sys 0.61.2",
  "x11rb",

@@ -17,6 +17,7 @@ use project_index::{Folder, FolderKind, Index, Issue, ProjectEntry};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
 use ui_kit::{Action, ErrorCenter, ErrorResponse, ShortcutTable, Theme, TitleBar, layout};
 
@@ -42,12 +43,12 @@ enum View {
 /// A file or folder chosen in a system dialog.
 #[derive(Debug)]
 enum Picked {
-    ProjectFile(Option<PathBuf>),
-    Folder(FolderKind, Option<PathBuf>),
+    ProjectFile(PathBuf),
+    Folder(FolderKind, PathBuf),
     /// Browse… in the New project dialog.
-    SaveFolder(Option<PathBuf>),
+    SaveFolder(PathBuf),
     /// Change… for the default folder in Settings.
-    DefaultFolder(Option<PathBuf>),
+    DefaultFolder(PathBuf),
 }
 
 /// A finished rename or move: the old path and where the project went.
@@ -136,7 +137,10 @@ pub struct Browser {
     recovery: Option<RecoveryDialog>,
     /// Shown once after a version failed to start and the previous one came back.
     rollback: Option<updater::health::RollbackNotice>,
-    picker: Option<Task<Picked>>,
+    /// The open file chooser; `None` comes back when nothing was picked.
+    picker: Option<Receiver<Option<Picked>>>,
+    /// Folders being shown in the file manager, until each has started.
+    showing: Vec<Task<diag::Result<()>>>,
     file_job: Option<FileJob>,
     new_project: Option<NewProjectDialog>,
     rename: Option<RenameDialog>,
@@ -224,6 +228,7 @@ impl Browser {
             recovery: None,
             rollback: None,
             picker: None,
+            showing: Vec::new(),
             file_job: None,
             new_project: None,
             rename: None,
@@ -428,15 +433,29 @@ impl Browser {
                 Poll::Lost => self.refresh = None,
             }
         }
-        if let Some(task) = &self.picker {
-            match task.poll() {
-                Poll::Running => {}
-                Poll::Done(picked) => {
+        if let Some(picker) = &self.picker {
+            match picker.try_recv() {
+                Err(TryRecvError::Empty) => {}
+                Ok(picked) => {
                     self.picker = None;
-                    self.picked(ctx, picked);
+                    if let Some(picked) = picked {
+                        self.picked(ctx, picked);
+                    }
                 }
-                Poll::Lost => self.picker = None,
+                Err(TryRecvError::Disconnected) => self.picker = None,
             }
+        }
+        let mut shown = Vec::new();
+        self.showing.retain(|task| match task.poll() {
+            Poll::Running => true,
+            Poll::Done(result) => {
+                shown.push(result);
+                false
+            }
+            Poll::Lost => false,
+        });
+        for err in shown.into_iter().filter_map(Result::err) {
+            self.errors.push(&err);
         }
         if let Some(task) = &self.file_job {
             match task.poll() {
@@ -471,33 +490,29 @@ impl Browser {
 
     fn picked(&mut self, ctx: &egui::Context, picked: Picked) {
         match picked {
-            Picked::ProjectFile(Some(path)) => {
+            Picked::ProjectFile(path) => {
                 let mut recorded = false;
                 self.with_index(|index| index.record(&path).map(|_| recorded = true));
                 if recorded {
                     self.open(ctx, &path);
                 }
             }
-            Picked::Folder(kind, Some(path)) => {
+            Picked::Folder(kind, path) => {
                 self.with_index(|index| index.add_folder(&path, kind));
                 self.view = View::Folder(Folder { path, kind });
                 self.start_refresh(ctx);
             }
-            Picked::SaveFolder(Some(path)) => {
+            Picked::SaveFolder(path) => {
                 self.with_index(|index| index.add_folder_if_new(&path, FolderKind::Projects));
                 if let Some(dialog) = &mut self.new_project {
                     dialog.set_folder(path);
                 }
             }
-            Picked::DefaultFolder(Some(path)) => {
+            Picked::DefaultFolder(path) => {
                 self.with_index(|index| index.add_folder_if_new(&path, FolderKind::Projects));
                 self.set_default_folder(Some(path));
                 self.start_refresh(ctx);
             }
-            Picked::ProjectFile(None)
-            | Picked::Folder(_, None)
-            | Picked::SaveFolder(None)
-            | Picked::DefaultFolder(None) => {}
         }
     }
 
@@ -510,18 +525,17 @@ impl Browser {
     }
 
     /// Opens the system folder dialog; `make` wraps the answer.
-    fn pick_any_folder(&mut self, ctx: &egui::Context, title: &str, make: fn(Option<PathBuf>) -> Picked) {
+    fn pick_any_folder(&mut self, ctx: &egui::Context, title: &str, make: fn(PathBuf) -> Picked) {
         if self.picker.is_some() {
             return;
         }
         let (title, start) = (title.to_owned(), self.default_project_folder());
-        let asker = ctx.clone();
-        self.picker = Some(Task::spawn(ctx, move || {
+        self.picker = Some(ui_kit::file_dialog::ask(ctx, "folder dialog", move || {
             let mut dialog = rfd::FileDialog::new().set_title(title);
             if let Some(start) = start.filter(|s| s.is_dir()) {
                 dialog = dialog.set_directory(start);
             }
-            make(ui_kit::file_dialog::run(&asker, || dialog.pick_folder()))
+            dialog.pick_folder().map(make)
         }));
     }
 
@@ -530,15 +544,14 @@ impl Browser {
             return;
         }
         let start = self.default_project_folder();
-        let asker = ctx.clone();
-        self.picker = Some(Task::spawn(ctx, move || {
+        self.picker = Some(ui_kit::file_dialog::ask(ctx, "open project dialog", move || {
             let mut dialog = rfd::FileDialog::new()
                 .set_title("Open a project")
                 .add_filter(format!("{} project", brand::APP_NAME), &[project::FILE_EXTENSION]);
             if let Some(start) = start.filter(|s| s.is_dir()) {
                 dialog = dialog.set_directory(start);
             }
-            Picked::ProjectFile(ui_kit::file_dialog::run(&asker, || dialog.pick_file()))
+            dialog.pick_file().map(Picked::ProjectFile)
         }));
     }
 
@@ -547,13 +560,19 @@ impl Browser {
             return;
         }
         let title = format!("Add a folder to {}", kind.label());
-        let asker = ctx.clone();
-        self.picker = Some(Task::spawn(ctx, move || {
-            Picked::Folder(
-                kind,
-                ui_kit::file_dialog::run(&asker, || rfd::FileDialog::new().set_title(title).pick_folder()),
-            )
+        self.picker = Some(ui_kit::file_dialog::ask(ctx, "add folder dialog", move || {
+            rfd::FileDialog::new()
+                .set_title(title)
+                .pick_folder()
+                .map(|path| Picked::Folder(kind, path))
         }));
+    }
+
+    /// Shows `path` (a folder, or the folder holding a file) in the file
+    /// manager, off the interface thread; a failure is said when it comes.
+    fn show_in_file_manager(&mut self, ctx: &egui::Context, path: PathBuf) {
+        self.showing
+            .push(Task::spawn(ctx, move || show_in_file_manager(&path)));
     }
 
     /// The folder chosen for new projects, or else the first project folder.
@@ -661,9 +680,7 @@ impl Browser {
                     });
                 }
                 CardAction::ShowInFileManager(path) => {
-                    if let Err(err) = show_in_file_manager(&path) {
-                        self.errors.push(&err);
-                    }
+                    self.show_in_file_manager(ctx, path);
                 }
                 CardAction::Forget(path) => {
                     self.with_index(|index| index.forget(&path));
@@ -790,10 +807,8 @@ impl Browser {
                 }
             },
         );
-        if let Some(path) = reveal
-            && let Err(err) = show_in_file_manager(&path)
-        {
-            self.errors.push(&err);
+        if let Some(path) = reveal {
+            self.show_in_file_manager(ctx, path);
         }
         if let Some(path) = remove {
             self.with_index(|index| index.remove_folder(&path));
@@ -983,10 +998,9 @@ impl Browser {
                         }
                     }
                     if ui.button("Show crash reports").clicked() {
-                        let folder = diag::AppDirs::locate().map(|d| d.crashes);
-                        if let Err(err) = folder.and_then(|f| show_in_file_manager(&f)) {
-                            self.errors.push(&err);
-                        }
+                        self.showing.push(Task::spawn(ctx, || {
+                            diag::AppDirs::locate().and_then(|dirs| show_in_file_manager(&dirs.crashes))
+                        }));
                     }
                 });
             });

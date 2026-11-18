@@ -11,7 +11,7 @@ The Cargo workspace members. One engine with no interface, and thin pages on top
 | [ui-kit](ui-kit/) | Themes, top bar, shortcuts, shared timeline widget, the mixer's strips | 0.6 (done), 4, 8 |
 | [graphics](graphics/) | Which graphics system draws the windows: the shared settings, the start plan, the safety nets around Vulkan and around decoding on the window's device, and opening the editor's Vulkan device for video decoding | 4A |
 | [video-device](video-device/) | The window's graphics device as the video decoder shares it, and the copy of a decoded picture into images the viewer draws from | 4A |
-| [os](os/) | Small questions to the operating system: the keyboard layout in use, followed live; worker threads below the interface's priority; very small numbers as zero on the sound card's thread; an allocator that counts, for tests | 4, 8 |
+| [os](os/) | Small questions to the operating system: the keyboard layout in use, followed live; worker threads below the interface's priority; very small numbers as zero on the sound card's thread; opening a file with its program and showing a folder in the file manager; an allocator that counts, for tests | 4, 8 |
 | [app](app/) | The editor window and its five pages (binary `editor`) | 0.6 (done), 4 onwards |
 | [updater](updater/) | Release checks, signatures, safe installs, rollback | 1 (done), 3 |
 | [project-index](project-index/) | The launcher's list of known projects and folders (SQLite) | 2 |

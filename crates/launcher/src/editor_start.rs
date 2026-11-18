@@ -32,24 +32,16 @@ pub fn start_editor(data_dir: &Path, args: &[&OsStr]) -> diag::Result<Child> {
     })
 }
 
-/// Opens the system file manager at `path` (a folder, or the folder holding a file).
+/// Opens the system file manager at `path` (a folder, or the folder holding
+/// a file). It looks at the disk and starts a program: call it off the
+/// interface thread.
 pub fn show_in_file_manager(path: &Path) -> diag::Result<()> {
     let folder = if path.is_dir() {
         path
     } else {
         path.parent().unwrap_or(path)
     };
-    let program = if cfg!(windows) { "explorer" } else { "xdg-open" };
-    Command::new(program).arg(folder).spawn().map_err(|err| {
-        AppError::new("The folder can't be shown")
-            .why(format!(
-                "Starting the file manager for {} failed.",
-                folder.display()
-            ))
-            .fix("Open the folder yourself; its path is shown when you hover over it.")
-            .source(err)
-    })?;
-    Ok(())
+    os::show_folder(folder)
 }
 
 /// Opens a web address in the person's browser.

@@ -18,6 +18,7 @@ directories = "6"
 eframe = "0.37"
 egui = "0.37"
 graphics = { path = "../graphics" }
+os = { path = "../os" }
 image = { version = "0.25", default-features = false, features = ["png"] }
 project = { path = "../project" }
 project-index = { path = "../project-index" }

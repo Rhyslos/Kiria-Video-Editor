@@ -7,7 +7,7 @@
 
 use super::Editor;
 use project::{Command, Document, Region, Time};
-use ui_kit::RegionCut;
+use ui_kit::{Action, RegionCut};
 
 /// The command for `cut` of `region` on a timeline `length` long; `None`
 /// when keeping it would remove nothing.
@@ -53,14 +53,14 @@ pub(crate) fn says(cut: RegionCut) -> &'static str {
 
 /// Does `cut` to the open timeline's region in `d`, as one undo step.
 /// Returns where the region started when something was cut.
-fn cut_in(d: &mut Document, cut: RegionCut) -> diag::Result<Option<Time>> {
+fn cut_in(d: &mut Document, cut: RegionCut, mark: &str) -> diag::Result<Option<Time>> {
     let Some(seq) = d.project().active() else {
         return Ok(None);
     };
     let Some(region) = seq.region else {
         return Err(diag::AppError::new("There is no region")
             .why("These act on the region: the stretch marked in the ruler.")
-            .fix("Mark in and out (I and O), or Shift-drag in the ruler."));
+            .fix(mark.to_owned()));
     };
     let Some(command) = command(seq.id, region, seq.length(), cut) else {
         return Ok(None);
@@ -69,12 +69,23 @@ fn cut_in(d: &mut Document, cut: RegionCut) -> diag::Result<Option<Time>> {
     Ok(Some(region.start))
 }
 
+/// How to mark a region, with the keys the shortcut table has for marking
+/// in and out now.
+fn mark_the_region(shortcuts: &ui_kit::ShortcutTable) -> String {
+    format!(
+        "Mark in and out ({} and {}), or Shift-drag in the ruler.",
+        shortcuts.keys_or_name(Action::MarkIn),
+        shortcuts.keys_or_name(Action::MarkOut)
+    )
+}
+
 impl Editor {
     /// Does `cut` to the open timeline's region, as one undo step.
     pub(super) fn cut_region(&mut self, cut: RegionCut) -> diag::Result<()> {
         let mut done = None;
+        let mark = mark_the_region(&self.shortcuts);
         self.with_document(|d| {
-            done = cut_in(d, cut)?;
+            done = cut_in(d, cut, &mark)?;
             Ok(())
         })?;
         if let Some(start) = done {
@@ -89,6 +100,25 @@ impl Editor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The hint names the keys marking in and out are bound to now.
+    #[test]
+    fn the_region_hint_names_the_keys_bound_now() {
+        let mut table = ui_kit::ShortcutTable::default();
+        assert!(mark_the_region(&table).starts_with("Mark in and out (I and O)"));
+        let line = table
+            .lines()
+            .iter()
+            .position(|b| b.action == Action::MarkIn)
+            .expect("a line");
+        let keys = ui_kit::Shortcut::ctrl_shift(egui::Key::Period);
+        table.rebind(line, keys).expect("free keys");
+        let text = mark_the_region(&table);
+        assert!(
+            text.contains(&format!("({} and O)", table.written(keys))),
+            "{text}"
+        );
+    }
 
     #[test]
     fn keeping_the_region_removes_what_is_before_and_after_it() {
@@ -138,7 +168,7 @@ mod tests {
             })
             .unwrap();
             let before = d.project().clone();
-            assert_eq!(cut_in(&mut d, cut).unwrap(), Some(region.start));
+            assert_eq!(cut_in(&mut d, cut, "").unwrap(), Some(region.start));
             let after = d.project().active().unwrap();
             assert_ne!(after.video_tracks, before.active().unwrap().video_tracks);
             let left = if cut == RegionCut::Lift {

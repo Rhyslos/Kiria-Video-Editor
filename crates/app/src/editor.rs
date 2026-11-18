@@ -721,13 +721,14 @@ impl Editor {
                 };
             }),
             Action::ClearSelection => {
-                if self.full_screen {
-                    self.set_full_screen(false);
-                } else if self.lines_on && matches!(self.page, Page::Edit | Page::Audio) {
+                let task = self.following.is_some() || self.steadying.is_some();
+                let lines = self.lines_on && matches!(self.page, Page::Edit | Page::Audio);
+                match escape_does(task, self.full_screen, lines) {
+                    EscapeDoes::StopTask => self.stop_tasks(),
+                    EscapeDoes::LeaveFullScreen => self.set_full_screen(false),
                     // Escape leaves the lines first, as it leaves a menu.
-                    self.run_action(Action::VolumeLines);
-                } else {
-                    self.selected.clear();
+                    EscapeDoes::LeaveLines => self.run_action(Action::VolumeLines),
+                    EscapeDoes::SelectNothing => self.selected.clear(),
                 }
                 Ok(())
             }
@@ -3311,7 +3312,7 @@ impl Editor {
                 |m, stream| pictures.get(jobs, &ctx, m, stream),
             );
             // Sound being set in the inspector shows on its clips at once.
-            timeline_panel::show_sounds(&mut drawn, self.inspector.sounds_being_set());
+            timeline_panel::show_sounds(&mut drawn, &self.inspector.sounds_being_set());
             crate::audio_page::lines::fill(&mut drawn.audio, seq, self.lines.kind);
             self.timeline.lines = self.lines_on.then_some(self.lines);
             self.timeline.rough_cut = self.settings.rough_cut;
@@ -3775,7 +3776,7 @@ impl eframe::App for Editor {
         }
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         self.heartbeat.beat();
         let started = Instant::now();
         let ctx = ui.ctx().clone();
@@ -3808,6 +3809,12 @@ impl eframe::App for Editor {
         // A file chooser that could not open says why.
         if let Some(problem) = ui_kit::file_dialog::take_problem(&ctx) {
             self.errors.push(&problem);
+        }
+        // A picture the graphics card turned down says why, once per cause.
+        if let Some(state) = frame.wgpu_render_state() {
+            for problem in ui_kit::video_picture::refusals(state) {
+                self.errors.push(&problem);
+            }
         }
         let listening = self.shortcuts_page.as_ref().is_some_and(|p| p.listening());
         if !listening {
@@ -4141,6 +4148,53 @@ fn placeholder(page: Page, has_project: bool) -> (&'static str, &'static str) {
     (page.label(), "")
 }
 
+/// What one press of the command bound to Escape (`ClearSelection`) does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EscapeDoes {
+    /// Stops a box being followed or a clip being analysed, and nothing else.
+    StopTask,
+    LeaveFullScreen,
+    LeaveLines,
+    SelectNothing,
+}
+
+/// The first that applies: a task running on a thread of its own is
+/// stopped, then full screen left, then the lines tool, then the selection
+/// cleared. One press does one of them.
+fn escape_does(task_running: bool, full_screen: bool, lines_on: bool) -> EscapeDoes {
+    if task_running {
+        EscapeDoes::StopTask
+    } else if full_screen {
+        EscapeDoes::LeaveFullScreen
+    } else if lines_on {
+        EscapeDoes::LeaveLines
+    } else {
+        EscapeDoes::SelectNothing
+    }
+}
+
+impl Editor {
+    /// Stops a box being followed (what it found so far is kept) and a clip
+    /// being analysed (nothing set); their news says when they have ended.
+    fn stop_tasks(&mut self) {
+        if let Some(job) = &self.following {
+            job.stop();
+        }
+        if let Some(job) = &self.steadying {
+            job.stop();
+        }
+    }
+}
+
+/// " (Esc stops it)" with the key the shortcut table has for stopping a
+/// task now, or nothing when no key is bound to it.
+fn stops_it(shortcuts: &ShortcutTable) -> String {
+    match shortcuts.keys_for(Action::ClearSelection) {
+        keys if keys.is_empty() => String::new(),
+        keys => format!(" ({keys} stops it)"),
+    }
+}
+
 /// What the status line says when the choice of what a click moves changes.
 fn click_moves_says(moves: ui_kit::ClickMoves, edit_at_playhead: bool) -> &'static str {
     match (moves, edit_at_playhead) {
@@ -4396,6 +4450,41 @@ mod tests {
     fn the_lines_hint_is_only_for_pages_with_a_timeline() {
         assert!(about_the_timeline(LINES_ON) && about_the_timeline(LINES_OFF));
         assert!(!about_the_timeline("Imported 3 files"));
+    }
+
+    /// The command bound to Escape stops a running follow or analysis and
+    /// does nothing else that press: the selection, full screen and the
+    /// lines tool stay. Without one it does what it always did.
+    #[test]
+    fn escape_stops_a_running_task_and_nothing_else() {
+        for full_screen in [false, true] {
+            for lines in [false, true] {
+                assert_eq!(escape_does(true, full_screen, lines), EscapeDoes::StopTask);
+            }
+        }
+        assert_eq!(escape_does(false, false, false), EscapeDoes::SelectNothing);
+        assert_eq!(escape_does(false, true, true), EscapeDoes::LeaveFullScreen);
+        assert_eq!(escape_does(false, false, true), EscapeDoes::LeaveLines);
+    }
+
+    /// The hint names the key bound now, and is left out with none bound.
+    #[test]
+    fn the_stop_hint_names_the_key_bound_now() {
+        let mut table = ShortcutTable::default();
+        let usual = stops_it(&table);
+        assert!(usual.ends_with("stops it)"), "{usual}");
+        assert!(!usual.contains("Select nothing"), "{usual}");
+        let line = table
+            .lines()
+            .iter()
+            .position(|b| b.action == Action::ClearSelection)
+            .expect("a line");
+        let keys = ui_kit::Shortcut::ctrl_shift(egui::Key::Period);
+        table.rebind(line, keys).expect("free keys");
+        assert_eq!(stops_it(&table), format!(" ({} stops it)", table.written(keys)));
+        assert_ne!(stops_it(&table), usual);
+        table.clear(line);
+        assert_eq!(stops_it(&table), "");
     }
 
     #[test]

@@ -28,42 +28,51 @@ use ui_kit::Theme;
 use ui_kit::inspector::{self, Keyed, Number, Touched, Words};
 use ui_kit::keyframe::{KeyClicks, KeyState, Keys};
 
+use crate::pending::Pending;
+
 mod effects;
 mod speed;
 mod title;
 mod transition;
 
-/// A look being set and not yet an undo step: whose, at which moment of
-/// the timeline (where it began), and what.
+/// Whose look is being set, and at which moment of the timeline (where
+/// the change began).
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct Pending {
+struct LookAt {
     clip: ClipId,
     at: Time,
-    look: Look,
 }
 
-impl Pending {
-    fn command(&self, sequence: project::SequenceId) -> Command {
+impl LookAt {
+    fn command(self, sequence: project::SequenceId, look: Look) -> Command {
         Command::SetLookAt {
             sequence,
             clip: self.clip,
             at: self.at,
-            look: self.look,
+            look,
         }
+    }
+
+    /// The look the project holds there; `None` when the clip is gone.
+    fn stored(&self, project: &Project) -> Option<Look> {
+        let rate = project.active()?.settings.frame_rate;
+        let clip = clip_in(project, self.clip)?;
+        Some(clip.look_at(clip.moment(self.at, rate)))
     }
 }
 
 #[derive(Debug, Default)]
 pub struct Inspector {
     /// A look being set and not yet an undo step.
-    pending: Option<Pending>,
-    /// Sound being set and not yet an undo step: each sound clip's new
-    /// settings (a picture's linked sound clips change together).
-    pending_sound: Option<Vec<(ClipId, Sound)>>,
+    pending: Pending<LookAt, Look>,
+    /// Sound being set and not yet an undo step: the sound clips and each
+    /// one's new settings, in the same order (a picture's linked sound
+    /// clips change together).
+    pending_sound: Pending<Vec<ClipId>, Vec<Sound>>,
     /// A picture's effects with a setting being dragged, not yet an undo step.
-    pending_effects: Option<(ClipId, project::Effects)>,
+    pending_effects: Pending<ClipId, project::Effects>,
     /// A title's words being typed or size dragged, not yet an undo step.
-    pending_title: Option<(ClipId, project::Title)>,
+    pending_title: Pending<ClipId, project::Title>,
     /// A sound clip's volume (thousandths of a decibel) being dragged on
     /// the timeline, by its level line: shown as it moves. The timeline
     /// makes the undo step when it is let go, not the panel.
@@ -122,8 +131,9 @@ impl Inspector {
         let sequence = project.active_sequence;
         let looked = self
             .pending
-            .and_then(|pending| pending.command(sequence).apply(project).ok());
-        let looked = match &self.pending_effects {
+            .get()
+            .and_then(|(key, look)| key.command(sequence, *look).apply(project).ok());
+        let looked = match self.pending_effects.get() {
             Some((clip, effects)) => Command::SetEffects {
                 sequence,
                 clip: *clip,
@@ -134,7 +144,7 @@ impl Inspector {
             .or(looked),
             None => looked,
         };
-        let looked = match &self.pending_title {
+        let looked = match self.pending_title.get() {
             Some((clip, title)) => Command::SetTitle {
                 sequence,
                 clip: *clip,
@@ -145,12 +155,12 @@ impl Inspector {
             .or(looked),
             None => looked,
         };
-        let Some(sounds) = &self.pending_sound else {
+        if self.pending_sound.get().is_none() {
             return looked;
-        };
+        }
         Command::SetSound {
             sequence,
-            sounds: sounds.clone(),
+            sounds: self.sounds_being_set(),
         }
         .apply(looked.as_ref().unwrap_or(project))
         .ok()
@@ -158,8 +168,10 @@ impl Inspector {
     }
 
     /// Sound being set and not yet an undo step, for the timeline to draw.
-    pub fn sounds_being_set(&self) -> &[(ClipId, Sound)] {
-        self.pending_sound.as_deref().unwrap_or_default()
+    pub fn sounds_being_set(&self) -> Vec<(ClipId, Sound)> {
+        self.pending_sound.get().map_or_else(Vec::new, |(clips, sounds)| {
+            clips.iter().copied().zip(sounds.iter().copied()).collect()
+        })
     }
 
     /// The clip the panel is about (see [`shown_clip`]) with its look as it
@@ -171,10 +183,7 @@ impl Inspector {
         }
         let picture = picture_size(project, clip)?;
         let at = clip.moment(playhead, seq.settings.frame_rate);
-        let look = match self.pending {
-            Some(pending) if pending.clip == clip.id => pending.look,
-            _ => clip.look_at(at),
-        };
+        let look = self.look_being_set(clip.id).unwrap_or_else(|| clip.look_at(at));
         Some(Subject {
             clip: clip.id,
             at,
@@ -201,17 +210,13 @@ impl Inspector {
         busy: bool,
     ) -> Option<Command> {
         // A change in waiting on another clip is not lost.
-        let other = match self.pending {
-            Some(waiting) if waiting.clip != clip => self.finish(project),
+        let other = match self.pending.get() {
+            Some((waiting, _)) if waiting.clip != clip => self.finish(project),
             _ => None,
         };
         // A change keeps the moment it began at.
-        let at = self.pending.map_or(at, |pending| pending.at);
-        self.pending = Some(Pending {
-            clip,
-            at,
-            look: look.within_limits(),
-        });
+        let at = self.pending.get().map_or(at, |(key, _)| key.at);
+        self.pending.set(LookAt { clip, at }, look.within_limits());
         self.held = busy;
         if busy || other.is_some() {
             // The other clip's step goes first; this one follows when the
@@ -231,8 +236,16 @@ impl Inspector {
     /// the clip already has there.
     fn finish(&mut self, project: &Project) -> Option<Command> {
         self.held = false;
-        let pending = self.pending.take()?;
-        changes(project, &pending).then(|| pending.command(project.active_sequence))
+        let (key, look) = self.pending.finish(|key| key.stored(project))?;
+        Some(key.command(project.active_sequence, look))
+    }
+
+    /// The look being set on `clip`, if it is the one being changed.
+    fn look_being_set(&self, clip: ClipId) -> Option<Look> {
+        self.pending
+            .get()
+            .filter(|(key, _)| key.clip == clip)
+            .map(|(_, look)| *look)
     }
 
     /// Draws the inspector for the first of `selected` that has a picture,
@@ -251,15 +264,22 @@ impl Inspector {
         let target = shown_clip(project, selected);
         // A change left hanging on a clip that is no longer the one shown
         // (another was selected mid-drag) is finished first.
+        // Each is an undo step only if it changes something.
         let showing = target.map(|(_, _, clip)| clip.id);
-        if let Some(pending) = self.pending
-            && Some(pending.clip) != showing
+        if self
+            .pending
+            .get()
+            .is_some_and(|(key, _)| Some(key.clip) != showing)
         {
-            commands.push(pending.command(sequence));
-            self.pending = None;
             self.held = false;
+            if let Some((key, look)) = self.pending.finish(|key| key.stored(project)) {
+                commands.push(key.command(sequence, look));
+            }
         }
-        if let Some((clip, effects)) = self.pending_effects.take_if(|(clip, _)| Some(*clip) != showing) {
+        if let Some((clip, effects)) = self.pending_effects.finish_on_change(
+            |clip| Some(*clip) == showing,
+            |clip| clip_in(project, *clip).map(|c| c.effects.clone()),
+        ) {
             commands.push(Command::SetEffects {
                 sequence,
                 clip,
@@ -269,14 +289,14 @@ impl Inspector {
         let hearing: Vec<ClipId> = target
             .map(|(seq, _, clip)| sound_clips(seq, clip).iter().map(|c| c.id).collect())
             .unwrap_or_default();
-        if let Some(sounds) = &self.pending_sound
-            && !sounds.iter().all(|(id, _)| hearing.contains(id))
-        {
+        if let Some((clips, sounds)) = self.pending_sound.finish_on_change(
+            |clips| clips.iter().all(|id| hearing.contains(id)),
+            |clips| stored_sounds(project, clips),
+        ) {
             commands.push(Command::SetSound {
                 sequence,
-                sounds: sounds.clone(),
+                sounds: clips.into_iter().zip(sounds).collect(),
             });
-            self.pending_sound = None;
         }
         // Nothing selected: the page shows the timeline here instead.
         let Some((seq, track, clip)) = target else {
@@ -347,7 +367,10 @@ impl Inspector {
         ui.add_space(6.0);
 
         // Words typed into another title, left by selecting this clip.
-        if let Some((id, title)) = self.pending_title.take_if(|(id, _)| *id != clip.id) {
+        if let Some((id, title)) = self.pending_title.finish_on_change(
+            |id| *id == clip.id,
+            |id| clip_in(project, *id).and_then(|c| c.title.as_deref().cloned()),
+        ) {
             commands.push(Command::SetTitle {
                 sequence,
                 clip: id,
@@ -355,19 +378,18 @@ impl Inspector {
             });
         }
         if let Some(stored) = clip.title.as_deref().filter(|_| clip.is_title()) {
-            let shown = match &self.pending_title {
-                Some((id, title)) if *id == clip.id => title.clone(),
-                _ => stored.clone(),
-            };
+            let shown = self.pending_title.value_for(&clip.id).unwrap_or(stored).clone();
             let asked = title::section(ui, theme, sequence, clip.id, stored, &shown);
-            self.pending_title = asked.changing.map(|title| (clip.id, title));
+            match asked.changing {
+                Some(title) => self.pending_title.set(clip.id, title),
+                None => self.pending_title.clear(),
+            }
             commands.extend(asked.command);
         }
 
-        let before = match self.pending {
-            Some(pending) if pending.clip == clip.id => pending.look,
-            _ => clip.look_at(moment),
-        };
+        let before = self
+            .look_being_set(clip.id)
+            .unwrap_or_else(|| clip.look_at(moment));
         let mut values = Values::of(&before, frame);
         let mut touched = Touched::default();
         let mut asks = Asks::default();
@@ -406,10 +428,11 @@ impl Inspector {
         }
 
         if track.kind == TrackKind::Video && !adjustment {
-            let shown = match &self.pending_effects {
-                Some((id, effects)) if *id == clip.id => effects.clone(),
-                _ => clip.effects.clone(),
-            };
+            let shown = self
+                .pending_effects
+                .value_for(&clip.id)
+                .unwrap_or(&clip.effects)
+                .clone();
             let at = effects::At {
                 clip,
                 playhead,
@@ -426,14 +449,14 @@ impl Inspector {
                 self.steady = Some((clip.id, effect));
             }
             if !asked.commands.is_empty() {
-                self.pending_effects = None;
+                self.pending_effects.clear();
                 commands.extend(asked.commands);
             } else if let Some(effects) = asked.dragging {
-                self.pending_effects = Some((clip.id, effects));
+                self.pending_effects.set(clip.id, effects);
             }
-            if !asked.busy
-                && let Some((id, effects)) = self.pending_effects.take()
-                && effects != clip.effects
+            if let Some((id, effects)) = self
+                .pending_effects
+                .finish_if_released(asked.busy, |id| clip_in(project, *id).map(|c| c.effects.clone()))
             {
                 commands.push(Command::SetEffects {
                     sequence,
@@ -471,19 +494,15 @@ impl Inspector {
         // Shown at once; an undo step once the hand is off it, be that a
         // hand on the panel or one on the picture in the viewer.
         if touched.changed {
-            let at = self.pending.map_or(moment, |pending| pending.at);
-            self.pending = Some(Pending {
-                clip: clip.id,
-                at,
-                look: values.look(frame, &before),
-            });
+            let at = self.pending.get().map_or(moment, |(key, _)| key.at);
+            self.pending
+                .set(LookAt { clip: clip.id, at }, values.look(frame, &before));
         }
-        if !touched.busy
-            && !self.held
-            && let Some(pending) = self.pending.take()
-            && changes(project, &pending)
+        if let Some((key, look)) = self
+            .pending
+            .finish_if_released(touched.busy || self.held, |key| key.stored(project))
         {
-            commands.push(pending.command(sequence));
+            commands.push(key.command(sequence, look));
         }
         commands.extend(self.answer(&asks, &keys, sequence, clip.id, playhead, rate));
         commands
@@ -551,12 +570,12 @@ impl Inspector {
         let targets = sound_clips(seq, clip);
         let first = targets.first()?;
         let rate = seq.settings.frame_rate;
-        let pending = self.pending_sound.as_ref();
+        let pending = self.pending_sound.get();
         let from_timeline = self.volume_from_timeline;
         let now = |c: &project::Clip| {
             let sound = pending
-                .and_then(|sounds| sounds.iter().find(|(id, _)| *id == c.id))
-                .map_or(c.sound, |(_, sound)| *sound);
+                .and_then(|(clips, sounds)| sounds.get(clips.iter().position(|id| *id == c.id)?))
+                .map_or(c.sound, |sound| *sound);
             match from_timeline {
                 Some((id, gain_mdb)) if id == c.id => Sound { gain_mdb, ..sound },
                 _ => sound,
@@ -638,23 +657,19 @@ impl Inspector {
         }
         if touched.changed {
             let was = SoundValues::of(&before);
-            self.pending_sound = Some(
-                targets
-                    .iter()
-                    .map(|c| (c.id, values.sound(&was, now(c), rate, c.duration)))
-                    .collect(),
-            );
+            let sounds = targets
+                .iter()
+                .map(|c| values.sound(&was, now(c), rate, c.duration))
+                .collect();
+            self.pending_sound
+                .set(targets.iter().map(|c| c.id).collect(), sounds);
         }
-        if touched.busy {
-            return None;
-        }
-        let sounds = self.pending_sound.take()?;
-        let changes = sounds
-            .iter()
-            .any(|(id, sound)| targets.iter().any(|c| c.id == *id && c.sound != *sound));
-        changes.then(|| Command::SetSound {
+        let (clips, sounds) = self
+            .pending_sound
+            .finish_if_released(touched.busy, |clips| sounds_in(seq, clips))?;
+        Some(Command::SetSound {
             sequence: seq.id,
-            sounds,
+            sounds: clips.into_iter().zip(sounds).collect(),
         })
     }
 }
@@ -1066,16 +1081,33 @@ fn picture_size(project: &Project, clip: &project::Clip) -> Option<(u32, u32)> {
     }
 }
 
-/// Whether `pending` changes its clip's look at its moment.
-fn changes(project: &Project, pending: &Pending) -> bool {
-    let Some(seq) = project.active() else {
-        return false;
-    };
+/// The clip `id` on the open timeline, on any track.
+fn clip_in(project: &Project, id: ClipId) -> Option<&project::Clip> {
+    let seq = project.active()?;
     seq.video_tracks
         .iter()
+        .chain(&seq.audio_tracks)
         .flat_map(|track| &track.clips)
-        .find(|clip| clip.id == pending.clip)
-        .is_some_and(|clip| clip.look_at(clip.moment(pending.at, seq.settings.frame_rate)) != pending.look)
+        .find(|clip| clip.id == id)
+}
+
+/// The sound each of `clips` has on the open timeline; `None` when one is gone.
+fn stored_sounds(project: &Project, clips: &[ClipId]) -> Option<Vec<Sound>> {
+    sounds_in(project.active()?, clips)
+}
+
+/// The sound each of `clips` has on `seq`; `None` when one is gone.
+fn sounds_in(seq: &project::Sequence, clips: &[ClipId]) -> Option<Vec<Sound>> {
+    clips
+        .iter()
+        .map(|id| {
+            seq.audio_tracks
+                .iter()
+                .flat_map(|track| &track.clips)
+                .find(|clip| clip.id == *id)
+                .map(|clip| clip.sound)
+        })
+        .collect()
 }
 
 /// Whether the inspector has a clip to show for `selected`; when it hasn't,
@@ -1821,11 +1853,13 @@ pub(crate) mod tests {
             scale: 500_000,
             ..Look::PLAIN
         };
-        inspector.pending = Some(Pending {
-            clip: clip.id,
-            at: Time::ZERO,
+        inspector.pending.set(
+            LookAt {
+                clip: clip.id,
+                at: Time::ZERO,
+            },
             look,
-        });
+        );
         let shown = inspector.shown(&project).unwrap();
         assert_eq!(shown.active().unwrap().video_tracks[0].clips[0].look, look);
         assert_eq!(
@@ -2005,10 +2039,10 @@ pub(crate) mod tests {
             gain_mdb: -6_000,
             ..Sound::PLAIN
         };
-        let mut inspector = Inspector {
-            pending_sound: Some(sounds.iter().map(|id| (*id, quiet)).collect()),
-            ..Inspector::default()
-        };
+        let mut inspector = Inspector::default();
+        inspector
+            .pending_sound
+            .set(sounds.clone(), vec![quiet; sounds.len()]);
         assert_eq!(inspector.sounds_being_set().len(), 2);
         let shown = inspector.shown(&project).unwrap();
         assert!(
@@ -2038,10 +2072,8 @@ pub(crate) mod tests {
         );
         assert!(inspector.sounds_being_set().is_empty());
         // Left hanging when another clip is chosen: finished, not lost.
-        let mut inspector = Inspector {
-            pending_sound: Some(vec![(sounds[0], quiet)]),
-            ..Inspector::default()
-        };
+        let mut inspector = Inspector::default();
+        inspector.pending_sound.set(vec![sounds[0]], vec![quiet]);
         assert_eq!(frame(&mut inspector, &project, &[]).len(), 1);
     }
 
@@ -2273,11 +2305,13 @@ pub(crate) mod tests {
             ..Look::PLAIN
         };
         // Begun with the playhead at 4 s; the playhead moved on since.
-        inspector.pending = Some(Pending {
-            clip,
-            at: Time::seconds(4),
+        inspector.pending.set(
+            LookAt {
+                clip,
+                at: Time::seconds(4),
+            },
             look,
-        });
+        );
         let commands = frame(&mut inspector, &project, &[]);
         let after = commands[0].apply(&project).unwrap();
         let stored = &after.active().unwrap().video_tracks[0].clips[0];
@@ -2313,10 +2347,8 @@ pub(crate) mod tests {
             ..Look::PLAIN
         };
         let at = Time::seconds(1);
-        let mut inspector = Inspector {
-            pending: Some(Pending { clip, at, look }),
-            ..Inspector::default()
-        };
+        let mut inspector = Inspector::default();
+        inspector.pending.set(LookAt { clip, at }, look);
         // Nothing selected any more: the change is finished, not lost.
         let commands = frame(&mut inspector, &project, &[]);
         assert_eq!(
@@ -2328,8 +2360,37 @@ pub(crate) mod tests {
                 look
             }]
         );
-        assert!(inspector.pending.is_none());
+        assert!(inspector.pending.get().is_none());
         // With the clip selected and nothing touched, nothing is changed.
         assert!(frame(&mut inspector, &project, &[clip]).is_empty());
+    }
+
+    #[test]
+    fn choosing_another_clip_mid_drag_with_nothing_changed_adds_no_undo_step() {
+        let project = project_with_sound();
+        let seq = project.active().unwrap();
+        let picture = seq.video_tracks[0].clips[0].clone();
+        let sounds = sound_ids(&project);
+        let mut inspector = Inspector::default();
+        // A drag on the picture's look, effects and sound, each back where
+        // it began, while the hand is still on it.
+        inspector.pending.set(
+            LookAt {
+                clip: picture.id,
+                at: Time::ZERO,
+            },
+            picture.look_at(Time::ZERO),
+        );
+        inspector.held = true;
+        inspector.pending_effects.set(picture.id, picture.effects.clone());
+        inspector
+            .pending_sound
+            .set(sounds.clone(), vec![Sound::PLAIN; sounds.len()]);
+        // The mic's clip alone is chosen: each is finished, none a step.
+        let commands = frame(&mut inspector, &project, &[sounds[1]]);
+        assert!(commands.is_empty(), "{commands:?}");
+        assert!(inspector.pending.get().is_none());
+        assert!(inspector.pending_effects.get().is_none());
+        assert!(inspector.sounds_being_set().is_empty());
     }
 }
