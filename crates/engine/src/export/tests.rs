@@ -1468,15 +1468,35 @@ fn a_paused_export_waits_and_its_time_paused_does_not_count() {
         audio: AudioCodec::Pcm24,
         ..ExportSettings::mp4(dir.path().join("sound.wav"))
     };
+    let begun = Instant::now();
     let export = Export::start(project, seq, settings, None, || {});
     export.pause();
-    std::thread::sleep(Duration::from_millis(150));
-    let held = export.progress();
+    let paused_at = begun.elapsed();
+    // A frame under way when paused is finished first: wait until the
+    // count stands (for a busy test machine, up to 30 s).
+    let give_up = Instant::now() + Duration::from_secs(30);
+    let held = loop {
+        let before = export.progress();
+        std::thread::sleep(Duration::from_millis(200));
+        let after = export.progress();
+        if after.frames_done == before.frames_done {
+            break after;
+        }
+        assert!(Instant::now() < give_up, "the export did not hold");
+    };
     assert!(held.paused && export.is_paused());
     std::thread::sleep(Duration::from_millis(300));
+    let asked = Instant::now();
     let still = export.progress();
+    let asking = asked.elapsed();
     assert_eq!(still.frames_done, held.frames_done, "nothing done while paused");
-    assert!(still.elapsed < Duration::from_millis(250), "{:?}", still.elapsed);
+    // The time counted is at most the time before the pause (and the time
+    // the asking itself took), never the half second and more paused.
+    assert!(
+        still.elapsed <= paused_at + asking,
+        "{:?} counted, paused after {paused_at:?}",
+        still.elapsed
+    );
     export.resume();
     let Outcome::Done(done) = wait(&export) else {
         panic!("the export did not finish after resuming");

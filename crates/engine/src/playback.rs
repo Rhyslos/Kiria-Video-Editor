@@ -67,18 +67,21 @@ const GIVE_BACK_PATIENCE: Duration = Duration::from_secs(2);
 /// ([`wait_until_quiet`]).
 static AUDIO_THREADS: AtomicUsize = AtomicUsize::new(0);
 
-/// Counts an audio thread for as long as it lives, also if it panics.
-struct Running;
+/// Counts an audio thread for as long as it lives, also if it panics: in
+/// [`AUDIO_THREADS`] and in its own playback's [`Clock::threads`].
+struct Running(Arc<Clock>);
 
 impl Running {
-    fn new() -> Running {
+    fn new(clock: Arc<Clock>) -> Running {
         AUDIO_THREADS.fetch_add(1, Ordering::AcqRel);
-        Running
+        clock.threads.fetch_add(1, Ordering::AcqRel);
+        Running(clock)
     }
 }
 
 impl Drop for Running {
     fn drop(&mut self) {
+        self.0.threads.fetch_sub(1, Ordering::AcqRel);
         AUDIO_THREADS.fetch_sub(1, Ordering::AcqRel);
     }
 }
@@ -90,8 +93,14 @@ impl Drop for Running {
 /// decoder's code when the program ends can take the program down with it.
 /// Stop playback first; a playback still running keeps its thread.
 pub fn wait_until_quiet(timeout: Duration) -> bool {
+    wait_until_none(&AUDIO_THREADS, timeout)
+}
+
+/// Waits until `threads` counts none, at most `timeout`. Returns whether
+/// it does.
+fn wait_until_none(threads: &AtomicUsize, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
-    while AUDIO_THREADS.load(Ordering::Acquire) > 0 {
+    while threads.load(Ordering::Acquire) > 0 {
         if Instant::now() >= deadline {
             return false;
         }
@@ -129,6 +138,9 @@ struct Clock {
     meters: Mutex<Vec<(TrackId, Arc<TrackReadout>)>>,
     /// What the EQ's analyser shows, once the mixer is made.
     spectrum: OnceLock<Arc<Spectrum>>,
+    /// This playback's audio thread while it lives (one at most), so a
+    /// test can wait for its own thread while others' run too.
+    threads: AtomicUsize,
 }
 
 impl Clock {
@@ -143,6 +155,7 @@ impl Clock {
             readout: OnceLock::new(),
             meters: Mutex::new(Vec::new()),
             spectrum: OnceLock::new(),
+            threads: AtomicUsize::new(0),
         }
     }
 
@@ -264,7 +277,7 @@ impl Playback {
     ) -> Playback {
         let clock = Arc::new(Clock::new());
         let c = Arc::clone(&clock);
-        let running = Running::new();
+        let running = Running::new(Arc::clone(&clock));
         // The thread is not kept: stopping never waits for it (see `Drop`).
         let started = std::thread::Builder::new().name("audio".into()).spawn(move || {
             let _running = running;
