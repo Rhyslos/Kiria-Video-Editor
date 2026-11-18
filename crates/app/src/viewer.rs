@@ -793,6 +793,26 @@ impl Viewer {
     }
 }
 
+/// Graphics errors on the window's device outside the places that catch
+/// them for themselves (putting frames together and reading them back,
+/// `render::caught`) are written to the log instead of ending the thread
+/// that made them, which the graphics library does unless told otherwise.
+/// The same error again and again is written once.
+pub fn log_graphics_errors(device: &wgpu::Device) {
+    let last = std::sync::Mutex::new(String::new());
+    device.on_uncaptured_error(Arc::new(move |error: wgpu::Error| {
+        let text = error.to_string();
+        let mut last = match last.lock() {
+            Ok(last) => last,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if *last != text {
+            tracing::error!("graphics error: {text}");
+            *last = text;
+        }
+    }));
+}
+
 /// How long closing the app waits for the picture being decoded to finish.
 const CLOSES_WITHIN: std::time::Duration = std::time::Duration::from_secs(3);
 

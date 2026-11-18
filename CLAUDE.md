@@ -48,7 +48,7 @@ tests/               cross-crate tests
 test-media/          shared test recordings (only the manifest is in git)
 xtask/               chores: `cargo xtask <ffmpeg | check-media | brand | keygen | manifest | sign | verify | icons>`
 packaging/           installers: Windows (Inno Setup), Linux (AppImage), icons, FFmpeg pin
-.github/workflows/   CI on Windows (Linux is paused, see below); release.yml builds, tests, signs and publishes releases; spike-*.yml build spike programs to run by hand
+.github/workflows/   CI on Windows, clippy alone on Linux (Linux is paused, see below); release.yml builds, tests, signs and publishes releases; spike-*.yml build spike programs to run by hand
 RELEASING.md         how to make a release; CHANGELOG.md what each release changed
 ```
 
@@ -56,7 +56,7 @@ Binaries: `cargo run -p app` (the editor, binary `editor`) and `cargo run -p lau
 
 To see a window without a screen (Linux): `xvfb-run -a -s "-screen 0 1600x1000x24" target/debug/editor --screenshot out.png`, or `target/debug/launcher --demo 14 --screenshot out.png` for the project browser with sample projects. CI also runs `--smoke-test` for both.
 
-**Linux is paused in CI and in releases** (November 2026): only Windows is built, tested and published. The Linux steps are still in the workflows; each has a comment saying how to turn it back on. Until then nothing in CI runs `--responsiveness-test` or takes screenshots, so run both by hand with the commands above before merging interface work, and keep the code building on Linux.
+**Linux is paused in CI and in releases** (November 2026): only Windows is built, tested and published; on Linux CI only runs clippy on the whole workspace (the `linux-lint` job), so the code keeps building there. The Linux steps are still in the workflows; each has a comment saying how to turn it back on. Until then nothing in CI runs `--responsiveness-test` or takes screenshots, so run both by hand with the commands above before merging interface work, and keep the code building on Linux.
 
 ## Commands
 
@@ -119,6 +119,6 @@ Building needs libclang (for the FFmpeg bindings); on Windows set `LIBCLANG_PATH
 - Waveforms belong to recordings, like proxies: read once, every sound stream of a file in the same pass, and kept on disk in the cache folder's `waveforms/` by the recording's fingerprint and stream (`cache::waveform::Store`, a budget of its own, used longest ago removed first). Clearing proxies leaves them; Settings › Cache clears them (with the clip pictures and loudness readings) on their own. Nothing about them is in a project file. Clip pictures of long recordings are the nearest key frames unless Settings › Editing › Clip pictures says Exact; they are kept the same way, in the cache folder's `pictures/` (small JPEGs, a budget of their own, cleared with the waveforms), with each file's Library card picture beside them, read first and on its own. The Library's loudness readings of a file belong to the recording too: every stream measured in one pass and kept in the cache folder's `loudness/` by fingerprint, a few bytes each, and cleared with the waveforms.
 - FFmpeg is linked dynamically and its licence text ships with the app.
 - Every program calls `diag::start(brand::VERSION)` first and `finish()` on a clean exit (logging, crash reports, crash detection). Crash detection is per process: each editor run keeps its own marker (`sessions/<process id>.running` in the data folder) and holds a lock beside it while it runs, and only a marker whose lock is free counts as a crash (even one with the new run's own id), so several editors (one per project) can run at once. The graphics start markers (Vulkan start, decoding on the window's device) are kept the same way, per process, with `diag::marker`.
-- Releases are tagged `vX.Y.Z` (pushed, or typed into "Run workflow"); the release workflow builds, tests, signs and publishes. Pushes to `main` publish automatic betas (`brand::VERSION` comes from `BUILD_VERSION` then). Updates are trusted only with a valid signature from the `RELEASE_SIGNING_KEY` secret.
+- Releases are tagged `vX.Y.Z` (pushed, or typed into "Run workflow"); the release workflow builds, tests, signs and publishes. Pushes to `main` publish automatic betas (`brand::VERSION` comes from `BUILD_VERSION` then). Updates are trusted only with a valid signature from the `RELEASE_SIGNING_KEY` secret, kept in the `release` environment and used only by the signing job of runs on `main` and `v*` tags; pull request builds are never signed and skip the update drill. Every workflow's token only reads unless a job asks for more, and actions are pinned by commit with the version in a comment.
 - A release is only published after an installed copy of the previous one has updated to it by itself in the release workflow (the update drill, `RELEASING.md`). Anything that changes how updates are found, fetched, installed or started is covered by it; keep `launcher --update-step` working.
 - Licence: GPL-3.0-or-later (`LICENSE`). Dependencies must have GPL-compatible licences; `deny.toml` checks this in CI. Never copy code whose licence is incompatible.

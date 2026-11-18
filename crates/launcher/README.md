@@ -8,7 +8,7 @@ Phase 2 in progress. Done: the project browser (folder tree, project grid, searc
 
 ## Behaviour
 
-1. Logs to `<data folder>/logs/launcher.<date>.log` (no crash detection; that belongs to the editor).
+1. Logs to `<data folder>/logs/launcher.<date>.log` and writes a crash report to `crash-reports/` if it panics, through `diag::start_helper` (no crash detection; that belongs to the editor).
 1. Opens its window through the [graphics](../graphics/) crate, as the editor does: on Windows Vulkan first, Direct3D 12 when Vulkan reports an error, and its own start markers (`starting/launcher-vulkan/`, one per process) for a driver that crashes or freezes instead. See Graphics below.
 1. In an installed copy, installs an update downloaded on an earlier run (`updater::apply`), checking its signature and checksum again first. The launcher itself is replaced later, once the new version has started properly, so a broken update can never take the recovery with it. Only when the update's manifest needs a newer launcher is it swapped in at once (after its `--self-test`) and started instead, with the same arguments. The window then says "Updated to x.y.z"; a failure is shown in the error strip and the old version keeps working.
 2. With a project file as argument (`launcher trip.kiria`), starts the editor with it at once, lists it for next time and checks for updates. Being offline never delays this.
@@ -20,7 +20,7 @@ Phase 2 in progress. Done: the project browser (folder tree, project grid, searc
 4. Opening a project starts the editor with its path, notes the time in the index and closes the window. A download still running finishes before the process exits.
 5. In an installed copy the launcher then waits, without a window, up to 20 seconds for the editor to report that its first window is on screen (`updater::health`). Two failed starts in a row switch back to the previous version, mark the failed one so it is never offered again, and open the launcher to explain (with Report the problem and Show crash reports).
 5. Only one launcher updates at a time (`updater::UpdateLock`): installing a waiting update, downloading one and the check after the editor's start each take the lock first. Opening two projects at once starts two launchers; the one that finds the lock taken skips that step this time, notes it in the log, shows no error (the version panel says "Updating in another window") and opens normally.
-5. Finding projects on disk, renames, moves, deletes, file dialogs and update checks all run on worker threads (`work.rs`); the interface thread only reads the index.
+5. Finding projects on disk, renames, moves, deletes, file dialogs and update checks all run on worker threads (`work.rs`), and update choices are written to `updates.ron` by a `project::disk::Keeper` on a thread of its own (whole or not at all, flushed before the process exits); the interface thread only reads the index.
 
 ## Renaming, moving and deleting a project
 

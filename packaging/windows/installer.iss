@@ -55,4 +55,6 @@ Filename: "{app}\launcher.exe"; Description: "Start {#AppName}"; Flags: nowait p
 Type: filesandordirs; Name: "{app}\versions"
 Type: files; Name: "{app}\current"
 Type: files; Name: "{app}\current.new"
+; Left only if the updater was stopped while switching versions.
+Type: files; Name: "{app}\.current.*.saving"
 Type: files; Name: "{app}\launcher.old.exe"

@@ -49,7 +49,7 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let (dirs, _log) = match diag::start_helper("launcher") {
+    let (dirs, _log) = match diag::start_helper("launcher", VERSION) {
         Ok((dirs, log)) => (Some(dirs), Some(log)),
         Err(err) => {
             eprintln!("{}", err.report());

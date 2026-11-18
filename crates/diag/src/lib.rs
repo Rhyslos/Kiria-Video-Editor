@@ -12,6 +12,7 @@
 
 pub mod crash;
 mod error;
+mod log_writer;
 pub mod logging;
 pub mod marker;
 mod paths;
@@ -23,6 +24,9 @@ pub use paths::AppDirs;
 
 /// How many days of log files are kept.
 pub const LOG_DAYS_KEPT: usize = 7;
+
+/// How many crash reports are kept; older ones are removed at start.
+pub const CRASH_REPORTS_KEPT: usize = 20;
 
 /// Everything [`start`] set up. Keep it alive until the program ends.
 #[derive(Debug)]
@@ -42,7 +46,7 @@ pub fn start(app_version: &'static str) -> Result<Diagnostics> {
     let dirs = AppDirs::locate()?;
     dirs.create()?;
     let log = logging::init(&dirs.logs, LOG_DAYS_KEPT)?;
-    crash::install_panic_hook(dirs.crashes.clone(), dirs.logs.clone(), app_version);
+    start_crash_reports(&dirs, app_version);
     let started = session::Session::start(&dirs.data)?;
     if started.previous_crashed {
         tracing::warn!("the previous run did not close cleanly");
@@ -56,13 +60,23 @@ pub fn start(app_version: &'static str) -> Result<Diagnostics> {
     })
 }
 
-/// Folders and logging for a helper program such as the launcher. No crash
-/// detection: only the editor's own runs count as sessions.
-pub fn start_helper(name: &str) -> Result<(AppDirs, logging::LogGuard)> {
+/// Folders, logging (its own `<name>.YYYY-MM-DD.log` files) and crash
+/// reports for a helper program such as the launcher. No crash detection:
+/// only the editor's own runs count as sessions.
+pub fn start_helper(name: &str, app_version: &'static str) -> Result<(AppDirs, logging::LogGuard)> {
     let dirs = AppDirs::locate()?;
     dirs.create()?;
     let log = logging::init_named(&dirs.logs, LOG_DAYS_KEPT, name)?;
+    start_crash_reports(&dirs, app_version);
     Ok((dirs, log))
+}
+
+/// Removes old crash reports, then installs the crash handler.
+fn start_crash_reports(dirs: &AppDirs, app_version: &'static str) {
+    if let Err(err) = crash::prune_reports(&dirs.crashes, CRASH_REPORTS_KEPT) {
+        tracing::warn!("old crash reports could not be removed: {err}");
+    }
+    crash::install_panic_hook(dirs.crashes.clone(), app_version);
 }
 
 impl Diagnostics {

@@ -54,7 +54,7 @@
 //! the CPU. Stepping down is logged with the reason and shows no error; only
 //! the last way's failure does.
 
-use crate::compose::{Composed, Composer, Composing};
+use crate::compose::{Composed, Composer, Composing, NotComposed};
 use crate::frame::{self, FrameDescription};
 use crate::frames::FrameCache;
 use crate::timeline::video_at;
@@ -991,7 +991,9 @@ impl Worker {
                 }
                 out.composed = Some(composed);
             }
-            Err(_) => out.refused = true,
+            Err(NotComposed::Refused) => out.refused = true,
+            // Told for this frame; the worker carries on with the next.
+            Err(NotComposed::Graphics(err)) => out.error = Some(err),
         }
         out.took = started.elapsed();
         Some(out)

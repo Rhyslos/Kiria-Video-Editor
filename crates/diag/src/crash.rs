@@ -4,18 +4,50 @@
 //! folder whenever the app panics: what went wrong and where, the app
 //! version, the system, the graphics card once known, the last lines of the
 //! log, and a backtrace. The normal panic output still follows.
+//!
+//! A panic caught on purpose with [`catch_panic`] (a background task that
+//! failed while the app carries on) is logged as an error, not reported as
+//! a crash. [`prune_reports`] keeps only the newest reports.
 
 use std::backtrace::Backtrace;
+use std::cell::Cell;
 use std::fs;
 use std::io;
-use std::panic::PanicHookInfo;
+use std::panic::{PanicHookInfo, UnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+use std::time::SystemTime;
 
 /// How many log lines a report includes.
 const LOG_LINES_IN_REPORT: usize = 200;
 
 static GPU_INFO: OnceLock<String> = OnceLock::new();
+
+thread_local! {
+    /// How many [`catch_panic`] calls this thread is inside.
+    static CATCHING: Cell<u32> = const { Cell::new(0) };
+}
+
+/// Runs `work`, catching a panic in it like [`std::panic::catch_unwind`].
+/// Such a panic is handled by the caller, so the panic hook logs it as an
+/// error and writes no crash report.
+pub fn catch_panic<R>(work: impl FnOnce() -> R + UnwindSafe) -> std::thread::Result<R> {
+    /// Leaves the count as it was, however `work` ends.
+    struct Inside;
+    impl Drop for Inside {
+        fn drop(&mut self) {
+            let _ = CATCHING.try_with(|depth| depth.set(depth.get().saturating_sub(1)));
+        }
+    }
+    let _ = CATCHING.try_with(|depth| depth.set(depth.get() + 1));
+    let _inside = Inside;
+    std::panic::catch_unwind(work)
+}
+
+/// Whether the panic happening on this thread will be caught by [`catch_panic`].
+fn panic_is_caught() -> bool {
+    CATCHING.try_with(|depth| depth.get() > 0).unwrap_or(false)
+}
 
 /// Records the graphics card description for future crash reports.
 /// The first call wins; later calls are ignored.
@@ -33,19 +65,24 @@ pub struct CrashDetails<'a> {
     pub log_tail: &'a [String],
 }
 
-/// Writes a report on every panic, then runs the previous panic handler.
-pub fn install_panic_hook(crash_dir: PathBuf, logs_dir: PathBuf, app_version: &'static str) {
+/// Writes a report on every panic that is not caught with [`catch_panic`],
+/// then runs the previous panic handler. The report's log lines are this
+/// process's own log ([`crate::logging::recent_lines`]).
+pub fn install_panic_hook(crash_dir: PathBuf, app_version: &'static str) {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let backtrace = Backtrace::force_capture().to_string();
-        let log_tail = crate::logging::latest_log_file(&logs_dir)
-            .map(|file| crate::logging::tail(&file, LOG_LINES_IN_REPORT))
-            .unwrap_or_default();
         let message = panic_message(info);
         let location = info
             .location()
             .map(|l| format!("{}:{}", l.file(), l.line()))
             .unwrap_or_else(|| "unknown".into());
+        if panic_is_caught() {
+            tracing::error!(%location, "a panic was caught and handled: {message}");
+            previous(info);
+            return;
+        }
+        let backtrace = Backtrace::force_capture().to_string();
+        let log_tail = crate::logging::recent_lines(LOG_LINES_IN_REPORT);
         let report = build_report(&CrashDetails {
             message: &message,
             location: &location,
@@ -113,6 +150,31 @@ pub fn write_report(dir: &Path, report: &str) -> io::Result<PathBuf> {
     Ok(path)
 }
 
+/// Removes all but the newest `keep` crash reports in `dir` and returns
+/// how many were removed. Other files are left alone.
+pub fn prune_reports(dir: &Path, keep: usize) -> io::Result<usize> {
+    let mut reports: Vec<(SystemTime, PathBuf)> = fs::read_dir(dir)?
+        .flatten()
+        .filter(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            name.starts_with("crash-") && name.ends_with(".txt")
+        })
+        .filter_map(|entry| {
+            let modified = entry.metadata().ok()?.modified().ok()?;
+            Some((modified, entry.path()))
+        })
+        .collect();
+    // Newest first; names (which hold the time) settle equal times.
+    reports.sort_by(|a, b| b.cmp(a));
+    let mut removed = 0;
+    for (_, path) in reports.iter().skip(keep) {
+        fs::remove_file(path)?;
+        removed += 1;
+    }
+    Ok(removed)
+}
+
 fn panic_message(info: &PanicHookInfo<'_>) -> String {
     let payload = info.payload();
     if let Some(text) = payload.downcast_ref::<&str>() {
@@ -168,5 +230,39 @@ mod tests {
         assert_eq!(fs::read_to_string(first).unwrap(), "one");
         let name = second.file_name().unwrap().to_string_lossy();
         assert!(!name.contains(':'), "file names must be valid on Windows: {name}");
+    }
+
+    #[test]
+    fn pruning_keeps_the_newest_reports() {
+        let tmp = tempfile::tempdir().unwrap();
+        let start = SystemTime::now() - std::time::Duration::from_secs(1000);
+        for n in 0..25u64 {
+            let path = tmp.path().join(format!("crash-{n:02}.txt"));
+            fs::write(&path, "report").unwrap();
+            let file = fs::File::options().write(true).open(&path).unwrap();
+            file.set_modified(start + std::time::Duration::from_secs(n))
+                .unwrap();
+        }
+        fs::write(tmp.path().join("notes.txt"), "keep me").unwrap();
+
+        assert_eq!(prune_reports(tmp.path(), 20).unwrap(), 5);
+        let mut left: Vec<String> = fs::read_dir(tmp.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(left.len(), 21);
+        assert_eq!(left[0], "crash-05.txt", "the oldest five are gone");
+        assert!(left.contains(&"notes.txt".to_owned()));
+        assert_eq!(prune_reports(tmp.path(), 20).unwrap(), 0);
+    }
+
+    #[test]
+    fn catch_panic_marks_only_its_own_work() {
+        assert!(!panic_is_caught());
+        let inside = catch_panic(panic_is_caught).unwrap();
+        assert!(inside);
+        assert!(catch_panic(|| panic!("caught")).is_err());
+        assert!(!panic_is_caught(), "the mark ends with the work");
     }
 }

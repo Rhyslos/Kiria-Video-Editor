@@ -9,6 +9,8 @@ publish = false
 
 [dependencies]
 brand = { path = "../brand" }
+# Already in the build through tracing-appender; the log writer's queue.
+crossbeam-channel = "0.5"
 directories = "6"
 # Already in the build through tracing-appender; only its formatting is added.
 time = { version = "0.3", default-features = false, features = ["std", "formatting"] }

@@ -128,7 +128,7 @@ One Cargo workspace, one engine with no UI, and thin pages on top; the UI only s
 
 Windows and Linux runners: format check, clippy, tests, licence check, a 30-second playback benchmark on a reference clip. Tags `v*` additionally build installers, sign them and draft a GitHub release.
 
-Linux is paused in CI and in releases since November 2026 (Windows only for now); the workflows keep the Linux steps and say how to turn them back on.
+Linux is paused in CI and in releases since November 2026 (Windows only for now); the workflows keep the Linux steps and say how to turn them back on. Meanwhile one Linux job runs clippy on the whole workspace for every pull request and push to `main`, so the Linux-only code keeps compiling.
 
 ## Phase 0 · Foundations
 

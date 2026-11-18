@@ -279,3 +279,94 @@ fn a_grade_keeps_to_its_mask_and_its_colour_range() {
     let ranged = shown_with(&darker)[8 * 16 + 8];
     assert!((ranged - 1.0).abs() < 0.02, "white isn't skin: {ranged}");
 }
+
+#[test]
+fn a_graphics_error_is_told_for_the_frame_and_the_next_frame_is_drawn() {
+    let Some(mut composer) = composer() else {
+        eprintln!("no graphics device here: graphics errors aren't checked");
+        return;
+    };
+    // Wider than the card can draw: the library refuses the frame, which
+    // used to end the preview's thread.
+    let too_wide = (composer.composing.device.limits().max_texture_dimension_2d + 1, 8);
+    let refused = FrameDescription {
+        size: too_wide,
+        layers: vec![layer(Area::fitted((16, 8), too_wide), Vec::new())],
+        steps: vec![Step::Picture(0)],
+    };
+    match composer.compose(&refused, vec![(0, white((16, 8)), None)]) {
+        Err(NotComposed::Graphics(err)) => {
+            assert!(
+                err.why_text().is_some_and(|why| !why.is_empty()),
+                "{}",
+                err.report()
+            );
+        }
+        other => panic!("expected a graphics error, got {other:?}"),
+    }
+    let size = (16, 16);
+    let whole = FrameDescription {
+        size,
+        layers: vec![layer(Area::fitted(size, size), Vec::new())],
+        steps: vec![Step::Picture(0)],
+    };
+    let composed = composer.compose(&whole, vec![(0, white(size), None)]).unwrap();
+    assert!(light(&composer, &composed)[8 * 16 + 8] > 0.98, "white");
+    assert!(composer.sample(&composed, 8).is_some());
+}
+
+#[test]
+fn the_scopes_copy_is_kept_while_its_size_stays_the_same() {
+    let Some(mut composer) = composer() else {
+        eprintln!("no graphics device here: the scopes' copy isn't checked");
+        return;
+    };
+    let size = (64, 36);
+    let whole = FrameDescription {
+        size,
+        layers: vec![layer(Area::fitted(size, size), Vec::new())],
+        steps: vec![Step::Picture(0)],
+    };
+    let composed = composer.compose(&whole, vec![(0, white(size), None)]).unwrap();
+    let buffer = |composer: &Composer| composer.scope_copy.as_ref().map(|copy| copy.buffer.clone());
+    assert!(composer.sample(&composed, 32).is_some());
+    let first = buffer(&composer).expect("kept");
+    assert!(composer.sample(&composed, 32).is_some());
+    assert_eq!(buffer(&composer).as_ref(), Some(&first), "the same buffer");
+    let smaller = composer.sample(&composed, 16).expect("read back");
+    assert_eq!((smaller.width, smaller.height), (16, 9));
+    assert_ne!(
+        buffer(&composer).as_ref(),
+        Some(&first),
+        "a new one for a new size"
+    );
+}
+
+#[test]
+fn upload_slots_for_layers_no_longer_used_are_let_go() {
+    let Some(mut composer) = composer() else {
+        eprintln!("no graphics device here: upload slots aren't checked");
+        return;
+    };
+    let size = (16, 16);
+    let with = |layers: usize| FrameDescription {
+        size,
+        layers: (0..layers)
+            .map(|_| layer(Area::fitted(size, size), Vec::new()))
+            .collect(),
+        steps: (0..layers).map(Step::Picture).collect(),
+    };
+    let pictures = |layers: usize| (0..layers).map(|i| (i, white(size), None)).collect();
+    composer.compose(&with(5), pictures(5)).unwrap();
+    assert_eq!(composer.uploads.len(), 10);
+    // A moment with fewer layers keeps them for a while...
+    composer.compose(&with(1), pictures(1)).unwrap();
+    assert_eq!(composer.uploads.len(), 10);
+    // ...and lets them go when frames keep needing fewer.
+    for _ in 0..UPLOADS_IDLE_FOR {
+        composer.compose(&with(1), pictures(1)).unwrap();
+    }
+    assert_eq!(composer.uploads.len(), 2);
+    composer.compose(&with(2), pictures(2)).unwrap();
+    assert_eq!(composer.uploads.len(), 4);
+}

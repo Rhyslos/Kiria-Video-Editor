@@ -802,7 +802,16 @@ fn run(
                 cannot("This window isn't drawn on a graphics card, so pictures can't be put together for a video here.")
                     .fix("Export sound only (WAV, MP3 or OGG), or start the app on a machine with a working graphics driver.")
             })?;
-            let reader = Reader::new(&devices.composing.device, picture_size);
+            let device = &devices.composing.device;
+            let reader = render::caught(device, || Reader::new(device, picture_size)).map_err(|err| {
+                cannot(format!(
+                    "The graphics card can't read back pictures of {}×{} ({}).",
+                    picture_size.0,
+                    picture_size.1,
+                    render::caught::describe(&err)
+                ))
+                .fix("Export at a smaller size, or update the graphics driver.")
+            })?;
             Some((codec, devices, reader))
         }
         None => None,

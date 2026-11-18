@@ -8,6 +8,10 @@ on:
     branches: [main]
     paths: ["spikes/rendering/**", ".github/workflows/spike-rendering.yml"]
 
+# The token only reads: the build is handed over as an artifact.
+permissions:
+  contents: read
+
 jobs:
   windows:
     runs-on: windows-latest
@@ -15,7 +19,7 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Toolchain
         run: rustup toolchain install stable --profile minimal
       - name: Build
@@ -34,7 +38,7 @@ jobs:
           cp spikes/rendering/run.ps1 spikes/rendering/run.bat pkg/
           cp spikes/rendering/target/release/render-bench.exe pkg/bin/
           cp LICENSE pkg/
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: render-bench-windows
           path: pkg/
