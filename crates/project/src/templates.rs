@@ -9,7 +9,9 @@
 //! ([`crate::Command::InsertTemplate`]) that carries the whole template, so
 //! the autosave journal can replay it even after the file is gone.
 
-use crate::command::{insert_clip, missing, sequence_mut, sequence_ref, settle_automatic};
+use crate::clip_edits::settle_automatic;
+use crate::command::{insert_clip, missing, sequence_mut, sequence_ref};
+use crate::file::FileKind;
 use crate::ids::{ClipId, LinkId, MediaId, SequenceId, TrackId};
 use crate::model::{Clip, MediaKind, MediaRef, Project, Region, Sequence, Track, TrackKind};
 use crate::time::Time;
@@ -473,11 +475,6 @@ struct FileIn {
     template: Template,
 }
 
-#[derive(Deserialize)]
-struct Header {
-    format_version: u32,
-}
-
 /// One template file in the folder.
 #[derive(Debug)]
 pub struct Listed {
@@ -520,26 +517,23 @@ pub fn from_str(text: &str) -> diag::Result<Template> {
 
 /// Like [`from_str`] with an explicit target version and migration list (used by tests).
 pub fn from_str_with(text: &str, current: u32, migrations: &[Migration]) -> diag::Result<Template> {
-    let version = ron::from_str::<Header>(text).or_explain(damaged)?.format_version;
-    if version > current {
-        return Err(AppError::new("This template was saved by a newer version")
-            .why(format!(
-                "It uses template format {version}; this version reads up to format {current}."
-            ))
-            .fix("Update the app, then use the template again."));
-    }
-    let mut text = std::borrow::Cow::Borrowed(text);
-    for from in version..current {
-        let step = from
-            .checked_sub(1)
-            .and_then(|i| migrations.get(i as usize))
-            .ok_or_else(damaged)?;
-        text = std::borrow::Cow::Owned(step(&text)?);
-    }
-    let file: FileIn = ron::from_str(&text).or_explain(damaged)?;
+    let file: FileIn = crate::file::versioned_from_str(text, current, migrations, &TEMPLATE)?;
     file.template.validate()?;
     Ok(file.template)
 }
+
+const TEMPLATE: FileKind = FileKind {
+    newer: |version, current| {
+        AppError::new("This template was saved by a newer version")
+            .why(format!(
+                "It uses template format {version}; this version reads up to format {current}."
+            ))
+            .fix("Update the app, then use the template again.")
+    },
+    damaged,
+    // A template format with no way up is read as a damaged file.
+    no_step: |_| damaged(),
+};
 
 fn damaged() -> AppError {
     AppError::new("This file is not a template, or it is damaged")
