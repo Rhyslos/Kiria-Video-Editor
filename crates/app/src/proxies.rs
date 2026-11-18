@@ -572,7 +572,9 @@ impl ProxyBuilds {
     pub fn cleared(&mut self, paths: &[PathBuf]) {
         for file in self.files.values_mut() {
             let proxy = self.shelf.file_for(&file.fingerprint, file.stream);
-            if paths.contains(&proxy) && !matches!(file.state, State::Looking(_) | State::Deleting(_)) {
+            if proxy.is_some_and(|proxy| paths.contains(&proxy))
+                && !matches!(file.state, State::Looking(_) | State::Deleting(_))
+            {
                 file.state = State::Cleared;
             }
         }
@@ -877,7 +879,7 @@ mod tests {
             path: PathBuf::from(format!("{size}.mp4")),
             fingerprint: Fingerprint {
                 size,
-                sample_hash: format!("{size:x}"),
+                sample_hash: format!("{size:032x}"),
             },
             stream: 0,
             length: 10.0,
@@ -886,13 +888,16 @@ mod tests {
         let (ours, other) = (MediaId(1), MediaId(2));
         builds.files.insert(ours, file(1));
         builds.files.insert(other, file(2));
-        let cleared = builds.shelf.file_for(
-            &Fingerprint {
-                size: 1,
-                sample_hash: "1".into(),
-            },
-            0,
-        );
+        let cleared = builds
+            .shelf
+            .file_for(
+                &Fingerprint {
+                    size: 1,
+                    sample_hash: format!("{:032x}", 1),
+                },
+                0,
+            )
+            .unwrap();
         builds.cleared(&[cleared]);
         assert_eq!(builds.status(ours), Status::Cleared);
         assert_eq!(builds.status(other), Status::Ready, "only what was cleared");

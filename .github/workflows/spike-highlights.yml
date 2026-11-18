@@ -21,7 +21,8 @@ jobs:
       - name: FFmpeg (the pinned build)
         run: |
           source packaging/ffmpeg.env
-          curl -sSL -o ffmpeg.zip "$FFMPEG_WINDOWS_URL"
+          curl -fsSL -o ffmpeg.zip "$FFMPEG_WINDOWS_URL"
+          echo "$FFMPEG_WINDOWS_SHA256  ffmpeg.zip" | sha256sum -c - || { echo "Not the pinned FFmpeg build (packaging/README.md says how to bump the pin)."; exit 1; }
           7z x -y ffmpeg.zip > /dev/null
           echo "FFMPEG_DIR=$(cygpath -w "$PWD/$(ls -d ffmpeg-*-win64-gpl-shared-*/ | head -1)")" >> "$GITHUB_ENV"
       - name: Build

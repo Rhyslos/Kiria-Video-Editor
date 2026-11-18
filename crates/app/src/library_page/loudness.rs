@@ -4,8 +4,9 @@
 //! integrated loudness gated as the loudness standard says, true peak from
 //! four-times oversampling). Every sound stream of a file is measured in
 //! one pass over it, once someone looks at it, and the readings are kept
-//! in the cache folder's `loudness/` by the file's fingerprint, so a file
-//! is measured once, not once a session. A stream of one channel (a microphone) is
+//! in the cache folder's `loudness/` by the file's fingerprint
+//! (`cache::loudness::Store`), so a file is measured once, not once a
+//! session. A stream of one channel (a microphone) is
 //! measured as one channel, as the loudness standard says: its peak is its
 //! own samples', not those of the two channels it is spread over to play.
 //!
@@ -19,20 +20,13 @@ use project::{MediaId, MediaRef};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+pub use cache::loudness::Reading;
+
 /// The rate sound is read at to be measured.
 const RATE: u32 = 48_000;
 
 /// The highest true peak a file may reach after its level is changed.
 pub const PEAK_CEILING: f32 = -1.0;
-
-/// What was measured of a sound stream.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Reading {
-    /// Gated loudness of the whole stream, LUFS (minus infinity for silence).
-    pub integrated: f32,
-    /// Its highest true peak, dBTP.
-    pub true_peak: f32,
-}
 
 /// What is known of one file's streams.
 enum File {
@@ -46,7 +40,7 @@ pub struct Measurements {
     files: HashMap<MediaId, File>,
     /// Where readings are kept between sessions, by the file's fingerprint
     /// (the cache folder's `loudness/`); none in tests.
-    kept: Option<PathBuf>,
+    kept: Option<cache::loudness::Store>,
 }
 
 impl Measurements {
@@ -54,7 +48,7 @@ impl Measurements {
     pub fn keeping_in(folder: PathBuf) -> Measurements {
         Measurements {
             files: HashMap::new(),
-            kept: Some(folder),
+            kept: Some(cache::loudness::Store::new(folder)),
         }
     }
 
@@ -79,17 +73,19 @@ impl Measurements {
                 Priority::Interactive,
                 "measure loudness",
                 move |job| {
-                    let kept = kept.map(|folder| folder.join(kept_name(&fingerprint)));
-                    if let Some(readings) = kept.as_deref().and_then(|file| load(file, &streams)) {
+                    let numbers: Vec<u32> = streams.iter().map(|s| s.0).collect();
+                    if let Some(readings) = kept.as_ref().and_then(|store| store.load(&fingerprint, &numbers))
+                    {
                         ctx.request_repaint();
                         return Ok(readings);
                     }
-                    let result = measure_streams(&path, &streams, || job.is_cancelled());
-                    if let (Ok(readings), Some(file)) = (&result, &kept) {
-                        save(file, &streams, readings);
+                    let result = measure_streams(&path, &streams, || job.is_cancelled())
+                        .map(|r| numbers.into_iter().zip(r).collect::<Vec<_>>());
+                    if let (Ok(readings), Some(store)) = (&result, &kept) {
+                        store.save(&fingerprint, readings);
                     }
                     ctx.request_repaint();
-                    result.map(|r| streams.iter().map(|s| s.0).zip(r).collect())
+                    result
                 },
             ))
         });
@@ -128,13 +124,13 @@ impl Measurements {
     pub fn clear_kept(&mut self, jobs: &JobSystem) {
         self.stop();
         self.files.clear();
-        if let Some(folder) = self.kept.clone() {
+        if let Some(store) = self.kept.clone() {
             drop(jobs.submit_write(
                 PoolKind::Analysis,
                 Priority::Interactive,
                 "clear loudness readings",
                 move |_| {
-                    let removed = clear_folder(&folder);
+                    let removed = store.clear();
                     tracing::info!("{removed} kept loudness readings cleared");
                     Ok(())
                 },
@@ -149,70 +145,6 @@ impl Measurements {
                 handle.cancel();
             }
         }
-    }
-}
-
-/// Removes the readings kept in `folder`; how many went. Only the files
-/// written there are removed, never the folder's other contents.
-fn clear_folder(folder: &Path) -> usize {
-    let Ok(entries) = std::fs::read_dir(folder) else {
-        return 0;
-    };
-    entries
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().is_some_and(|e| e == "txt") && path.is_file())
-        .filter(|path| std::fs::remove_file(path).is_ok())
-        .count()
-}
-
-/// The name a file's readings are kept under: its fingerprint, as its
-/// proxy's and waveforms' are.
-fn kept_name(fingerprint: &project::Fingerprint) -> String {
-    format!("{}-{}.txt", fingerprint.size, fingerprint.sample_hash)
-}
-
-/// The first line of a kept file: what it is and its format's version.
-const KEPT_HEADER: &str = "loudness 1";
-
-/// The readings kept in `file` for `streams`, when it holds every one.
-fn load(file: &Path, streams: &[(u32, u16)]) -> Option<Vec<(u32, Reading)>> {
-    let text = std::fs::read_to_string(file).ok()?;
-    let mut lines = text.lines();
-    if lines.next()? != KEPT_HEADER {
-        return None;
-    }
-    let mut kept = HashMap::new();
-    for line in lines {
-        let mut parts = line.split_whitespace();
-        let stream: u32 = parts.next()?.parse().ok()?;
-        let integrated: f32 = parts.next()?.parse().ok()?;
-        let true_peak: f32 = parts.next()?.parse().ok()?;
-        kept.insert(
-            stream,
-            Reading {
-                integrated,
-                true_peak,
-            },
-        );
-    }
-    streams.iter().map(|(s, _)| Some((*s, *kept.get(s)?))).collect()
-}
-
-/// Keeps the readings of `streams` in `file`, whole or not at all; a
-/// failure only means measuring again next session.
-fn save(file: &Path, streams: &[(u32, u16)], readings: &[Reading]) {
-    let mut text = format!("{KEPT_HEADER}\n");
-    for ((stream, _), r) in streams.iter().zip(readings) {
-        text.push_str(&format!("{stream} {} {}\n", r.integrated, r.true_peak));
-    }
-    let written = file
-        .parent()
-        .map_or(Ok(()), std::fs::create_dir_all)
-        .map_err(|e| e.to_string())
-        .and_then(|()| project::disk::write_atomic(file, text.as_bytes()).map_err(|e| e.to_string()));
-    if let Err(why) = written {
-        tracing::info!("a file's loudness was not kept: {why}");
     }
 }
 
@@ -383,7 +315,13 @@ mod tests {
             .collect();
         let first = every_stream(&mut Measurements::keeping_in(folder.clone()), &jobs, &media);
         assert_eq!(first, alone, "read together, each as it reads alone");
-        assert!(folder.join(kept_name(&media.fingerprint)).is_file(), "kept");
+        let streams: Vec<u32> = media.info.audio.iter().map(|a| a.index).collect();
+        assert!(
+            cache::loudness::Store::new(folder.clone())
+                .load(&media.fingerprint, &streams)
+                .is_some(),
+            "kept"
+        );
         // The next session reads them back: even a file that is gone.
         let mut gone = media.clone();
         gone.path = dir.path().join("moved away.mkv");
@@ -403,6 +341,24 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         };
         assert!(failed.is_err(), "not read back for another file");
+    }
+
+    #[test]
+    fn a_crafted_fingerprint_is_measured_but_nothing_is_kept() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../media/tests/fixtures/voice.mp3");
+        let mut media = media::describe(&fixture).unwrap();
+        media.fingerprint.sample_hash = "../../escaped".into();
+        let jobs = JobSystem::new(jobs::Budgets::default().resolve(&jobs::Machine::detect()));
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("cache/loudness");
+        let readings = every_stream(&mut Measurements::keeping_in(folder.clone()), &jobs, &media);
+        assert!(!readings.is_empty(), "measured all the same");
+        assert!(!folder.exists(), "nothing kept");
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            0,
+            "nothing written anywhere"
+        );
     }
 
     #[test]

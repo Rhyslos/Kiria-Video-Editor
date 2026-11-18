@@ -158,16 +158,15 @@ impl Store {
         Store { folder }
     }
 
-    fn file_for(&self, fingerprint: &Fingerprint, stream: u32) -> PathBuf {
-        self.folder.join(format!(
-            "{}-{}-{stream}.peaks",
-            fingerprint.size, fingerprint.sample_hash
-        ))
+    /// Where this stream's peaks are kept; `None` for a fingerprint the
+    /// app does not make (nothing is kept for it, [`crate::naming`]).
+    fn file_for(&self, fingerprint: &Fingerprint, stream: u32) -> Option<PathBuf> {
+        crate::naming::stem(fingerprint).map(|stem| self.folder.join(format!("{stem}-{stream}.peaks")))
     }
 
     /// The peaks kept for this stream, if any (and readable).
     pub fn load(&self, fingerprint: &Fingerprint, stream: u32) -> Option<Peaks> {
-        let path = self.file_for(fingerprint, stream);
+        let path = self.file_for(fingerprint, stream)?;
         let bytes = std::fs::read(&path).ok()?;
         let peaks = decode(&bytes);
         if peaks.is_some() {
@@ -184,8 +183,11 @@ impl Store {
 
     /// Keeps `peaks` for this stream. Failing only costs reading it again.
     pub fn save(&self, fingerprint: &Fingerprint, stream: u32, peaks: &Peaks) {
+        let Some(file) = self.file_for(fingerprint, stream) else {
+            return;
+        };
         let written = std::fs::create_dir_all(&self.folder)
-            .and_then(|()| project::disk::write_atomic(&self.file_for(fingerprint, stream), &encode(peaks)));
+            .and_then(|()| project::disk::write_atomic(&file, &encode(peaks)));
         if let Err(err) = written {
             tracing::info!("a waveform could not be kept on disk: {err}");
         }
@@ -319,10 +321,7 @@ mod tests {
     fn peaks_are_kept_on_disk_by_fingerprint_and_trimmed_oldest_first() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path().join("waveforms"));
-        let print = |n: u64| Fingerprint {
-            size: n,
-            sample_hash: format!("{:x}", n * 7),
-        };
+        let print = crate::naming::print;
         let peaks = Peaks {
             per_second: PER_SECOND,
             values: vec![0.0, 0.25, 1.0, 0.5].into(),
@@ -338,21 +337,41 @@ mod tests {
             "{back:?}"
         );
         assert_eq!(store.load(&print(1), 1), None, "another stream");
-        std::fs::write(store.file_for(&print(2), 0), b"not peaks").unwrap();
+        std::fs::write(store.file_for(&print(2), 0).unwrap(), b"not peaks").unwrap();
         assert_eq!(store.load(&print(2), 0), None, "a damaged file is read again");
         // Older first: the one saved first goes when the budget is tight.
         let old = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
         std::fs::File::options()
             .append(true)
-            .open(store.file_for(&print(2), 0))
+            .open(store.file_for(&print(2), 0).unwrap())
             .unwrap()
             .set_modified(old)
             .unwrap();
         store.save(&print(3), 0, &peaks);
         assert_eq!(store.trim(50), 1, "two of 24 bytes fit");
-        assert!(store.load(&print(3), 0).is_some() && !store.file_for(&print(2), 0).exists());
+        assert!(store.load(&print(3), 0).is_some() && !store.file_for(&print(2), 0).unwrap().exists());
         assert_eq!(store.clear(), 2, "clearing removes them all");
         assert_eq!(store.load(&print(3), 0), None);
+    }
+
+    #[test]
+    fn a_fingerprint_the_app_does_not_make_is_never_read_or_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("cache/waveforms");
+        let store = Store::new(folder.clone());
+        let peaks = Peaks {
+            per_second: PER_SECOND,
+            values: vec![0.5].into(),
+        };
+        for fingerprint in crate::naming::hostile() {
+            store.save(&fingerprint, 0, &peaks);
+            assert_eq!(store.load(&fingerprint, 0), None, "{fingerprint:?}");
+        }
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            0,
+            "nothing written"
+        );
     }
 
     #[test]

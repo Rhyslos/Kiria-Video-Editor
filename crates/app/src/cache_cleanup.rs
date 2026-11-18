@@ -363,7 +363,9 @@ pub fn proxies_of(shelf: &Shelf, project: &project::Project) -> Vec<PathBuf> {
     project
         .media
         .values()
-        .filter_map(|m| crate::proxies::video_stream(m).map(|stream| shelf.file_for(&m.fingerprint, stream)))
+        .filter_map(|m| {
+            crate::proxies::video_stream(m).and_then(|stream| shelf.file_for(&m.fingerprint, stream))
+        })
         .collect()
 }
 
@@ -545,7 +547,7 @@ mod tests {
         let mut media = media::describe(&fixture).unwrap();
         media.fingerprint = project::Fingerprint {
             size,
-            sample_hash: format!("{size:x}"),
+            sample_hash: format!("{size:032x}"),
         };
         p = project::Command::Import { sequence: seq, media }
             .apply(&p)
@@ -571,7 +573,7 @@ mod tests {
         let mut second = media::describe(&fixture).unwrap();
         second.fingerprint = project::Fingerprint {
             size: 2,
-            sample_hash: "2".into(),
+            sample_hash: format!("{:032x}", 2),
         };
         both = project::Command::Import {
             sequence: both.active_sequence,
@@ -609,7 +611,9 @@ mod tests {
         );
         assert_eq!(m.own.files, 1, "the recording the other project uses is shared");
         assert!(
-            m.own_paths.iter().all(|p| p.to_string_lossy().contains("1-1-")),
+            m.own_paths
+                .iter()
+                .all(|p| p.to_string_lossy().contains(&format!("1-{:032x}-", 1))),
             "{:?}",
             m.own_paths
         );

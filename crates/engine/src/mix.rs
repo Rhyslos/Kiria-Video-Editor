@@ -226,7 +226,7 @@ impl Mixer {
             // (lower, like tape).
             let speed = clip.speed.as_f64();
             let source = clip.source_in.as_secs_f64() + (a - cs) * speed;
-            let read_rate = ((rate / speed).round() as u32).max(1);
+            let read_rate = read_rate(rate, speed);
             let key = (media.id, clip.stream, read_rate);
             let wanted = (source.max(0.0) * f64::from(read_rate)).round() as i64;
             let follows = Follows {
@@ -287,7 +287,7 @@ impl Mixer {
         }
         let rate = f64::from(self.rate);
         let speed = clip.speed.as_f64();
-        let read_rate = ((rate / speed.max(0.0001)).round() as u32).clamp(1, 1_000_000);
+        let read_rate = read_rate(rate, speed);
         let source = clip.source_at_f64(a);
         let wanted = (source.max(0.0) * f64::from(read_rate)).round() as i64;
         let follows = Follows {
@@ -541,6 +541,16 @@ impl Mixer {
     }
 }
 
+/// The rate a clip's sound is read at so that it plays at `speed` on a
+/// mix at `rate` (twice the rate at half speed, tape-style). A speed of
+/// zero or below, or one that is not a number, which no checked project
+/// holds, still gives a rate a decoder can be opened at: from 1 Hz to
+/// 1 MHz.
+fn read_rate(rate: f64, speed: f64) -> u32 {
+    let speed = if speed.is_nan() { 1.0 } else { speed.max(0.0001) };
+    ((rate / speed).round() as u32).clamp(1, 1_000_000)
+}
+
 /// A decibel value in thousandths as a factor on samples. The bottom of the
 /// range is silence.
 pub fn volume(gain_mdb: i32) -> f32 {
@@ -714,6 +724,18 @@ mod tests {
         let seq = p.active_sequence;
         let media = media::describe(&fixture).unwrap();
         Command::Import { sequence: seq, media }.apply(&p).unwrap()
+    }
+
+    #[test]
+    fn the_read_rate_follows_the_speed_and_stays_usable() {
+        assert_eq!(read_rate(48_000.0, 1.0), 48_000);
+        assert_eq!(read_rate(48_000.0, 0.5), 96_000);
+        assert_eq!(read_rate(48_000.0, 2.0), 24_000);
+        // Speeds no checked project holds still open a decoder at a sane rate.
+        assert_eq!(read_rate(48_000.0, 0.0), 1_000_000);
+        assert_eq!(read_rate(48_000.0, -1.0), 1_000_000);
+        assert_eq!(read_rate(48_000.0, f64::NAN), 48_000);
+        assert_eq!(read_rate(48_000.0, f64::INFINITY), 1);
     }
 
     fn loudness(samples: &[f32]) -> f32 {
