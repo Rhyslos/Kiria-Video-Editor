@@ -234,6 +234,10 @@ if wanted audio-cleanup; then
 fi
 BACKGROUND=Always editor_shot audio-meters "$DEMO" --page audio --audio-tool meters --audio-track 2 --playhead 4 --play
 BACKGROUND=Always editor_shot audio-mixer "$DEMO" --page audio --audio-tool ducking --audio-track 4 --audio-view mixer --playhead 4 --play
+for view in spectrum tracks; do
+  BACKGROUND=Always editor_shot "audio-band-$view" "$DEMO" --page audio --audio-tool compressor --audio-track 2 \
+    --audio-band "$view" --playhead 4 --play
+done
 editor_shot audio-lines "$DEMO" --page audio --audio-tool loudness --audio-track 4 --playhead 27.5 --action VolumeLines
 if wanted audio-clarity; then
   clarity=$(copy_of clarity)

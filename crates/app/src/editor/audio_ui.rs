@@ -233,7 +233,11 @@ impl Editor {
             target: self.settings.loudness_target.lufs(),
             show: self.audio_page.show,
         };
-        let audio_page::AudioPage { band, clarity: checks, .. } = &mut self.audio_page;
+        let audio_page::AudioPage {
+            band,
+            clarity: checks,
+            ..
+        } = &mut self.audio_page;
         let clarity_asks = audio_page::band_draw::band(
             ui,
             &self.theme,

@@ -441,7 +441,9 @@ fn track_meters_follow_the_tracks_and_the_analyser_hears_the_one_chosen() {
         .iter()
         .any(|(_, m)| m.take().momentary.is_finite());
     assert!(heard);
-    fake.send.send(Message::Analyse(Some(Listen::Track(ids[0])))).unwrap();
+    fake.send
+        .send(Message::Analyse(Some(Listen::Track(ids[0]))))
+        .unwrap();
     fake.play(RATE as usize / 2, 480);
     assert!(
         spectrum.levels().iter().any(|l| *l > -100.0),

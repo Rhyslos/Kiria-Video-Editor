@@ -65,7 +65,10 @@ pub fn band(
     }
     let rest = Rect::from_min_max(pos2(rail.right() + 2.0, r.top()), r.max);
     ui.painter().line_segment(
-        [pos2(rest.left(), r.top() + 8.0), pos2(rest.left(), r.bottom() - 8.0)],
+        [
+            pos2(rest.left(), r.top() + 8.0),
+            pos2(rest.left(), r.bottom() - 8.0),
+        ],
         Stroke::new(1.0, theme.line),
     );
     if *view == View::Clarity {
@@ -142,12 +145,24 @@ fn spectrum(ui: &mut Ui, theme: &Theme, r: Rect, band: &mut Band, cx: &Context<'
     let small = FontId::proportional(10.0);
     for (hz, text) in [(100.0, "100"), (1_000.0, "1k"), (10_000.0, "10k")] {
         let x = x_of(hz);
-        p.line_segment([pos2(x, plot.top()), pos2(x, plot.bottom())], Stroke::new(1.0, theme.line));
-        p.text(pos2(x, curve.bottom() - 1.0), Align2::CENTER_BOTTOM, text, small.clone(), theme.muted);
+        p.line_segment(
+            [pos2(x, plot.top()), pos2(x, plot.bottom())],
+            Stroke::new(1.0, theme.line),
+        );
+        p.text(
+            pos2(x, curve.bottom() - 1.0),
+            Align2::CENTER_BOTTOM,
+            text,
+            small.clone(),
+            theme.muted,
+        );
     }
     for db in [-60.0, -30.0] {
         let y = y_of(db);
-        p.line_segment([pos2(plot.left(), y), pos2(plot.right(), y)], Stroke::new(1.0, theme.line));
+        p.line_segment(
+            [pos2(plot.left(), y), pos2(plot.right(), y)],
+            Stroke::new(1.0, theme.line),
+        );
     }
     match band.levels {
         Some(levels) => {
@@ -172,7 +187,10 @@ fn spectrum(ui: &mut Ui, theme: &Theme, r: Rect, band: &mut Band, cx: &Context<'
             p.add(Shape::line(line, Stroke::new(1.5, theme.accent)));
             if let Some(held) = band.held {
                 let held: Vec<Pos2> = (0..COUNT).map(|i| pos2(x_band(i), y_of(held[i]))).collect();
-                p.add(Shape::line(held, Stroke::new(1.0, theme.muted.gamma_multiply(0.7))));
+                p.add(Shape::line(
+                    held,
+                    Stroke::new(1.0, theme.muted.gamma_multiply(0.7)),
+                ));
             }
         }
         None => note(ui, theme, curve, "Play to see the sound by frequency"),
@@ -187,7 +205,7 @@ fn spectrogram(ui: &mut Ui, theme: &Theme, r: Rect, band: &mut Band) {
         note(ui, theme, r, "And the last few seconds here");
         return;
     }
-    let id = ui.id().with("spectrogram");
+    let id = egui::Id::new("audio band spectrogram");
     let mut texture: Option<egui::TextureHandle> = ui.data(|d| d.get_temp(id));
     if band.columns_changed || texture.is_none() {
         let mut image = egui::ColorImage::filled([COLUMNS, COUNT], heat(0.0));
@@ -238,7 +256,10 @@ fn loudness(ui: &mut Ui, theme: &Theme, r: Rect, band: &Band, cx: &Context<'_>) 
     let small = FontId::proportional(10.0);
     for lufs in [-40.0, -30.0, -20.0, -10.0] {
         let y = y_of(lufs);
-        p.line_segment([pos2(plot.left(), y), pos2(plot.right(), y)], Stroke::new(1.0, theme.line));
+        p.line_segment(
+            [pos2(plot.left(), y), pos2(plot.right(), y)],
+            Stroke::new(1.0, theme.line),
+        );
         p.text(
             pos2(graph.left() + 4.0, y),
             Align2::LEFT_CENTER,
@@ -272,7 +293,10 @@ fn loudness(ui: &mut Ui, theme: &Theme, r: Rect, band: &Band, cx: &Context<'_>) 
         runs.into_iter().filter(|r| r.len() > 1).collect()
     };
     for run in line(|r| r.momentary) {
-        p.add(Shape::line(run, Stroke::new(1.0, theme.muted.gamma_multiply(0.7))));
+        p.add(Shape::line(
+            run,
+            Stroke::new(1.0, theme.muted.gamma_multiply(0.7)),
+        ));
     }
     for run in line(|r| r.short_term) {
         p.add(Shape::line(run, Stroke::new(2.0, theme.accent)));
@@ -285,7 +309,11 @@ fn loudness(ui: &mut Ui, theme: &Theme, r: Rect, band: &Band, cx: &Context<'_>) 
         );
     }
     // Beside it: short-term now, large, and the aim.
-    let mut col = ui.new_child(UiBuilder::new().max_rect(numbers).layout(egui::Layout::top_down(egui::Align::Min)));
+    let mut col = ui.new_child(
+        UiBuilder::new()
+            .max_rect(numbers)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
     col.spacing_mut().item_spacing.y = 2.0;
     let now = band.loudness.back();
     let text = |v: Option<f32>| match v.filter(|v| v.is_finite()) {
@@ -312,9 +340,11 @@ fn loudness(ui: &mut Ui, theme: &Theme, r: Rect, band: &Band, cx: &Context<'_>) 
     let overs = band.loudness.iter().filter(|r| r.true_peak > CEILING).count();
     if overs > 0 {
         col.label(
-            egui::RichText::new(format!("Peaks over {CEILING:.0} dBTP: marked in red").replace('-', "\u{2212}"))
-                .color(OVER)
-                .size(11.0),
+            egui::RichText::new(
+                format!("Peaks over {CEILING:.0} dBTP: marked in red").replace('-', "\u{2212}"),
+            )
+            .color(OVER)
+            .size(11.0),
         );
     }
 }
@@ -352,17 +382,21 @@ fn tracks(ui: &mut Ui, theme: &Theme, r: Rect, band: &Band, cx: &Context<'_>) {
         if i + 1 == fits && more > 0 {
             name = format!("{name} (and {more} more)");
         }
-        ui.painter().with_clip_rect(r.with_max_x(lanes.left() - 4.0)).text(
-            pos2(r.left(), lane.center().y),
-            Align2::LEFT_CENTER,
-            name,
-            small.clone(),
-            theme.text_secondary,
-        );
+        ui.painter()
+            .with_clip_rect(r.with_max_x(lanes.left() - 4.0))
+            .text(
+                pos2(r.left(), lane.center().y),
+                Align2::LEFT_CENTER,
+                name,
+                small.clone(),
+                theme.text_secondary,
+            );
         if i > 0 {
             p.line_segment([lane.left_top(), lane.right_top()], Stroke::new(1.0, theme.panel));
         }
-        let Some((_, readings)) = band.tracks.get(&track.id) else { continue };
+        let Some((_, readings)) = band.tracks.get(&track.id) else {
+            continue;
+        };
         for reading in readings {
             if !reading.momentary.is_finite() {
                 continue;
@@ -403,14 +437,31 @@ fn stereo(ui: &mut Ui, theme: &Theme, r: Rect, band: &mut Band, cx: &Context<'_>
         p.line_segment([a, b], Stroke::new(1.0, theme.line));
     }
     let small = FontId::proportional(9.5);
-    p.text(pos2(c.x - half * 0.7, square.top() + 6.0), Align2::CENTER_TOP, "L", small.clone(), theme.muted);
-    p.text(pos2(c.x + half * 0.7, square.top() + 6.0), Align2::CENTER_TOP, "R", small.clone(), theme.muted);
+    p.text(
+        pos2(c.x - half * 0.7, square.top() + 6.0),
+        Align2::CENTER_TOP,
+        "L",
+        small.clone(),
+        theme.muted,
+    );
+    p.text(
+        pos2(c.x + half * 0.7, square.top() + 6.0),
+        Align2::CENTER_TOP,
+        "R",
+        small.clone(),
+        theme.muted,
+    );
     // Scaled so the loudest point of the newest picture reaches the edge:
     // the shape matters, not how loud it is.
     let loudest = band
         .stereo
         .back()
-        .map(|s| s.points.iter().map(|(l, r)| l.abs().max(r.abs())).fold(0.0f32, f32::max))
+        .map(|s| {
+            s.points
+                .iter()
+                .map(|(l, r)| l.abs().max(r.abs()))
+                .fold(0.0f32, f32::max)
+        })
         .unwrap_or(0.0);
     let scale = if loudest > 1e-4 { 0.7 / loudest } else { 0.0 };
     let pictures = band.stereo.len();
@@ -454,10 +505,16 @@ fn stereo(ui: &mut Ui, theme: &Theme, r: Rect, band: &mut Band, cx: &Context<'_>
         );
         painter.rect_filled(line, 3.0, theme.bg);
         painter.line_segment(
-            [pos2(line.center().x, line.top() - 2.0), pos2(line.center().x, line.bottom() + 2.0)],
+            [
+                pos2(line.center().x, line.top() - 2.0),
+                pos2(line.center().x, line.bottom() + 2.0),
+            ],
             Stroke::new(1.0, theme.line_strong),
         );
-        for (text, x, align) in [(left, line.left() - 4.0, Align2::RIGHT_CENTER), (right, line.right() + 4.0, Align2::LEFT_CENTER)] {
+        for (text, x, align) in [
+            (left, line.left() - 4.0, Align2::RIGHT_CENTER),
+            (right, line.right() + 4.0, Align2::LEFT_CENTER),
+        ] {
             painter.text(pos2(x, line.center().y), align, text, small.clone(), theme.muted);
         }
         if let Some(v) = value {

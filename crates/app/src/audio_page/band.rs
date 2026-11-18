@@ -142,7 +142,7 @@ pub struct Band {
     /// Spectrum: levels now, the highest held, how long each is held yet.
     pub levels: Option<[f32; COUNT]>,
     pub held: Option<[f32; COUNT]>,
-    hold_left: [f32; COUNT],
+    hold_left: Vec<f32>,
     /// The spectrogram, oldest first, and whether it changed since drawn.
     pub columns: VecDeque<[f32; COUNT]>,
     pub columns_changed: bool,
@@ -197,6 +197,10 @@ impl Band {
             self.loudness.clear();
             self.tracks.clear();
         }
+        if jumped || self.last_at.is_none() {
+            // Peaks from before this stretch of playing aren't in it.
+            self.peak_since = f32::NEG_INFINITY;
+        }
         self.last_at = Some(at);
         if let Some(m) = live.master {
             self.peak_since = self.peak_since.max(m.true_peak_db[0].max(m.true_peak_db[1]));
@@ -212,11 +216,10 @@ impl Band {
             keep_since(&mut self.loudness, at - LOUDNESS_SECONDS, |r| r.at);
         }
         for (id, role) in roles {
-            let Some(levels) = live.tracks.get(id) else { continue };
-            let (kept_role, readings) = self
-                .tracks
-                .entry(*id)
-                .or_insert_with(|| (*role, VecDeque::new()));
+            let Some(levels) = live.tracks.get(id) else {
+                continue;
+            };
+            let (kept_role, readings) = self.tracks.entry(*id).or_insert_with(|| (*role, VecDeque::new()));
             *kept_role = *role;
             if readings.back().is_none_or(|r| at - r.at >= EVERY) {
                 readings.push_back(TrackReading {
@@ -234,6 +237,7 @@ impl Band {
         self.levels = levels;
         let Some(levels) = levels else { return };
         let held = self.held.get_or_insert(levels);
+        self.hold_left.resize(COUNT, 0.0);
         for i in 0..COUNT {
             if levels[i] >= held[i] {
                 held[i] = levels[i];
@@ -371,11 +375,25 @@ mod tests {
         // About 33 s played: the last 30 kept, one every tenth.
         let first = band.loudness.front().expect("readings").at;
         assert!(at - first <= LOUDNESS_SECONDS + 0.01, "{first}");
-        assert!((290..=302).contains(&band.loudness.len()), "{}", band.loudness.len());
+        assert!(
+            (290..=302).contains(&band.loudness.len()),
+            "{}",
+            band.loudness.len()
+        );
         let (role, track) = &band.tracks[&TrackId(4)];
         assert_eq!(*role, TrackRole::Dialogue);
         assert!(track.len() <= 151 && track.iter().all(|r| r.ducked == 6.0));
-        assert!(band.loudness.iter().all(|r| r.true_peak == -0.5), "the higher channel");
+        assert!(
+            band.loudness.iter().all(|r| r.true_peak == -0.5),
+            "the higher channel"
+        );
+        let mut quiet = live(-20.0);
+        if let Some(m) = quiet.master.as_mut() {
+            m.true_peak_db = [-12.0, -12.0];
+        }
+        let mut fresh = Band::default();
+        fresh.follow(&quiet, None, &roles, 0.0, 1.0 / 60.0);
+        assert_eq!(fresh.loudness[0].true_peak, -12.0, "nothing from before playing");
         // A loop back to the start: what follows is a new picture.
         band.follow(&live(-20.0), None, &roles, 0.0, 1.0 / 60.0);
         assert_eq!(band.loudness.len(), 1);

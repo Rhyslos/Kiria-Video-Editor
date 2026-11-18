@@ -231,7 +231,12 @@ impl Analyser {
     }
 
     fn analyse(&mut self) {
-        for ((f, x), w) in self.frame.iter_mut().zip(self.held.chunks_exact(2)).zip(&self.window) {
+        for ((f, x), w) in self
+            .frame
+            .iter_mut()
+            .zip(self.held.chunks_exact(2))
+            .zip(&self.window)
+        {
             *f = 0.5 * (x[0] + x[1]) * w;
         }
         self.stereo();
@@ -288,13 +293,18 @@ impl Analyser {
         } else {
             (lr / (ll * rr).sqrt()) as f32
         };
-        let balance = if quiet { 0.0 } else { ((rr - ll) / (rr + ll)) as f32 };
+        let balance = if quiet {
+            0.0
+        } else {
+            ((rr - ll) / (rr + ll)) as f32
+        };
         let step = WINDOW / POINTS;
         for (i, x) in self.held.chunks_exact(2).step_by(step).take(POINTS).enumerate() {
             self.left[i] = x[0];
             self.right[i] = x[1];
         }
-        self.spectrum.put_stereo(correlation, balance, &self.left, &self.right);
+        self.spectrum
+            .put_stereo(correlation, balance, &self.left, &self.right);
     }
 }
 
