@@ -10,7 +10,8 @@
 //! frames; it knows nothing of projects and hands back [`StripEvent`]s.
 
 use crate::Theme;
-use crate::master::{BOTTOM_DB, TOP_DB, db_at, falling, y_of};
+use crate::master::{db_at, falling, y_of};
+use crate::volume::{self, BOTTOM_DB, Bottom, TOP_DB, settled};
 use egui::{Align2, Color32, CursorIcon, FontId, Rect, Sense, Stroke, Ui, pos2, vec2};
 use std::collections::HashMap;
 
@@ -107,30 +108,16 @@ pub fn most_scroll(width: f32, count: usize) -> f32 {
     (count as f32 * STRIP_WIDTH - width).max(0.0)
 }
 
-/// A typed volume: "-6", "−6.5 dB", "+3", "0", "off" (silent, the bottom).
+/// A typed volume: "-6", "−6.5 dB", "+3", "0". A track at the bottom of
+/// the range is still heard, so "off" is not a volume here (mute is).
 pub fn read_db(text: &str) -> Option<f32> {
-    let text = text.trim().to_lowercase().replace('−', "-");
-    if text == "off" {
-        return Some(BOTTOM_DB);
-    }
-    let number = text.trim_end_matches("db").trim();
-    let db: f32 = number.parse().ok()?;
-    db.is_finite().then(|| db.clamp(BOTTOM_DB, TOP_DB))
+    volume::read(text, Bottom::Heard)
 }
 
-/// A volume as a strip's box writes it: "−8.0 dB", "0.0 dB", "+1.5 dB", "Off".
+/// A volume as a strip's box writes it: "−8.0 dB", "0.0 dB", "+1.5 dB",
+/// "−60.0 dB" (a track's volume is heard at the bottom of the range).
 pub fn db_words(db: f32) -> String {
-    crate::timeline::level::words(f64::from(db))
-}
-
-/// Where a fader lands at `db` as it is dragged: half decibels, 0 dB
-/// within one.
-fn settled(db: f32) -> f32 {
-    if db.abs() < 1.0 {
-        0.0
-    } else {
-        (db * 2.0).round() / 2.0
-    }
+    volume::words(db, Bottom::Heard)
 }
 
 impl Mixer {
@@ -559,7 +546,7 @@ mod tests {
         assert_eq!(read_db("−6.5 dB"), Some(-6.5));
         assert_eq!(read_db("+3"), Some(3.0));
         assert_eq!(read_db("40"), Some(TOP_DB));
-        assert_eq!(read_db("Off"), Some(BOTTOM_DB));
+        assert_eq!(read_db("Off"), None, "a track at the bottom is heard");
         assert_eq!(read_db("loud"), None);
         assert_eq!(db_words(-8.0), "−8.0 dB");
         assert_eq!(settled(0.7), 0.0);
