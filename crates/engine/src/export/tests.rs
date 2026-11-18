@@ -1598,3 +1598,25 @@ fn normalising_takes_the_loudness_measured_already_and_matches_measuring_again()
     };
     assert_ne!(own.normalised.expect("normalised").measured, known);
 }
+
+#[test]
+fn cancelling_while_a_frame_is_awaited_ends_the_wait_within_a_second() {
+    // A worker asked for nothing never answers: without the cancel this
+    // would wait the whole minute a frame may take.
+    let preview = Preview::start(Decoding::Software, Convert::OnCpu, None, || {});
+    let shared = Arc::new(Shared::default());
+    let cancelling = shared.clone();
+    let canceller = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(200));
+        cancelling.cancel.store(true, Ordering::Relaxed);
+    });
+    let started = Instant::now();
+    let got = wait_for(&preview, Time::ZERO, &shared);
+    assert!(matches!(got, Ok(None)), "cancelled, not a picture or an error");
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "the wait ended {:?} after it began",
+        started.elapsed()
+    );
+    canceller.join().unwrap();
+}

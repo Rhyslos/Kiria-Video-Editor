@@ -27,6 +27,7 @@
 //! samples. An export can be paused between frames ([`Export::pause`]).
 
 use crate::compose::Composing;
+use crate::loudness::Loudness;
 use crate::offline::OfflineMix;
 use crate::preview::{Convert, OnDevice, Picture, Preview};
 use audio::settings::{LimiterSettings, MasterSettings};
@@ -38,7 +39,7 @@ use project::{Project, Rate, Sequence, SequenceId, Time};
 use render::Reader;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::mpsc::{Receiver, Sender, SyncSender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -771,57 +772,183 @@ fn run(
 ) -> diag::Result<Option<Exported>> {
     let started = Instant::now();
     settings.check()?;
-    let seq = project
-        .sequences
-        .iter()
-        .find(|s| s.id == sequence)
-        .ok_or_else(|| cannot("The timeline is not in the project any more."))?;
-    // The file's frames: each shows the timeline at its own start.
-    let rate = settings.rate.unwrap_or(seq.settings.frame_rate);
-    let (first, end) = frames(seq.length(), settings.range, rate);
-    let count = (end - first).max(0) as u64;
-    if count == 0 {
-        return Err(cannot("There is nothing on that stretch of the timeline.")
-            .fix("Put a clip on the timeline, or export the whole timeline instead of the region."));
-    }
-    shared.frames.store(count, Ordering::Relaxed);
-
-    let timeline_size = (seq.settings.width, seq.settings.height);
-    // The file's picture size, and the timeline's picture fitted inside.
-    let frame_size = settings.frame_size(timeline_size);
-    let picture_size = picture_size(timeline_size, frame_size);
-    let sample_rate = settings
-        .audio
-        .sample_rate_for(seq.settings.sample_rate.max(8_000));
-    // Pictures, when the file has them: read back on the device they are
-    // put together on, at the size they take in the file (put together at
-    // that size, or at the timeline's and enlarged as they are read back).
-    let pictures = match settings.video {
-        Some(codec) => {
-            let devices = devices.ok_or_else(|| {
-                cannot("This window isn't drawn on a graphics card, so pictures can't be put together for a video here.")
-                    .fix("Export sound only (WAV, MP3 or OGG), or start the app on a machine with a working graphics driver.")
-            })?;
-            let device = &devices.composing.device;
-            let reader = render::caught(device, || Reader::new(device, picture_size)).map_err(|err| {
-                cannot(format!(
-                    "The graphics card can't read back pictures of {}×{} ({}).",
-                    picture_size.0,
-                    picture_size.1,
-                    render::caught::describe(&err)
-                ))
-                .fix("Export at a smaller size, or update the graphics driver.")
-            })?;
-            Some((codec, devices, reader))
-        }
+    let plan = Plan::of(project, sequence, settings)?;
+    shared.frames.store(plan.count, Ordering::Relaxed);
+    let pictures = picture_device(settings, &plan, devices)?;
+    let codec = pictures.as_ref().map(|(codec, _, _)| *codec);
+    let Outputs {
+        writer,
+        beside,
+        video,
+        encoder,
+        audio_encoder,
+        on_graphics_card,
+    } = open_outputs(settings, parts, &plan, codec, shared)?;
+    // A worker of its own, so the viewer keeps its decoders and its place.
+    // It is closed whichever way this returns (`Picturing`'s drop), before
+    // the file is completed or dropped.
+    let mut picturing =
+        pictures.map(|(_, devices, reader)| Picturing::start(devices, reader, plan.frame_size, || {}));
+    let normalised = match settings.normalise {
+        Some(target) => match normalise_gain(&plan, target, known, shared, notify)? {
+            Some(normalised) => Some(normalised),
+            None => return Ok(None),
+        },
         None => None,
     };
-    let video = pictures.as_ref().map(|(codec, _, _)| VideoSettings {
-        codec: *codec,
+    let master_settings = export_master(plan.seq, normalised.map_or(0.0, |n| n.gain_db), settings.limit);
+    let limiting = master_settings.limiter.on;
+    let mut master = OfflineMix::new(project, sequence, plan.sample_rate, plan.start, master_settings)?;
+    let mut loudness = Loudness::new(plan.sample_rate);
+    let (result, written) = write_frames(
+        &plan,
+        picturing.as_mut(),
+        (&mut master, &mut loudness),
+        (writer, beside),
+        shared,
+        notify,
+    );
+    // The preview's decoders are closed before the file is completed or dropped.
+    drop(picturing);
+    let (writer, beside) = written?;
+    if !result? {
+        return Ok(None);
+    }
+    writer.finish()?;
+    if let Some(beside) = beside {
+        beside.finish()?;
+    }
+    Ok(Some(Exported {
+        path: settings.path.clone(),
+        frames: plan.count,
+        took: shared.working(started),
+        length: Duration::from_secs_f64(plan.count as f64 / plan.rate.as_f64()),
+        size: video.map(|v| (v.width, v.height)),
+        sound_beside: parts.beside.as_ref().map(|(_, path)| path.clone()),
+        encoder,
+        audio_encoder,
+        on_graphics_card,
+        loudness: loudness.measured().integrated,
+        true_peak: loudness.measured().true_peak_max,
+        normalised,
+        limited_db: limiting.then(|| master.limited_db()),
+    }))
+}
+
+/// What an export's settings make of its timeline: which frames, at what
+/// sizes and rates.
+struct Plan<'a> {
+    project: &'a Project,
+    seq: &'a Sequence,
+    /// The file's frame rate.
+    rate: Rate,
+    /// The first of the timeline's frames at that rate, and how many.
+    first: i64,
+    count: u64,
+    /// Where the first frame starts on the timeline.
+    start: Time,
+    /// The file's picture size, and the timeline's picture fitted inside.
+    frame_size: (u32, u32),
+    picture_size: (u32, u32),
+    sample_rate: u32,
+}
+
+impl<'a> Plan<'a> {
+    fn of(project: &'a Project, sequence: SequenceId, settings: &ExportSettings) -> diag::Result<Plan<'a>> {
+        let seq = project
+            .sequences
+            .iter()
+            .find(|s| s.id == sequence)
+            .ok_or_else(|| cannot("The timeline is not in the project any more."))?;
+        // The file's frames: each shows the timeline at its own start.
+        let rate = settings.rate.unwrap_or(seq.settings.frame_rate);
+        let (first, end) = frames(seq.length(), settings.range, rate);
+        let count = (end - first).max(0) as u64;
+        if count == 0 {
+            return Err(cannot("There is nothing on that stretch of the timeline.")
+                .fix("Put a clip on the timeline, or export the whole timeline instead of the region."));
+        }
+        let timeline_size = (seq.settings.width, seq.settings.height);
+        let frame_size = settings.frame_size(timeline_size);
+        Ok(Plan {
+            project,
+            seq,
+            rate,
+            first,
+            count,
+            start: rate.frame_start(first),
+            frame_size,
+            picture_size: picture_size(timeline_size, frame_size),
+            sample_rate: settings
+                .audio
+                .sample_rate_for(seq.settings.sample_rate.max(8_000)),
+        })
+    }
+
+    /// Where the file's frame `index` (from the first exported) starts on the timeline.
+    fn frame_start(&self, index: u64) -> Time {
+        self.rate.frame_start(self.first + index as i64)
+    }
+}
+
+/// Pictures, when the file has them: the codec, the devices, and a reader
+/// on the device they are put together on, at the size they take in the
+/// file (put together at that size, or at the timeline's and enlarged as
+/// they are read back).
+fn picture_device(
+    settings: &ExportSettings,
+    plan: &Plan<'_>,
+    devices: Option<Devices>,
+) -> diag::Result<Option<(VideoCodec, Devices, Reader)>> {
+    let Some(codec) = settings.video else {
+        return Ok(None);
+    };
+    let devices = devices.ok_or_else(|| {
+        cannot("This window isn't drawn on a graphics card, so pictures can't be put together for a video here.")
+            .fix("Export sound only (WAV, MP3 or OGG), or start the app on a machine with a working graphics driver.")
+    })?;
+    let picture_size = plan.picture_size;
+    let device = &devices.composing.device;
+    let reader = render::caught(device, || Reader::new(device, picture_size)).map_err(|err| {
+        cannot(format!(
+            "The graphics card can't read back pictures of {}×{} ({}).",
+            picture_size.0,
+            picture_size.1,
+            render::caught::describe(&err)
+        ))
+        .fix("Export at a smaller size, or update the graphics driver.")
+    })?;
+    Ok(Some((codec, devices, reader)))
+}
+
+/// The files being written, and what writes them.
+struct Outputs {
+    writer: Writer,
+    /// The sound beside the file, when asked for.
+    beside: Option<Writer>,
+    video: Option<VideoSettings>,
+    /// The encoder of the pictures (of the sound for a sound-only file), and of the sound.
+    encoder: String,
+    audio_encoder: String,
+    on_graphics_card: bool,
+}
+
+/// Opens the file (with pictures in `codec`, when it has them) and the
+/// sound beside it, under their names while being written.
+fn open_outputs(
+    settings: &ExportSettings,
+    parts: &Parts,
+    plan: &Plan<'_>,
+    codec: Option<VideoCodec>,
+    shared: &Shared,
+) -> diag::Result<Outputs> {
+    let (frame_size, rate, sample_rate) = (plan.frame_size, plan.rate, plan.sample_rate);
+    let video = codec.map(|codec| VideoSettings {
+        codec,
         width: frame_size.0,
         height: frame_size.1,
         rate: (rate.num(), rate.den()),
-        bit_rate: settings.quality.video_bit_rate(*codec, frame_size, rate),
+        bit_rate: settings.quality.video_bit_rate(codec, frame_size, rate),
         software: settings.software,
     });
     let audio = AudioSettings {
@@ -853,217 +980,184 @@ fn run(
         *name = Some(encoder.clone());
     }
     tracing::info!(
-        "exporting {count} frames as {} ({:?} at {} bits a second with {encoder}, {} with {audio_encoder} at {sample_rate} Hz)",
+        "exporting {} frames as {} ({:?} at {} bits a second with {encoder}, {} with {audio_encoder} at {sample_rate} Hz)",
+        plan.count,
         settings.container.label(),
         video.map(|v| (v.width, v.height)),
         video.map_or(0, |v| v.bit_rate),
         settings.audio.label(),
     );
+    Ok(Outputs {
+        writer,
+        beside,
+        video,
+        encoder,
+        audio_encoder,
+        on_graphics_card,
+    })
+}
 
-    // A worker of its own, so the viewer keeps its decoders and its place.
-    // Nothing is kept on the card for going back to: export only goes
-    // forward. It is never handed the proxies, and waits for each exact
-    // frame (no key frame shown first).
-    let mut picturing = pictures.map(|(_, devices, reader)| {
-        let (device, queue) = (devices.composing.device.clone(), devices.composing.queue.clone());
-        let on_device = devices.on_device.map(|on_device| OnDevice {
-            frames_kept: 0,
-            ..on_device
-        });
-        let mut preview = Preview::start_composing(
-            devices.decoding,
-            devices.convert,
-            on_device,
-            Some(devices.composing),
-            || {},
-        );
-        preview.set_key_frame_first(false);
-        let black = render::reader::black(frame_size);
-        Picturing {
-            preview,
-            reader,
-            device,
-            queue,
-            black,
-        }
-    });
-    let start = rate.frame_start(first);
-    // Normalising: the whole stretch is mixed and measured first.
-    // Measured already for this stretch at these rates (the Export page's
-    // check), or mixed and measured now.
-    let as_measured = rate == seq.settings.frame_rate && sample_rate == seq.settings.sample_rate.max(8_000);
+/// Normalising: the whole stretch is mixed and measured first, or taken
+/// as `known` when it was measured already for this stretch at these rates
+/// (the Export page's check). The gain that brings it to `target`; `Ok(None)`
+/// when cancelled.
+fn normalise_gain(
+    plan: &Plan<'_>,
+    target: f32,
+    known: Option<f32>,
+    shared: &Shared,
+    notify: &dyn Fn(),
+) -> diag::Result<Option<Normalised>> {
+    let settings = &plan.seq.settings;
+    let as_measured = plan.rate == settings.frame_rate && plan.sample_rate == settings.sample_rate.max(8_000);
     let known = known.filter(|_| as_measured);
-    let normalised = match settings.normalise {
-        Some(target) => {
-            shared.measuring.store(true, Ordering::Relaxed);
-            let measuring = || measure(project, seq, (start, rate, sample_rate, count), shared, notify);
-            let measured = match known.map_or_else(measuring, |k| Ok(Some(k))) {
-                Ok(Some(measured)) => measured,
-                // Cancelled, or the mixer couldn't be made.
-                other => {
-                    if let Some(p) = &mut picturing {
-                        p.preview.close(Duration::from_secs(5));
-                    }
-                    return other.map(|_| None);
-                }
-            };
-            shared.measuring.store(false, Ordering::Relaxed);
-            shared.frames_done.store(0, Ordering::Relaxed);
-            let normalised = Normalised::for_target(measured, target);
-            tracing::info!(
-                "the mix measures {measured:.1} LUFS: exported {:+.1} dB louder to aim at {target} LUFS",
-                normalised.gain_db
-            );
-            Some(normalised)
-        }
-        None => None,
+    shared.measuring.store(true, Ordering::Relaxed);
+    let measuring = || {
+        measure(
+            plan.project,
+            plan.seq,
+            (plan.start, plan.rate, plan.sample_rate, plan.count),
+            shared,
+            notify,
+        )
     };
-    let master_settings = export_master(seq, normalised.map_or(0.0, |n| n.gain_db), settings.limit);
-    let limiting = master_settings.limiter.on;
-    let mut master = match OfflineMix::new(project, sequence, sample_rate, start, master_settings) {
-        Ok(master) => master,
-        Err(err) => {
-            if let Some(p) = &mut picturing {
-                p.preview.close(Duration::from_secs(5));
-            }
-            return Err(err);
-        }
+    // Cancelled, or the mixer couldn't be made.
+    let Some(measured) = known.map_or_else(measuring, |k| Ok(Some(k)))? else {
+        return Ok(None);
     };
-    let mut loudness = crate::loudness::Loudness::new(sample_rate);
-    let mut sound = Vec::new();
-    let mut samples_written: u64 = 0;
-    // Three steps overlap: while the encoder writes frame n (a thread of
-    // its own, a few frames' room ahead of it), frame n + 1 is read back
-    // from the graphics card here, and frame n + 2 is being decoded and
-    // put together by the preview worker.
-    let (to_writer, writes) = std::sync::mpsc::sync_channel::<Out>(FRAMES_AHEAD);
-    let (spare, spares) = channel::<Vec<u8>>();
-    let black = picturing.as_ref().map(|p| p.black.clone()).unwrap_or_default();
-    let (result, written) = std::thread::scope(|scope| {
-        let writing = scope.spawn(move || -> diag::Result<(Writer, Option<Writer>)> {
-            let (mut writer, mut beside) = (writer, beside);
-            for out in writes {
-                match out {
-                    Out::Picture(picture) => {
-                        writer.write_picture(&picture)?;
-                        // Back for another frame; gone if reading has ended.
-                        let _ = spare.send(picture);
-                    }
-                    Out::Black => writer.write_picture(&black)?,
-                    Out::Sound(samples) => {
-                        writer.write_sound(&samples)?;
-                        if let Some(beside) = &mut beside {
-                            beside.write_sound(&samples)?;
-                        }
-                    }
-                }
-            }
-            Ok((writer, beside))
-        });
-        let result: diag::Result<bool> = (|| {
-            let ask = |p: &mut Picturing, index: u64| {
-                let at = rate.frame_start(first + index as i64);
-                p.preview
-                    .show(project, sequence, at, picture_size.0, picture_size.1);
-            };
-            if let Some(p) = &mut picturing {
-                ask(p, 0);
-            }
-            for index in 0..count {
-                if !shared.carry_on() {
-                    return Ok(false);
-                }
-                if let Some(p) = &mut picturing {
-                    let at = rate.frame_start(first + index as i64);
-                    let shown = wait_for(&p.preview, at)?;
-                    // The next frame is decoded meanwhile.
-                    if index + 1 < count {
-                        ask(p, index + 1);
-                    }
-                    if let Some(err) = shown.error {
-                        return Err(err);
-                    }
-                    if shown.refused {
-                        return Err(cannot(
-                            "A picture decoded on the graphics card could not be drawn from when the frame was put together.",
-                        )
-                        .fix("Turn off \"Decode video on the window's graphics device\" in Settings, under Graphics, and export again."));
-                    }
-                    let out = match shown.composed {
-                        Some(frame) => {
-                            let mut picture = spares.try_recv().unwrap_or_default();
-                            p.reader
-                                .read(&p.device, &p.queue, frame.view(), frame.working(), &mut picture)
-                                .map_err(|err| {
-                                    cannot(format!(
-                                        "A finished frame could not be read back from the graphics card ({err:?})."
-                                    ))
-                                    .fix("Export again. If it keeps happening, update the graphics driver.")
-                                })?;
-                            if picture_size != frame_size {
-                                let mut boxed = spares.try_recv().unwrap_or_default();
-                                letterbox(&picture, picture_size, frame_size, &mut boxed);
-                                picture = boxed;
-                            }
-                            Out::Picture(picture)
-                        }
-                        // Nothing on the timeline here.
-                        None => Out::Black,
-                    };
-                    if to_writer.send(out).is_err() {
-                        // The encoder stopped: its error is what is told.
-                        return Ok(true);
-                    }
-                }
-                // The sound up to the end of this frame, to the exact sample.
-                let until = samples_until(index + 1, sample_rate, rate);
-                master.take((until - samples_written) as usize, &mut sound);
-                loudness.feed(&sound);
-                if to_writer.send(Out::Sound(std::mem::take(&mut sound))).is_err() {
-                    return Ok(true);
-                }
-                samples_written = until;
+    shared.measuring.store(false, Ordering::Relaxed);
+    shared.frames_done.store(0, Ordering::Relaxed);
+    let normalised = Normalised::for_target(measured, target);
+    tracing::info!(
+        "the mix measures {measured:.1} LUFS: exported {:+.1} dB louder to aim at {target} LUFS",
+        normalised.gain_db
+    );
+    Ok(Some(normalised))
+}
 
-                shared.frames_done.store(index + 1, Ordering::Relaxed);
-                if index % 15 == 0 {
-                    notify();
-                }
-            }
-            Ok(true)
-        })();
-        drop(to_writer);
+/// Between the export's worker and the encoder's thread: what is to be
+/// written, and the buffers handed back to be filled again.
+struct Pipe {
+    to_writer: SyncSender<Out>,
+    pictures: Receiver<Vec<u8>>,
+    sound: Receiver<Vec<f32>>,
+}
+
+/// Writes every frame of the plan, with the sound up to its end. Three
+/// steps overlap: while the encoder writes frame n (a thread of its own, a
+/// few frames' room ahead of it), frame n + 1 is read back from the
+/// graphics card here, and frame n + 2 is being decoded and put together
+/// by the preview worker. Says whether it went to the end (not cancelled),
+/// and gives back the writers, or the encoder's error.
+fn write_frames(
+    plan: &Plan<'_>,
+    picturing: Option<&mut Picturing>,
+    mixing: (&mut OfflineMix, &mut Loudness),
+    writers: (Writer, Option<Writer>),
+    shared: &Shared,
+    notify: &dyn Fn(),
+) -> (diag::Result<bool>, diag::Result<(Writer, Option<Writer>)>) {
+    let (to_writer, writes) = std::sync::mpsc::sync_channel::<Out>(FRAMES_AHEAD);
+    let (picture_back, pictures) = channel::<Vec<u8>>();
+    let (sound_back, sound) = channel::<Vec<f32>>();
+    let black = picturing.as_ref().map(|p| p.black.clone()).unwrap_or_default();
+    std::thread::scope(|scope| {
+        let writing = scope.spawn(move || encode(&writes, writers, &black, (&picture_back, &sound_back)));
+        let pipe = Pipe {
+            to_writer,
+            pictures,
+            sound,
+        };
+        // The pipe goes with it: the encoder's thread ends once it is done.
+        let result = feed(plan, picturing, mixing, pipe, shared, notify);
         let written = writing
             .join()
             .unwrap_or_else(|_| Err(cannot("The encoder stopped unexpectedly.")));
         (result, written)
-    });
-    // The preview's decoders are closed before the file is completed or dropped.
-    if let Some(p) = &mut picturing {
-        p.preview.close(Duration::from_secs(5));
+    })
+}
+
+/// The encoder's thread: writes what it is handed, in order, and hands the
+/// buffers back to be filled again (gone if feeding has ended).
+fn encode(
+    writes: &Receiver<Out>,
+    (mut writer, mut beside): (Writer, Option<Writer>),
+    black: &[u8],
+    (picture_back, sound_back): (&Sender<Vec<u8>>, &Sender<Vec<f32>>),
+) -> diag::Result<(Writer, Option<Writer>)> {
+    for out in writes {
+        match out {
+            Out::Picture(picture) => {
+                writer.write_picture(&picture)?;
+                let _ = picture_back.send(picture);
+            }
+            Out::Black => writer.write_picture(black)?,
+            Out::Sound(samples) => {
+                writer.write_sound(&samples)?;
+                if let Some(beside) = &mut beside {
+                    beside.write_sound(&samples)?;
+                }
+                let _ = sound_back.send(samples);
+            }
+        }
     }
-    let (writer, beside) = written?;
-    if !result? {
-        return Ok(None);
+    Ok((writer, beside))
+}
+
+/// Hands the encoder each frame's picture and the sound up to its end, in
+/// the file's order. `Ok(false)` when cancelled; `Ok(true)` also when the
+/// encoder stopped (its error is what is told).
+fn feed(
+    plan: &Plan<'_>,
+    mut picturing: Option<&mut Picturing>,
+    (master, loudness): (&mut OfflineMix, &mut Loudness),
+    pipe: Pipe,
+    shared: &Shared,
+    notify: &dyn Fn(),
+) -> diag::Result<bool> {
+    let ask = |p: &mut Picturing, index: u64| {
+        let (w, h) = plan.picture_size;
+        p.preview
+            .show(plan.project, plan.seq.id, plan.frame_start(index), w, h);
+    };
+    if let Some(p) = picturing.as_deref_mut() {
+        ask(p, 0);
     }
-    writer.finish()?;
-    if let Some(beside) = beside {
-        beside.finish()?;
+    let mut samples_written: u64 = 0;
+    for index in 0..plan.count {
+        if !shared.carry_on() {
+            return Ok(false);
+        }
+        if let Some(p) = picturing.as_deref_mut() {
+            let Some(shown) = wait_for(&p.preview, plan.frame_start(index), shared)? else {
+                return Ok(false);
+            };
+            // The next frame is decoded meanwhile.
+            if index + 1 < plan.count {
+                ask(p, index + 1);
+            }
+            let out = p.read_back(shown, plan, &pipe.pictures)?;
+            if pipe.to_writer.send(out).is_err() {
+                return Ok(true);
+            }
+        }
+        // The sound up to the end of this frame, to the exact sample, in a
+        // buffer the encoder has handed back when there is one.
+        let until = samples_until(index + 1, plan.sample_rate, plan.rate);
+        let mut sound = pipe.sound.try_recv().unwrap_or_default();
+        master.take((until - samples_written) as usize, &mut sound);
+        loudness.feed(&sound);
+        if pipe.to_writer.send(Out::Sound(sound)).is_err() {
+            return Ok(true);
+        }
+        samples_written = until;
+
+        shared.frames_done.store(index + 1, Ordering::Relaxed);
+        if index % 15 == 0 {
+            notify();
+        }
     }
-    Ok(Some(Exported {
-        path: settings.path.clone(),
-        frames: count,
-        took: shared.working(started),
-        length: Duration::from_secs_f64(count as f64 / rate.as_f64()),
-        size: video.map(|v| (v.width, v.height)),
-        sound_beside: parts.beside.as_ref().map(|(_, path)| path.clone()),
-        encoder,
-        audio_encoder,
-        on_graphics_card,
-        loudness: loudness.measured().integrated,
-        true_peak: loudness.measured().true_peak_max,
-        normalised,
-        limited_db: limiting.then(|| master.limited_db()),
-    }))
+    Ok(true)
 }
 
 /// How many samples of sound the first `frames` frames take, exactly.
@@ -1184,13 +1278,99 @@ pub fn measure_mix(
 }
 
 /// What making the pictures takes: a preview worker of the export's own and
-/// the reader that brings its frames back from the graphics card.
+/// the reader that brings its frames back from the graphics card. Dropping
+/// it closes the worker and waits for it (a few seconds at most), so its
+/// decoders are closed whichever way the export ends.
 struct Picturing {
     preview: Preview,
     reader: Reader,
     device: wgpu::Device,
     queue: wgpu::Queue,
     black: Vec<u8>,
+}
+
+impl Picturing {
+    /// Starts the worker. Nothing is kept on the card for going back to:
+    /// export only goes forward. It is never handed the proxies, and waits
+    /// for each exact frame (no key frame shown first).
+    fn start(
+        devices: Devices,
+        reader: Reader,
+        frame_size: (u32, u32),
+        notify: impl Fn() + Send + 'static,
+    ) -> Picturing {
+        let (device, queue) = (devices.composing.device.clone(), devices.composing.queue.clone());
+        let on_device = devices.on_device.map(|on_device| OnDevice {
+            frames_kept: 0,
+            ..on_device
+        });
+        let mut preview = Preview::start_composing(
+            devices.decoding,
+            devices.convert,
+            on_device,
+            Some(devices.composing),
+            notify,
+        );
+        preview.set_key_frame_first(false);
+        Picturing {
+            preview,
+            reader,
+            device,
+            queue,
+            black: render::reader::black(frame_size),
+        }
+    }
+
+    /// What the encoder is handed for the picture `shown`: read back from
+    /// the graphics card (into a buffer handed back from `spares` when there
+    /// is one) and put in its frame, or black where nothing is on the timeline.
+    fn read_back(
+        &mut self,
+        shown: Picture,
+        plan: &Plan<'_>,
+        spares: &Receiver<Vec<u8>>,
+    ) -> diag::Result<Out> {
+        if let Some(err) = shown.error {
+            return Err(err);
+        }
+        if shown.refused {
+            return Err(cannot(
+                "A picture decoded on the graphics card could not be drawn from when the frame was put together.",
+            )
+            .fix("Turn off \"Decode video on the window's graphics device\" in Settings, under Graphics, and export again."));
+        }
+        // Nothing on the timeline here.
+        let Some(frame) = shown.composed else {
+            return Ok(Out::Black);
+        };
+        let mut picture = spares.try_recv().unwrap_or_default();
+        self.reader
+            .read(
+                &self.device,
+                &self.queue,
+                frame.view(),
+                frame.working(),
+                &mut picture,
+            )
+            .map_err(|err| {
+                cannot(format!(
+                    "A finished frame could not be read back from the graphics card ({err:?})."
+                ))
+                .fix("Export again. If it keeps happening, update the graphics driver.")
+            })?;
+        if plan.picture_size != plan.frame_size {
+            let mut boxed = spares.try_recv().unwrap_or_default();
+            letterbox(&picture, plan.picture_size, plan.frame_size, &mut boxed);
+            picture = boxed;
+        }
+        Ok(Out::Picture(picture))
+    }
+}
+
+impl Drop for Picturing {
+    fn drop(&mut self) {
+        self.preview.close(Duration::from_secs(5));
+    }
 }
 
 /// What the export hands its encoder's thread, in the file's order.
@@ -1204,13 +1384,20 @@ enum Out {
 /// How many frames (and their sound) may wait for the encoder.
 const FRAMES_AHEAD: usize = 6;
 
+/// How often waiting for a frame looks whether the export was cancelled.
+const CANCEL_CHECK: Duration = Duration::from_millis(100);
+
 /// The picture for the moment `at`, which was just asked for: the exact
-/// one, never a picture standing in for it.
-fn wait_for(preview: &Preview, at: Time) -> diag::Result<Picture> {
+/// one, never a picture standing in for it. `Ok(None)` when the export is
+/// cancelled meanwhile (looked at every [`CANCEL_CHECK`]).
+fn wait_for(preview: &Preview, at: Time, shared: &Shared) -> diag::Result<Option<Picture>> {
     let give_up = Instant::now() + FRAME_PATIENCE;
     loop {
-        match preview.wait(Duration::from_millis(250)) {
-            Some(picture) if picture.at == at && !picture.stand_in => return Ok(picture),
+        if shared.cancel.load(Ordering::Relaxed) {
+            return Ok(None);
+        }
+        match preview.wait(CANCEL_CHECK) {
+            Some(picture) if picture.at == at && !picture.stand_in => return Ok(Some(picture)),
             // One for an earlier request, or one standing in: not the one waited for.
             Some(_) => {}
             None if Instant::now() >= give_up => {
