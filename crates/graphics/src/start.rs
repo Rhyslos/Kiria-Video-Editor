@@ -132,10 +132,10 @@ pub(crate) fn prepare_on(
         let cleared = saved.and_then(|()| {
             // Asked about, or left over from before the safe choice was made.
             if left_over(found, plan.ask) {
-                marker.clear()?;
+                marker.forget_left_behind()?;
             }
             if left_over(decoding.marker, plan.ask_decoding) {
-                decoding_marker.clear()?;
+                decoding_marker.forget_left_behind()?;
             }
             Ok(())
         });
@@ -411,11 +411,11 @@ mod tests {
     use super::*;
     use Backend::{Direct3D12, ToolkitDefault, Vulkan};
 
-    /// A marker as a crashed start leaves it: the process that wrote it is gone.
+    /// A marker as a crashed start leaves it: the process that wrote it is
+    /// gone (its lock went with it), whatever process has its number now.
     fn leave_marker(program: Program, dir: &Path) -> StartMarker {
-        let marker = StartMarker::in_dir(program, dir);
-        marker.write().unwrap(); // our own number counts as a finished process
-        marker
+        StartMarker::in_dir(program, dir).write().unwrap();
+        StartMarker::in_dir(program, dir)
     }
 
     fn windows(program: Program, dir: &Path, run: RunKind) -> (Startup, Vec<AppError>) {
@@ -573,9 +573,29 @@ mod tests {
 
     /// A marker as a session leaves it that stopped while decoding on the device.
     fn leave_decoding_marker(dir: &Path) -> StartMarker {
-        let marker = StartMarker::for_decoding(Program::Editor, dir);
-        marker.write().unwrap();
-        marker
+        StartMarker::for_decoding(Program::Editor, dir).write().unwrap();
+        StartMarker::for_decoding(Program::Editor, dir)
+    }
+
+    #[test]
+    fn another_editor_in_the_middle_of_it_is_no_failure_and_is_left_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Another copy is starting with Vulkan and decoding its first pictures.
+        let other = StartMarker::in_dir(Program::Editor, tmp.path()).of_process(4_000_000_000);
+        let other_decoding = StartMarker::for_decoding(Program::Editor, tmp.path()).of_process(4_000_000_000);
+        other.write().unwrap();
+        other_decoding.write().unwrap();
+        let (startup, problems) = windows(Program::Editor, tmp.path(), RunKind::Normal);
+        assert!(problems.is_empty());
+        let plan = startup.plan();
+        assert!(!plan.ask && !plan.ask_decoding && !plan.decode_on_device);
+        assert_eq!(plan.order, [Direct3D12, ToolkitDefault]);
+        assert!(other.is_present() && other_decoding.is_present());
+
+        // It crashes: the next start finds what it left.
+        drop((other, other_decoding));
+        let (startup, _) = windows(Program::Editor, tmp.path(), RunKind::Normal);
+        assert!(startup.plan().ask && startup.plan().ask_decoding);
     }
 
     #[test]

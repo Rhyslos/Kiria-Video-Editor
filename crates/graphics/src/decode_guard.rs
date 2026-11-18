@@ -339,9 +339,34 @@ mod tests {
         let (guard, marker) = guard(tmp.path());
         // Another copy of the editor is in the middle of its first pictures;
         // this one never decoded on the device.
-        marker.write().unwrap();
+        let other = marker.of_process(4_000_000_000);
+        other.write().unwrap();
         guard.close();
-        assert!(marker.is_present());
+        assert!(other.is_present());
+    }
+
+    #[test]
+    fn two_copies_guarding_at_once_do_not_clear_each_others_marker() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let marker = |pid| StartMarker::for_decoding(Program::Editor, dir).of_process(pid);
+        let (a, b) = (
+            DecodeGuard::new(Some(marker(100))),
+            DecodeGuard::new(Some(marker(200))),
+        );
+        a.about_to_decode();
+        b.about_to_decode();
+        // A gets through its first pictures; B is still at it.
+        for _ in 0..PICTURES_BEFORE_TRUSTED {
+            a.picture_drawn();
+        }
+        assert!(a.is_trusted());
+        let fresh = StartMarker::for_decoding(Program::Editor, dir);
+        assert!(fresh.is_present(), "B's marker stays");
+        assert_eq!(fresh.state(), crate::MarkerState::StartUnderWay);
+        // The driver takes B down: the next start finds it.
+        drop(b);
+        assert_eq!(fresh.state(), crate::MarkerState::LeftBehind);
     }
 
     #[test]

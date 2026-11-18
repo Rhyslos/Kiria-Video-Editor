@@ -9,16 +9,19 @@
 //! was killed, or lost power. This also catches cases the crash handler
 //! never sees.
 //!
-//! Markers are per process, so several editors can run at once (each on its
-//! own project) without taking the others for crashed, and a process id
-//! used again by another program changes nothing.
+//! Markers are per process ([`crate::marker`]), so several editors can run
+//! at once (each on its own project) without taking the others for crashed,
+//! and a process id used again by another program changes nothing. A new
+//! run given the id of one that crashed still reports that crash: only the
+//! lock decides.
 //!
 //! The launcher reads the markers ([`unfinished_runs`]) to tell a crash
 //! from an editor that is still running, offer to recover that project, and
 //! refuse to move a project an editor has open.
 
+use crate::marker::{HeldLock, MarkerSet, holds_lock, remove_file};
 use crate::{AppError, Explain, Result};
-use std::fs::{self, File, TryLockError};
+use std::fs;
 use std::path::{Path, PathBuf};
 
 /// The folder of the markers, in the data folder.
@@ -29,6 +32,11 @@ const OLD_MARKER_FILE: &str = "session.running";
 const MARKER_EXTENSION: &str = "running";
 const LOCK_EXTENSION: &str = "lock";
 
+/// The editors' run markers in `data_dir`.
+fn markers(data_dir: &Path) -> MarkerSet {
+    MarkerSet::new(data_dir.join(MARKERS_DIR), MARKER_EXTENSION)
+}
+
 /// A running session. Call [`Session::end`] on a clean exit.
 ///
 /// Dropping it does *not* remove the marker on purpose: a panic unwinds and
@@ -36,10 +44,9 @@ const LOCK_EXTENSION: &str = "lock";
 /// marker stays).
 #[derive(Debug)]
 pub struct Session {
-    marker: PathBuf,
     pid: u32,
-    /// Held while the run lasts.
-    lock: File,
+    /// Held while the run lasts, beside the marker.
+    lock: HeldLock,
 }
 
 /// The result of [`Session::start`].
@@ -68,23 +75,23 @@ impl Session {
         fs::create_dir_all(&dir)
             .or_explain(|| cannot(format!("The folder {} can't be made.", dir.display())))?;
         let mut previous_crashed = false;
+        // The lock alone decides: a marker with this run's own id whose lock
+        // is free was left by an earlier process given the same id, a crash.
         for run in unfinished_runs(data_dir) {
-            if run.pid == Some(pid) || run.running == Some(true) {
+            if run.running == Some(true) {
                 continue;
             }
             previous_crashed = true;
             run.forget()?;
         }
-        let lock_path = dir.join(format!("{pid}.{LOCK_EXTENSION}"));
-        let lock = File::create(&lock_path)
-            .or_explain(|| cannot(format!("Writing {} failed.", lock_path.display())))?;
-        lock.try_lock()
-            .map_err(|_| cannot(format!("{} is held by another run.", lock_path.display())))?;
-        let session = Session {
-            marker: dir.join(format!("{pid}.{MARKER_EXTENSION}")),
-            pid,
-            lock,
-        };
+        let markers = markers(data_dir);
+        let lock = markers.hold(pid).or_explain(|| {
+            cannot(format!(
+                "The lock beside {} can't be taken.",
+                markers.marker_path(pid).display()
+            ))
+        })?;
+        let session = Session { pid, lock };
         session.write(None)?;
         Ok(SessionStart {
             session,
@@ -102,45 +109,23 @@ impl Session {
         if let Some(project) = project {
             contents.push_str(&format!("project {}\n", project.display()));
         }
-        fs::write(&self.marker, contents).or_explain(|| {
+        let marker = self.lock.marker();
+        fs::write(marker, contents).or_explain(|| {
             AppError::new("The app can't record that it has started")
-                .why(format!("Writing {} failed.", self.marker.display()))
+                .why(format!("Writing {} failed.", marker.display()))
                 .fix("Check that the disk is not full and that you can write to the app's data folder.")
         })
     }
 
     /// Records a clean exit.
     pub fn end(self) -> Result<()> {
-        let Session { marker, lock, .. } = self;
-        let ended = remove_file(&marker);
-        drop(lock);
-        let _ = remove_file(&marker.with_extension(LOCK_EXTENSION));
-        ended.map_err(|err| {
+        let marker = self.lock.marker().to_path_buf();
+        self.lock.release().map_err(|err| {
             AppError::new("The app can't record a clean exit")
                 .why(format!("Removing {} failed.", marker.display()))
                 .fix("Nothing is lost; the next start may wrongly offer crash recovery.")
                 .source(err)
         })
-    }
-}
-
-/// Removes a file that may already be gone.
-fn remove_file(path: &Path) -> std::io::Result<()> {
-    match fs::remove_file(path) {
-        Err(err) if err.kind() != std::io::ErrorKind::NotFound => Err(err),
-        _ => Ok(()),
-    }
-}
-
-/// Whether the run whose lock file is `lock` still holds it: `None` when
-/// there is no lock file (an older version's marker, or one written by hand).
-fn holds_lock(lock: &Path) -> Option<bool> {
-    let file = File::options().write(true).open(lock).ok()?;
-    match file.try_lock() {
-        Ok(()) => Some(false),
-        Err(TryLockError::WouldBlock) => Some(true),
-        // Can't tell: better to miss a crash than call a running editor crashed.
-        Err(TryLockError::Error(_)) => Some(true),
     }
 }
 
@@ -195,24 +180,20 @@ impl UnfinishedRun {
 /// Every editor run that hasn't closed cleanly: each still running or
 /// crashed. Reading them changes nothing.
 pub fn unfinished_runs(data_dir: &Path) -> Vec<UnfinishedRun> {
-    let mut markers = vec![data_dir.join(OLD_MARKER_FILE)];
-    if let Ok(entries) = fs::read_dir(data_dir.join(MARKERS_DIR)) {
-        let mut found: Vec<PathBuf> = entries
-            .filter_map(|e| e.ok().map(|e| e.path()))
-            .filter(|p| p.extension().is_some_and(|e| e == MARKER_EXTENSION))
-            .collect();
-        found.sort();
-        markers.extend(found);
-    }
-    markers.into_iter().filter_map(read_marker).collect()
+    let old = data_dir.join(OLD_MARKER_FILE);
+    let old_running = holds_lock(&old.with_extension(LOCK_EXTENSION));
+    std::iter::once((old, old_running))
+        .chain(markers(data_dir).found().into_iter().map(|m| (m.path, m.running)))
+        .filter_map(|(marker, running)| read_marker(marker, running))
+        .collect()
 }
 
-fn read_marker(marker: PathBuf) -> Option<UnfinishedRun> {
+fn read_marker(marker: PathBuf, running: Option<bool>) -> Option<UnfinishedRun> {
     let text = fs::read_to_string(&marker).ok()?;
     let mut run = UnfinishedRun {
         pid: None,
         project: None,
-        running: holds_lock(&marker.with_extension(LOCK_EXTENSION)),
+        running,
         marker,
     };
     for line in text.lines() {
@@ -322,6 +303,19 @@ mod tests {
         assert_eq!(runs[0].running, Some(false));
         forget_unfinished_runs(tmp.path(), |_| true).unwrap();
         assert!(unfinished_runs(tmp.path()).is_empty());
+    }
+
+    #[test]
+    fn a_crash_is_reported_when_the_next_run_gets_the_same_process_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        let first = Session::start_as(tmp.path(), 100).unwrap();
+        first.session.note_project(Path::new("/videos/a.x")).unwrap();
+        drop(first); // crashed; the system gives its id to the next editor
+        let second = Session::start_as(tmp.path(), 100).unwrap();
+        assert!(second.previous_crashed);
+        let runs = unfinished_runs(tmp.path());
+        assert_eq!(runs.len(), 1, "only the new run's own marker");
+        assert_eq!((runs[0].project.clone(), runs[0].running), (None, Some(true)));
     }
 
     #[test]
