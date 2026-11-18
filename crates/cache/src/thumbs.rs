@@ -129,14 +129,6 @@ const MAGIC: &[u8; 8] = b"PICTS\0\0\x01";
 const PICTURES: &str = "pictures";
 const COVER: &str = "cover";
 
-/// Marks a kept file used now: what `trim` keeps the newest of.
-fn touch(path: &Path) {
-    let _ = std::fs::File::options()
-        .append(true)
-        .open(path)
-        .and_then(|f| f.set_modified(std::time::SystemTime::now()));
-}
-
 /// How finely the pictures are kept: plenty for 160 × 90.
 const QUALITY: u8 = 85;
 
@@ -160,7 +152,7 @@ impl Store {
     pub fn load_cover(&self, fingerprint: &Fingerprint, stream: u32) -> Option<Frame> {
         let path = self.file_named(fingerprint, stream, COVER)?;
         let mut strip = decode(&std::fs::read(&path).ok()?, false)?;
-        touch(&path);
+        crate::disk::touch(&path);
         strip.frames.pop()
     }
 
@@ -182,7 +174,7 @@ impl Store {
         let bytes = std::fs::read(&path).ok()?;
         let strip = decode(&bytes, exact);
         if strip.is_some() {
-            touch(&path);
+            crate::disk::touch(&path);
         }
         strip
     }
@@ -215,27 +207,7 @@ impl Store {
     /// Removes the strips used longest ago until those left take at most
     /// `budget` bytes. Returns how many went.
     pub fn trim(&self, budget: u64) -> usize {
-        let Ok(entries) = std::fs::read_dir(&self.folder) else {
-            return 0;
-        };
-        let mut files: Vec<(std::time::SystemTime, u64, PathBuf)> = entries
-            .flatten()
-            .filter(|e| e.path().extension().is_some_and(|x| x == PICTURES || x == COVER))
-            .filter_map(|e| {
-                let meta = e.metadata().ok()?;
-                Some((meta.modified().ok()?, meta.len(), e.path()))
-            })
-            .collect();
-        files.sort_by_key(|f| std::cmp::Reverse(f.0));
-        let mut kept = 0u64;
-        let mut removed = 0;
-        for (_, len, path) in files {
-            kept += len;
-            if kept > budget && std::fs::remove_file(&path).is_ok() {
-                removed += 1;
-            }
-        }
-        removed
+        crate::disk::trim(&self.folder, &[PICTURES, COVER], budget)
     }
 }
 

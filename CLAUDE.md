@@ -40,7 +40,7 @@ A fast, light, native video editor written in Rust. A hobby project, open source
 ```text
 Cargo.toml           workspace, shared versions and lint rules
 rust-toolchain.toml  pinned Rust version
-deny.toml            dependency licence and advisory checks (cargo-deny)
+deny.toml            dependency licence, advisory and duplicate-version checks (cargo-deny)
 crates/              the workspace crates; see crates/README.md for the table
 docs/                project plan, build plan, research notes, decisions, the user guide (docs/user-guide/)
 spikes/              throwaway prototypes (not built)

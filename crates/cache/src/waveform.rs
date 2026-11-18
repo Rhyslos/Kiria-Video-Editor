@@ -171,10 +171,7 @@ impl Store {
         let peaks = decode(&bytes);
         if peaks.is_some() {
             // Its last use: what `trim` keeps the newest of.
-            let _ = std::fs::File::options()
-                .append(true)
-                .open(&path)
-                .and_then(|f| f.set_modified(std::time::SystemTime::now()));
+            crate::disk::touch(&path);
         } else {
             tracing::info!(file = %path.display(), "a kept waveform could not be read; reading the sound again");
         }
@@ -202,27 +199,7 @@ impl Store {
     /// Removes the waveforms used longest ago until those left take at
     /// most `budget` bytes. Returns how many went.
     pub fn trim(&self, budget: u64) -> usize {
-        let Ok(entries) = std::fs::read_dir(&self.folder) else {
-            return 0;
-        };
-        let mut files: Vec<(std::time::SystemTime, u64, PathBuf)> = entries
-            .flatten()
-            .filter(|e| e.path().extension().is_some_and(|x| x == "peaks"))
-            .filter_map(|e| {
-                let meta = e.metadata().ok()?;
-                Some((meta.modified().ok()?, meta.len(), e.path()))
-            })
-            .collect();
-        files.sort_by_key(|f| std::cmp::Reverse(f.0));
-        let mut kept = 0u64;
-        let mut removed = 0;
-        for (_, len, path) in files {
-            kept += len;
-            if kept > budget && std::fs::remove_file(&path).is_ok() {
-                removed += 1;
-            }
-        }
-        removed
+        crate::disk::trim(&self.folder, &["peaks"], budget)
     }
 }
 
