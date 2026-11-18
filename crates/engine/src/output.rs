@@ -195,12 +195,18 @@ impl Paced {
     }
 
     /// Runs on a thread named `paced-sound` until playback stops. Returns
-    /// the thread, or why it couldn't start.
-    pub fn run(mut self, shared: Arc<Shared>) -> diag::Result<std::thread::JoinHandle<()>> {
+    /// the thread, or why it couldn't start. The thread holds `alive` until
+    /// it ends, so whoever counts the audio threads counts it too.
+    pub fn run(
+        mut self,
+        shared: Arc<Shared>,
+        alive: impl Send + 'static,
+    ) -> diag::Result<std::thread::JoinHandle<()>> {
         use diag::Explain;
         std::thread::Builder::new()
             .name("paced-sound".into())
             .spawn(move || {
+                let _alive = alive;
                 os::float::denormals_as_zero();
                 self.next = Instant::now();
                 while !shared.stop.load(Ordering::Acquire) {

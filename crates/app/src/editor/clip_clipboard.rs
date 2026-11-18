@@ -34,7 +34,7 @@ pub(crate) fn pasted_says(copied: &CopiedClips, left_out: usize, place: &str) ->
 impl Editor {
     /// Copy: the chosen keyframe marks, or else the selected clips.
     pub(super) fn copy(&mut self) -> diag::Result<()> {
-        if self.timeline.chosen_keyframes().is_some() || self.selected.is_empty() {
+        if self.shown_view().chosen_keyframes().is_some() || self.selected.is_empty() {
             return self.copy_keyframes();
         }
         self.copy_clips().map(|_| ())
@@ -183,7 +183,7 @@ impl Editor {
                 end,
             })
         })?;
-        self.timeline.clear_gap();
+        self.shown_view().clear_gap();
         self.status = "Closed the gap: everything after it moved back, on every track.".into();
         Ok(())
     }

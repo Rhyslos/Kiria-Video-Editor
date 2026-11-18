@@ -111,6 +111,31 @@ pub mod clarity {
     pub const MUDDY: Color32 = Color32::from_rgb(0xC8, 0xA9, 0x6E);
 }
 
+/// The colours a label can have (a project's media and timeline labels,
+/// and those offered everywhere), in the order they are offered. The same
+/// in every theme.
+pub mod labels {
+    use egui::Color32;
+    pub const BLUE: Color32 = Color32::from_rgb(0x4F, 0x8C, 0xE0);
+    pub const GREEN: Color32 = Color32::from_rgb(0x5D, 0xBB, 0x7A);
+    pub const PINK: Color32 = Color32::from_rgb(0xE0, 0x6F, 0xB4);
+    pub const YELLOW: Color32 = Color32::from_rgb(0xE6, 0xC3, 0x5C);
+    pub const ORANGE: Color32 = Color32::from_rgb(0xE8, 0x8A, 0x3C);
+    pub const PURPLE: Color32 = Color32::from_rgb(0x9A, 0x6C, 0xD8);
+    pub const RED: Color32 = Color32::from_rgb(0xE5, 0x48, 0x4D);
+    pub const GREY: Color32 = Color32::from_rgb(0x8A, 0x8F, 0x96);
+}
+
+/// The colours of the Color page's curves for the red, green and blue
+/// channels (the master curve is drawn in the theme's text colour). The
+/// same in every theme.
+pub mod channels {
+    use egui::Color32;
+    pub const RED: Color32 = Color32::from_rgb(235, 90, 90);
+    pub const GREEN: Color32 = Color32::from_rgb(90, 200, 110);
+    pub const BLUE: Color32 = Color32::from_rgb(90, 140, 240);
+}
+
 /// The Audio page's analyser band: the spectrogram's colours from quiet
 /// to loud, and the marks for what is too loud or out of phase. The same
 /// in every theme.

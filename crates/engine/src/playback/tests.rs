@@ -274,6 +274,29 @@ fn closing_waits_for_stopped_audio_threads_to_end() {
     assert!(wait_until_none(&clock.threads, Duration::from_secs(30)), "ended");
 }
 
+/// The thread mixing without a sound card counts as an audio thread until
+/// it ends, also once the audio thread that started it has returned.
+#[test]
+fn closing_waits_for_the_paced_thread_of_an_unheard_playback() {
+    let output = fake(&recording(), Time::ZERO).output;
+    let (returned, audio_returned) = channel::<()>();
+    let playback = quiet_playback(Time::ZERO, move |clock| {
+        play_unheard(output, (RATE, 2), clock);
+        let _ = returned.send(());
+    });
+    audio_returned.recv_timeout(Duration::from_secs(30)).unwrap();
+    assert!(playback.unheard(), "mixed unheard");
+    let clock = Arc::clone(&playback.clock);
+    // The audio thread has returned; the paced thread mixes on until
+    // playback stops, and is counted.
+    assert!(
+        !wait_until_none(&clock.threads, Duration::from_millis(200)),
+        "the paced thread is counted while it mixes"
+    );
+    drop(playback);
+    assert!(wait_until_none(&clock.threads, Duration::from_secs(30)), "ended");
+}
+
 #[test]
 fn stopping_does_not_wait_for_the_audio_thread() {
     let (done, finished) = std::sync::mpsc::channel();
