@@ -868,6 +868,50 @@ fn a_jump_while_the_sound_card_goes_away_is_not_held_up() {
     );
 }
 
+/// A jump that comes while the sound card is being given up replaces the
+/// one the card went away during: the older one is never made afterwards,
+/// so the clock stays on the newest jump and the playhead moves on.
+#[test]
+fn a_newer_jump_replaces_one_the_sound_card_went_away_during() {
+    let Fake {
+        mut session,
+        output,
+        clock,
+        send,
+        inbox,
+    } = fake(&recording(), Time::ZERO);
+    // The card goes away during the first jump: it waits.
+    session.card = true;
+    clock.output.lost.store(true, Ordering::Release);
+    send.send(Message::Jump {
+        at: Time::seconds(1),
+        number: 1,
+    })
+    .unwrap();
+    session.step(&inbox, &clock);
+    assert_eq!(session.pending, Some((Time::seconds(1), 1)));
+    // The mix is taken back and plays on unheard; a second jump came in
+    // meanwhile.
+    session.card = false;
+    play_unheard(output, (RATE, 2), &clock);
+    send.send(Message::Jump {
+        at: Time::seconds(2),
+        number: 2,
+    })
+    .unwrap();
+    session.step(&inbox, &clock);
+    assert_eq!(clock.jumped.load(Ordering::Acquire), 2);
+    assert_eq!(session.pending, None, "the older jump is dropped");
+    // Steps with nothing new don't go back to the older jump.
+    session.step(&inbox, &clock);
+    session.step(&inbox, &clock);
+    assert_eq!(clock.jumped.load(Ordering::Acquire), 2);
+    // The playhead moves on from the second jump.
+    poll(|| (clock.position(Time::seconds(2), 2) > Time::seconds(2)).then_some(()));
+    clock.output.stop.store(true, Ordering::Release);
+    assert!(wait_until_none(&clock.threads, Duration::from_secs(30)), "ended");
+}
+
 #[test]
 fn only_errors_that_end_the_stream_give_up_on_the_sound_card() {
     use cpal::ErrorKind as K;
