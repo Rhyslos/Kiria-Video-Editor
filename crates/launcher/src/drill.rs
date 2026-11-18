@@ -9,6 +9,10 @@
 //! 3. starts the editor and waits for it to report that it works, which is
 //!    also the moment the launcher itself is replaced by the new version's.
 //!
+//! Each of the three takes the update lock (`updater::UpdateLock`) as a
+//! normal start does and lets go before the next, and before a newer
+//! launcher is started to do the step again.
+//!
 //! The report says where things stand afterwards. The workflow refuses to
 //! publish a release the previous one does not end up on, up to date.
 //!
@@ -141,10 +145,15 @@ fn check(data_dir: &Path) -> Check {
     match updater::release::check(&crate::version_in_use(), &prefs) {
         Ok(CheckResult::UpToDate) => Check::UpToDate,
         Ok(CheckResult::Skipped(version)) => Check::Skipped(version.to_string()),
-        Ok(CheckResult::Available(release)) => match updater::fetch(&release, &data_dir.join("downloads")) {
-            Ok(ready) => Check::Downloaded(ready.version),
-            Err(err) => Check::Failed(err.report()),
-        },
+        Ok(CheckResult::Available(release)) => {
+            let Some(_lock) = updater::UpdateLock::for_step(data_dir, "downloading an update") else {
+                return Check::Failed("another launcher is updating at the same time".into());
+            };
+            match updater::fetch(&release, &data_dir.join("downloads")) {
+                Ok(ready) => Check::Downloaded(ready.version),
+                Err(err) => Check::Failed(err.report()),
+            }
+        }
         Err(err) => Check::Failed(err.report()),
     }
 }

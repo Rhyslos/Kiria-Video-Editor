@@ -135,6 +135,10 @@ pub(crate) fn install_waiting_update(data_dir: &Path) -> diag::Result<Installed>
         InstallKind::AppImage(_) => VERSION.to_owned(),
         InstallKind::Development => return Ok(Installed::Nothing),
     };
+    // Held until this returns, so a restart into a newer launcher finds it free.
+    let Some(_lock) = updater::UpdateLock::for_step(data_dir, "installing a waiting update") else {
+        return Ok(Installed::Nothing);
+    };
     if let InstallKind::Folders(layout) = &kind {
         apply::remove_old_launcher(layout);
     }
@@ -350,6 +354,13 @@ pub(crate) fn watch_editor(data_dir: &Path, child: &mut std::process::Child) -> 
     };
     let outcome = health::watch_start(data_dir, child, health::START_TIMEOUT);
     tracing::info!(?outcome, %version, "editor start");
+    // Another launcher updating now: its editor's start is its own to record.
+    let Some(_lock) = updater::UpdateLock::for_step(data_dir, "the check after the editor's start") else {
+        return Watched {
+            outcome: Some(outcome),
+            rolled_back: false,
+        };
+    };
     if outcome == health::StartOutcome::Started {
         // The version works: now its launcher may replace this one (used from the next start).
         match updater::apply::replace_launcher(&layout, VERSION) {
@@ -380,6 +391,9 @@ fn update_in_background(data_dir: &Path) {
     let prefs = UpdatePrefs::load(data_dir);
     match updater::release::check(&version_in_use(), &prefs) {
         Ok(CheckResult::Available(release)) if prefs.automatic => {
+            let Some(_lock) = updater::UpdateLock::for_step(data_dir, "downloading an update") else {
+                return;
+            };
             tracing::info!(version = %release.version, "downloading an update");
             match updater::fetch(&release, &data_dir.join("downloads")) {
                 Ok(ready) => tracing::info!(version = %ready.version, "update downloaded and verified"),

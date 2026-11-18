@@ -11,12 +11,15 @@
 //!
 //! - [`health`] notices a version that fails to start and rolls back to the
 //!   previous one, which it never offers again.
+//! - [`lock::UpdateLock`] lets one launcher at a time download, install or
+//!   check a start; another skips updating that time.
 
 pub mod apply;
 pub mod download;
 pub mod fetch;
 pub mod health;
 pub mod install;
+pub mod lock;
 pub mod manifest;
 pub mod prefs;
 pub mod release;
@@ -24,6 +27,7 @@ pub mod release;
 pub use download::Progress;
 pub use fetch::{ReadyUpdate, fetch, fetch_with_progress};
 pub use install::Layout;
+pub use lock::UpdateLock;
 pub use manifest::{Channel, Manifest, ManifestFile, RELEASE_PUBLIC_KEY};
 pub use prefs::UpdatePrefs;
 pub use release::{CheckResult, Release};
