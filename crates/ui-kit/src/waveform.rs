@@ -76,17 +76,45 @@ const FEW: usize = 4_096;
 /// Seconds a waveform's levels are kept after it was last drawn.
 const KEPT_FOR: f64 = 60.0;
 
+/// Seconds before levels whose thread could not start are tried again.
+const RETRY_AFTER: f64 = 1.0;
+
 /// The levels of every waveform drawn lately, one entry per waveform (the
 /// `Id` its page gives it, the same while its file is read), so a waveform
 /// whose peaks grow while they are read has one entry, not one per copy.
 /// Levels are made on a thread of their own (a few milliseconds for hours
 /// of sound), one at a time per waveform: peaks that arrive while one is
-/// being made wait, and only the newest of them is made next.
-#[derive(Clone, Default)]
+/// being made wait, and only the newest of them is made next. A thread
+/// that can't start is tried again `RETRY_AFTER` later (the peaks are
+/// folded as they are meanwhile), never made on the interface thread.
+#[derive(Clone)]
 struct Kept {
     waveforms: HashMap<Id, Entry>,
     /// Workers making levels right now (for tests).
     workers: Arc<AtomicUsize>,
+    /// Starts a worker (a named thread; tests make it refuse).
+    spawn: Spawn,
+}
+
+impl Default for Kept {
+    fn default() -> Self {
+        Kept {
+            waveforms: HashMap::new(),
+            workers: Arc::default(),
+            spawn: Arc::new(spawn_thread),
+        }
+    }
+}
+
+/// Starts a worker running the work handed to it, or says why it couldn't.
+type Spawn = Arc<dyn Fn(Box<dyn FnOnce() + Send>) -> std::io::Result<()> + Send + Sync>;
+
+/// Runs `work` on a thread of its own.
+fn spawn_thread(work: Box<dyn FnOnce() + Send>) -> std::io::Result<()> {
+    std::thread::Builder::new()
+        .name("waveform levels".into())
+        .spawn(work)
+        .map(drop)
 }
 
 /// Peaks, and the cell their levels go in once made.
@@ -102,6 +130,8 @@ struct Entry {
     making: Option<Making>,
     /// When it was last drawn (the interface's clock, seconds).
     used: f64,
+    /// Not before then is a worker started (one couldn't start before).
+    retry_at: f64,
 }
 
 impl Kept {
@@ -127,8 +157,11 @@ impl Kept {
         // Peaks drawn while others are being made wait for the draw after
         // those are made (the worker asks for one): the newest drawn then is
         // the next made, the ones in between never.
-        if entry.making.is_none() {
-            entry.making = Some(make(ctx, peaks, &self.workers));
+        if entry.making.is_none() && now >= entry.retry_at {
+            entry.making = make(ctx, peaks, &self.workers, &self.spawn);
+            if entry.making.is_none() {
+                entry.retry_at = now + RETRY_AFTER;
+            }
         }
         None
     }
@@ -139,9 +172,9 @@ impl Kept {
     }
 }
 
-/// Starts making the levels of `peaks` on a thread of its own; the cell
-/// they go in.
-fn make(ctx: &Context, peaks: &Arc<[f32]>, workers: &Arc<AtomicUsize>) -> Making {
+/// Starts making the levels of `peaks` on a worker started by `spawn`; the
+/// cell they go in, or `None` when the worker couldn't start.
+fn make(ctx: &Context, peaks: &Arc<[f32]>, workers: &Arc<AtomicUsize>, spawn: &Spawn) -> Option<Making> {
     let cell = Arc::new(OnceLock::new());
     let (made, of, ctx, busy) = (
         Arc::clone(&cell),
@@ -150,21 +183,22 @@ fn make(ctx: &Context, peaks: &Arc<[f32]>, workers: &Arc<AtomicUsize>) -> Making
         Arc::clone(workers),
     );
     busy.fetch_add(1, Ordering::SeqCst);
-    let spawned = std::thread::Builder::new()
-        .name("waveform levels".into())
-        .spawn(move || {
-            let levels = Arc::new(Levels::of(&of));
-            // Counted out before the levels can be seen, so the interface
-            // never finds them made while this worker still counts.
-            busy.fetch_sub(1, Ordering::SeqCst);
-            let _ = made.set(levels);
-            ctx.request_repaint();
-        });
-    if let Err(err) = spawned {
-        workers.fetch_sub(1, Ordering::SeqCst);
-        tracing::debug!("waveform levels not made: {err}");
+    let spawned = spawn(Box::new(move || {
+        let levels = Arc::new(Levels::of(&of));
+        // Counted out before the levels can be seen, so the interface
+        // never finds them made while this worker still counts.
+        busy.fetch_sub(1, Ordering::SeqCst);
+        let _ = made.set(levels);
+        ctx.request_repaint();
+    }));
+    match spawned {
+        Ok(()) => Some((Arc::clone(peaks), cell)),
+        Err(err) => {
+            workers.fetch_sub(1, Ordering::SeqCst);
+            tracing::debug!("waveform levels not made, tried again shortly: {err}");
+            None
+        }
     }
-    (Arc::clone(peaks), cell)
 }
 
 /// Whether the context lets go of unused levels at the end of each pass.
@@ -358,7 +392,9 @@ mod tests {
         let peaks: Arc<[f32]> = (0..FEW as u32).map(|i| i as f32).collect();
         for _ in 0..500 {
             let workers = Arc::new(AtomicUsize::new(0));
-            let (_, cell) = make(&ctx, &peaks, &workers);
+            let Some((_, cell)) = make(&ctx, &peaks, &workers, &Kept::default().spawn) else {
+                panic!("worker started");
+            };
             // Look as often as possible, so the moment the levels appear is
             // caught: the count must already be down then.
             let give_up = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -411,6 +447,41 @@ mod tests {
             !kept.waveforms.contains_key(&id),
             "not drawn for a minute: let go"
         );
+    }
+
+    #[test]
+    fn a_worker_that_could_not_start_is_tried_again_shortly() {
+        let ctx = Context::default();
+        let id = Id::unique("a stream on a strained machine");
+        let tries = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&tries);
+        let mut kept = Kept {
+            spawn: Arc::new(move |_work| {
+                counted.fetch_add(1, Ordering::SeqCst);
+                Err(std::io::Error::other("no more threads"))
+            }),
+            ..Kept::default()
+        };
+        let peaks: Arc<[f32]> = (0..100_000u32).map(|i| (i % 97) as f32 / 97.0).collect();
+        assert!(kept.levels(&ctx, id, &peaks, 10.0).is_none());
+        assert_eq!(tries.load(Ordering::SeqCst), 1);
+        assert_eq!(kept.workers.load(Ordering::SeqCst), 0, "not counted");
+        assert!(kept.waveforms[&id].making.is_none(), "nothing waits on it");
+        // Drawn every frame meanwhile: no new thread asked for each time.
+        assert!(kept.levels(&ctx, id, &peaks, 10.5).is_none());
+        assert_eq!(tries.load(Ordering::SeqCst), 1);
+        // A little later threads start again: its levels come.
+        kept.spawn = Kept::default().spawn;
+        let now = 10.0 + RETRY_AFTER;
+        let give_up = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let levels = loop {
+            if let Some(levels) = kept.levels(&ctx, id, &peaks, now) {
+                break levels;
+            }
+            assert!(std::time::Instant::now() < give_up, "made in time");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        assert_eq!(levels.loudest(&peaks, 0, peaks.len()), 96.0 / 97.0);
     }
 
     #[test]
