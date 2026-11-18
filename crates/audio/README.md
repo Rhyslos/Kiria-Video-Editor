@@ -35,7 +35,7 @@ Built (8.1): every effect, the master, the mixer, its controller, the input ring
 | `src/test_signal.rs` | Made-up sound for tests and the timing run: `Rng`, `speech` (a speech-like buzz in syllables and phrases, and where it speaks), `sine` |
 | `tests/mixer.rs` | The mixer as the engine will use it: the fixed delay, a command heard within one block, mute and solo, ducking, dry rings, jumps, swaps coming back, a rebuilt track without a jump, the same sound through device buffers of 128, 441, 480 and 1024 frames, the limiter's ceiling, the analyser |
 | `tests/no_alloc.rs` | 32 tracks with every effect, a command every block and swaps, under an allocator that counts (`os::alloc_count`): no allocation or free on the mixing thread |
-| `tests/stress.rs` | 32 tracks with every effect: the time per block, printed; lenient on CI. The ten-second release run is by hand: `cargo test -p audio --release --test stress -- --ignored --nocapture` |
+| `tests/stress.rs` | 32 tracks with every effect: every ring fed and the ceiling held, the time per block printed but not judged. The timing checks (two seconds and ten) are by hand in a release build: `cargo test -p audio --release --test stress -- --ignored --nocapture` |
 
 ## How it fits together
 

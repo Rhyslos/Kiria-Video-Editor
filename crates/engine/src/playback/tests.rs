@@ -154,12 +154,24 @@ fn the_clock_moves_from_where_playback_started() {
     let p = Project::new_automatic("T");
     let playback = Playback::start(p.clone(), p.active_sequence, Time::seconds(3));
     assert_eq!(playback.started_at(), Time::seconds(3));
-    std::thread::sleep(Duration::from_millis(300));
-    let at = playback.position();
-    assert!(at >= Time::seconds(3), "{at:?}");
-    if !playback.has_sound() {
+    poll(|| {
+        let at = playback.position();
+        assert!(at >= Time::seconds(3), "{at:?}");
         // Without a sound card (as on test machines) time itself runs.
-        assert!(at > Time::seconds(3) + tenth(), "{at:?}");
+        (playback.has_sound() || at > Time::seconds(3) + tenth()).then_some(())
+    });
+}
+
+/// Asks `ready` every 10 ms until it gives something, for up to 30
+/// seconds (long, for a busy test machine); fails if it never does.
+fn poll<T>(mut ready: impl FnMut() -> Option<T>) -> T {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if let Some(done) = ready() {
+            return done;
+        }
+        assert!(Instant::now() < deadline, "not within 30 s");
+        std::thread::sleep(Duration::from_millis(10));
     }
 }
 
@@ -170,20 +182,27 @@ fn quiet_playback(from: Time, audio: impl FnOnce(&Arc<Clock>) + Send + 'static) 
 
 #[test]
 fn the_clock_stands_still_until_the_sound_is_ready() {
-    // Sound that takes a while to get ready, as far into a long file on a slow drive.
-    let playback = quiet_playback(Time::seconds(5), |clock| {
-        std::thread::sleep(Duration::from_millis(400));
+    // Sound that takes a while to get ready, as far into a long file on a
+    // slow drive: here, until the test says it is.
+    let (ready, wait) = channel::<()>();
+    let playback = quiet_playback(Time::seconds(5), move |clock| {
+        let _ = wait.recv_timeout(Duration::from_secs(30));
         clock.follow_time();
     });
     std::thread::sleep(Duration::from_millis(200));
     assert_eq!(playback.position(), Time::seconds(5), "waiting for the sound");
     assert!(!playback.has_sound());
-    std::thread::sleep(Duration::from_millis(500));
-    let at = playback.position();
-    assert!(at > Time::seconds(5) + tenth(), "moving now: {at:?}");
+    let readied = playback.clock.now_us();
+    ready.send(()).unwrap();
+    poll(|| playback.unheard().then_some(()));
+    // The clock runs from when the sound was ready, not from the start.
+    let from = playback.clock.wall_from.load(Ordering::Acquire);
+    assert!(from >= readied, "from {from} us, ready at {readied} us");
+    let at = poll(|| Some(playback.position()).filter(|at| *at > Time::seconds(5) + tenth()));
+    let since = Time::from_ratio((playback.clock.now_us() - readied) as i64, 1_000_000).unwrap();
     assert!(
-        at < Time::seconds(5) + Time::from_ratio(45, 100).unwrap(),
-        "from where it started: {at:?}"
+        at <= Time::seconds(5) + since,
+        "from where it started: {at:?}, {since:?} after the sound was ready"
     );
 }
 
@@ -194,8 +213,7 @@ fn the_position_is_the_sample_the_sound_card_is_handed_less_the_delay() {
         clock.output.heard.store(120_000, Ordering::Release);
         clock.follow_sound();
     });
-    std::thread::sleep(Duration::from_millis(100));
-    assert!(playback.has_sound());
+    poll(|| playback.has_sound().then_some(()));
     assert_eq!(
         playback.position(),
         Time::seconds(2) + Time::from_ratio(1, 2).unwrap()
@@ -217,55 +235,62 @@ fn the_position_is_the_sample_the_sound_card_is_handed_less_the_delay() {
 #[test]
 fn without_a_sound_card_a_jump_restarts_the_wall_clock() {
     let mut playback = quiet_playback(Time::seconds(2), |clock| clock.follow_time());
-    std::thread::sleep(Duration::from_millis(150));
+    poll(|| playback.unheard().then_some(()));
+    poll(|| (playback.position() > Time::seconds(2)).then_some(()));
+    let before = playback.clock.now_us();
     playback.jump(Time::seconds(10));
     let at = playback.position();
+    let since = Time::from_ratio((playback.clock.now_us() - before) as i64, 1_000_000).unwrap();
+    // No more than the time the jump and the reading took.
     assert!(
-        at >= Time::seconds(10) && at < Time::seconds(10) + tenth(),
-        "{at:?}"
+        at >= Time::seconds(10) && at <= Time::seconds(10) + since,
+        "{at:?}, {since:?} after the jump"
     );
 }
 
 #[test]
 fn closing_waits_for_stopped_audio_threads_to_end() {
-    let playback = quiet_playback(Time::ZERO, |clock| {
+    let (let_go, letting_go) = channel::<()>();
+    let playback = quiet_playback(Time::ZERO, move |clock| {
         while !clock.stopped() {
             std::thread::sleep(Duration::from_millis(5));
         }
-        // Letting go of the sound card and the files takes a moment.
-        std::thread::sleep(Duration::from_millis(300));
+        // Letting go of the sound card and the files takes a moment: here,
+        // until the test says so.
+        let _ = letting_go.recv_timeout(Duration::from_secs(30));
     });
-    std::thread::sleep(Duration::from_millis(50));
+    let clock = Arc::clone(&playback.clock);
     assert!(!wait_until_quiet(Duration::from_millis(50)), "still playing");
+    assert!(!wait_until_none(&clock.threads, Duration::from_millis(50)));
     drop(playback);
     assert!(
         !wait_until_quiet(Duration::from_millis(50)),
         "stopped, not ended yet"
     );
-    // Other tests' audio threads count too; all of them end within seconds.
-    assert!(wait_until_quiet(Duration::from_secs(10)));
+    assert!(!wait_until_none(&clock.threads, Duration::from_millis(50)));
+    let_go.send(()).unwrap();
+    // Other tests' audio threads count in `wait_until_quiet` too, so this
+    // one's own count is waited for.
+    assert!(wait_until_none(&clock.threads, Duration::from_secs(30)), "ended");
 }
 
 #[test]
 fn stopping_does_not_wait_for_the_audio_thread() {
     let (done, finished) = std::sync::mpsc::channel();
+    let (carry_on, busy) = channel::<()>();
     let playback = quiet_playback(Time::ZERO, move |clock| {
-        // Busy with something that can't be interrupted, then the usual check.
-        std::thread::sleep(Duration::from_millis(600));
-        let _ = done.send(clock.stopped());
+        // Busy with something that can't be interrupted (until the test
+        // says, which it does only once stopping returned), then the usual
+        // check. Stopping that waited would leave this to give up.
+        let interrupted = busy.recv_timeout(Duration::from_secs(30)).is_ok();
+        let _ = done.send((interrupted, clock.stopped()));
     });
-    std::thread::sleep(Duration::from_millis(50));
-    let before = Instant::now();
     drop(playback);
-    assert!(
-        before.elapsed() < Duration::from_millis(100),
-        "{:?}",
-        before.elapsed()
-    );
+    let _ = carry_on.send(());
     assert_eq!(
-        finished.recv_timeout(Duration::from_secs(5)),
-        Ok(true),
-        "the thread saw the stop and ended"
+        finished.recv_timeout(Duration::from_secs(60)),
+        Ok((true, true)),
+        "stopping returned while the thread was busy; it saw the stop and ended"
     );
 }
 
@@ -495,8 +520,14 @@ fn the_sound_cards_callback_never_allocates() {
 /// them all at the device's pace (a device thread asking for 256 frames
 /// every 5.3 ms, as a sound card at 48 kHz) while the audio thread decodes
 /// and feeds 32 files. Prints the time per block and the frames that came
-/// late; lenient, so a busy test machine passes.
+/// late. A measurement of the machine as much as of the code, so by hand,
+/// in a release build on a quiet machine:
+///
+/// ```sh
+/// cargo test -p engine --release thirty_two_tracks -- --ignored --nocapture
+/// ```
 #[test]
+#[ignore = "timing run, by hand in a release build"]
 fn thirty_two_tracks_play_through_the_real_time_path() {
     let mut p = with_effects();
     let media = p.media.values().next().cloned().unwrap();
@@ -602,8 +633,9 @@ fn following_the_project_sends_only_when_the_mix_changed() {
 fn without_a_sound_card_the_meters_still_move() {
     let project = recording();
     let from = Time::from_ratio(1, 4).unwrap();
+    let begun = Instant::now();
     let playback = Playback::start_unheard(project.clone(), project.active_sequence, from);
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(30);
     let mut master = Levels::SILENT;
     let mut tracks = false;
     while Instant::now() < deadline && !(master.momentary.is_finite() && tracks) {
@@ -621,11 +653,17 @@ fn without_a_sound_card_the_meters_still_move() {
         "the master's meter moved: {master:?}"
     );
     assert!(tracks, "a track's meter moved");
-    // The clock follows the samples mixed, at about real-time pace.
+    // The clock follows the samples mixed, at real-time pace: it moves on,
+    // and never ahead of the time passed by more than the buffer mixed
+    // ahead (512 frames).
     let a = playback.position();
-    std::thread::sleep(Duration::from_millis(300));
-    let moved = (playback.position() - a).as_secs_f64();
-    assert!((0.15..0.6).contains(&moved), "moved {moved} s in 0.3 s");
+    let b = poll(|| Some(playback.position()).filter(|b| *b - a > tenth()));
+    let passed = begun.elapsed().as_secs_f64();
+    let played = (b - from).as_secs_f64();
+    assert!(
+        played <= passed + 512.0 / f64::from(RATE),
+        "{played} s mixed in {passed} s"
+    );
 }
 
 /// The thread standing in for the sound card never allocates, and waits
