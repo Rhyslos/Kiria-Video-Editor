@@ -698,6 +698,9 @@ mod tests {
         }
     }
 
+    // Linux paths: on Windows they aren't absolute, and the AppImage case
+    // never happens there.
+    #[cfg(unix)]
     #[test]
     fn a_launcher_inside_its_appimage_is_an_appimage_install() {
         let signs = real_appimage();
