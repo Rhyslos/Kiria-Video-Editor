@@ -129,7 +129,7 @@ pub struct Browser {
     focus_search: bool,
     selected: Option<PathBuf>,
     status: String,
-    refresh: Option<Task<diag::Result<HashMap<PathBuf, cards::Notes>>>>,
+    refresh: Option<Task<diag::Result<Refreshed>>>,
     /// Projects with unsaved changes left by a crash, and how many.
     /// Unsaved changes from a crash and missing media, per project.
     notes: HashMap<PathBuf, cards::Notes>,
@@ -336,9 +336,9 @@ impl Browser {
         let file = self.index_file.clone();
         self.refresh = Some(Task::spawn(ctx, move || {
             let index = Index::open(&file)?;
-            index.refresh()?;
+            let skipped = index.refresh()?;
             // Only each file's short summary and journal are read, so this stays quick.
-            Ok(index
+            let notes = index
                 .projects()?
                 .into_iter()
                 .filter(|p| p.issue.is_none())
@@ -349,7 +349,8 @@ impl Browser {
                     };
                     (notes != cards::Notes::default()).then_some((p.path, notes))
                 })
-                .collect())
+                .collect();
+            Ok(Refreshed { notes, skipped })
         }));
     }
 
@@ -425,7 +426,12 @@ impl Browser {
                 Poll::Done(result) => {
                     self.refresh = None;
                     match result {
-                        Ok(notes) => self.notes = notes,
+                        Ok(Refreshed { notes, skipped }) => {
+                            self.notes = notes;
+                            if let Some(notice) = skipped_says(skipped) {
+                                self.status = notice;
+                            }
+                        }
                         Err(err) => self.errors.push(&err),
                     }
                     self.reload();
@@ -1376,8 +1382,37 @@ fn unsaved_says(name: &str, unsaved: usize) -> String {
     }
 }
 
+/// What a refresh of the project list brings back from its worker.
+struct Refreshed {
+    /// Unsaved changes from a crash and missing media, per project.
+    notes: HashMap<PathBuf, cards::Notes>,
+    /// How many project files couldn't be listed.
+    skipped: usize,
+}
+
+/// The quiet notice after a refresh that skipped project files whose
+/// names the list can't store; nothing when none were skipped.
+fn skipped_says(skipped: usize) -> Option<String> {
+    match skipped {
+        0 => None,
+        1 => Some(
+            "1 project file isn't listed: its name has characters the list can't store. Rename it to list it.".into(),
+        ),
+        n => Some(format!(
+            "{n} project files aren't listed: their names have characters the list can't store. Rename them to list them."
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn skipped_project_files_are_mentioned_only_when_there_are_some() {
+        assert_eq!(super::skipped_says(0), None);
+        assert!(super::skipped_says(1).is_some_and(|s| s.starts_with("1 project file isn't")));
+        assert!(super::skipped_says(3).is_some_and(|s| s.starts_with("3 project files aren't")));
+    }
+
     #[test]
     fn the_recovery_question_counts_in_words() {
         assert_eq!(
