@@ -129,11 +129,7 @@ impl Editor {
         let Some(seq) = self.document.as_ref().and_then(|d| d.project().active()) else {
             return Vec::new();
         };
-        self.selected
-            .iter()
-            .copied()
-            .filter(|clip| seq.tracks().any(|t| t.clips.iter().any(|c| c.id == *clip)))
-            .collect()
+        that_exist(&self.selected, seq)
     }
 
     /// Removes the selected clips as one step, closing the gaps on every
@@ -205,6 +201,21 @@ pub(super) fn added_clips(before: &[ClipId], after: Vec<ClipId>) -> Vec<ClipId> 
     after.into_iter().filter(|c| !before.contains(c)).collect()
 }
 
+/// The clips of `selected` that are on `seq`, in `selected`'s order. One
+/// pass over the timeline's clips into a set, so Delete after Select all on
+/// a timeline of thousands of clips stays quick.
+pub(super) fn that_exist(selected: &[ClipId], seq: &project::Sequence) -> Vec<ClipId> {
+    if selected.is_empty() {
+        return Vec::new();
+    }
+    let existing: HashSet<ClipId> = seq.tracks().flat_map(|t| t.clips.iter().map(|c| c.id)).collect();
+    selected
+        .iter()
+        .copied()
+        .filter(|c| existing.contains(c))
+        .collect()
+}
+
 /// Every clip of the open timeline.
 pub(super) fn all_clips(p: &project::Project) -> Vec<ClipId> {
     p.active()
@@ -254,6 +265,37 @@ mod tests {
         let scanning = start.elapsed();
         assert_eq!(found, scanned);
         println!("pasted clips, 5 000 clips: set {now:?}, list scan {scanning:?}");
+    }
+
+    #[test]
+    fn only_the_selected_clips_still_there_are_kept_in_order() {
+        let seq = crate::editor::undo_says::tests::many_clips(10, 5);
+        let selected = [12, 99, 10, 14, 3].map(ClipId).to_vec();
+        assert_eq!(that_exist(&selected, &seq), [12, 10, 14].map(ClipId).to_vec());
+        assert!(that_exist(&[], &seq).is_empty());
+        assert!(that_exist(&[ClipId(1)], &seq).is_empty());
+    }
+
+    /// Prints how long finding which selected clips still exist takes after
+    /// Select all on a timeline of 5 000 clips, against the per-clip scan
+    /// it was before.
+    #[test]
+    #[ignore = "a measurement: cargo test -p app -- --ignored --nocapture selected_that_exist"]
+    fn selected_that_exist_among_five_thousand_is_quick() {
+        let seq = crate::editor::undo_says::tests::many_clips(1000, 5000);
+        let selected: Vec<ClipId> = (1000..6000).map(ClipId).collect();
+        let start = std::time::Instant::now();
+        let found = that_exist(&selected, &seq);
+        let now = start.elapsed();
+        let start = std::time::Instant::now();
+        let scanned: Vec<ClipId> = selected
+            .iter()
+            .copied()
+            .filter(|clip| seq.tracks().any(|t| t.clips.iter().any(|c| c.id == *clip)))
+            .collect();
+        let scanning = start.elapsed();
+        assert_eq!(found, scanned);
+        println!("selected that exist, 5 000 clips: set {now:?}, per-clip scan {scanning:?}");
     }
 
     /// A gap after sound lined up to the sample (its end off the frames)

@@ -4,7 +4,8 @@
 //! so a change never happens out of sight.
 
 use super::Editor;
-use project::{Project, Sequence, SequenceId};
+use imbl::Vector;
+use project::{Project, Sequence, SequenceId, Track};
 use std::collections::HashSet;
 
 /// One step of the history as the person sees it.
@@ -76,9 +77,34 @@ pub(crate) fn step(from: &Project, to: &Project) -> Step {
     }
 }
 
-/// Whether a timeline is the same in both, open or not.
+/// Whether a timeline is the same in both, open or not. A command shares
+/// the tracks, clips and labels it leaves alone with the project before it,
+/// so those are found the same by their pointers first; only what a pointer
+/// says differs is compared in full (imbl's `==` has no such shortcut), so
+/// an undo in a project of many large timelines stays quick.
 fn same(a: &Sequence, b: &Sequence) -> bool {
-    a == b
+    let rest = |s: &Sequence| Sequence {
+        video_tracks: Vector::new(),
+        audio_tracks: Vector::new(),
+        labels: Vector::new(),
+        ..s.clone()
+    };
+    rest(a) == rest(b)
+        && same_tracks(&a.video_tracks, &b.video_tracks)
+        && same_tracks(&a.audio_tracks, &b.audio_tracks)
+        && (a.labels.ptr_eq(&b.labels) || a.labels == b.labels)
+}
+
+/// Whether two lists of tracks are the same, track by track.
+fn same_tracks(a: &Vector<Track>, b: &Vector<Track>) -> bool {
+    let same_track = |a: &Track, b: &Track| {
+        let rest = |t: &Track| Track {
+            clips: Vector::new(),
+            ..t.clone()
+        };
+        (a.clips.ptr_eq(&b.clips) || a.clips == b.clips) && rest(a) == rest(b)
+    };
+    a.ptr_eq(b) || (a.len() == b.len() && a.iter().zip(b.iter()).all(|(a, b)| same_track(a, b)))
 }
 
 /// What changed inside one timeline, in a few words.
@@ -225,6 +251,99 @@ pub(super) mod tests {
         let one_less = many_clips(1000, 4999);
         assert_eq!(in_timeline(&before, &one_less), "removed 1 clip");
         assert_eq!(in_timeline(&before, &before), "changed clips");
+    }
+
+    #[test]
+    fn a_timeline_is_the_same_only_when_nothing_in_it_changed() {
+        let a = many_clips(1000, 50);
+        assert!(same(&a, &a.clone()));
+        // Equal, but built afresh: no pointer is shared.
+        let mut fresh = a.clone();
+        fresh.video_tracks = a
+            .video_tracks
+            .iter()
+            .map(|t| Track {
+                clips: t.clips.iter().cloned().collect(),
+                ..t.clone()
+            })
+            .collect();
+        fresh.labels = a.labels.iter().cloned().collect();
+        assert!(!fresh.video_tracks.ptr_eq(&a.video_tracks));
+        assert!(same(&a, &fresh));
+        let changed = |change: &dyn Fn(&mut Sequence)| {
+            let mut b = a.clone();
+            change(&mut b);
+            !same(&a, &b) && !same(&b, &a)
+        };
+        assert!(changed(&|s| s.name = "Other".into()));
+        assert!(changed(&|s| s.edit_needle = project::Time::seconds(3)));
+        assert!(changed(
+            &|s| s.video_tracks[0].clips[49].duration = project::Time::seconds(9)
+        ));
+        assert!(changed(&|s| {
+            s.video_tracks[0].clips.pop_back();
+        }));
+        assert!(changed(&|s| s.video_tracks[0].muted = !s.video_tracks[0].muted));
+        assert!(changed(&|s| s.audio_tracks[0].gain_db = -3.0));
+        assert!(changed(&|s| {
+            let track = s.video_tracks[0].clone();
+            s.video_tracks.push_back(track);
+        }));
+        assert!(changed(&|s| {
+            s.labels.push_back(project::TimelineLabel {
+                id: project::LabelId(7),
+                name: "Label 1".into(),
+                at: project::Time::seconds(1),
+                color: project::LabelColor::Blue,
+            });
+        }));
+    }
+
+    /// 20 timelines of 5 000 clips each and the project after one clip of
+    /// the open one was removed.
+    fn twenty_big_timelines() -> (Project, Project) {
+        let mut p = crate::inspector::tests::project_with_a_clip();
+        let open = p.active_sequence;
+        let at = p.sequences.iter().position(|s| s.id == open).unwrap();
+        p.sequences.set(at, many_clips(1000, 5000));
+        for n in 0..19 {
+            p = Command::DuplicateSequence {
+                sequence: open,
+                name: format!("Copy {n}"),
+            }
+            .apply(&p)
+            .unwrap();
+        }
+        p.active_sequence = open;
+        let after = Command::RemoveClips {
+            sequence: open,
+            clips: vec![project::ClipId(5999)],
+            ripple: false,
+        }
+        .apply(&p)
+        .unwrap();
+        (p, after)
+    }
+
+    /// Prints how long finding the timeline an undo changed takes among 20
+    /// timelines of 5 000 clips, against comparing every timeline in full.
+    #[test]
+    #[ignore = "a measurement: cargo test -p app -- --ignored --nocapture undo_finds"]
+    fn undo_finds_the_changed_timeline_among_twenty_big_ones_quickly() {
+        let (before, after) = twenty_big_timelines();
+        let start = std::time::Instant::now();
+        let says = step(&after, &before);
+        let now = start.elapsed();
+        let start = std::time::Instant::now();
+        let full = after
+            .sequences
+            .iter()
+            .filter(|s| before.sequence(s.id).is_some_and(|b| b != *s))
+            .count();
+        let comparing = start.elapsed();
+        assert_eq!(says.timeline, Some(before.active_sequence));
+        assert_eq!(full, 1);
+        println!("undo finds the timeline, 20 x 5 000 clips: pointers {now:?}, full compare {comparing:?}");
     }
 
     /// Prints how long saying what an undo changed takes on a timeline of
