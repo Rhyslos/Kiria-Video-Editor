@@ -174,6 +174,7 @@ pub struct AudioPage {
     pub timeline: ui_kit::TimelineView,
     pub counted: counting::Counted,
     /// The page's timeline was fitted to the timeline's length once.
+    /// Cleared with the Edit page's by `Editor::refit`.
     pub fitted: bool,
     /// The track the mixer last showed as chosen: another one is scrolled into view.
     strip_shown: Option<TrackId>,

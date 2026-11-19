@@ -114,7 +114,7 @@ impl Editor {
                 match self.with_document(|d| d.apply(Command::Restore { project })) {
                     Ok(()) => {
                         self.selected.clear();
-                        self.fitted = false;
+                        self.refit();
                         self.status = format!(
                             "Restored \"{name}\". {} returns to before.",
                             self.shortcuts.keys_or_name(Action::Undo)
@@ -209,7 +209,7 @@ impl Editor {
                 });
                 match result {
                     Ok(()) => {
-                        self.fitted = false;
+                        self.refit();
                         self.status = format!(
                             "Inserted the template \"{name}\" {}. {} takes it out again.",
                             spot.said(),
@@ -252,7 +252,7 @@ impl Editor {
             match result {
                 Ok(()) => {
                     self.selected.clear();
-                    self.fitted = false;
+                    self.refit();
                     self.status = format!(
                         "Removed {count} quiet stretch{}.",
                         if count == 1 { "" } else { "es" }

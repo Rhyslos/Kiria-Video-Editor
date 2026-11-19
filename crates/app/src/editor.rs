@@ -126,7 +126,8 @@ pub struct Editor {
     shown_sequence: Option<project::SequenceId>,
     /// Where the playhead was in each timeline left this session.
     playheads: std::collections::HashMap<project::SequenceId, Time>,
-    /// The timeline was fitted to the project once already.
+    /// The timeline was fitted to the project once already. Cleared only
+    /// by `refit`, with the Audio page's own.
     fitted: bool,
     waveforms: crate::waveforms::Waveforms,
     pictures: crate::clip_pictures::ClipPictures,
@@ -497,6 +498,16 @@ impl Editor {
         view_on(self.page, &mut self.timeline, &mut self.audio_page.timeline)
     }
 
+    /// Show the whole timeline again on every page: the Edit page's view
+    /// (which the other pages share) and the Audio page's own are fitted to
+    /// the timeline's length the next time each is drawn. Everything that
+    /// changes what a timeline is as a whole (another one opened, files
+    /// added, a version restored, quiet stretches removed) calls this.
+    fn refit(&mut self) {
+        self.fitted = false;
+        self.audio_page.fitted = false;
+    }
+
     fn with_document(&mut self, f: impl FnOnce(&mut Document) -> diag::Result<()>) -> diag::Result<()> {
         match self.document.as_mut() {
             Some(document) => f(document),
@@ -793,11 +804,7 @@ impl Editor {
             let p = document.project();
             let shown = self.audio_page.shown(p);
             let base = shown.as_ref().unwrap_or(p);
-            let view = if self.page == Page::Audio {
-                &self.audio_page.timeline
-            } else {
-                &self.timeline
-            };
+            let view = view_on(self.page, &self.timeline, &self.audio_page.timeline);
             let lined = view
                 .line_being_set()
                 .and_then(|line| crate::audio_page::lines::with_line_being_set(base, line));
@@ -901,7 +908,7 @@ impl Editor {
                     })
                     .map(|()| {
                         // Show the whole timeline again with the new file in it.
-                        self.fitted = false;
+                        self.refit();
                         let matching = if settle.is_some() {
                             "what most of the videos imported with it share"
                         } else {
@@ -1895,12 +1902,9 @@ fn cut_beside(seq: &project::Sequence, at: Time, later: bool) -> Option<Time> {
 }
 
 /// The timeline view `page` shows: the Audio page's own (`audio`), or the
-/// Edit page's (`edit`), which the other pages share.
-fn view_on<'a>(
-    page: Page,
-    edit: &'a mut ui_kit::TimelineView,
-    audio: &'a mut ui_kit::TimelineView,
-) -> &'a mut ui_kit::TimelineView {
+/// Edit page's (`edit`), which the other pages share. Takes the two views
+/// borrowed either way (shared or mutable), so every choice goes through here.
+fn view_on<V>(page: Page, edit: V, audio: V) -> V {
     match page {
         Page::Audio => audio,
         _ => edit,
@@ -1956,6 +1960,33 @@ mod tests {
         for page in [Page::Edit, Page::Color, Page::Library, Page::Export] {
             let shown = view_on(page, &mut edit, &mut audio) as *const _;
             assert!(std::ptr::eq(shown, &edit), "{page:?}: the Edit page's");
+        }
+        // Following playback reads the same view through a shared borrow.
+        assert!(std::ptr::eq(view_on(Page::Audio, &edit, &audio), &audio));
+        assert!(std::ptr::eq(view_on(Page::Edit, &edit, &audio), &edit));
+    }
+
+    /// Every refit clears both views' fit flag through `refit`: one written
+    /// by hand on its own leaves the other page zoomed on a timeline whose
+    /// length changed. (The screenshot script resets only the Audio page's
+    /// view, to a fresh one, on purpose.)
+    #[test]
+    fn every_refit_goes_through_one_place() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = vec![src.join("editor.rs")];
+        let parts = std::fs::read_dir(src.join("editor")).expect("the editor's folder");
+        for entry in parts {
+            let path = entry.expect("an entry").path();
+            if path.extension().is_some_and(|e| e == "rs") && !path.ends_with("script.rs") {
+                files.push(path);
+            }
+        }
+        let needle = ["fitted", " = false"].concat();
+        for file in files {
+            let text = std::fs::read_to_string(&file).expect("a source file");
+            let found = text.matches(needle.as_str()).count();
+            let allowed = if file.ends_with("editor.rs") { 2 } else { 0 };
+            assert_eq!(found, allowed, "{}: call `refit` instead", file.display());
         }
     }
 
