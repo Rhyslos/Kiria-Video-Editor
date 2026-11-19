@@ -65,31 +65,6 @@ impl Editor {
                     .start(ctx, &self.shortcuts, self.shortcuts.layout());
             }
         }
-        for err in self.export_page.poll() {
-            self.errors.push(&err);
-        }
-        if let Some(pace) = self.export_page.take_pace() {
-            self.settings.export_pace = pace;
-        }
-        match self.cheat_sheet.poll(&self.jobs, ctx) {
-            Some(crate::cheat_sheet::Saved::Done(path)) => {
-                self.status = format!(
-                    "Saved the cheat sheet as {}. Open it to print it.",
-                    path.display()
-                );
-            }
-            Some(crate::cheat_sheet::Saved::Failed(err)) => self.errors.push(&err),
-            None => {}
-        }
-        if std::mem::take(&mut self.user_guide_requested) {
-            match self.user_guide.open(ctx) {
-                Ok(_) => self.status = "Opening the user guide in your web browser".into(),
-                Err(err) => self.errors.push(&err),
-            }
-        }
-        if let Some(err) = self.user_guide.poll() {
-            self.errors.push(&err);
-        }
     }
 
     /// The Saved versions window, and what it asks for.
