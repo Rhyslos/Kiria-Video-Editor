@@ -467,8 +467,15 @@ pub enum FrameBlend {
 }
 
 impl Track {
-    /// The volume a track or a whole mix can have, in decibels.
+    /// The volume a track or a whole mix can have, in decibels: the one
+    /// rule loading checks and the commands that set a volume
+    /// (`SetTrackMix`, `SetMasterGain`) keep.
     pub const GAINS_DB: std::ops::RangeInclusive<f32> = -60.0..=12.0;
+
+    /// [`Track::GAINS_DB`] in words, for error texts: "-60 dB to +12 dB".
+    pub fn gains_text() -> String {
+        format!("{} dB to {:+} dB", Track::GAINS_DB.start(), Track::GAINS_DB.end())
+    }
 
     /// What is wrong with the track's own settings (its volume and sound),
     /// in plain words, each starting with `place`. Its clips are checked
