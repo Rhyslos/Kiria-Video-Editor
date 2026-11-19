@@ -33,6 +33,7 @@ pub mod video_picture;
 pub mod viewer;
 pub mod volume;
 pub mod waveform;
+pub mod worker;
 pub mod yuv_renderer;
 
 pub use dialog::dialog;

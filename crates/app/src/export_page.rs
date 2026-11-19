@@ -29,7 +29,7 @@ pub use queue::Unfinished;
 use queue::{Job, Queue, State};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::mpsc::{Receiver, TryRecvError, channel};
+use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::Duration;
 use ui_kit::{Theme, layout};
 pub use words::Pace;
@@ -67,6 +67,8 @@ pub struct ExportPage {
     folder_dialog: Option<Receiver<Option<PathBuf>>>,
     /// A folder being made ("Make it").
     making: Option<Receiver<diag::Result<()>>>,
+    /// A free name being found ("New name") for the name it was asked for.
+    naming: Option<(String, Receiver<diag::Result<String>>)>,
     /// Folders being shown in the file manager, until each has started.
     showing: Vec<Receiver<diag::Result<()>>>,
     own: OwnPresets,
@@ -123,6 +125,7 @@ impl ExportPage {
             finding: None,
             folder_dialog: None,
             making: None,
+            naming: None,
             showing: Vec::new(),
             own,
             own_read_only,
@@ -201,6 +204,17 @@ impl ExportPage {
             if let Err(err) = made {
                 errors.push(err);
             }
+        }
+        if let Some((asked, naming)) = &self.naming
+            && let Ok(found) = naming.try_recv()
+        {
+            match found {
+                // A name typed since is kept.
+                Ok(free) if self.name == *asked => self.name = free,
+                Ok(_) => {}
+                Err(err) => errors.push(err),
+            }
+            self.naming = None;
         }
         self.showing.retain(|showing| match showing.try_recv() {
             Ok(shown) => {
@@ -404,8 +418,8 @@ impl ExportPage {
             let ctx = ctx.clone();
             move || ctx.request_repaint()
         };
-        let loudness = self.loudness.look(project, seq.id, range, notify.clone());
-        let disk = self.disk.look(&folder, &path, notify);
+        let loudness = self.loudness.look(project, seq.id, range, notify);
+        let disk = self.disk.look(&folder, &path, ctx);
         if let Some(wait) = self.disk.wait() {
             ctx.request_repaint_after(wait);
         }
@@ -917,32 +931,16 @@ impl ExportPage {
                 }
             }
             Fix::NewName => {
-                let ending = self.choice.container.extension();
-                let folder = plan.folder.clone();
-                // A few looks at the disk, at a click.
-                self.name = checks::free_name(&self.name, |n| folder.join(format!("{n}.{ending}")).exists());
-            }
-            Fix::MakeFolder => {
-                let (tell, made) = channel();
-                let folder = plan.folder.clone();
-                let ctx = ctx.clone();
-                let spawned = std::thread::Builder::new()
-                    .name("export folder".into())
-                    .spawn(move || {
-                        let made = std::fs::create_dir_all(&folder).map_err(|err| {
-                            AppError::new("The folder can't be made")
-                                .why(format!("Making {} failed.", folder.display()))
-                                .fix("Check the path, or choose another folder with Browse….")
-                                .source(err)
-                        });
-                        let _ = tell.send(made);
-                        ctx.request_repaint();
-                    });
-                match spawned {
-                    Ok(_) => self.making = Some(made),
-                    Err(err) => tracing::error!("making the folder could not start: {err}"),
+                if self.naming.is_none() {
+                    let asked = self.name.clone();
+                    let (folder, ending) = (plan.folder.clone(), self.choice.container.extension());
+                    let path = move |n: &str| folder.join(format!("{n}.{ending}"));
+                    // The folder may be slow or out of reach: looked at off this thread.
+                    let found = find_free_name(ctx, asked.clone(), path);
+                    self.naming = Some((asked, found));
                 }
             }
+            Fix::MakeFolder => self.making = Some(make_folder(ctx, plan.folder.clone())),
         }
     }
 
@@ -1462,26 +1460,100 @@ fn ask_folder(ctx: &egui::Context, now: &Path) -> Receiver<Option<PathBuf>> {
 /// Shows `folder` in the file manager on a thread of its own (it looks at
 /// the disk and starts a program); how it went arrives later.
 fn show_folder(ctx: &egui::Context, folder: PathBuf) -> Receiver<diag::Result<()>> {
-    let (tell, shown) = channel();
-    let (sender, ctx) = (tell.clone(), ctx.clone());
-    let started = std::thread::Builder::new()
-        .name("show export folder".into())
-        .spawn(move || {
-            let _ = sender.send(os::show_folder(&folder));
-            ctx.request_repaint();
-        });
-    if let Err(err) = started {
-        let _ = tell.send(Err(AppError::new("The folder can't be shown")
-            .why("The system would not start a thread to ask the file manager.")
-            .fix("Try again in a moment, or open the folder yourself.")
-            .source(err)));
-    }
-    shown
+    ui_kit::worker::answer(
+        ctx,
+        "show export folder",
+        move || os::show_folder(&folder),
+        |err| {
+            Err(AppError::new("The folder can't be shown")
+                .why("The system would not start a thread to ask the file manager.")
+                .fix("Try again in a moment, or open the folder yourself.")
+                .source(err))
+        },
+    )
+}
+
+/// Makes `folder` ("Make it") on a thread of its own; how it went arrives
+/// later.
+fn make_folder(ctx: &egui::Context, folder: PathBuf) -> Receiver<diag::Result<()>> {
+    let can_t = || AppError::new("The folder can't be made");
+    ui_kit::worker::answer(
+        ctx,
+        "export folder",
+        move || {
+            std::fs::create_dir_all(&folder).map_err(|err| {
+                can_t()
+                    .why(format!("Making {} failed.", folder.display()))
+                    .fix("Check the path, or choose another folder with Browse….")
+                    .source(err)
+            })
+        },
+        |err| {
+            Err(can_t()
+                .why("The system would not start a thread to make it.")
+                .fix("Try again in a moment, or make the folder yourself.")
+                .source(err))
+        },
+    )
+}
+
+/// Finds a name after `name` whose file (`path` of it) isn't there yet
+/// ("New name"), on a thread of its own: each name tried is a look at the
+/// disk, and the folder may be slow or out of reach.
+fn find_free_name(
+    ctx: &egui::Context,
+    name: String,
+    path: impl Fn(&str) -> PathBuf + Send + 'static,
+) -> Receiver<diag::Result<String>> {
+    ui_kit::worker::answer(
+        ctx,
+        "export name",
+        move || Ok(checks::free_name(&name, |n| path(n).exists())),
+        |err| {
+            Err(AppError::new("A new name can't be found")
+                .why("The system would not start a thread to look in the folder.")
+                .fix("Try again in a moment, or type another name.")
+                .source(err))
+        },
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_new_name_is_found_off_the_interface_thread() {
+        let dir = tempfile::tempdir().unwrap();
+        for taken in ["Trip.mp4", "Trip 2.mp4", "Trip 3.mp4"] {
+            std::fs::write(dir.path().join(taken), b"x").unwrap();
+        }
+        let ctx = egui::Context::default();
+        let folder = dir.path().to_path_buf();
+        let here = std::thread::current().id();
+        let found = find_free_name(&ctx, "Trip".into(), move |n| {
+            assert_ne!(
+                std::thread::current().id(),
+                here,
+                "the disk is looked at elsewhere"
+            );
+            folder.join(format!("{n}.mp4"))
+        });
+        let free = found.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+        assert_eq!(free.unwrap(), "Trip 4");
+    }
+
+    #[test]
+    fn make_it_makes_the_folder_on_a_worker() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("a").join("b");
+        let ctx = egui::Context::default();
+        let made = make_folder(&ctx, folder.clone());
+        made.recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap()
+            .unwrap();
+        assert!(folder.is_dir());
+    }
 
     #[test]
     fn quick_preset_changes_are_written_one_at_a_time_and_the_newest_stays() {

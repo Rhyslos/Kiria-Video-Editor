@@ -13,7 +13,7 @@
 //! platform) the chooser is always there, on Linux the fix is one package,
 //! and the editor also takes files dropped on its window.
 
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 /// A chooser that answers "nothing picked" faster than this never opened:
@@ -52,28 +52,7 @@ pub fn ask<T: Send + 'static>(
     f: impl FnOnce() -> Option<T> + Send + 'static,
 ) -> Receiver<Option<T>> {
     let asker = ctx.clone();
-    answer_on_thread(ctx, name, move || run(&asker, f))
-}
-
-/// Runs `work` on a thread named `name` and sends its answer, then asks
-/// `ctx` to redraw. A thread that can't start answers `None`.
-fn answer_on_thread<T: Send + 'static>(
-    ctx: &egui::Context,
-    name: &str,
-    work: impl FnOnce() -> Option<T> + Send + 'static,
-) -> Receiver<Option<T>> {
-    let (tell, answer) = channel();
-    let (sender, ctx) = (tell.clone(), ctx.clone());
-    let started = std::thread::Builder::new().name(name.to_owned()).spawn(move || {
-        // The window may have stopped waiting; then nobody needs it.
-        let _ = sender.send(work());
-        ctx.request_repaint();
-    });
-    if let Err(err) = started {
-        tracing::error!("the file chooser's thread ({name}) could not start: {err}");
-        let _ = tell.send(None);
-    }
-    answer
+    crate::worker::answer(ctx, name, move || run(&asker, f), |_| None)
 }
 
 fn report(ctx: &egui::Context) {
@@ -184,19 +163,8 @@ mod tests {
     }
 
     #[test]
-    fn the_answer_arrives_from_a_thread_of_its_own() {
-        let ctx = egui::Context::default();
-        let answer = answer_on_thread(&ctx, "test chooser", || {
-            Some(std::thread::current().name().map(str::to_owned))
-        });
-        assert_eq!(wait(&answer), Some(Some("test chooser".to_owned())));
-    }
-
-    #[test]
     fn a_closed_chooser_answers_none() {
         let ctx = egui::Context::default();
-        let answer = answer_on_thread(&ctx, "test chooser", || None::<std::path::PathBuf>);
-        assert_eq!(wait(&answer), None);
         let asked = ask(&ctx, "test chooser", || None::<std::path::PathBuf>);
         assert_eq!(wait(&asked), None);
     }
