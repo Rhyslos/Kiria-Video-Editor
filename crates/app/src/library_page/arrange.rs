@@ -266,11 +266,11 @@ fn grouped(found: &[MediaId], project: &Project, group: GroupBy) -> Vec<(Heading
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use project::{Command, Fingerprint, MediaInfo, MediaKind, MediaLabel, Time};
 
-    fn media(id: u64, path: &str, kind: MediaKind) -> MediaRef {
+    pub(crate) fn media(id: u64, path: &str, kind: MediaKind) -> MediaRef {
         MediaRef {
             id: MediaId(id),
             path: path.into(),
@@ -284,7 +284,7 @@ mod tests {
         }
     }
 
-    fn label(p: &Project, name: &str, color: LabelColor, on: &[u64]) -> Project {
+    pub(crate) fn label(p: &Project, name: &str, color: LabelColor, on: &[u64]) -> Project {
         Command::AddMediaLabel {
             label: MediaLabel {
                 id: MediaLabelId(0),
