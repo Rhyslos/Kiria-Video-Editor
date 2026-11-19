@@ -20,13 +20,14 @@ pub enum ToolbarClick {
 impl ToolbarClick {
     /// The buttons in the order they are shown: the tools, then (after a
     /// gap) Snapping, Fit and the rough cut view.
-    pub const ALL: [ToolbarClick; 9] = [
+    pub const ALL: [ToolbarClick; 10] = [
         ToolbarClick::Tool(Tool::Select),
         ToolbarClick::Tool(Tool::Blade),
         ToolbarClick::Tool(Tool::Ripple),
         ToolbarClick::Tool(Tool::Roll),
         ToolbarClick::Tool(Tool::Slip),
         ToolbarClick::Tool(Tool::Slide),
+        ToolbarClick::Tool(Tool::Text),
         ToolbarClick::Snapping,
         ToolbarClick::Fit,
         ToolbarClick::RoughCut,
@@ -275,6 +276,17 @@ fn draw_icon(click: ToolbarClick, p: &egui::Painter, c: Pos2, colour: Color32) {
                 p.line_segment([c + vec2(10.0 * s, 0.0), c + vec2(8.0 * s, 2.0)], stroke);
             }
         }
+        // Text: a capital T.
+        ToolbarClick::Tool(Tool::Text) => {
+            p.line_segment(
+                [c + vec2(-6.0, -7.0), c + vec2(6.0, -7.0)],
+                Stroke::new(2.2, colour),
+            );
+            p.line_segment(
+                [c + vec2(0.0, -7.0), c + vec2(0.0, 7.0)],
+                Stroke::new(2.2, colour),
+            );
+        }
         // Snapping: a magnet.
         ToolbarClick::Snapping => {
             p.add(Shape::line(
@@ -330,10 +342,14 @@ mod tests {
             .iter()
             .take_while(|c| matches!(c, ToolbarClick::Tool(_)))
             .collect();
-        assert_eq!(tools.len(), 6, "the tools come first");
+        assert_eq!(tools.len(), 7, "the tools come first");
         let groups: Vec<_> = all.iter().filter(|c| c.starts_group()).collect();
         assert_eq!(groups, [&ToolbarClick::Snapping]);
-        assert_eq!(TOOLBAR_WIDTH, 9.0 * 30.0 + 10.0 + 9.0 * 4.0, "as wide as before");
+        assert_eq!(
+            TOOLBAR_WIDTH,
+            10.0 * 30.0 + 10.0 + 10.0 * 4.0,
+            "a button wider for the text tool"
+        );
     }
 
     #[test]

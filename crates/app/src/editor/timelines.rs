@@ -264,6 +264,7 @@ impl Editor {
             .and_then(|d| added_clip(&before, d.project()));
         if let Some(clip) = added {
             self.selected = vec![clip];
+            self.inspector.focus_title_words(clip);
         }
         self.status = format!("{} added: type its words in the inspector", style.name());
         Ok(())
