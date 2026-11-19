@@ -9,16 +9,20 @@ use project::{Project, Time};
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 
+/// The save dialog's answer to come, the project and time it was asked
+/// for, and the devices to put the picture together on.
+type Asked = (
+    Receiver<Option<PathBuf>>,
+    Project,
+    Time,
+    Option<engine::export::Devices>,
+);
+
 #[derive(Default)]
 pub struct FrameGrab {
     /// The save dialog, with the project and time it was asked for, and
     /// the devices to put the picture together on.
-    dialog: Option<(
-        Receiver<Option<PathBuf>>,
-        Project,
-        Time,
-        Option<engine::export::Devices>,
-    )>,
+    dialog: Option<Asked>,
     saving: Option<(PathBuf, JobHandle<()>)>,
 }
 

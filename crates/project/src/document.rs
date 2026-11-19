@@ -407,6 +407,12 @@ impl Document {
         self.journal_problem.take()
     }
 
+    /// The number of the newest journal entry: it goes up with every change,
+    /// undo and redo, so two the same mean nothing was done in between.
+    pub fn newest_entry(&self) -> u64 {
+        self.seq
+    }
+
     /// True when there are changes not yet in the project file (they are in the journal).
     pub fn has_unsaved_changes(&self) -> bool {
         self.unsaved_since.is_some()

@@ -179,7 +179,7 @@ impl Editor {
         // After a save that left the picture as it was (the playhead on the
         // same frame of the same file, and nothing edited since), nothing is
         // put together again.
-        let key = (shows, document.journal_seq());
+        let key = (shows, document.newest_entry());
         if self.thumbnail_shows.as_ref() == Some(&key) {
             return;
         }
@@ -242,7 +242,7 @@ mod tests {
             (go, job)
         };
         assert!(
-            thumbnail_settled(None, Duration::ZERO, &mut None),
+            thumbnail_settled::<()>(None, Duration::ZERO, &mut None),
             "nothing running"
         );
 

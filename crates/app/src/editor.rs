@@ -1797,7 +1797,7 @@ impl eframe::App for Editor {
             let p = document.project();
             let out = project::thumbnail_path(document.path());
             let shows = engine::thumbnail::shows(p, p.active_sequence, self.viewer.playhead);
-            let seq = document.journal_seq();
+            let seq = document.newest_entry();
             let still = self
                 .viewer
                 .export_devices()

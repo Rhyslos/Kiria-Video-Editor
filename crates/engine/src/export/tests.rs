@@ -1620,3 +1620,56 @@ fn cancelling_while_a_frame_is_awaited_ends_the_wait_within_a_second() {
     );
     canceller.join().unwrap();
 }
+
+/// One picture of the timeline is put together as the export does it, at
+/// the timeline's size, with the clip's look.
+#[test]
+fn a_still_is_the_timeline_as_it_is_seen() {
+    let Some(devices) = devices() else {
+        eprintln!("no graphics device here: stills aren't checked");
+        return;
+    };
+    let (project, seq) = recording();
+    let size = {
+        let s = project.active().unwrap();
+        (s.settings.width, s.settings.height)
+    };
+    let (plain, got) = still(&project, seq, Time::seconds(1), devices).unwrap();
+    assert_eq!(got, size);
+    assert_eq!(plain.len(), (size.0 * size.1 * 4) as usize);
+    // Fully transparent: the picture is black where the clip was.
+    let clip = project.active().unwrap().video_tracks[0].clips[0].id;
+    let faded = Command::SetLook {
+        sequence: seq,
+        clip,
+        look: project::Look {
+            opacity: 0,
+            ..project::Look::PLAIN
+        },
+    }
+    .apply(&project)
+    .unwrap();
+    let (dark, _) = still(&faded, seq, Time::seconds(1), self::devices().unwrap()).unwrap();
+    let brightness = |p: &[u8]| {
+        p.chunks_exact(4)
+            .map(|px| u64::from(px[0]) + u64::from(px[1]) + u64::from(px[2]))
+            .sum::<u64>()
+    };
+    assert!(
+        brightness(&dark) < brightness(&plain),
+        "the look is in the picture"
+    );
+}
+
+/// A picture read back for the encoder turns back into its colours.
+#[test]
+fn nv12_turns_back_into_rgba() {
+    // 2×2: white brightness, no colour; then black.
+    let white = [235u8, 235, 235, 235, 128, 128];
+    assert_eq!(nv12_to_rgba(&white, (2, 2)), [255u8, 255, 255, 255].repeat(4));
+    let black = [16u8, 16, 16, 16, 128, 128];
+    assert_eq!(nv12_to_rgba(&black, (2, 2)), [0u8, 0, 0, 255].repeat(4));
+    // Pure red in BT.709 limited range: Y 63, Cb 102, Cr 240.
+    let red = nv12_to_rgba(&[63, 63, 63, 63, 102, 240], (2, 2));
+    assert!(red[0] > 245 && red[1] < 10 && red[2] < 10, "{red:?}");
+}
