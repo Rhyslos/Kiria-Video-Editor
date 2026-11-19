@@ -187,6 +187,22 @@ impl Inspector {
         })
     }
 
+    /// `project` with the sound being set in the Audio section (a volume or
+    /// pan being dragged, not yet an undo step), for playback to follow so
+    /// it is heard as it moves; `None` when nothing is being set.
+    pub fn with_sounds_being_set(&self, project: &Project) -> Option<Project> {
+        let sounds = self.sounds_being_set();
+        if sounds.is_empty() {
+            return None;
+        }
+        Command::SetSound {
+            sequence: project.active_sequence,
+            sounds,
+        }
+        .apply(project)
+        .ok()
+    }
+
     /// The clip the panel is about (see [`shown_clip`]) with its look as it
     /// is shown now, at `playhead`. `None` when no selected clip has a picture.
     pub fn subject(&self, project: &Project, selected: &[ClipId], playhead: Time) -> Option<Subject> {
@@ -1067,6 +1083,30 @@ pub(crate) mod tests {
         let mut inspector = Inspector::default();
         inspector.pending_sound.set(vec![sounds[0]], vec![quiet]);
         assert_eq!(frame(&mut inspector, &project, &[]).len(), 1);
+    }
+
+    /// Playback follows a volume being dragged in the Audio section before
+    /// it is let go: the project as it would be, the stored one untouched.
+    #[test]
+    fn a_sound_being_dragged_is_what_playback_hears() {
+        let project = project_with_a_clip();
+        let clip = project.active().unwrap().audio_tracks[0].clips[0].id;
+        let mut inspector = Inspector::default();
+        assert!(
+            inspector.with_sounds_being_set(&project).is_none(),
+            "nothing being set"
+        );
+        let quiet = Sound {
+            gain_mdb: -12_000,
+            ..Sound::PLAIN
+        };
+        inspector.pending_sound.set(vec![clip], vec![quiet]);
+        let heard = inspector.with_sounds_being_set(&project).unwrap();
+        assert_eq!(heard.active().unwrap().audio_tracks[0].clips[0].sound, quiet);
+        assert_eq!(
+            project.active().unwrap().audio_tracks[0].clips[0].sound,
+            Sound::PLAIN
+        );
     }
 
     /// The clip of `project_with_a_clip` (10 s from 0) with its opacity
