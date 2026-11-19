@@ -10,8 +10,9 @@
 //!    also the moment the launcher itself is replaced by the new version's.
 //!
 //! Each of the three takes the update lock (`updater::UpdateLock`) as a
-//! normal start does and lets go before the next, and before a newer
-//! launcher is started to do the step again.
+//! normal start does (the third also the start check's own short lock,
+//! `updater::StartCheckLock`) and lets go before the next, and before a
+//! newer launcher is started to do the step again.
 //!
 //! The report says where things stand afterwards. The workflow refuses to
 //! publish a release the previous one does not end up on, up to date.

@@ -41,8 +41,17 @@ impl InstallKind {
     /// AppImage only when [`appimage_in_use`] says this launcher really runs
     /// from one; a stray `APPIMAGE` variable is ignored.
     pub fn detect(root: &Path) -> InstallKind {
-        if let Some(path) = appimage_in_use(cfg!(target_os = "linux"), &AppImageSigns::of_this_process()) {
+        let linux = cfg!(target_os = "linux");
+        let signs = AppImageSigns::of_this_process();
+        if let Some(path) = appimage_in_use(linux, &signs) {
             return InstallKind::AppImage(path);
+        }
+        if appimage_left_alone(linux, &signs) {
+            tracing::warn!(
+                appimage = ?signs.appimage,
+                appdir = ?signs.appdir,
+                "running from an AppImage whose file can't be tied to this launcher: it won't be updated"
+            );
         }
         let layout = Layout::at(root);
         if layout.current_version().is_some() {
@@ -114,14 +123,16 @@ impl AppImageSigns {
 ///   fails whenever the values were inherited from another AppImage, whose
 ///   mount our program is not in;
 /// - `APPIMAGE` is an absolute path to a regular file (not a link or folder)
-///   outside `APPDIR`;
-/// - its name is the app's AppImage name (`brand::APP_NAME` at the start,
-///   `.AppImage` at the end, ignoring case). The version in between is not
-///   checked: an AppImage keeps its first name through updates, and people
-///   add to or shorten the middle.
+///   outside `APPDIR`.
+///
+/// The file's name is not checked: people and AppImage managers rename the
+/// file, and it keeps that name through updates. The checks above already tie
+/// it to this launcher.
 ///
 /// When any of them fails the launcher is not an AppImage install, and the
-/// folder layout (or nothing, for a development build) is used instead.
+/// folder layout (or nothing, for a development build) is used instead; if
+/// it still runs from inside an AppImage mount, [`appimage_left_alone`] says
+/// so.
 pub fn appimage_in_use(linux: bool, signs: &AppImageSigns) -> Option<PathBuf> {
     if !linux || !signs.appimage_is_file {
         return None;
@@ -135,9 +146,21 @@ pub fn appimage_in_use(linux: bool, signs: &AppImageSigns) -> Option<PathBuf> {
     if !exe.starts_with(appdir) || appimage.starts_with(appdir) {
         return None;
     }
-    let name = appimage.file_name()?.to_str()?.to_lowercase();
-    let ours = name.starts_with(&brand::APP_NAME.to_lowercase()) && name.ends_with(".appimage");
-    ours.then(|| appimage.to_path_buf())
+    Some(appimage.to_path_buf())
+}
+
+/// Whether this launcher runs from inside an AppImage mount (`APPDIR` set,
+/// absolute and holding the running program) whose file [`appimage_in_use`]
+/// still can't trust, so a downloaded update would never be installed. The
+/// version panel then says so instead of offering a restart that does nothing.
+pub fn appimage_left_alone(linux: bool, signs: &AppImageSigns) -> bool {
+    let inside_mount = match (signs.appdir.as_deref(), signs.exe.as_deref()) {
+        (Some(appdir), Some(exe)) => {
+            appdir.is_absolute() && appdir.parent().is_some() && exe.starts_with(appdir)
+        }
+        _ => false,
+    };
+    linux && inside_mount && appimage_in_use(linux, signs).is_none()
 }
 
 /// The launcher's file name on this platform.
@@ -284,11 +307,11 @@ fn unpack(package: &Path, layout: &Layout, version: &str) -> diag::Result<()> {
 }
 
 /// Points the `current` file at `version` in one rename, put on the disk
-/// first ([`crate::state_file::write_whole`]).
+/// first ([`diag::disk::write_atomic`]).
 pub fn set_current(layout: &Layout, version: &str) -> diag::Result<()> {
     let file = layout.root().join(CURRENT_FILE);
     let failed = || install_failed(format!("{} could not be written.", file.display()));
-    crate::state_file::write_whole(&file, version.as_bytes()).or_explain(failed)
+    diag::disk::write_atomic(&file, version.as_bytes()).or_explain(failed)
 }
 
 /// Replaces `target` with `source`: a copy beside it first, then one rename.
@@ -704,6 +727,7 @@ mod tests {
     fn a_launcher_inside_its_appimage_is_an_appimage_install() {
         let signs = real_appimage();
         assert_eq!(appimage_in_use(true, &signs), signs.appimage);
+        assert!(!appimage_left_alone(true, &signs));
         // Renamed by hand or by an integration tool: still ours.
         let renamed = AppImageSigns {
             appimage: Some(PathBuf::from(format!(
@@ -713,6 +737,40 @@ mod tests {
             ..real_appimage()
         };
         assert!(appimage_in_use(true, &renamed).is_some());
+        // Any name: the mount and the file already tie it to this launcher.
+        for name in ["video-editor.AppImage", "editor", "app_1.2.3-x86_64.appimage"] {
+            let renamed = AppImageSigns {
+                appimage: Some(PathBuf::from("/home/me/Applications").join(name)),
+                ..real_appimage()
+            };
+            assert_eq!(appimage_in_use(true, &renamed), renamed.appimage, "{name}");
+            assert!(!appimage_left_alone(true, &renamed), "{name}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_appimage_whose_file_cant_be_trusted_says_it_is_left_alone() {
+        let not_a_file = AppImageSigns {
+            appimage_is_file: false,
+            ..real_appimage()
+        };
+        assert_eq!(appimage_in_use(true, &not_a_file), None);
+        assert!(appimage_left_alone(true, &not_a_file));
+        let no_variable = AppImageSigns {
+            appimage: None,
+            ..real_appimage()
+        };
+        assert!(appimage_left_alone(true, &no_variable));
+        assert!(!appimage_left_alone(false, &not_a_file), "never off Linux");
+        // Not inside a mount at all (a development build, an inherited
+        // variable): nothing to say.
+        let outside = AppImageSigns {
+            exe: Some(PathBuf::from("/home/me/build/launcher")),
+            ..not_a_file
+        };
+        assert!(!appimage_left_alone(true, &outside));
+        assert!(!appimage_left_alone(true, &AppImageSigns::default()));
     }
 
     #[test]
@@ -746,12 +804,12 @@ mod tests {
     }
 
     #[test]
-    fn an_appimage_variable_naming_another_program_is_ignored() {
-        let other = AppImageSigns {
-            appimage: Some(PathBuf::from("/home/me/Applications/Writer-3.1-x86_64.AppImage")),
+    fn an_appimage_variable_that_cant_be_ours_is_ignored() {
+        let inside_mount = AppImageSigns {
+            appimage: Some(PathBuf::from("/tmp/.mount_abc123/usr/bin/launcher")),
             ..real_appimage()
         };
-        assert_eq!(appimage_in_use(true, &other), None);
+        assert_eq!(appimage_in_use(true, &inside_mount), None);
         let not_a_file = AppImageSigns {
             appimage_is_file: false,
             ..real_appimage()

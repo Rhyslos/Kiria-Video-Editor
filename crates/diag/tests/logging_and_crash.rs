@@ -24,6 +24,15 @@ fn logs_are_written_and_a_panic_leaves_a_crash_report() {
 
     tracing::info!("hello from the test");
     tracing::info!("the last line before the panic");
+    // Another editor appends to the same daily file; its lines are not
+    // this process's and stay out of the report.
+    let shared = logging::latest_log_file(&dirs.logs).expect("the shared log file");
+    let others: String = (0..300).map(|n| format!("another editor's line {n}\n")).collect();
+    fs::OpenOptions::new()
+        .append(true)
+        .open(&shared)
+        .and_then(|mut file| std::io::Write::write_all(&mut file, others.as_bytes()))
+        .unwrap();
     let result = std::panic::catch_unwind(|| panic!("deliberate test panic"));
     assert!(result.is_err());
 
@@ -39,6 +48,10 @@ fn logs_are_written_and_a_panic_leaves_a_crash_report() {
     assert!(
         report.contains("a panic was caught and handled: deliberate caught panic"),
         "the caught panic is in the log:\n{report}"
+    );
+    assert!(
+        !report.contains("another editor's line"),
+        "the report has only this process's lines:\n{report}"
     );
 
     drop(guard); // flushes the background writer

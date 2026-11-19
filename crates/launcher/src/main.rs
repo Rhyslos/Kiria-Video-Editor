@@ -357,22 +357,35 @@ pub(crate) fn watch_editor(data_dir: &Path, child: &mut std::process::Child) -> 
     };
     let outcome = health::watch_start(data_dir, child, health::START_TIMEOUT);
     tracing::info!(?outcome, %version, "editor start");
-    // Another launcher updating now: its editor's start is its own to record.
-    let Some(_lock) = updater::UpdateLock::for_step(data_dir, "the check after the editor's start") else {
-        return Watched {
-            outcome: Some(outcome),
-            rolled_back: false,
-        };
-    };
-    if outcome == health::StartOutcome::Started {
+    Watched {
+        outcome: Some(outcome),
+        rolled_back: record_start(data_dir, &layout, &version, outcome),
+    }
+}
+
+/// After the editor's start: records it, swaps in a newer launcher and
+/// tidies up after a good one, rolls back after repeated failures.
+/// Returns whether it rolled back.
+fn record_start(
+    data_dir: &Path,
+    layout: &updater::Layout,
+    version: &str,
+    outcome: updater::health::StartOutcome,
+) -> bool {
+    use updater::health;
+    // Not waited for: another launcher may be downloading for minutes. Its
+    // download doesn't stop this start being recorded (after_start has a
+    // short lock of its own), only the launcher swap and the tidying up.
+    let update = updater::UpdateLock::for_step(data_dir, "replacing the launcher and removing old versions");
+    if outcome == health::StartOutcome::Started && update.is_some() {
         // The version works: now its launcher may replace this one (used from the next start).
-        match updater::apply::replace_launcher(&layout, VERSION) {
+        match updater::apply::replace_launcher(layout, VERSION) {
             Ok(true) => tracing::info!(%version, "launcher updated"),
             Ok(false) => {}
             Err(err) => tracing::warn!("{}", err.report()),
         }
     }
-    let rolled_back = match health::after_start(data_dir, &layout, &version, outcome) {
+    match health::after_start(data_dir, layout, version, outcome, update.as_ref()) {
         Ok(Some(notice)) => {
             tracing::warn!(failed = %notice.failed, restored = %notice.restored, "rolled back");
             true
@@ -382,10 +395,6 @@ pub(crate) fn watch_editor(data_dir: &Path, child: &mut std::process::Child) -> 
             tracing::warn!("{}", err.report());
             false
         }
-    };
-    Watched {
-        outcome: Some(outcome),
-        rolled_back,
     }
 }
 
@@ -448,6 +457,33 @@ mod tests {
         assert_eq!(table.keys_for(ui_kit::Action::OpenSettings), "Ctrl+Comma");
     }
 
+    /// Another launcher downloading (it holds the update lock for minutes)
+    /// never keeps this one's failed starts from being counted and rolled back.
+    #[test]
+    fn failed_starts_roll_back_while_another_launcher_downloads() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (data, root) = (tmp.path().join("data"), tmp.path().join("app"));
+        std::fs::create_dir_all(&data).unwrap();
+        let layout = updater::Layout::at(&root);
+        for version in ["0.1.0", "0.2.0"] {
+            let dir = layout.version_dir(version);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(updater::install::editor_file_name()), "").unwrap();
+        }
+        updater::apply::set_current(&layout, "0.2.0").unwrap();
+        let _downloading = updater::UpdateLock::try_take(&data).unwrap().unwrap();
+
+        assert!(!super::record_start(
+            &data,
+            &layout,
+            "0.2.0",
+            StartOutcome::Failed
+        ));
+        assert!(super::record_start(&data, &layout, "0.2.0", StartOutcome::Failed));
+        assert_eq!(layout.current_version().as_deref(), Some("0.1.0"));
+        assert_eq!(updater::UpdatePrefs::load(&data).bad_versions, ["0.2.0"]);
+    }
+
     use graphics::{Backend, GraphicsSettings, Platform, Program, RunKind, StartMarker};
     use updater::health::{self, StartOutcome};
 
@@ -467,7 +503,7 @@ mod tests {
             std::fs::write(dir.join(updater::install::editor_file_name()), "").unwrap();
         }
         updater::apply::set_current(&layout, "0.2.0").unwrap();
-        let after_start = |outcome| health::after_start(&data, &layout, "0.2.0", outcome).unwrap();
+        let after_start = |outcome| health::after_start(&data, &layout, "0.2.0", outcome, None).unwrap();
         let editor_plan = || {
             let marker = StartMarker::in_dir(Program::Editor, &data);
             let choice = GraphicsSettings::load(&data).choice;
