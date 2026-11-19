@@ -210,6 +210,7 @@ const USUAL: &[(Action, Shortcut)] = &[
     (Action::RollTool, Shortcut::key(Key::T)),
     (Action::SlipTool, Shortcut::key(Key::Y)),
     (Action::SlideTool, Shortcut::key(Key::U)),
+    (Action::TextTool, Shortcut::key(Key::W)),
     (Action::ToggleLoop, Shortcut::key(Key::L)),
     (Action::MarkIn, Shortcut::key(Key::I)),
     (Action::MarkOut, Shortcut::key(Key::O)),
