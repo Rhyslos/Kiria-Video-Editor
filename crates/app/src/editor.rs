@@ -807,11 +807,14 @@ impl Editor {
         // Mute, solo, volume and sound changes (and their undo) are heard
         // within a block: a comparison per frame, sent only when changed.
         // What is being dragged on the Audio page (a setting, a fader, a
-        // track's line) is heard as it moves.
+        // track's line) or in the inspector's Audio section (a clip's
+        // volume or pan) is heard as it moves.
         if let Some(document) = &self.document {
             let p = document.project();
             let shown = self.audio_page.shown(p);
-            let base = shown.as_ref().unwrap_or(p);
+            let shown = shown.as_ref().unwrap_or(p);
+            let setting = self.inspector.with_sounds_being_set(shown);
+            let base = setting.as_ref().unwrap_or(shown);
             let view = view_on(self.page, &self.timeline, &self.audio_page.timeline);
             let lined = view
                 .line_being_set()
