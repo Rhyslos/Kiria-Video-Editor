@@ -221,6 +221,15 @@ impl Editor {
                 .into();
                 Ok(())
             }
+            Action::TrackColumn => {
+                self.settings.hide_track_column = !self.settings.hide_track_column;
+                self.status = match self.settings.hide_track_column {
+                    true => "No column for the selected track: pin tracks beside the master from their right-click menu",
+                    false => "The selected audio track's column is beside the master again",
+                }
+                .into();
+                Ok(())
+            }
             Action::DetailedGain => {
                 self.settings.detailed_gain = !self.settings.detailed_gain;
                 self.status = match self.settings.detailed_gain {

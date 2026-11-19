@@ -187,6 +187,10 @@ pub struct Editor {
     /// track it was last for (it stays on it when nothing is selected).
     track_column: ui_kit::track_column::TrackColumn,
     track_column_for: Option<project::TrackId>,
+    /// The columns of the tracks pinned beside the master, by track.
+    pinned_columns: std::collections::HashMap<u64, ui_kit::track_column::TrackColumn>,
+    /// Effects copied from a track (its menu's "Copy its effects"), to paste on another.
+    track_effects: Option<project::TrackSound>,
     versions: crate::versions_window::VersionsWindow,
     templates: crate::templates_window::TemplatesWindow,
     /// Prune: the files no timeline uses, to take out of the project.
@@ -452,6 +456,8 @@ impl Editor {
             master: ui_kit::master::MasterColumn::default(),
             track_column: ui_kit::track_column::TrackColumn::default(),
             track_column_for: None,
+            pinned_columns: Default::default(),
+            track_effects: None,
             versions: crate::versions_window::VersionsWindow::default(),
             templates: crate::templates_window::TemplatesWindow::default(),
             prune: crate::prune_window::PruneWindow::default(),
@@ -1098,6 +1104,7 @@ impl Editor {
             zoom_to_playhead: self.settings.zoom_to_playhead,
             track_knobs: self.settings.track_knobs,
             detailed_gain: self.settings.detailed_gain,
+            track_column: !self.settings.hide_track_column,
             rough_cut: self.settings.rough_cut,
             edit_at_playhead: self.settings.edit_at_playhead,
             clean: self.settings.clean_picture,

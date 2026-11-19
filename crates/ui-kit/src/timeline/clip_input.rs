@@ -624,6 +624,10 @@ impl TimelineView {
             on_fade,
             on_strip,
         } = *targets;
+        // Nothing on a locked track is dragged (the project would refuse it).
+        if hit_track.is_some_and(|t| t.locked) {
+            return;
+        }
         if r.drag_started_by(egui::PointerButton::Primary)
             && let Some(fade) = on_fade
         {

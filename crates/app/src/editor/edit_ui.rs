@@ -767,6 +767,26 @@ impl Editor {
             self.timeline.zoom_to_playhead = self.settings.zoom_to_playhead;
             self.timeline.volume_control = self.settings.volume_control();
             self.timeline.detailed_on_selected = self.settings.detailed_gain_selected;
+            // Every track's meter, read once a frame (reading takes the
+            // held peaks): the headers' meters and the tall columns.
+            let meters: std::collections::HashMap<project::TrackId, ([f32; 2], f32)> = self
+                .playback
+                .as_ref()
+                .map(|p| {
+                    p.track_meters()
+                        .into_iter()
+                        .map(|(id, meter)| {
+                            let l = meter.take();
+                            (id, (l.peak_db, l.short_term))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            for (d, t) in drawn.audio.iter_mut().zip(&seq.audio_tracks) {
+                d.meter = meters.get(&t.id).map(|l| l.0);
+            }
+            self.timeline.pins = true;
+            self.timeline.effects_copied = self.track_effects.is_some();
             if self.settings.rough_cut {
                 timeline_panel::fold_sound(&mut drawn);
             }
@@ -806,21 +826,46 @@ impl Editor {
                 })
                 .or_else(|| seq.audio_tracks.front());
             self.track_column_for = picked.map(|t| t.id);
-            let column = picked.map(|t| {
-                let index = seq.audio_tracks.iter().position(|o| o.id == t.id).unwrap_or(0);
-                let levels = self.playback.as_ref().and_then(|p| {
-                    p.track_meters()
-                        .into_iter()
-                        .find(|(id, _)| *id == t.id)
-                        .map(|(_, meter)| {
-                            let l = meter.take();
-                            (l.peak_db, l.short_term)
-                        })
-                });
-                (t.id, t.name.clone(), index, t.gain_db, t.muted, t.solo, levels)
-            });
-            let columns = if column.is_some() { 2.0 } else { 1.0 };
-            let size = egui::vec2(width - (layout::MASTER_WIDTH + 8.0) * columns, height);
+            // The pinned tracks' columns first, in the order they were
+            // pinned, then the selected track's (unless it is pinned, or
+            // that column is switched off); as many as leave the timeline room.
+            let pinned = self
+                .timeline
+                .pinned
+                .iter()
+                .filter_map(|id| seq.audio_tracks.iter().find(|t| t.id.0 == *id))
+                .map(|t| (t, true));
+            let auto = picked
+                .filter(|t| !self.settings.hide_track_column && !self.timeline.pinned.contains(&t.id.0))
+                .map(|t| (t, false));
+            let room = ((width - TIMELINE_LEAST - layout::MASTER_WIDTH) / (layout::MASTER_WIDTH + 8.0))
+                .max(0.0) as usize;
+            let columns: Vec<ColumnShown> = pinned
+                .chain(auto)
+                .take(room)
+                .map(|(t, closable)| {
+                    let index = seq.audio_tracks.iter().position(|o| o.id == t.id).unwrap_or(0);
+                    ColumnShown {
+                        id: t.id,
+                        name: t.name.clone(),
+                        colour: t.colour.map_or_else(
+                            || ui_kit::timeline::audio_colour(index),
+                            timeline_panel::label_colour,
+                        ),
+                        gain_db: t.gain_db,
+                        muted: t.muted,
+                        solo: t.solo,
+                        levels: meters.get(&t.id).copied(),
+                        closable,
+                    }
+                })
+                .collect();
+            self.pinned_columns
+                .retain(|id, _| self.timeline.pinned.contains(id));
+            let size = egui::vec2(
+                width - (layout::MASTER_WIDTH + 8.0) * (columns.len() as f32 + 1.0),
+                height,
+            );
             let levels = self.playback.as_ref().map(|p| {
                 let l = p.levels();
                 ui_kit::master::MeterLevels {
@@ -836,27 +881,38 @@ impl Editor {
             ui.horizontal_top(|ui| {
                 timeline_events = self.timeline.show(ui, &self.theme, &data, size);
                 ui.add_space(8.0);
-                if let Some((id, name, index, gain_db, muted, solo, levels)) = column {
+                for c in &columns {
                     let (rect, _) =
                         ui.allocate_exact_size(egui::vec2(layout::MASTER_WIDTH, height), egui::Sense::hover());
                     let strip = ui_kit::track_column::TrackStrip {
-                        id: id.0,
-                        name: &name,
-                        colour: ui_kit::timeline::audio_colour(index),
-                        gain_db,
-                        muted,
-                        solo,
-                        levels,
+                        id: c.id.0,
+                        name: &c.name,
+                        colour: c.colour,
+                        gain_db: c.gain_db,
+                        muted: c.muted,
+                        solo: c.solo,
+                        levels: c.levels,
+                        closable: c.closable,
                     };
-                    let asked = self.track_column.show(ui, &self.theme, rect, strip);
-                    let (muted, solo) = asked.mute_solo.unwrap_or((muted, solo));
+                    let column = match c.closable {
+                        true => self.pinned_columns.entry(c.id.0).or_default(),
+                        false => &mut self.track_column,
+                    };
+                    let asked = column.show(ui, &self.theme, rect, strip);
+                    let (muted, solo) = asked.mute_solo.unwrap_or((c.muted, c.solo));
                     if asked.gain_db.is_some() || asked.mute_solo.is_some() {
                         timeline_events.push(ui_kit::TimelineEvent::TrackMix {
-                            track: id.0,
+                            track: c.id.0,
                             muted,
                             solo,
-                            gain_db: asked.gain_db.unwrap_or(gain_db),
+                            gain_db: asked.gain_db.unwrap_or(c.gain_db),
                         });
+                    }
+                    if asked.solo_only {
+                        timeline_events.push(ui_kit::TimelineEvent::SoloOnly { track: c.id.0 });
+                    }
+                    if asked.close {
+                        self.timeline.pinned.retain(|t| *t != c.id.0);
                     }
                     ui.add_space(8.0);
                 }
@@ -901,6 +957,23 @@ impl Editor {
             );
         }
     }
+}
+
+/// The timeline keeps at least this wide when columns are pinned beside
+/// the master: those that don't fit are left out.
+const TIMELINE_LEAST: f32 = 480.0;
+
+/// A tall track column beside the master, as shown this frame.
+struct ColumnShown {
+    id: project::TrackId,
+    name: String,
+    colour: egui::Color32,
+    gain_db: f32,
+    muted: bool,
+    solo: bool,
+    levels: Option<([f32; 2], f32)>,
+    /// A pinned track's column, with its × to unpin it.
+    closable: bool,
 }
 
 #[cfg(test)]

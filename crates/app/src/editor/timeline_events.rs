@@ -202,6 +202,32 @@ impl Editor {
                     self.errors.push(&err);
                 }
             }
+            E::LockTrack { .. }
+            | E::ColourTrack { .. }
+            | E::DuplicateTrack { .. }
+            | E::MoveTrack { .. }
+            | E::InsertTrack { .. }
+            | E::ResetTrackMix { .. }
+            | E::SoloOnly { .. }
+            | E::RemoveEmptyTracks => {
+                self.apply_on_open(|seq| timeline_panel::track_option_command(seq, &event));
+            }
+            E::TrackPan { .. } => {
+                self.apply_on_open(|seq| timeline_panel::track_option_command(seq, &event));
+                self.play_on_with_new_mix();
+            }
+            E::SelectTrackClips { track, from } => {
+                if let Some(seq) = self.document.as_ref().and_then(|d| d.project().active()) {
+                    self.selected = timeline_panel::track_clips(seq, project::TrackId(track), from);
+                    self.selected_label = None;
+                }
+            }
+            E::CopyTrackEffects { track } => self.copy_track_effects(project::TrackId(track)),
+            E::PasteTrackEffects { track } => self.paste_track_effects(project::TrackId(track)),
+            E::OpenTrackEffects { track } => {
+                self.audio_page.track = Some(project::TrackId(track));
+                self.page = ui_kit::Page::Audio;
+            }
             E::RemoveTrack { .. } | E::HideTrack { .. } | E::RenameTrack { .. } => {
                 self.apply_on_open(|seq| timeline_panel::track_command(seq.id, event));
             }
@@ -250,6 +276,40 @@ impl Editor {
             E::SplitAt { at, clip } => self.split_on_open(at, clip.map(project::ClipId)),
             E::Blade { clip, at } => self.split_on_open(at, Some(project::ClipId(clip))),
         }
+    }
+
+    /// Keeps the effects of `track` to paste on another track.
+    fn copy_track_effects(&mut self, track: project::TrackId) {
+        let sound = self
+            .document
+            .as_ref()
+            .and_then(|d| d.project().active())
+            .and_then(|seq| seq.track(track))
+            .map(|t| (t.name.clone(), t.sound.clone()));
+        if let Some((name, sound)) = sound {
+            self.status = match sound.effects_on() {
+                true => format!("The effects of {name} are copied: right-click another track to paste them"),
+                false => format!("{name} has no effects on: pasting them turns another track's effects off"),
+            };
+            self.track_effects = Some(sound);
+        }
+    }
+
+    /// The copied effects replace those of `track`: one undo step.
+    fn paste_track_effects(&mut self, track: project::TrackId) {
+        let Some(copied) = self.track_effects.clone() else {
+            return;
+        };
+        self.apply_on_open(|seq| {
+            let t = seq.track(track)?;
+            let sound = t.sound.with_effects_of(&copied);
+            (sound != t.sound).then(|| Command::SetTrackSound {
+                sequence: seq.id,
+                track,
+                sound: Box::new(sound),
+            })
+        });
+        self.play_on_with_new_mix();
     }
 
     /// Builds one command from the open timeline (`None`: nothing to do)

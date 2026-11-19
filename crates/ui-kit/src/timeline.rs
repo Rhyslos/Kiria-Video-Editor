@@ -104,6 +104,16 @@ pub fn audio_colour(index: usize) -> Color32 {
     AUDIO_COLOURS[index % AUDIO_COLOURS.len()]
 }
 
+/// The colour a track is drawn in: its own, else the usual one of the
+/// `index`-th audio track, or of video clips (`video`).
+pub fn track_colour(track: &TimelineTrack, index: usize, audio: bool, video: Color32) -> Color32 {
+    match (track.colour, audio) {
+        (Some(c), _) => c,
+        (None, true) => audio_colour(index),
+        (None, false) => video,
+    }
+}
+
 /// An audio track with the detailed knob is at least this tall.
 pub const DETAILED_TRACK: f32 = 136.0;
 /// An audio track with the compact knob is at least this tall.
@@ -313,6 +323,20 @@ pub struct TimelineTrack {
     /// Its role, an index into [`TimelineData::roles`]: a mark in its
     /// colour by its name, and chosen in the names' right-click menu.
     pub role: Option<usize>,
+    /// Its own colour, chosen in the names' menu (none: the usual one).
+    pub colour: Option<Color32>,
+    /// Locked: nothing on it can be moved, trimmed or changed. A padlock in
+    /// its header, and its clips drawn hatched.
+    pub locked: bool,
+    /// An audio track's pan, -1 all left to 1 all right: the small knob
+    /// in its header.
+    pub pan: f32,
+    /// An audio track's effects (EQ, compressor and the rest) do
+    /// something: its FX button is lit.
+    pub effects_on: bool,
+    /// An audio track's two channels' peaks (dBFS) while playing: the thin
+    /// meter at its header's right edge.
+    pub meter: Option<[f32; 2]>,
 }
 
 impl TimelineClip {
@@ -475,6 +499,39 @@ pub enum TimelineEvent {
     AddTrack { audio: bool },
     /// "Remove" from that menu, for a track without clips.
     RemoveTrack { track: u64 },
+    /// "Remove the empty tracks" from that menu: every track without
+    /// clips, keeping one of each kind.
+    RemoveEmptyTracks,
+    /// "Insert a track above" or "below" a track: a new track of its kind
+    /// at `index` among them (0 is V1 or A1).
+    InsertTrack { audio: bool, index: usize },
+    /// "Duplicate" from that menu: a copy of the track and its clips beside it.
+    DuplicateTrack { track: u64 },
+    /// "Move up" or "Move down" from that menu: the track to `index` among
+    /// the tracks of its kind.
+    MoveTrack { track: u64, index: usize },
+    /// The padlock in a track's header (or "Lock" in its menu).
+    LockTrack { track: u64, locked: bool },
+    /// A colour picked for a track in its menu: an index into
+    /// [`crate::theme::labels::ALL`], or none for the usual one.
+    ColourTrack { track: u64, colour: Option<usize> },
+    /// "Select every clip on it" (`from` none) or "Select its clips after
+    /// the playhead" (`from` the playhead) from a track's menu.
+    SelectTrackClips { track: u64, from: Option<f64> },
+    /// "Copy its effects" from an audio track's menu.
+    CopyTrackEffects { track: u64 },
+    /// "Paste effects" on an audio track: the copied ones replace its own.
+    PasteTrackEffects { track: u64 },
+    /// "Reset volume and pan" from an audio track's menu.
+    ResetTrackMix { track: u64 },
+    /// Ctrl-click on S (or "Solo only this track"): this track soloed,
+    /// every other one not.
+    SoloOnly { track: u64 },
+    /// The FX button in an audio track's header: its effects on the Audio page.
+    OpenTrackEffects { track: u64 },
+    /// The pan knob in an audio track's header was let go (or
+    /// double-clicked): -1 all left to 1 all right.
+    TrackPan { track: u64, pan: f32 },
     /// A track's name was typed.
     RenameTrack { track: u64, name: String },
     /// A video track's eye was clicked: hide it, or show it again.
@@ -783,6 +840,16 @@ pub struct TimelineView {
     label_drag: Option<ruler::LabelDrag>,
     /// The timeline label whose right-click menu is open.
     label_menu: Option<u64>,
+    /// Audio tracks pinned beside the master column, in the order they
+    /// were pinned (their menu's "Pin beside the master"). Kept with the layout.
+    pub pinned: Vec<u64>,
+    /// Audio tracks can be pinned here (their menu offers it). The page sets it.
+    pub pins: bool,
+    /// Effects were copied from a track: "Paste effects" can be chosen.
+    /// The page sets it.
+    pub effects_copied: bool,
+    /// The audio headers' meters as drawn, falling back slowly.
+    meters: std::collections::HashMap<u64, [f32; 2]>,
 }
 
 impl Default for TimelineView {
@@ -845,6 +912,10 @@ impl Default for TimelineView {
             line_menu: None,
             label_drag: None,
             label_menu: None,
+            pinned: Vec::new(),
+            pins: false,
+            effects_copied: false,
+            meters: Default::default(),
         }
     }
 }
@@ -1637,7 +1708,7 @@ impl TimelineView {
                     audio,
                     events,
                 );
-                let colour = if audio { audio_colour(i) } else { theme.line_strong };
+                let colour = track_colour(track, i, audio, theme.line_strong);
                 // Waveforms are as loud as the track is set, following its
                 // fader while it is dragged.
                 let track_gain = match self.fader_drag {
@@ -1663,6 +1734,9 @@ impl TimelineView {
                     left,
                 };
                 self.draw_track_clips(ui, theme, data, &clip_painter, &at, look, elsewhere, visible);
+                if track.locked {
+                    headers::draw_locked(&clip_painter.with_clip_rect(band.intersect(area)), theme, band);
+                }
             }
             // A clip dragged past the last track of this area: a lit strip
             // where the new track would be, with the clip in it.
@@ -1899,6 +1973,11 @@ mod tests {
             loading: None,
             line: None,
             role: None,
+            colour: None,
+            locked: false,
+            pan: 0.0,
+            effects_on: false,
+            meter: None,
         }
     }
 
@@ -1917,6 +1996,8 @@ mod tests {
         needle: Option<f64>,
         region: Option<(f64, f64)>,
         markers: Vec<TimelineMarker>,
+        /// The window around the timeline (taller for long menus).
+        window: Vec2,
     }
 
     const OVER_RULER: Pos2 = pos2(640.0, 10.0);
@@ -1940,6 +2021,7 @@ mod tests {
                 needle: None,
                 region: None,
                 markers: Vec::new(),
+                window: vec2(1000.0, 400.0),
             }
         }
 
@@ -1950,7 +2032,7 @@ mod tests {
                 .chain(events)
                 .collect();
             let input = egui::RawInput {
-                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, self.window.max(size))),
                 events,
                 ..Default::default()
             };
@@ -2454,6 +2536,11 @@ mod tests {
             loading: None,
             line: None,
             role: None,
+            colour: None,
+            locked: false,
+            pan: 0.0,
+            effects_on: false,
+            meter: None,
         };
         let tracks = [track];
         let rows = [Rect::from_min_max(pos2(0.0, 0.0), pos2(500.0, 50.0))];
@@ -3714,6 +3801,70 @@ mod tests {
     }
 
     #[test]
+    fn the_headers_lock_tracks_open_effects_and_solo_one_alone() {
+        let mut rig = Rig::new(2, 1);
+        let primary = egui::PointerButton::Primary;
+        // A video track's padlock, left of its eye: x 90 to 110.
+        assert_eq!(
+            click(&mut rig, pos2(100.0, 118.0), primary),
+            [TimelineEvent::LockTrack {
+                track: 1,
+                locked: true
+            }]
+        );
+        // An audio track's second row (y 246 to 262), left of the meter:
+        // the padlock, FX and the pan knob.
+        assert_eq!(
+            click(&mut rig, pos2(69.0, 254.0), primary),
+            [TimelineEvent::LockTrack {
+                track: 100,
+                locked: true
+            }]
+        );
+        assert_eq!(
+            click(&mut rig, pos2(93.0, 254.0), primary),
+            [TimelineEvent::OpenTrackEffects { track: 100 }]
+        );
+        rig.audio[0].pan = 0.5;
+        // Dragged right: half the way across from the middle.
+        let at = pos2(117.0, 254.0);
+        assert_eq!(
+            drag(&mut rig, at, at + vec2(30.0, 0.0)),
+            [TimelineEvent::TrackPan { track: 100, pan: 1.0 }],
+            "from half right to all the way"
+        );
+        // Ctrl-click on S: this track alone.
+        rig.modifiers = egui::Modifiers::COMMAND;
+        assert_eq!(
+            click(&mut rig, pos2(117.0, 232.0), primary),
+            [TimelineEvent::SoloOnly { track: 100 }]
+        );
+    }
+
+    #[test]
+    fn a_locked_track_is_hatched_and_its_clips_stay_put() {
+        let mut rig = Rig::new(1, 1);
+        rig.audio[0].locked = true;
+        // Its clip is chosen by a click, but a drag moves nothing.
+        assert_eq!(drag(&mut rig, pos2(300.0, 250.0), pos2(500.0, 250.0)), []);
+        rig.audio[0].locked = false;
+        assert!(matches!(
+            drag(&mut rig, pos2(300.0, 250.0), pos2(500.0, 250.0))[..],
+            [TimelineEvent::Move { clip: 100, .. }]
+        ));
+    }
+
+    #[test]
+    fn pinning_keeps_the_order_and_each_track_once() {
+        let mut pinned = vec![3, 5];
+        headers::pin(&mut pinned, 3, true);
+        assert_eq!(pinned, [5, 3], "pinned again: at the end");
+        headers::pin(&mut pinned, 7, true);
+        headers::pin(&mut pinned, 5, false);
+        assert_eq!(pinned, [3, 7]);
+    }
+
+    #[test]
     fn the_eye_hides_and_shows_a_video_track() {
         let mut rig = Rig::new(2, 1);
         let primary = egui::PointerButton::Primary;
@@ -3765,7 +3916,16 @@ mod tests {
         click(rig, at, egui::PointerButton::Secondary);
         rig.frame(vec![]);
         assert!(egui::Popup::is_any_open(&rig.ctx), "the menu opened");
-        let events = click(rig, at + vec2(30.0, down), egui::PointerButton::Primary);
+        // Only clicks on the menu: one past it would land on the timeline.
+        let target = at + vec2(30.0, down);
+        if rig
+            .ctx
+            .layer_id_at(target)
+            .is_none_or(|l| l.order != egui::Order::Foreground)
+        {
+            return (Vec::new(), false);
+        }
+        let events = click(rig, target, egui::PointerButton::Primary);
         let renames = rig.view.rename.take().is_some();
         (events, renames)
     }
@@ -3776,7 +3936,7 @@ mod tests {
         let (mut all, mut renames) = (Vec::new(), false);
         // Near the window's bottom edge the menu opens upward to fit, so
         // the tries begin above the place that was clicked.
-        for step in -30..40 {
+        for step in -100..130 {
             let (events, renamed) = pick_from_names_menu(rig, at, 4.0 + step as f32 * 5.0);
             for event in events {
                 if !all.contains(&event) {
@@ -3789,8 +3949,10 @@ mod tests {
     }
 
     #[test]
-    fn the_menu_of_the_track_names_adds_hides_renames_and_removes() {
+    fn the_menu_of_the_track_names_offers_what_can_be_done_to_a_track() {
         let mut rig = Rig::new(2, 2);
+        // A window with room for the whole menu.
+        rig.window = vec2(1000.0, 900.0);
         // The upper video track has no clips: it can go.
         rig.video[1].clips.clear();
         click(&mut rig, pos2(40.0, 130.0), egui::PointerButton::Secondary);
@@ -3800,13 +3962,34 @@ mod tests {
         assert_eq!(
             events,
             [
+                TimelineEvent::LockTrack {
+                    track: 1,
+                    locked: true
+                },
                 TimelineEvent::HideTrack {
                     track: 1,
                     hidden: true
                 },
+                TimelineEvent::SelectTrackClips { track: 1, from: None },
+                TimelineEvent::SelectTrackClips {
+                    track: 1,
+                    from: Some(2.0)
+                },
+                TimelineEvent::DuplicateTrack { track: 1 },
+                // The top video track: only down (to V1).
+                TimelineEvent::MoveTrack { track: 1, index: 0 },
+                TimelineEvent::InsertTrack {
+                    audio: false,
+                    index: 2
+                },
+                TimelineEvent::InsertTrack {
+                    audio: false,
+                    index: 1
+                },
                 TimelineEvent::RemoveTrack { track: 1 },
                 TimelineEvent::AddTrack { audio: false },
                 TimelineEvent::AddTrack { audio: true },
+                TimelineEvent::RemoveEmptyTracks,
             ]
         );
         // A track with clips stays: the line is there but does nothing.
@@ -3814,12 +3997,32 @@ mod tests {
         assert_eq!(
             events,
             [
+                TimelineEvent::LockTrack {
+                    track: 0,
+                    locked: true
+                },
                 TimelineEvent::HideTrack {
                     track: 0,
                     hidden: true
                 },
+                TimelineEvent::SelectTrackClips { track: 0, from: None },
+                TimelineEvent::SelectTrackClips {
+                    track: 0,
+                    from: Some(2.0)
+                },
+                TimelineEvent::DuplicateTrack { track: 0 },
+                TimelineEvent::MoveTrack { track: 0, index: 1 },
+                TimelineEvent::InsertTrack {
+                    audio: false,
+                    index: 1
+                },
+                TimelineEvent::InsertTrack {
+                    audio: false,
+                    index: 0
+                },
                 TimelineEvent::AddTrack { audio: false },
                 TimelineEvent::AddTrack { audio: true },
+                TimelineEvent::RemoveEmptyTracks,
             ]
         );
         // An audio track: nothing to hide, and its own kind is offered first.
@@ -3829,9 +4032,37 @@ mod tests {
         assert_eq!(
             events,
             [
+                TimelineEvent::LockTrack {
+                    track: 101,
+                    locked: true
+                },
+                TimelineEvent::SelectTrackClips {
+                    track: 101,
+                    from: None
+                },
+                TimelineEvent::SelectTrackClips {
+                    track: 101,
+                    from: Some(2.0)
+                },
+                TimelineEvent::SoloOnly { track: 101 },
+                TimelineEvent::ResetTrackMix { track: 101 },
+                TimelineEvent::CopyTrackEffects { track: 101 },
+                // Nothing copied yet: no pasting.
+                TimelineEvent::DuplicateTrack { track: 101 },
+                // The bottom audio track: only up (to A1).
+                TimelineEvent::MoveTrack { track: 101, index: 0 },
+                TimelineEvent::InsertTrack {
+                    audio: true,
+                    index: 1
+                },
+                TimelineEvent::InsertTrack {
+                    audio: true,
+                    index: 2
+                },
                 TimelineEvent::RemoveTrack { track: 101 },
                 TimelineEvent::AddTrack { audio: true },
                 TimelineEvent::AddTrack { audio: false },
+                TimelineEvent::RemoveEmptyTracks,
             ]
         );
         // On the empty part of the column: only adding.
@@ -3844,6 +4075,7 @@ mod tests {
             [
                 TimelineEvent::AddTrack { audio: false },
                 TimelineEvent::AddTrack { audio: true },
+                TimelineEvent::RemoveEmptyTracks,
             ]
         );
     }

@@ -355,6 +355,8 @@ pub struct Display {
     pub track_knobs: bool,
     /// Audio tracks have the detailed volume knob.
     pub detailed_gain: bool,
+    /// The selected audio track has a column beside the master.
+    pub track_column: bool,
     /// The timeline is in the rough cut view.
     pub rough_cut: bool,
     /// Cuts, splits and pastes happen at the playhead (no edit needle).
@@ -381,7 +383,7 @@ pub fn display_lines(display: Display) -> [(Action, &'static str, bool); 4] {
 
 /// The Display menu's lines under its Timeline heading: how the timeline's
 /// tracks are looked at.
-pub fn timeline_lines(display: Display) -> [(Action, &'static str, bool); 8] {
+pub fn timeline_lines(display: Display) -> [(Action, &'static str, bool); 9] {
     [
         (Action::RoughCut, "Rough cut", display.rough_cut),
         (Action::CompactTracks, "Compact tracks", display.compact_tracks),
@@ -407,6 +409,7 @@ pub fn timeline_lines(display: Display) -> [(Action, &'static str, bool); 8] {
         ),
         (Action::TrackKnobs, "Volume knobs", display.track_knobs),
         (Action::DetailedGain, "Detailed audio gain", display.detailed_gain),
+        (Action::TrackColumn, "Selected track column", display.track_column),
     ]
 }
 
@@ -496,7 +499,8 @@ mod tests {
                 (Action::ZoomToPlayhead, true),
                 (Action::EditAtPlayhead, false),
                 (Action::TrackKnobs, false),
-                (Action::DetailedGain, true)
+                (Action::DetailedGain, true),
+                (Action::TrackColumn, false)
             ]
         );
         // Each line's words are in its command's name, so the menu, search

@@ -50,6 +50,9 @@ pub struct Settings {
     /// The track of the selected audio clip shows the detailed knob,
     /// growing to fit it while the clip is selected (Settings › Editing).
     pub detailed_gain_selected: bool,
+    /// No column for the selected audio track beside the master on the Edit
+    /// page (Display menu); pinned tracks still have theirs.
+    pub hide_track_column: bool,
     /// How the height is shared between the viewer and the timeline (the
     /// handle between them), on every page that has both.
     pub viewer_split: ui_kit::splitter::Split,

@@ -1,6 +1,7 @@
 //! How the timeline of a project was laid out when it was last open: each
 //! track's height, the divider between video and audio, which audio
-//! tracks show their level lines, and which of its timelines was open.
+//! tracks show their level lines and are pinned beside the master, and
+//! which of its timelines was open.
 //!
 //! This is view state, not an edit. It lives in its own small file beside
 //! the project (`<file>.view`), never in the project file, so making a track
@@ -39,6 +40,8 @@ pub struct ProjectView {
     /// doesn't say, or that timeline is gone). Which timeline is open is
     /// not an edit, so it is kept here and not in the project.
     pub open_timeline: Option<u64>,
+    /// Audio tracks pinned beside the master column, in order.
+    pub pinned_tracks: Vec<u64>,
 }
 
 impl Default for ProjectView {
@@ -49,6 +52,7 @@ impl Default for ProjectView {
             video_fits_tracks: true,
             level_lines: Vec::new(),
             open_timeline: None,
+            pinned_tracks: Vec::new(),
         }
     }
 }
@@ -62,6 +66,7 @@ impl ProjectView {
             video_fits_tracks: timeline.fit_video,
             level_lines: timeline.level_lines(),
             open_timeline: timeline.showing,
+            pinned_tracks: timeline.pinned.clone(),
         }
     }
 
@@ -74,6 +79,7 @@ impl ProjectView {
         timeline.fit_video = self.video_fits_tracks;
         timeline.set_level_lines(self.level_lines.iter().copied());
         timeline.showing = self.open_timeline;
+        timeline.pinned = self.pinned_tracks.clone();
     }
 
     /// Reads the view kept for a project; the usual layout when there is
@@ -101,9 +107,9 @@ impl ProjectView {
 
 /// What of the view is kept, cheaply compared every frame: the heights'
 /// revision, the divider, whether the video area fits its tracks, the
-/// tracks with level lines, and the timeline shown.
+/// tracks with level lines, and the timeline shown and the pinned tracks.
 #[derive(Debug, Clone, PartialEq)]
-struct Looks(u64, f32, bool, Vec<u64>, Option<u64>);
+struct Looks(u64, f32, bool, Vec<u64>, Option<u64>, Vec<u64>);
 
 impl Looks {
     fn of(timeline: &TimelineView) -> Looks {
@@ -113,6 +119,7 @@ impl Looks {
             timeline.fit_video,
             timeline.level_lines(),
             timeline.showing,
+            timeline.pinned.clone(),
         )
     }
 }

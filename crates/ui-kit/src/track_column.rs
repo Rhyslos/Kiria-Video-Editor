@@ -3,7 +3,8 @@
 //! on, so its volume can be set finely. Its name in its colour at the top;
 //! the two channels' peaks and the loudness over 3 s on the master's scale;
 //! the volume, and M and S, underneath. Built from the master column's
-//! parts, so both read the same (working rule 1).
+//! parts, so both read the same (working rule 1). The same column serves
+//! tracks pinned beside the master, with an × to unpin them.
 
 use crate::Theme;
 use crate::master::{db_at, db_text, falling, volume_text, y_of};
@@ -23,6 +24,8 @@ pub struct TrackStrip<'a> {
     /// Its channels' peaks (dBFS) and loudness over 3 s (LUFS); `None`
     /// while nothing plays.
     pub levels: Option<([f32; 2], f32)>,
+    /// A pinned track's column: an × at its top right unpins it.
+    pub closable: bool,
 }
 
 /// What a frame of the column asks of the page.
@@ -34,6 +37,10 @@ pub struct TrackColumnResponse {
     pub mute_solo: Option<(bool, bool)>,
     /// The volume while the fader is dragged, to show and hear.
     pub dragging: Option<f32>,
+    /// The × was clicked: unpin it.
+    pub close: bool,
+    /// S was Ctrl-clicked: solo this track alone.
+    pub solo_only: bool,
 }
 
 /// Kept by the page between frames.
@@ -65,8 +72,31 @@ impl TrackColumn {
             1.5,
             strip.colour,
         );
-        painter.text(
-            pos2(rect.center().x, rect.top() + 12.0),
+        if strip.closable {
+            let x = Rect::from_center_size(pos2(rect.right() - 10.0, rect.top() + 12.0), vec2(14.0, 14.0));
+            let r = ui
+                .interact(
+                    x,
+                    ui.scope_id().with(("track-column-close", strip.id)),
+                    Sense::click(),
+                )
+                .on_hover_text(format!("Unpin {} from beside the master", strip.name));
+            let colour = if r.hovered() { theme.text } else { theme.muted };
+            for (a, b) in [
+                (vec2(-3.5, -3.5), vec2(3.5, 3.5)),
+                (vec2(-3.5, 3.5), vec2(3.5, -3.5)),
+            ] {
+                painter.line_segment([x.center() + a, x.center() + b], Stroke::new(1.4, colour));
+            }
+            response.close = r.clicked();
+        }
+        // The name, short of the × when there is one.
+        let room = rect.shrink2(vec2(4.0, 0.0)).with_max_x(match strip.closable {
+            true => rect.right() - 18.0,
+            false => rect.right() - 4.0,
+        });
+        painter.with_clip_rect(room.intersect(rect)).text(
+            pos2(room.center().x, rect.top() + 12.0),
             Align2::CENTER_CENTER,
             strip.name,
             FontId::proportional(11.0),
@@ -224,7 +254,11 @@ impl TrackColumn {
         let width = (rect.width() - 22.0) / 2.0;
         for (i, (label, on, tip)) in [
             ("M", strip.muted, "Mute this track"),
-            ("S", strip.solo, "Solo: hear only soloed tracks"),
+            (
+                "S",
+                strip.solo,
+                "Solo: hear only soloed tracks. Ctrl+click: this track alone",
+            ),
         ]
         .into_iter()
         .enumerate()
@@ -234,7 +268,11 @@ impl TrackColumn {
                 vec2(width, 16.0),
             );
             let r = ui
-                .interact(b, ui.scope_id().with(("track-column", label)), Sense::click())
+                .interact(
+                    b,
+                    ui.scope_id().with(("track-column", label, strip.id)),
+                    Sense::click(),
+                )
                 .on_hover_text(tip);
             let fill = match (on, i) {
                 (true, 0) => status::WARNING,
@@ -250,7 +288,9 @@ impl TrackColumn {
                 FontId::proportional(10.5),
                 if on { theme.bg } else { theme.text },
             );
-            if r.clicked() {
+            if r.clicked() && i == 1 && ui.input(|i| i.modifiers.command) {
+                response.solo_only = true;
+            } else if r.clicked() {
                 response.mute_solo = Some(match i {
                     0 => (!strip.muted, strip.solo),
                     _ => (strip.muted, !strip.solo),
@@ -281,6 +321,7 @@ mod tests {
                 muted: false,
                 solo: false,
                 levels: None,
+                closable: true,
             };
             out = column.show(
                 ui,
@@ -318,5 +359,11 @@ mod tests {
         frame(&mut column, &ctx, vec![button(m, true)]);
         let clicked = frame(&mut column, &ctx, vec![button(m, false)]);
         assert_eq!(clicked.mute_solo, Some((true, false)));
+        // The × of a pinned column.
+        let x = pos2(84.0 - 10.0, 12.0);
+        frame(&mut column, &ctx, vec![egui::Event::PointerMoved(x)]);
+        frame(&mut column, &ctx, vec![button(x, true)]);
+        let closed = frame(&mut column, &ctx, vec![button(x, false)]);
+        assert!(closed.close);
     }
 }

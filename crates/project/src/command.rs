@@ -269,6 +269,41 @@ pub enum Command {
         track: TrackId,
         name: String,
     },
+    /// Adds an empty track of `kind` at `index` among the tracks of its
+    /// kind (0: the bottom video track, or the top audio track), named
+    /// with the next free name ("V3", "A4").
+    AddTrackAt {
+        sequence: SequenceId,
+        kind: TrackKind,
+        index: usize,
+    },
+    /// Locks a track, so nothing on it can be changed (its clips, and the
+    /// track being removed), or unlocks it. Its volume, mute and solo still
+    /// change.
+    SetTrackLocked {
+        sequence: SequenceId,
+        track: TrackId,
+        locked: bool,
+    },
+    /// Gives a track a colour its clips are drawn in, or takes it away.
+    SetTrackColour {
+        sequence: SequenceId,
+        track: TrackId,
+        colour: Option<crate::model::LabelColor>,
+    },
+    /// Copies a track with its clips (new ids, unlinked), its volume, mute,
+    /// solo, effects and colour, just beside it: above a video track, under
+    /// an audio track. Named "<name> copy".
+    DuplicateTrack {
+        sequence: SequenceId,
+        track: TrackId,
+    },
+    /// Moves a track to `index` among the tracks of its kind.
+    MoveTrack {
+        sequence: SequenceId,
+        track: TrackId,
+        index: usize,
+    },
     /// Hides a video track, so its clips are not seen in the picture, or
     /// shows it again.
     SetTrackHidden {
@@ -858,6 +893,29 @@ impl Command {
                 crate::tracks::add(&mut p, *sequence, *kind, name)?;
             }
             Command::RemoveTrack { sequence, track } => crate::tracks::remove(&mut p, *sequence, *track)?,
+            Command::AddTrackAt {
+                sequence,
+                kind,
+                index,
+            } => crate::tracks::add_at(&mut p, *sequence, *kind, *index)?,
+            Command::SetTrackLocked {
+                sequence,
+                track,
+                locked,
+            } => crate::command::track_mut(sequence_mut(&mut p, *sequence)?, *track)?.locked = *locked,
+            Command::SetTrackColour {
+                sequence,
+                track,
+                colour,
+            } => crate::command::track_mut(sequence_mut(&mut p, *sequence)?, *track)?.colour = *colour,
+            Command::DuplicateTrack { sequence, track } => {
+                crate::tracks::duplicate(&mut p, *sequence, *track)?
+            }
+            Command::MoveTrack {
+                sequence,
+                track,
+                index,
+            } => crate::tracks::move_to(&mut p, *sequence, *track, *index)?,
             Command::RenameTrack {
                 sequence,
                 track,
@@ -1196,6 +1254,11 @@ impl Command {
         // A clip made shorter keeps its fades within it.
         p.fit_fades();
         p.validate()?;
+        // Nothing on a locked track changes (a whole earlier version put
+        // back is the exception: it was the project as it was).
+        if !matches!(self, Command::Restore { .. }) {
+            crate::tracks::keep_locks(before, &p)?;
+        }
         Ok(p)
     }
 }

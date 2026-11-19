@@ -463,6 +463,11 @@ pub fn drawn(
             loading: progress.loading(what),
             line: None,
             role: None,
+            colour: t.colour.map(label_colour),
+            locked: t.locked,
+            pan: t.sound.pan as f32 / project::Sound::SIDE as f32,
+            effects_on: t.sound.effects_on(),
+            meter: None,
         }
     };
     let (video, audio) = (
@@ -894,6 +899,136 @@ pub fn track_command(
     })
 }
 
+/// The command for one of a track's options: its padlock, colour and pan,
+/// and its menu's duplicate, move, insert, reset, solo alone and removing
+/// the empty tracks. `None` for anything else, or when nothing changes.
+pub fn track_option_command(seq: &Sequence, event: &ui_kit::TimelineEvent) -> Option<project::Command> {
+    use project::{Command, TrackId, TrackKind};
+    use ui_kit::TimelineEvent as E;
+    let sequence = seq.id;
+    let found = |id: u64| seq.track(TrackId(id));
+    Some(match *event {
+        E::LockTrack { track, locked } => Command::SetTrackLocked {
+            sequence,
+            track: TrackId(track),
+            locked,
+        },
+        E::ColourTrack { track, colour } => Command::SetTrackColour {
+            sequence,
+            track: TrackId(track),
+            colour: match colour {
+                Some(i) => Some(*LabelColor::ALL.get(i)?),
+                None => None,
+            },
+        },
+        E::DuplicateTrack { track } => Command::DuplicateTrack {
+            sequence,
+            track: TrackId(track),
+        },
+        E::MoveTrack { track, index } => Command::MoveTrack {
+            sequence,
+            track: TrackId(track),
+            index,
+        },
+        E::InsertTrack { audio, index } => Command::AddTrackAt {
+            sequence,
+            kind: if audio { TrackKind::Audio } else { TrackKind::Video },
+            index,
+        },
+        E::TrackPan { track, pan } => {
+            let t = found(track)?;
+            let pan = (f64::from(pan.clamp(-1.0, 1.0)) * f64::from(project::Sound::SIDE)).round() as i32;
+            if t.sound.pan == pan {
+                return None;
+            }
+            Command::SetTrackSound {
+                sequence,
+                track: t.id,
+                sound: Box::new(project::TrackSound {
+                    pan,
+                    ..t.sound.clone()
+                }),
+            }
+        }
+        E::ResetTrackMix { track } => {
+            let t = found(track)?;
+            let mut steps = Vec::new();
+            if t.gain_db != 0.0 {
+                steps.push(Command::SetTrackMix {
+                    sequence,
+                    track: t.id,
+                    muted: t.muted,
+                    solo: t.solo,
+                    gain_db: 0.0,
+                });
+            }
+            if t.sound.pan != 0 || !t.sound.pan_line.is_empty() {
+                steps.push(Command::SetTrackSound {
+                    sequence,
+                    track: t.id,
+                    sound: Box::new(project::TrackSound {
+                        pan: 0,
+                        pan_line: Default::default(),
+                        ..t.sound.clone()
+                    }),
+                });
+            }
+            steps_of(steps)?
+        }
+        E::SoloOnly { track } => steps_of(
+            seq.audio_tracks
+                .iter()
+                .filter(|t| t.solo != (t.id.0 == track))
+                .map(|t| Command::SetTrackMix {
+                    sequence,
+                    track: t.id,
+                    muted: t.muted,
+                    solo: t.id.0 == track,
+                    gain_db: t.gain_db,
+                })
+                .collect(),
+        )?,
+        E::RemoveEmptyTracks => {
+            let mut steps = Vec::new();
+            for tracks in [&seq.video_tracks, &seq.audio_tracks] {
+                // A locked track stays, and one track of each kind.
+                let empty: Vec<&project::Track> = tracks
+                    .iter()
+                    .filter(|t| t.clips.is_empty() && !t.locked)
+                    .collect();
+                let keep = usize::from(empty.len() == tracks.len());
+                steps.extend(empty.iter().skip(keep).map(|t| Command::RemoveTrack {
+                    sequence,
+                    track: t.id,
+                }));
+            }
+            steps_of(steps)?
+        }
+        _ => return None,
+    })
+}
+
+/// Several commands as one undo step; one alone as itself; none: `None`.
+fn steps_of(mut steps: Vec<project::Command>) -> Option<project::Command> {
+    match steps.len() {
+        0 => None,
+        1 => steps.pop(),
+        _ => Some(project::Command::Steps(steps)),
+    }
+}
+
+/// The clips of `track` to select: every one, or (`from`) those still
+/// playing at or after that moment.
+pub fn track_clips(seq: &Sequence, track: project::TrackId, from: Option<f64>) -> Vec<ClipId> {
+    seq.track(track).map_or_else(Vec::new, |t| {
+        t.clips
+            .iter()
+            .filter(|c| from.is_none_or(|at| (c.start + c.duration).as_secs_f64() > at))
+            .map(|c| c.id)
+            .collect()
+    })
+}
+
 /// A volume in decibels from the timeline (its level line) in the
 /// project's thousandths, the bottom of the range being silence.
 pub fn gain_mdb(db: f32) -> i32 {
@@ -1243,6 +1378,11 @@ mod tests {
             loading: None,
             line: None,
             role: None,
+            colour: None,
+            locked: false,
+            pan: 0.0,
+            effects_on: false,
+            meter: None,
         }
     }
 
@@ -1485,6 +1625,105 @@ mod tests {
         let err = ask(&p, E::RemoveTrack { track: v1 }).unwrap_err();
         assert!(err.what().contains("the only video track"), "{}", err.what());
         assert_eq!(track_command(sequence, E::ClearSelection), None);
+    }
+
+    #[test]
+    fn a_tracks_options_become_one_undo_step_each() {
+        use project::{Command, SequenceSettings};
+        use ui_kit::TimelineEvent as E;
+        let mut p = Project::new("Test", SequenceSettings::GAME_CLIP);
+        let ask = |p: &Project, event: E| {
+            let seq = p.active().unwrap();
+            track_option_command(seq, &event).map(|c| c.apply(p).unwrap())
+        };
+        // Three audio tracks, the new one in the middle.
+        let first = p.active().unwrap().audio_tracks.len();
+        for _ in 0..2 {
+            p = ask(
+                &p,
+                E::InsertTrack {
+                    audio: true,
+                    index: 1,
+                },
+            )
+            .unwrap();
+        }
+        let audio = |p: &Project| p.active().unwrap().audio_tracks.clone();
+        assert_eq!(audio(&p).len(), first + 2);
+        let ids: Vec<u64> = audio(&p).iter().map(|t| t.id.0).collect();
+        // Solo alone: only that track soloed, in one step.
+        let sequence = p.active_sequence;
+        p = Command::SetTrackMix {
+            sequence,
+            track: project::TrackId(ids[0]),
+            muted: false,
+            solo: true,
+            gain_db: -4.0,
+        }
+        .apply(&p)
+        .unwrap();
+        p = ask(&p, E::SoloOnly { track: ids[1] }).unwrap();
+        let solo: Vec<bool> = audio(&p).iter().map(|t| t.solo).collect();
+        assert_eq!(solo[..2], [false, true]);
+        assert!(solo[2..].iter().all(|s| !s));
+        // Reset: volume and pan back, mute and solo as they were.
+        p = ask(
+            &p,
+            E::TrackPan {
+                track: ids[0],
+                pan: -0.5,
+            },
+        )
+        .unwrap();
+        assert_eq!(audio(&p)[0].sound.pan, -500_000);
+        p = ask(&p, E::ResetTrackMix { track: ids[0] }).unwrap();
+        assert_eq!((audio(&p)[0].gain_db, audio(&p)[0].sound.pan), (0.0, 0));
+        assert!(
+            ask(&p, E::ResetTrackMix { track: ids[0] }).is_none(),
+            "nothing to reset"
+        );
+        // A colour, a lock.
+        p = ask(
+            &p,
+            E::ColourTrack {
+                track: ids[2],
+                colour: Some(5),
+            },
+        )
+        .unwrap();
+        assert_eq!(audio(&p)[2].colour, Some(LabelColor::Purple));
+        p = ask(
+            &p,
+            E::LockTrack {
+                track: ids[2],
+                locked: true,
+            },
+        )
+        .unwrap();
+        assert!(audio(&p)[2].locked);
+        // The empty tracks go, one of each kind staying, and a locked one.
+        p = ask(&p, E::RemoveEmptyTracks).unwrap();
+        let seq = p.active().unwrap();
+        assert_eq!((seq.video_tracks.len(), seq.audio_tracks.len()), (1, 1));
+        assert_eq!(seq.audio_tracks[0].id.0, ids[2], "the locked one");
+        assert!(ask(&p, E::RemoveEmptyTracks).is_none());
+        assert!(track_option_command(seq, &E::ClearSelection).is_none());
+    }
+
+    #[test]
+    fn a_tracks_clips_are_chosen_whole_or_from_the_playhead() {
+        let mut seq = linked_pairs(4);
+        let track = seq.video_tracks[0].id;
+        for (i, c) in seq.video_tracks[0].clips.iter_mut().enumerate() {
+            c.start = project::Time::seconds(i as i64 * 10);
+            c.duration = project::Time::seconds(5);
+        }
+        assert_eq!(track_clips(&seq, track, None).len(), 4);
+        // Still playing at the playhead, or later.
+        let after = |at: f64| track_clips(&seq, track, Some(at));
+        assert_eq!(after(12.0), [ClipId(1001), ClipId(1002), ClipId(1003)]);
+        assert_eq!(after(15.0), [ClipId(1002), ClipId(1003)], "ended there");
+        assert_eq!(after(36.0), []);
     }
 
     /// A recording with a picture and `sound` sound streams, `seconds` long.
