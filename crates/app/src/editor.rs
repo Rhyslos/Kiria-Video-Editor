@@ -3,6 +3,7 @@
 mod actions;
 mod audio_ui;
 mod clip_clipboard;
+mod clip_job;
 mod color_ui;
 mod edit_ui;
 mod follow;
@@ -126,7 +127,8 @@ pub struct Editor {
     shown_sequence: Option<project::SequenceId>,
     /// Where the playhead was in each timeline left this session.
     playheads: std::collections::HashMap<project::SequenceId, Time>,
-    /// The timeline was fitted to the project once already.
+    /// The timeline was fitted to the project once already. Cleared only
+    /// by `refit`, with the Audio page's own.
     fitted: bool,
     waveforms: crate::waveforms::Waveforms,
     pictures: crate::clip_pictures::ClipPictures,
@@ -497,6 +499,16 @@ impl Editor {
         view_on(self.page, &mut self.timeline, &mut self.audio_page.timeline)
     }
 
+    /// Show the whole timeline again on every page: the Edit page's view
+    /// (which the other pages share) and the Audio page's own are fitted to
+    /// the timeline's length the next time each is drawn. Everything that
+    /// changes what a timeline is as a whole (another one opened, files
+    /// added, a version restored, quiet stretches removed) calls this.
+    fn refit(&mut self) {
+        self.fitted = false;
+        self.audio_page.fitted = false;
+    }
+
     fn with_document(&mut self, f: impl FnOnce(&mut Document) -> diag::Result<()>) -> diag::Result<()> {
         match self.document.as_mut() {
             Some(document) => f(document),
@@ -793,11 +805,7 @@ impl Editor {
             let p = document.project();
             let shown = self.audio_page.shown(p);
             let base = shown.as_ref().unwrap_or(p);
-            let view = if self.page == Page::Audio {
-                &self.audio_page.timeline
-            } else {
-                &self.timeline
-            };
+            let view = view_on(self.page, &self.timeline, &self.audio_page.timeline);
             let lined = view
                 .line_being_set()
                 .and_then(|line| crate::audio_page::lines::with_line_being_set(base, line));
@@ -901,7 +909,7 @@ impl Editor {
                     })
                     .map(|()| {
                         // Show the whole timeline again with the new file in it.
-                        self.fitted = false;
+                        self.refit();
                         let matching = if settle.is_some() {
                             "what most of the videos imported with it share"
                         } else {
@@ -979,6 +987,39 @@ impl Editor {
                 );
             }
             Err(err) => self.errors.push(&err),
+        }
+    }
+
+    /// Work that goes on behind every page, followed each frame: the
+    /// export queue (its errors, and how fast it went kept in settings),
+    /// the cheat sheet being written, and the user guide asked for and
+    /// being opened. Kept out of the windows so that none of them, shut
+    /// or returning early, stops it.
+    fn follow_background(&mut self, ctx: &egui::Context) {
+        for err in self.export_page.poll() {
+            self.errors.push(&err);
+        }
+        if let Some(pace) = self.export_page.take_pace() {
+            self.settings.export_pace = pace;
+        }
+        match self.cheat_sheet.poll(&self.jobs, ctx) {
+            Some(crate::cheat_sheet::Saved::Done(path)) => {
+                self.status = format!(
+                    "Saved the cheat sheet as {}. Open it to print it.",
+                    path.display()
+                );
+            }
+            Some(crate::cheat_sheet::Saved::Failed(err)) => self.errors.push(&err),
+            None => {}
+        }
+        if std::mem::take(&mut self.user_guide_requested) {
+            match self.user_guide.open(ctx) {
+                Ok(_) => self.status = "Opening the user guide in your web browser".into(),
+                Err(err) => self.errors.push(&err),
+            }
+        }
+        if let Some(err) = self.user_guide.poll() {
+            self.errors.push(&err);
         }
     }
 
@@ -1500,8 +1541,6 @@ impl eframe::App for Editor {
             self.shortcuts
                 .set_layout(self.settings.keyboard.resolve(self.system_keyboard.now()));
         }
-        // While the shortcuts page waits for new keys, what is pressed is
-        // its answer, not a command.
         // A file chooser that could not open says why.
         if let Some(problem) = ui_kit::file_dialog::take_problem(&ctx) {
             self.errors.push(&problem);
@@ -1512,6 +1551,8 @@ impl eframe::App for Editor {
                 self.errors.push(&problem);
             }
         }
+        // While the shortcuts page waits for new keys, what is pressed is
+        // its answer, not a command.
         let listening = self.shortcuts_page.as_ref().is_some_and(|p| p.listening());
         if !listening {
             for action in self.shortcuts.pressed(&ctx) {
@@ -1629,6 +1670,7 @@ impl eframe::App for Editor {
         self.prune_window(&ctx);
         self.package_window(&ctx);
         self.shortcuts_window(&ctx);
+        self.follow_background(&ctx);
         let unfinished = self.export_page.unfinished();
         self.close_prompt.frame(&ctx, &self.theme, unfinished);
         if let Some(err) = self.graphics.show_warning(&ctx, &self.theme) {
@@ -1895,12 +1937,9 @@ fn cut_beside(seq: &project::Sequence, at: Time, later: bool) -> Option<Time> {
 }
 
 /// The timeline view `page` shows: the Audio page's own (`audio`), or the
-/// Edit page's (`edit`), which the other pages share.
-fn view_on<'a>(
-    page: Page,
-    edit: &'a mut ui_kit::TimelineView,
-    audio: &'a mut ui_kit::TimelineView,
-) -> &'a mut ui_kit::TimelineView {
+/// Edit page's (`edit`), which the other pages share. Takes the two views
+/// borrowed either way (shared or mutable), so every choice goes through here.
+fn view_on<V>(page: Page, edit: V, audio: V) -> V {
     match page {
         Page::Audio => audio,
         _ => edit,
@@ -1956,6 +1995,33 @@ mod tests {
         for page in [Page::Edit, Page::Color, Page::Library, Page::Export] {
             let shown = view_on(page, &mut edit, &mut audio) as *const _;
             assert!(std::ptr::eq(shown, &edit), "{page:?}: the Edit page's");
+        }
+        // Following playback reads the same view through a shared borrow.
+        assert!(std::ptr::eq(view_on(Page::Audio, &edit, &audio), &audio));
+        assert!(std::ptr::eq(view_on(Page::Edit, &edit, &audio), &edit));
+    }
+
+    /// Every refit clears both views' fit flag through `refit`: one written
+    /// by hand on its own leaves the other page zoomed on a timeline whose
+    /// length changed. (The screenshot script resets only the Audio page's
+    /// view, to a fresh one, on purpose.)
+    #[test]
+    fn every_refit_goes_through_one_place() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = vec![src.join("editor.rs")];
+        let parts = std::fs::read_dir(src.join("editor")).expect("the editor's folder");
+        for entry in parts {
+            let path = entry.expect("an entry").path();
+            if path.extension().is_some_and(|e| e == "rs") && !path.ends_with("script.rs") {
+                files.push(path);
+            }
+        }
+        let needle = ["fitted", " = false"].concat();
+        for file in files {
+            let text = std::fs::read_to_string(&file).expect("a source file");
+            let found = text.matches(needle.as_str()).count();
+            let allowed = if file.ends_with("editor.rs") { 2 } else { 0 };
+            assert_eq!(found, allowed, "{}: call `refit` instead", file.display());
         }
     }
 

@@ -37,20 +37,22 @@ impl Editor {
     pub(super) fn full_screen_viewer(&mut self, ui: &mut egui::Ui) {
         let Some(document) = &self.document else { return };
         let p = document.project();
-        let mut quality = self.settings.preview_quality;
         let height = ui.available_height() - 28.0 - FULL_SCREEN_SCRUB;
         // Full screen is for watching: no handles on the picture. A change
         // still being made when it was entered stays on show.
         let being_changed = self.effect_previewed(p, self.inspector.shown(p));
+        let display_state = self.display_state(true);
+        // The quality is the setting, as on every page: the settings keeper
+        // writes a pick made here.
         let command = self.viewer.ui(
             ui,
             &self.theme,
             being_changed.as_ref().unwrap_or(p),
-            &mut quality,
+            &mut self.settings.preview_quality,
             None,
             height,
             &self.shortcuts,
-            self.display_state(true),
+            display_state,
             crate::viewer::Stage::default(),
             |_, _, _| {},
         );
@@ -315,7 +317,7 @@ impl Editor {
                 }
             };
             if placed {
-                self.fitted = false;
+                self.refit();
             }
         }
     }

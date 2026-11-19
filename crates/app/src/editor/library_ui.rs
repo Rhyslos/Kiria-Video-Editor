@@ -88,7 +88,7 @@ impl Editor {
                 match result {
                     Ok(()) => {
                         self.status = says;
-                        self.fitted = false;
+                        self.refit();
                     }
                     Err(err) => self.errors.push(&err),
                 }
@@ -114,7 +114,7 @@ impl Editor {
                                 placing::AddAt::EditPoint => "at the edit point",
                             }
                         );
-                        self.fitted = false;
+                        self.refit();
                     }
                     Err(err) => self.errors.push(&err),
                 }
