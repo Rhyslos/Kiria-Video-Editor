@@ -16,6 +16,11 @@ use crate::video_picture::{ChromaLayout, PlaneTextures, YuvImage, texture_axes};
 use egui_wgpu::wgpu;
 use render::WHOLE;
 
+/// The setting a picture too large for the graphics card points to: the
+/// editor's proxy setting, opened by the error's fix
+/// ([`crate::settings::open_at_fix`]). The editor's tests check it has it.
+pub const PROXY_SETTING: &str = "proxies";
+
 /// Why the renderer turned a picture down.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refused {
@@ -61,7 +66,8 @@ impl Refused {
                 .why(format!(
                     "The picture is {w}×{h} pixels, and this graphics card takes pictures of at most {largest} pixels a side."
                 ))
-                .fix("Use a proxy for this file: Settings › Proxies, or \"Build proxy now\" on the file."),
+                .fix("Use a proxy for this file: turn Proxies on in Settings › Playback & proxies, or \"Build proxy now\" on the file.")
+                .action(crate::settings::open_at_fix("Open proxy settings", PROXY_SETTING)),
             Refused::Bytes { has, needs } => error
                 .why(format!(
                     "The decoder handed over {has} bytes for a picture that needs {needs}."

@@ -27,6 +27,24 @@ pub const MAX_SIZE: egui::Vec2 = vec2(1080.0, 820.0);
 /// How wide the column of cards is at most, so a label and its control
 /// stay close enough to read as one row.
 pub const COLUMN_WIDTH: f32 = 820.0;
+/// Starts the command of a fix that opens Settings at a setting, section or
+/// tab ([`open_at_fix`]); the id follows it.
+pub const OPEN_AT: &str = "settings.open-at#";
+
+/// An error's one-click fix that opens Settings at the setting, section or
+/// tab `id` names, for a program to run with [`SettingsView::open_at`].
+/// Code that can't see the program's Settings (this crate's errors) names
+/// the id, and the program's tests check that it has such a place.
+pub fn open_at_fix(label: impl Into<String>, id: &str) -> diag::FixAction {
+    diag::FixAction::new(label, format!("{OPEN_AT}{id}"))
+}
+
+/// The id a fix made by [`open_at_fix`] opens Settings at, or `None` for
+/// another command.
+pub fn open_at_id(command: &str) -> Option<&str> {
+    command.strip_prefix(OPEN_AT).filter(|id| !id.is_empty())
+}
+
 /// The search box at the end of the tabs.
 const SEARCH_WIDTH: f32 = 220.0;
 /// The height of a row of tabs.
@@ -623,6 +641,15 @@ pub fn window(ctx: &egui::Context, theme: &Theme, open: &mut bool, add: impl FnO
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_fix_opening_settings_carries_its_id() {
+        let fix = open_at_fix("Open proxy settings", "proxies");
+        assert_eq!(fix.label, "Open proxy settings");
+        assert_eq!(open_at_id(&fix.command), Some("proxies"));
+        assert_eq!(open_at_id("media.relink"), None);
+        assert_eq!(open_at_id(OPEN_AT), None);
+    }
 
     const SECTIONS: &[Section] = &[Section {
         id: "editing-needle",
