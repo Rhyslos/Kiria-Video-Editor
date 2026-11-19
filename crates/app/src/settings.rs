@@ -53,6 +53,10 @@ pub struct Settings {
     /// No volume control in the audio tracks' headers, for the shortest
     /// tracks (Display menu); before the knobs and the slider.
     pub hide_header_volume: bool,
+    /// Every audio track has a column beside the master on the Edit page,
+    /// not only those pinned (Settings › Audio); a track's × still takes
+    /// its column off.
+    pub columns_for_every_track: bool,
     /// How the height is shared between the viewer and the timeline (the
     /// handle between them), on every page that has both.
     pub viewer_split: ui_kit::splitter::Split,

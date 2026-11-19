@@ -75,7 +75,7 @@ pub(super) struct MenuState<'m> {
     pub rename: &'m mut Option<Rename>,
     pub level_lines: &'m mut BTreeSet<u64>,
     /// None where tracks are not pinned (a page without that column).
-    pub pinned: Option<&'m mut Vec<u64>>,
+    pub pins: Option<&'m mut super::pins::Pins>,
     pub effects_copied: bool,
 }
 
@@ -92,7 +92,7 @@ pub(super) fn menu(
     let MenuState {
         rename,
         level_lines,
-        pinned,
+        pins,
         effects_copied,
     } = state;
     r.context_menu(|ui| {
@@ -176,8 +176,8 @@ pub(super) fn menu(
                         }
                     });
                 }
-                if let Some(pinned) = pinned {
-                    let is_pinned = pinned.contains(&id);
+                if let Some(pins) = pins {
+                    let is_pinned = pins.has(id);
                     let text = if is_pinned {
                         "Unpin from beside the master"
                     } else {
@@ -190,7 +190,7 @@ pub(super) fn menu(
                         )
                         .clicked()
                     {
-                        pin(pinned, id, !is_pinned);
+                        pins.set(id, !is_pinned);
                         ui.close();
                     }
                 }
@@ -331,14 +331,6 @@ fn item(events: &mut Vec<TimelineEvent>, ui: &mut Ui, text: &str, event: Timelin
     if ui.button(text).clicked() {
         events.push(event);
         ui.close();
-    }
-}
-
-/// Pins track `id` beside the master column (at the end), or unpins it.
-pub(super) fn pin(pinned: &mut Vec<u64>, id: u64, on: bool) {
-    pinned.retain(|t| *t != id);
-    if on {
-        pinned.push(id);
     }
 }
 
