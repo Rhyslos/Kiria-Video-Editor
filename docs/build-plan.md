@@ -493,6 +493,10 @@ A voice-over edit (screen recording, a separate mic with hiss, music) found thes
 - [x] The Audio page's parts are resized by dragging the boundaries between them (the viewer and tools, the band, the bottom; in stacked Split, the timeline and the mixer), each part keeping its least (the viewer and tools their controls, the band its five views, the mixer its faders), a double-click putting a boundary back; the band's pictures grow with it (the spectrum's levels written once there is room, the clarity findings showing more rows). The sizes are a setting (`audio_heights`), shares of the page's height, so a resized window keeps the proportions; `ui_kit::splitter::stack` is the shared handle for pages of several parts.
 - [x] Export: a preset stays lit when only Normalise changes; a sound-only format has no "Video" panel; encoder probes log their refusals for debugging only, without an export's fix.
 
+**8.6 Voice-over recording**
+
+- [ ] Record a voice straight into the timeline for voice-overs: pick a microphone, a record button and shortcut, a count-in and a level meter before starting, and the timeline playing while you speak. Each take is saved as a file beside the project and lands as a clip at the playhead on a free audio track (one undo step); several takes over the same stretch are kept to choose from.
+
 **Gate 8**
 
 - [ ] A noisy recording with game, mic and voice chat streams mixes to −14 LUFS integrated with no true peak over −1 dB.
