@@ -167,9 +167,12 @@ pub(crate) fn change_keyframes(
     frames: &[Time],
     change: KeyframesChange,
 ) -> diag::Result<()> {
+    let id = clip;
     let (clip, rate) = picture_clip(p, sequence, clip)?;
-    // One moment per timeline frame, each a frame with a mark.
-    let marked = clip.keyframe_frames(&LookField::ALL, rate);
+    // One moment per timeline frame, each a frame with a mark: of the look,
+    // or of the speed ramp.
+    let mut marked = clip.keyframe_frames(&LookField::ALL, rate);
+    marked.extend(clip.ramp.keys().iter().map(|k| rate.frame_at(clip.start + k.at)));
     let mut wanted: Vec<i64> = frames.iter().map(|at| rate.frame_at(*at)).collect();
     wanted.sort_unstable();
     wanted.dedup();
@@ -179,19 +182,69 @@ pub(crate) fn change_keyframes(
             .fix("Pick a keyframe mark along the bottom of the selected clip."));
     }
     let starts: Vec<Time> = wanted.iter().map(|frame| rate.frame_start(*frame)).collect();
+    // The speed keyframes in those frames change the same way; a new ramp
+    // makes the clip longer or shorter, so it is set as `SetRamp` sets it.
+    let ramp = changed_ramp(clip, rate, &starts, change)?;
     match change {
-        KeyframesChange::Move(by) => move_keyframes(clip, rate, &starts, by),
+        KeyframesChange::Move(by) => move_keyframes(clip, rate, &starts, by)?,
         KeyframesChange::Remove | KeyframesChange::Ease(_) => {
             let change = match change {
                 KeyframesChange::Ease(ease) => KeyframeChange::Ease(ease),
                 _ => KeyframeChange::Remove,
             };
-            for at in starts {
-                change_at(clip, rate, at, &LookField::ALL, change);
+            for at in &starts {
+                change_at(clip, rate, *at, &LookField::ALL, change);
             }
-            Ok(())
         }
     }
+    match ramp {
+        Some(ramp) => crate::edits::set_ramp(p, sequence, id, &ramp),
+        None => Ok(()),
+    }
+}
+
+/// `clip`'s speed ramp with its keyframes in the timeline frames starting
+/// at `starts` changed by `change`; `None` when none is in them.
+fn changed_ramp(
+    clip: &Clip,
+    rate: Rate,
+    starts: &[Time],
+    change: KeyframesChange,
+) -> diag::Result<Option<crate::Ramp>> {
+    // A frame, from the clip's start, end excluded.
+    let near = |at: Time| {
+        (
+            at - clip.start,
+            rate.frame_start(rate.frame_at(at) + 1) - clip.start,
+        )
+    };
+    let inside = |k: &crate::SpeedKey| {
+        starts.iter().any(|at| {
+            let (from, to) = near(*at);
+            from <= k.at && k.at < to
+        })
+    };
+    if !clip.ramp.keys().iter().any(inside) {
+        return Ok(None);
+    }
+    let keys = clip.ramp.keys().iter().filter_map(|k| match change {
+        KeyframesChange::Remove if inside(k) => None,
+        KeyframesChange::Ease(ease) if inside(k) => Some(crate::SpeedKey { ease, ..*k }),
+        KeyframesChange::Move(by) if inside(k) => Some(crate::SpeedKey { at: k.at + by, ..*k }),
+        _ => Some(*k),
+    });
+    let keys: Vec<crate::SpeedKey> = keys.collect();
+    // Two speed keyframes in one frame: refused, as for any number.
+    let mut frames: Vec<i64> = keys.iter().map(|k| rate.frame_at(clip.start + k.at)).collect();
+    frames.sort_unstable();
+    if frames.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err(AppError::new("Speed has a keyframe there already")
+            .why(
+                "A number has one keyframe a frame, and the frame these were dropped on has one of the same.",
+            )
+            .fix("Drop them on another frame, or remove the one there first (right-click its mark)."));
+    }
+    Ok(Some(crate::Ramp::new(keys)))
 }
 
 /// Moves the keyframes in the timeline frames starting at `starts` by `by`.
