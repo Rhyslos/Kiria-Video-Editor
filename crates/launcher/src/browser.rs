@@ -130,7 +130,6 @@ pub struct Browser {
     selected: Option<PathBuf>,
     status: String,
     refresh: Option<Task<diag::Result<HashMap<PathBuf, cards::Notes>>>>,
-    /// Projects with unsaved changes left by a crash, and how many.
     /// Unsaved changes from a crash and missing media, per project.
     notes: HashMap<PathBuf, cards::Notes>,
     thumbnails: crate::thumbnails::Thumbnails,
