@@ -19,9 +19,12 @@
 //!   a factor) and reads "−60.0 dB". The volume lines follow their owner:
 //!   a clip's line at the bottom is silence, a track's is heard.
 
-/// The top of the range, in decibels.
+/// The top of the range, in decibels. The same as the top of
+/// `project::Track::GAINS_DB`; a test in the app crate
+/// (`the_volume_range_is_the_same_in_the_project_and_on_screen`) keeps them so.
 pub const TOP_DB: f32 = 12.0;
-/// The bottom of the range, in decibels.
+/// The bottom of the range, in decibels. The same as the bottom of
+/// `project::Track::GAINS_DB` (see [`TOP_DB`]).
 pub const BOTTOM_DB: f32 = -60.0;
 
 /// What the bottom of a volume's range is heard as.
