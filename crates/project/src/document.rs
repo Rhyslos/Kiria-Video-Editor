@@ -237,6 +237,9 @@ pub struct Document {
     journal_broken: bool,
     /// What went wrong with the journal, not yet told to the person.
     journal_problem: Option<AppError>,
+    /// Settings' "Always unlink audio and video": no clip stays linked
+    /// (see [`Document::set_always_unlinked`]).
+    always_unlinked: bool,
     /// A save could not start the journal again since it broke, and the
     /// person was told: later such failures are only logged.
     restart_failure_told: bool,
@@ -271,6 +274,7 @@ impl Document {
             opened: Opened::AsSaved,
             journal_broken: false,
             journal_problem: None,
+            always_unlinked: false,
             restart_failure_told: false,
             failed_saves: 0,
             retry_at: None,
@@ -369,10 +373,39 @@ impl Document {
     /// Applies a change and records it in the journal. Once applied, the
     /// change stays even when the journal can't be written: that is told by
     /// [`Document::take_journal_problem`], not by an error here.
+    ///
+    /// With [`Document::set_always_unlinked`] on, a change that leaves clips
+    /// linked (an import, a paste, a link) is written as that change and
+    /// [`Command::UnlinkAll`] together, one undo step.
     pub fn apply(&mut self, command: Command) -> diag::Result<()> {
         self.refuse_if_read_only()?;
-        self.history.apply(&command)?;
+        let mut next = command.apply(self.history.current())?;
+        let command = if self.always_unlinked && crate::linking::has_links(&next) {
+            crate::linking::unlink_all(&mut next);
+            Command::Steps(vec![command, Command::UnlinkAll])
+        } else {
+            command
+        };
+        self.history.push(next);
         self.record(JournalEntry::Do(Box::new(command)))
+    }
+
+    /// Settings' "Always unlink audio and video". Turned on, every clip
+    /// that is linked now is unlinked, as one undo step, and every later
+    /// change leaves none linked. Returns whether that unlinked something.
+    /// A read-only project keeps its links (nothing may change it).
+    pub fn set_always_unlinked(&mut self, on: bool) -> diag::Result<bool> {
+        self.always_unlinked = on;
+        if !on || self.is_read_only() || !crate::linking::has_links(self.project()) {
+            return Ok(false);
+        }
+        self.apply(Command::UnlinkAll)?;
+        Ok(true)
+    }
+
+    /// Whether "Always unlink audio and video" is on for this document.
+    pub fn always_unlinked(&self) -> bool {
+        self.always_unlinked
     }
 
     /// Opens another timeline of the project: not an edit, so it works on a
@@ -996,6 +1029,47 @@ mod tests {
             Project::new("Start", SequenceSettings::GAME_CLIP),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn always_unlinked_unlinks_what_is_there_and_every_import_after_as_one_step() {
+        use crate::command::tests::recording;
+        use crate::linking::has_links;
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("p.project");
+        let mut doc = new_doc(tmp.path());
+        let sequence = doc.project().active_sequence;
+        let import = |n| Command::Import {
+            sequence,
+            media: recording(&["Game", "Mic"], n),
+        };
+        doc.apply(import(10)).unwrap();
+        assert!(has_links(doc.project()));
+        assert!(
+            doc.set_always_unlinked(true).unwrap(),
+            "what was linked is unlinked"
+        );
+        assert!(!has_links(doc.project()));
+        assert!(!doc.set_always_unlinked(true).unwrap(), "nothing left to unlink");
+        doc.apply(import(20)).unwrap();
+        assert!(!has_links(doc.project()), "the import comes in unlinked");
+        assert!(doc.undo().unwrap());
+        assert_eq!(
+            doc.project().active().unwrap().video_tracks[0].clips.len(),
+            1,
+            "import and unlink undo as one"
+        );
+        assert!(doc.redo().unwrap());
+        // The journal replays to the same unlinked project.
+        let unlinked = doc.project().clone();
+        drop(doc);
+        let reopened = Document::open(&path, Recovery::Recover).unwrap();
+        assert_eq!(reopened.project(), &unlinked);
+        // Turned off, imports come in linked again.
+        let mut doc = reopened;
+        doc.set_always_unlinked(false).unwrap();
+        doc.apply(import(5)).unwrap();
+        assert!(has_links(doc.project()));
     }
 
     #[test]

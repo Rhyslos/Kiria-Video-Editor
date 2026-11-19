@@ -18,6 +18,7 @@ mod timeline_events;
 mod timeline_labels;
 mod timelines;
 mod undo_says;
+mod unlinking;
 mod windows;
 
 use crate::import::{self, Importer, Read};
@@ -307,8 +308,15 @@ impl Editor {
         let mut shortcuts = ShortcutTable::restored(&settings.shortcuts);
         let system_keyboard = crate::system_keyboard::Follower::start();
         shortcuts.set_layout(settings.keyboard.resolve(system_keyboard.now()));
+        let mut unlinked_on_open = false;
         let document = project.and_then(|p| match open_or_create(&p.path, p.recovery) {
-            Ok(doc) => {
+            Ok(mut doc) => {
+                // Settings' "Always unlink audio and video": what is linked
+                // in the project is unlinked as it opens (one undo step).
+                match doc.set_always_unlinked(settings.always_unlinked) {
+                    Ok(unlinked) => unlinked_on_open = unlinked,
+                    Err(err) => errors.push(&err),
+                }
                 let undo = shortcuts.keys_or_name(Action::Undo);
                 if let Some(notice) = crate::recovered::notice(doc.opened(), &undo) {
                     errors.push(&notice);
@@ -484,7 +492,10 @@ impl Editor {
             show_search: false,
             search_text: String::new(),
             cache_seen: 0,
-            status: String::new(),
+            status: match unlinked_on_open {
+                true => crate::editor::unlinking::UNLINKED_ON_OPEN.into(),
+                false => String::new(),
+            },
             slip_playhead: None,
             status_fade: Default::default(),
             status_about_timeline: Default::default(),

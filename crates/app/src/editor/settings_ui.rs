@@ -16,6 +16,7 @@ pub const THEME: &str = "theme";
 pub const EDIT_AT_PLAYHEAD: &str = "edit-at-playhead";
 pub const CLICK_MOVES: &str = "click-moves";
 pub const CUT_CLOSES_GAP: &str = "cut-closes-gap";
+pub const ALWAYS_UNLINKED: &str = "always-unlinked";
 pub const CLIP_PICTURES: &str = "clip-pictures";
 pub const CLEAR_WAVEFORMS: &str = "clear-waveforms";
 pub const PROXIES: &str = "proxies";
@@ -72,6 +73,12 @@ pub const CATEGORIES: &[Category] = &[
                     "Cut moves everything after the clips back on every track, as \"Delete and close the gap\" does. Off: it leaves the gap.",
                 )
                 .keywords("cut ripple gap ctrl+x"),
+                Setting::new(
+                    ALWAYS_UNLINKED,
+                    "Always unlink audio and video",
+                    "Every clip on its own: a picture and each of its sound streams are clicked, moved and trimmed apart, in every project.",
+                )
+                .keywords("unlink link linked separate audio video sound tracks streams"),
             ],
         },
         Section {
@@ -306,6 +313,9 @@ impl Editor {
                     CUT_CLOSES_GAP => {
                         ui_kit::settings::toggle(row.ui, row.theme, &mut s.cut_closes_gap);
                     }
+                    ALWAYS_UNLINKED => {
+                        ui_kit::settings::toggle(row.ui, row.theme, &mut s.always_unlinked);
+                    }
                     CLIP_PICTURES => {
                         let options: Vec<_> = ClipPictureWay::ALL.iter().map(|w| (*w, w.short())).collect();
                         ui_kit::settings::segmented(row.ui, row.theme, &mut s.clip_pictures, &options);
@@ -456,6 +466,9 @@ impl Editor {
             }
             if self.settings.library_marks != before.library_marks {
                 self.library_marks_moved();
+            }
+            if self.settings.always_unlinked != before.always_unlinked {
+                self.always_unlinked_changed();
             }
             let key_frame_first = self.settings.jump_picture.key_frame_first();
             self.viewer.set_key_frame_first(key_frame_first);

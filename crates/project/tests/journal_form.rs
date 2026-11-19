@@ -80,6 +80,10 @@ fn name(c: &Command) -> &'static str {
         Command::Slide { .. } => "Slide",
         Command::RemoveRanges { .. } => "RemoveRanges",
         Command::RemoveRangesAndRegion { .. } => "RemoveRangesAndRegion",
+        Command::Unlink { .. } => "Unlink",
+        Command::Link { .. } => "Link",
+        Command::UnlinkAll => "UnlinkAll",
+        Command::Steps(_) => "Steps",
         Command::Split { .. } => "Split",
         Command::AddLabel { .. } => "AddLabel",
         Command::RemoveLabel { .. } => "RemoveLabel",
@@ -401,6 +405,16 @@ fn every_command() -> Vec<Command> {
             sequence,
             ranges: vec![region, region],
         },
+        Command::Unlink {
+            sequence,
+            clips: vec![clip],
+        },
+        Command::Link {
+            sequence,
+            clips: vec![clip, sound_clip.id],
+        },
+        Command::UnlinkAll,
+        Command::Steps(vec![Command::UnlinkAll]),
         Command::Split {
             sequence,
             at,
@@ -642,7 +656,7 @@ fn every_variant_has_a_sample() {
     // The match in `name` lists every variant; count its arms here.
     let arms = include_str!("journal_form.rs")
         .lines()
-        .filter(|l| l.trim_start().starts_with("Command::") && l.contains("{ .. } =>"))
+        .filter(|l| l.trim_start().starts_with("Command::") && l.contains(" => \""))
         .count();
     assert_eq!(names.len(), arms, "a variant has no sample command");
 }

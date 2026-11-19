@@ -30,9 +30,15 @@ impl History {
     /// Applies a command. On error nothing changes.
     pub fn apply(&mut self, command: &Command) -> diag::Result<()> {
         let next = command.apply(&self.current)?;
+        self.push(next);
+        Ok(())
+    }
+
+    /// Makes `next`, worked out from the current project by a command,
+    /// the current project: one undo step, as [`History::apply`] does.
+    pub(crate) fn push(&mut self, next: Project) {
         self.undo.push(std::mem::replace(&mut self.current, next));
         self.redo.clear();
-        Ok(())
     }
 
     /// Steps back one change. Returns false when there is nothing to undo.
