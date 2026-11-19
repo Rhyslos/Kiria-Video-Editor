@@ -506,6 +506,51 @@ impl LibraryPage {
         self.loudness.forget(media);
     }
 
+    /// Shows file `media` in the detail panel: its type's tab, every
+    /// filter cleared so it is in view, chosen alone (search).
+    pub fn show_file(&mut self, project: &Project, media: MediaId) {
+        let Some(file) = project.media.get(&media) else {
+            return;
+        };
+        self.clear_filters();
+        self.tab = Tab::Type(Type::from(file.kind));
+        self.selected = Some(media);
+        self.chosen.only(media);
+    }
+
+    /// Shows the files with label `label`: that label alone as the filter,
+    /// on the tab of the type most of its files are (search).
+    pub fn show_label(&mut self, project: &Project, label: MediaLabelId) {
+        self.clear_filters();
+        self.labels = vec![label];
+        let mut counts = [0usize; Type::ALL.len()];
+        for (media, on) in &project.library.tagged {
+            if on.contains(&label)
+                && let Some(file) = project.media.get(media)
+                && let Some(i) = Type::ALL.iter().position(|t| *t == Type::from(file.kind))
+            {
+                counts[i] += 1;
+            }
+        }
+        let most = (0..counts.len())
+            .max_by_key(|i| (counts[*i], std::cmp::Reverse(*i)))
+            .unwrap_or(0);
+        self.tab = Tab::Type(Type::ALL[most]);
+    }
+
+    /// Opens custom list `list`, every filter cleared (search).
+    pub fn show_list(&mut self, list: MediaListId) {
+        self.clear_filters();
+        self.tab = Tab::List(list);
+    }
+
+    /// No words, label chips or smart filter: everything of the tab shown.
+    fn clear_filters(&mut self) {
+        self.text.clear();
+        self.labels.clear();
+        self.smart = None;
+    }
+
     /// Draws the page. Returns what was asked for.
     pub fn ui(
         &mut self,
@@ -989,6 +1034,43 @@ fn details(media: &MediaRef) -> String {
 mod tests {
     use super::*;
     use project::{LabelColor, MediaLabel};
+
+    /// Search shows a label on the tab most of its files are on, a list
+    /// on its own tab, and a file chosen alone, every filter cleared.
+    #[test]
+    fn search_shows_a_label_a_list_and_a_file() {
+        use arrange::tests::{label, media};
+        let mut p = Project::new_automatic("T");
+        p.media
+            .insert(MediaId(1), media(1, "/a/one.mp4", MediaKind::Video));
+        p.media
+            .insert(MediaId(2), media(2, "/a/two.wav", MediaKind::Audio));
+        p.media
+            .insert(MediaId(3), media(3, "/a/three.wav", MediaKind::Audio));
+        let p = label(&p, "Voice", LabelColor::Blue, &[1, 2, 3]);
+        let voice = p.library.labels[0].id;
+        let mut page = LibraryPage {
+            text: "old words".into(),
+            smart: Some(Smart::NotUsed),
+            ..Default::default()
+        };
+        page.show_label(&p, voice);
+        assert_eq!(page.labels, [voice]);
+        assert_eq!(
+            page.tab,
+            Tab::Type(Type::Audio),
+            "two of its three files are sound"
+        );
+        assert!(page.text.is_empty() && page.smart.is_none());
+        page.show_list(MediaListId(7));
+        assert_eq!(page.tab, Tab::List(MediaListId(7)));
+        assert!(page.labels.is_empty());
+        page.show_file(&p, MediaId(1));
+        assert_eq!(
+            (page.tab, page.selected),
+            (Tab::Type(Type::Video), Some(MediaId(1)))
+        );
+    }
 
     #[test]
     fn the_query_follows_the_tab_chips_and_filters() {

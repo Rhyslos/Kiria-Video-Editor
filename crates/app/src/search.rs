@@ -1,6 +1,6 @@
 //! The search palette (Ctrl+K): commands, the sections of Settings, the
-//! project's timelines, timeline labels, clips and files, matched by any
-//! part of their name. Files (and the clips that play them) are found by the
+//! project's timelines, timeline labels, clips and files, and the Library's
+//! labels and lists, matched by any part of their name. Files (and the clips that play them) are found by the
 //! library index, so a file's labels and note find it too.
 //!
 //! The palette is a dialog (`ui_kit::dialog::palette`): while it is up its
@@ -9,7 +9,7 @@
 //! further).
 
 use crate::settings_sections::Section;
-use project::{ClipId, MediaId, Sequence, SequenceId};
+use project::{ClipId, MediaId, MediaLabelId, MediaListId, Sequence, SequenceId};
 use ui_kit::{Action, ShortcutTable, Theme};
 
 /// The name the palette asks the library index under.
@@ -34,10 +34,23 @@ pub enum Hit {
         name: String,
         at: f64,
     },
-    /// A file of the project: shown in the media drawer.
+    /// A file of the project: shown in the Library when it is open, else
+    /// in the media drawer.
     File {
         id: MediaId,
         name: String,
+    },
+    /// A label on the project's files: the Library shows the files with it.
+    MediaLabel {
+        id: MediaLabelId,
+        name: String,
+        files: usize,
+    },
+    /// A custom list of files: the Library opens it.
+    MediaList {
+        id: MediaListId,
+        name: String,
+        files: usize,
     },
     Settings,
     /// A section of Settings: the window opens scrolled to it.
@@ -62,7 +75,9 @@ impl Hit {
             Hit::Clip { name, at, .. } => {
                 format!("Go to clip: {name}    {}", ui_kit::time_text::timecode(*at, fps))
             }
-            Hit::File { name, .. } => format!("Show file: {name}    in the media drawer"),
+            Hit::File { name, .. } => format!("Show file: {name}"),
+            Hit::MediaLabel { name, files, .. } => format!("Library label: {name}    {}", files_text(*files)),
+            Hit::MediaList { name, files, .. } => format!("Library list: {name}    {}", files_text(*files)),
             Hit::Settings => "Settings: theme, editing, resources".into(),
             Hit::Setting(section) => format!("Settings › {}: {}", section.name(), section.about()),
             Hit::Timeline { name, .. } => format!("Go to timeline: {name}"),
@@ -88,6 +103,7 @@ pub fn results(
     timelines: &[(SequenceId, String)],
     clip_name: impl Fn(&project::Clip) -> String,
     files: Option<&[(MediaId, String)]>,
+    library: Option<&project::Library>,
 ) -> Vec<Hit> {
     let q = query.trim().to_lowercase();
     let matches = |text: &str| text.to_lowercase().contains(&q);
@@ -115,6 +131,9 @@ pub fn results(
             .filter(|s| s.matches(&q))
             .map(Hit::Setting),
     );
+    if let Some(library) = library.filter(|_| !q.is_empty()) {
+        hits.extend(library_hits(&q, library));
+    }
     for (id, name) in timelines {
         if !q.is_empty() && (matches(name) || "timeline".contains(&q)) {
             hits.push(Hit::Timeline {
@@ -165,6 +184,40 @@ pub fn results(
     }
     hits.extend(file_hits(&q, files));
     hits
+}
+
+/// The Library's labels and lists whose names hold `q` (all of them for
+/// "label" or "list"), labels first, each with how many files it has.
+fn library_hits(q: &str, library: &project::Library) -> Vec<Hit> {
+    let named = |name: &str, kind: &str| name.to_lowercase().contains(q) || kind.contains(q);
+    let labels = library
+        .labels
+        .iter()
+        .filter(|l| named(&l.name, "library label"))
+        .map(|l| Hit::MediaLabel {
+            id: l.id,
+            name: l.name.clone(),
+            files: library.tagged.values().filter(|on| on.contains(&l.id)).count(),
+        });
+    let lists = library
+        .lists
+        .iter()
+        .filter(|l| named(&l.name, "library list"))
+        .map(|l| Hit::MediaList {
+            id: l.id,
+            name: l.name.clone(),
+            files: l.media.len(),
+        });
+    labels.chain(lists).collect()
+}
+
+/// "1 file", "3 files".
+fn files_text(n: usize) -> String {
+    if n == 1 {
+        "1 file".into()
+    } else {
+        format!("{n} files")
+    }
 }
 
 fn file_hits(q: &str, files: Option<&[(MediaId, String)]>) -> Vec<Hit> {
@@ -259,10 +312,10 @@ mod tests {
             named.set(named.get() + 1);
             "game-3-audio.mkv".to_owned()
         };
-        let hits = results("", &table, p.active(), &[], name, None);
+        let hits = results("", &table, p.active(), &[], name, None, None);
         assert!(!hits.iter().any(|h| matches!(h, Hit::Clip { .. })));
         assert_eq!(named.get(), 0, "named only when something is typed");
-        let hits = results("game", &table, p.active(), &[], name, None);
+        let hits = results("game", &table, p.active(), &[], name, None, None);
         assert!(hits.iter().any(|h| matches!(h, Hit::Clip { .. })));
     }
 
@@ -283,7 +336,7 @@ mod tests {
         .apply(&p)
         .unwrap();
         let table = ShortcutTable::default();
-        let find = |q: &str| results(q, &table, p.active(), &[], |_| "match.mkv".into(), None);
+        let find = |q: &str| results(q, &table, p.active(), &[], |_| "match.mkv".into(), None, None);
 
         assert!(find("undo").iter().any(|h| matches!(
             h,
@@ -369,6 +422,7 @@ mod tests {
             &[],
             |_| "DJI_0042.mp4".into(),
             Some(&files),
+            None,
         );
         assert!(
             hits.iter()
@@ -378,7 +432,15 @@ mod tests {
             id,
             name: "DJI_0042.mp4".into()
         }));
-        let before = results("drone", &table, p.active(), &[], |_| "DJI_0042.mp4".into(), None);
+        let before = results(
+            "drone",
+            &table,
+            p.active(),
+            &[],
+            |_| "DJI_0042.mp4".into(),
+            None,
+            None,
+        );
         assert!(
             !before
                 .iter()
@@ -388,10 +450,82 @@ mod tests {
     }
 
     #[test]
+    fn library_labels_and_lists_are_found_with_how_many_files_they_have() {
+        use project::{LabelColor, MediaLabelId, MediaListId};
+        let p = crate::inspector::tests::project_with_a_clip();
+        let file = *p.media.keys().next().unwrap();
+        let mut library = p.library.clone();
+        library.labels.push_back(project::MediaLabel {
+            id: MediaLabelId(1),
+            name: "Drone".into(),
+            color: LabelColor::Green,
+        });
+        library.labels.push_back(project::MediaLabel {
+            id: MediaLabelId(2),
+            name: "Interview".into(),
+            color: LabelColor::Blue,
+        });
+        library
+            .tagged
+            .insert(file, [MediaLabelId(1)].into_iter().collect());
+        library.lists.push_back(project::MediaList {
+            id: MediaListId(3),
+            name: "Best drone shots".into(),
+            media: [file].into_iter().collect(),
+        });
+        let table = ShortcutTable::default();
+        let find = |q: &str| {
+            results(
+                q,
+                &table,
+                p.active(),
+                &[],
+                |_| String::new(),
+                None,
+                Some(&library),
+            )
+        };
+        let drone = find("drone");
+        assert!(drone.contains(&Hit::MediaLabel {
+            id: MediaLabelId(1),
+            name: "Drone".into(),
+            files: 1
+        }));
+        assert!(drone.contains(&Hit::MediaList {
+            id: MediaListId(3),
+            name: "Best drone shots".into(),
+            files: 1
+        }));
+        assert!(
+            !drone
+                .iter()
+                .any(|h| matches!(h, Hit::MediaLabel { name, .. } if name == "Interview"))
+        );
+        // "label" lists every label, "list" every list; nothing typed, none.
+        let labels = find("label");
+        assert_eq!(
+            labels
+                .iter()
+                .filter(|h| matches!(h, Hit::MediaLabel { .. }))
+                .count(),
+            2
+        );
+        assert!(
+            find("")
+                .iter()
+                .all(|h| !matches!(h, Hit::MediaLabel { .. } | Hit::MediaList { .. }))
+        );
+        assert_eq!(
+            drone[drone.len() - 1].text(30.0),
+            "Library list: Best drone shots    1 file"
+        );
+    }
+
+    #[test]
     fn commands_show_the_keys_they_have_now() {
         let mut table = ShortcutTable::default();
         let keys_of = |table: &ShortcutTable, query: &str| {
-            results(query, table, None, &[], |_| String::new(), None)
+            results(query, table, None, &[], |_| String::new(), None, None)
                 .into_iter()
                 .find_map(|hit| match hit {
                     Hit::Command { keys, .. } => Some(keys),
@@ -445,7 +579,7 @@ mod tests {
         ui_kit::setup(&ctx, ui_kit::ThemeName::Ash);
         let table = ShortcutTable::default();
         let mut text = String::new();
-        let hits = results("package", &table, None, &[], |_| String::new(), None);
+        let hits = results("package", &table, None, &[], |_| String::new(), None, None);
         assert!(matches!(
             hits.first(),
             Some(Hit::Command {
@@ -514,7 +648,7 @@ mod tests {
     fn settings_and_timelines_are_found() {
         let table = ShortcutTable::default();
         let timelines = [(SequenceId(4), "Main sequence".to_owned())];
-        let find = |q: &str| results(q, &table, None, &timelines, |_| String::new(), None);
+        let find = |q: &str| results(q, &table, None, &timelines, |_| String::new(), None, None);
         let proxy = find("proxy");
         assert!(proxy.contains(&Hit::Setting(Section::Proxies)));
         assert!(proxy.contains(&Hit::Setting(Section::Cache)));
