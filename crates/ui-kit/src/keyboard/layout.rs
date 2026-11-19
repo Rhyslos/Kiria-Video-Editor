@@ -636,7 +636,7 @@ impl KeyboardChoice {
 pub struct SystemKeyboard {
     /// The layout, when the drawing knows it.
     pub layout: Option<LayoutId>,
-    /// The system's own name for a layout the drawing doesn't know ("ru"),
+    /// The system's own name for a layout the drawing doesn't know ("de"),
     /// to say which one it is.
     pub unknown: Option<String>,
 }
@@ -919,12 +919,12 @@ mod tests {
         assert_eq!(LayoutId::from_windows_language(0x0414), Some(LayoutId::Norwegian));
         assert_eq!(LayoutId::from_windows_language(0x0814), Some(LayoutId::Norwegian));
         assert_eq!(LayoutId::from_windows_language(0x0411), Some(LayoutId::Japanese));
-        assert_eq!(LayoutId::from_windows_language(0x0419), None, "not drawn yet");
+        assert_eq!(LayoutId::from_windows_language(0x0407), None, "not drawn yet");
         assert_eq!(LayoutId::from_xkb_name("no"), Some(LayoutId::Norwegian));
         assert_eq!(LayoutId::from_xkb_name("gb,us"), Some(LayoutId::Uk));
         assert_eq!(LayoutId::from_xkb_name("jp"), Some(LayoutId::Japanese));
         assert_eq!(LayoutId::from_xkb_name("us"), Some(LayoutId::Us));
-        assert_eq!(LayoutId::from_xkb_name("ru"), None);
+        assert_eq!(LayoutId::from_xkb_name("de"), None);
         assert_eq!(LayoutId::from_xkb_name(""), None);
     }
 
@@ -939,13 +939,13 @@ mod tests {
         );
 
         // A layout the drawing doesn't know, or none reported: US English.
-        let russian = SystemKeyboard::from_windows_language(0x0419);
-        assert_eq!(russian.layout, None);
-        assert_eq!(russian.summary(), "language 0419, not drawn here yet");
-        assert_eq!(KeyboardChoice::Automatic.resolve(&russian), LayoutId::Us);
+        let german = SystemKeyboard::from_windows_language(0x0407);
+        assert_eq!(german.layout, None);
+        assert_eq!(german.summary(), "language 0407, not drawn here yet");
+        assert_eq!(KeyboardChoice::Automatic.resolve(&german), LayoutId::Us);
         assert_eq!(
-            SystemKeyboard::from_xkb_name("ru").summary(),
-            "\"ru\", not drawn here yet"
+            SystemKeyboard::from_xkb_name("de").summary(),
+            "\"de\", not drawn here yet"
         );
         let nothing = SystemKeyboard::default();
         assert_eq!(nothing.summary(), "not reported");

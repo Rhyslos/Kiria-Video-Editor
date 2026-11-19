@@ -60,7 +60,7 @@ mod tests {
         assert_eq!(from_system(Some(&windows)).layout, Some(LayoutId::Norwegian));
         let xkb = os::SystemLayout::Xkb("gb".into());
         assert_eq!(from_system(Some(&xkb)).layout, Some(LayoutId::Uk));
-        let unknown = os::SystemLayout::Xkb("ru".into());
+        let unknown = os::SystemLayout::Xkb("de".into());
         assert_eq!(from_system(Some(&unknown)).layout, None);
         assert!(from_system(Some(&unknown)).unknown.is_some());
         assert_eq!(from_system(None), SystemKeyboard::default());
