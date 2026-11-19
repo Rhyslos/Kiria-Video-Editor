@@ -90,6 +90,9 @@ pub struct Editor {
     page: Page,
     shortcuts: ShortcutTable,
     errors: ErrorCenter,
+    /// The first uncaught graphics error on the window's device, for the
+    /// error list (`graphics_errors::watch`; the rest go to the log only).
+    graphics_errors: Option<std::sync::mpsc::Receiver<AppError>>,
     jobs: JobSystem,
     usage: UsageMonitor,
     document: Option<Document>,
@@ -349,9 +352,10 @@ impl Editor {
         if !imports.is_empty() {
             importer.read(&jobs, &cc.egui_ctx, imports);
         }
-        if let Some(state) = cc.wgpu_render_state.as_ref() {
-            crate::viewer::log_graphics_errors(&state.device);
-        }
+        let graphics_errors = cc
+            .wgpu_render_state
+            .as_ref()
+            .map(|state| crate::graphics_errors::watch(&state.device));
         let mut viewer = Viewer::new(
             &cc.egui_ctx,
             automation.playhead,
@@ -395,6 +399,7 @@ impl Editor {
             page: Page::default(),
             shortcuts,
             errors,
+            graphics_errors,
             jobs,
             usage: UsageMonitor::start(Duration::from_secs(1)),
             document,
@@ -1548,6 +1553,12 @@ impl eframe::App for Editor {
         // A picture the graphics card turned down says why, once per cause.
         if let Some(state) = frame.wgpu_render_state() {
             for problem in ui_kit::video_picture::refusals(state) {
+                self.errors.push(&problem);
+            }
+        }
+        // An uncaught graphics error says so once; the log has the rest.
+        if let Some(told) = &self.graphics_errors {
+            for problem in told.try_iter() {
                 self.errors.push(&problem);
             }
         }
