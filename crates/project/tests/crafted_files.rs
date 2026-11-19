@@ -147,6 +147,14 @@ fn curves_and_masks_out_of_range_are_refused() {
     assert!(error.contains("curve can't be used"), "{error}");
     let error = refused(&crafted_project("feather:300000", "feather:3000000"));
     assert!(error.contains("mask can't be used"), "{error}");
+    // A fade's curve goes from -1 to 1 (format 32), on a picture and a sound.
+    let error = refused(&crafted_project("fade_in_curve:400000", "fade_in_curve:4000000"));
+    assert!(error.contains("fade curve out of range"), "{error}");
+    let error = refused(&crafted_project(
+        "fade_out_curve:-500000",
+        "fade_out_curve:-5000000",
+    ));
+    assert!(error.contains("or a fade curve"), "{error}");
 }
 
 #[test]

@@ -203,6 +203,7 @@ mod tests {
             transition: None,
             title: None,
             grade: Default::default(),
+            fades: crate::fades::PictureFades::NONE,
             id: ClipId(id),
             media: MediaId(1),
             stream: 0,

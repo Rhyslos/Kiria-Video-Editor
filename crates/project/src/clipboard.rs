@@ -236,6 +236,7 @@ mod tests {
                     transition: None,
                     title: None,
                     grade: Default::default(),
+                    fades: crate::fades::PictureFades::NONE,
                     id: ClipId(0),
                     media,
                     stream: 0,

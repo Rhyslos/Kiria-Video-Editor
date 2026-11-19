@@ -369,6 +369,7 @@ pub(crate) fn place_media(
         transition: None,
         title: None,
         grade: Default::default(),
+        fades: crate::fades::PictureFades::NONE,
         id: p.allocate_id(),
         media: id,
         stream,

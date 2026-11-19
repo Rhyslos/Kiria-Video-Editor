@@ -355,6 +355,7 @@ mod tests {
             transition: None,
             title: None,
             grade: Default::default(),
+            fades: project::fades::PictureFades::NONE,
             id: ClipId(7),
             media: project::MediaId(1),
             stream: 0,

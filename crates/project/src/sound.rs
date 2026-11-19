@@ -29,6 +29,13 @@ pub struct Sound {
     pub fade_in: Time,
     /// How long it takes to fall to silence at the clip's end.
     pub fade_out: Time,
+    /// The fade in's curve (format 32), millionths from -1 to 1: 0 the
+    /// plain quarter sine ([`crate::fades::level`]).
+    #[serde(skip_serializing_if = "crate::defaults::is_default")]
+    pub fade_in_curve: i32,
+    /// The fade out's curve (format 32), as the fade in's.
+    #[serde(skip_serializing_if = "crate::defaults::is_default")]
+    pub fade_out_curve: i32,
 }
 
 impl Default for Sound {
@@ -44,6 +51,8 @@ impl Sound {
         pan: 0,
         fade_in: Time::ZERO,
         fade_out: Time::ZERO,
+        fade_in_curve: 0,
+        fade_out_curve: 0,
     };
 
     /// The bottom of the volume range: silent.
@@ -77,6 +86,12 @@ impl Sound {
             pan: self.pan.clamp(-Sound::SIDE, Sound::SIDE),
             fade_in: self.fade_in.max(Time::ZERO),
             fade_out: self.fade_out.max(Time::ZERO),
+            fade_in_curve: self
+                .fade_in_curve
+                .clamp(-crate::fades::CURVE_ONE, crate::fades::CURVE_ONE),
+            fade_out_curve: self
+                .fade_out_curve
+                .clamp(-crate::fades::CURVE_ONE, crate::fades::CURVE_ONE),
         }
     }
 
@@ -104,6 +119,7 @@ impl Sound {
     pub fn without_fade_in(self) -> Sound {
         Sound {
             fade_in: Time::ZERO,
+            fade_in_curve: 0,
             ..self
         }
     }
@@ -112,6 +128,7 @@ impl Sound {
     pub fn without_fade_out(self) -> Sound {
         Sound {
             fade_out: Time::ZERO,
+            fade_out_curve: 0,
             ..self
         }
     }
@@ -121,7 +138,7 @@ impl Sound {
     pub fn check(&self, length: Time) -> diag::Result<()> {
         if *self != self.within_limits() {
             return Err(AppError::new("That sound setting can't be used")
-                .why("Volume goes from -60 dB (silent) to +12 dB, and pan from all left to all right.")
+                .why("Volume goes from -60 dB (silent) to +12 dB, pan from all left to all right, and a fade's curve from -1 to 1.")
                 .fix("Reset the clip's Audio in the inspector and set it again."));
         }
         if !self.fits(length) {

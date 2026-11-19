@@ -402,6 +402,8 @@ mod tests {
             pan: -200_000,
             fade_in: Time::from_ratio(1, 2).unwrap(),
             fade_out: Time::seconds(1),
+            fade_in_curve: 0,
+            fade_out_curve: 0,
         };
         assert_eq!(
             sound_summary(&set),

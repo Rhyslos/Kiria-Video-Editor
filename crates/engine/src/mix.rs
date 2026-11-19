@@ -690,6 +690,9 @@ struct Shape {
     /// Seconds on the timeline: fades last as long whatever the clip's speed.
     fade_in: f64,
     fade_out: f64,
+    /// Each fade's curve, millionths ([`project::fades::level`]).
+    fade_in_curve: i32,
+    fade_out_curve: i32,
     length: f64,
 }
 
@@ -711,21 +714,21 @@ impl Shape {
             right: right * gain,
             fade_in: sound.fade_in.as_secs_f64(),
             fade_out: sound.fade_out.as_secs_f64(),
+            fade_in_curve: sound.fade_in_curve,
+            fade_out_curve: sound.fade_out_curve,
             length: clip.duration.as_secs_f64(),
         })
     }
 
     /// The fades' factor `at` seconds into the clip.
     fn faded(&self, at: f64) -> f32 {
-        let mut level = 1.0;
-        if self.fade_in > 0.0 && at < self.fade_in {
-            level *= fade(at / self.fade_in);
-        }
-        let left = self.length - at;
-        if self.fade_out > 0.0 && left < self.fade_out {
-            level *= fade(left / self.fade_out);
-        }
-        level
+        project::fades::both(
+            at,
+            self.length,
+            (self.fade_in, self.fade_in_curve),
+            (self.fade_out, self.fade_out_curve),
+            project::fades::Base::Sine,
+        ) as f32
     }
 
     /// Shapes interleaved stereo `samples` whose first frame is `from`
@@ -932,6 +935,8 @@ pub(crate) mod tests {
             right: 1.0,
             fade_in: 1.0,
             fade_out: 0.5,
+            fade_in_curve: 0,
+            fade_out_curve: 0,
             length: 2.0,
         };
         let rate = 48_000.0;
@@ -950,6 +955,19 @@ pub(crate) mod tests {
         let mut later = vec![1f32; 100 * CHANNELS];
         shape.apply(&mut later, 0.5, rate);
         assert!((later[0] - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6);
+        // A curve up comes in sooner, one down later, the ends unmoved.
+        for (curve, sooner) in [(600_000, true), (-600_000, false)] {
+            let bent = Shape {
+                fade_in_curve: curve,
+                ..shape
+            };
+            let mut ones = vec![1f32; 96_000 * CHANNELS];
+            bent.apply(&mut ones, 0.0, rate);
+            let half = ones[24_000 * CHANNELS];
+            assert_eq!(half > std::f32::consts::FRAC_1_SQRT_2, sooner, "{curve}: {half}");
+            assert_eq!(ones[0], 0.0);
+            assert_eq!(ones[60_000 * CHANNELS], 1.0);
+        }
     }
 
     /// The fixture with only its first sound track heard, and that clip's sound set.

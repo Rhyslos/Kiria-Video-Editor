@@ -312,6 +312,7 @@ fn command_for(action: &Action, p: &Project, media: MediaId, recording: MediaId)
                     transition: None,
                     title: None,
                     grade: Default::default(),
+                    fades: project::fades::PictureFades::NONE,
                     id: ClipId(0),
                     media,
                     stream: 0,

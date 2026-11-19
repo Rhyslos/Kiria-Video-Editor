@@ -34,6 +34,7 @@ pub mod disk;
 pub mod document;
 mod edits;
 pub mod effects;
+pub mod fades;
 pub mod file;
 pub mod global_labels;
 pub mod grade;

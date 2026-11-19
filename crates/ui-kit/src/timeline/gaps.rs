@@ -91,6 +91,7 @@ mod tests {
                     plays_until: None,
                     transition_in: None,
                     graded: false,
+                    fades: Default::default(),
                 })
                 .collect(),
             muted: false,

@@ -48,6 +48,7 @@ fn name(c: &Command) -> &'static str {
         Command::PasteKeyframes { .. } => "PasteKeyframes",
         Command::ResetLook { .. } => "ResetLook",
         Command::SetSound { .. } => "SetSound",
+        Command::SetFades { .. } => "SetFades",
         Command::Restore { .. } => "Restore",
         Command::InsertTemplate { .. } => "InsertTemplate",
         Command::RemoveMedia { .. } => "RemoveMedia",
@@ -267,6 +268,18 @@ fn every_command() -> Vec<Command> {
                 (sound_clip.id, Sound::default()),
                 (sound_clip.id, sound_clip.sound),
             ],
+        },
+        Command::SetFades {
+            sequence,
+            fades: vec![(
+                clip,
+                project::fades::PictureFades {
+                    fade_in: Time::seconds(1),
+                    fade_out: Time::ZERO,
+                    fade_in_curve: 250_000,
+                    fade_out_curve: 0,
+                },
+            )],
         },
         Command::Restore {
             project: Box::new(small),
