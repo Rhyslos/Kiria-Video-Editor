@@ -1089,8 +1089,8 @@ pub(crate) mod tests {
     /// it is let go: the project as it would be, the stored one untouched.
     #[test]
     fn a_sound_being_dragged_is_what_playback_hears() {
-        let project = project_with_a_clip();
-        let clip = project.active().unwrap().audio_tracks[0].clips[0].id;
+        let project = project_with_sound();
+        let clip = sound_ids(&project)[0];
         let mut inspector = Inspector::default();
         assert!(
             inspector.with_sounds_being_set(&project).is_none(),
@@ -1102,11 +1102,17 @@ pub(crate) mod tests {
         };
         inspector.pending_sound.set(vec![clip], vec![quiet]);
         let heard = inspector.with_sounds_being_set(&project).unwrap();
-        assert_eq!(heard.active().unwrap().audio_tracks[0].clips[0].sound, quiet);
-        assert_eq!(
-            project.active().unwrap().audio_tracks[0].clips[0].sound,
-            Sound::PLAIN
-        );
+        let sound_of = |p: &Project| {
+            p.active()
+                .unwrap()
+                .tracks()
+                .flat_map(|t| t.clips.iter())
+                .find(|c| c.id == clip)
+                .unwrap()
+                .sound
+        };
+        assert_eq!(sound_of(&heard), quiet);
+        assert_eq!(sound_of(&project), Sound::PLAIN);
     }
 
     /// The clip of `project_with_a_clip` (10 s from 0) with its opacity
