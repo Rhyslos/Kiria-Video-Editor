@@ -465,6 +465,10 @@ pub enum TimelineEvent {
     /// "Fit to the nested timeline" on a nested clip whose timeline ends
     /// before it does: shorten it to end there.
     FitNested { clip: u64 },
+    /// A click with the text tool away from every clip: add a title at
+    /// `at` (the page puts it on its frame), on the video track `track` or the first
+    /// free one above it (none: over the audio area or below the rows).
+    AddTitleAt { at: f64, track: Option<u64> },
     /// "Add an adjustment layer here" from the right-click menu, at `at`
     /// on the video track under the pointer.
     AddAdjustment { at: f64, track: Option<u64> },
@@ -577,6 +581,9 @@ pub enum Tool {
     Slip,
     /// Drag a clip between its neighbours; they get longer or shorter.
     Slide,
+    /// Click where a title should go to add one there (a click on a clip
+    /// selects it, so a title can be picked to type its words).
+    Text,
 }
 
 impl Tool {
@@ -589,6 +596,7 @@ impl Tool {
             Tool::Roll => "Roll",
             Tool::Slip => "Slip",
             Tool::Slide => "Slide",
+            Tool::Text => "Text",
         }
     }
 }
@@ -1959,6 +1967,51 @@ mod tests {
         let other = over_label(&rig, 8.0);
         let right = click(&mut rig, other, egui::PointerButton::Secondary);
         assert!(right.contains(&TimelineEvent::SelectLabel(Some(2))), "{right:?}");
+    }
+
+    #[test]
+    fn the_text_tool_adds_a_title_where_clicked_and_selects_a_clip_clicked() {
+        let primary = egui::PointerButton::Primary;
+        let mut rig = Rig::new(1, 1);
+        rig.view.tool = Tool::Text;
+        rig.frame(Vec::new());
+        // V1 is drawn at the bottom of the video area, under the ruler and
+        // the labels row.
+        let v1 = RULER + LABELS + rig.video_height() - 10.0;
+        // Past the clip on the video track: a title there, on that track.
+        let empty = pos2(rig.view.x_of(HEADER_WIDTH, 7.0), v1);
+        let added = click(&mut rig, empty, primary);
+        let at = added.iter().find_map(|e| match e {
+            TimelineEvent::AddTitleAt { at, track } => Some((*at, *track)),
+            _ => None,
+        });
+        let (at, track) = at.unwrap_or_else(|| panic!("no title: {added:?}"));
+        assert!((at - 7.0).abs() < 0.05, "{at}");
+        assert_eq!(track, Some(rig.video[0].id));
+        // Over the audio area: a title too, on a video track of the page's choosing.
+        let below = pos2(rig.view.x_of(HEADER_WIDTH, 7.0), OVER_AUDIO.y);
+        let added = click(&mut rig, below, primary);
+        assert!(
+            added
+                .iter()
+                .any(|e| matches!(e, TimelineEvent::AddTitleAt { track: None, .. })),
+            "{added:?}"
+        );
+        // On a clip: it is selected, nothing is added.
+        let on_clip = pos2(rig.view.x_of(HEADER_WIDTH, 3.0), v1);
+        let picked = click(&mut rig, on_clip, primary);
+        assert!(
+            picked.contains(&TimelineEvent::Select {
+                clip: rig.video[0].clips[0].id,
+                add: false
+            }),
+            "{picked:?}"
+        );
+        assert!(
+            !picked
+                .iter()
+                .any(|e| matches!(e, TimelineEvent::AddTitleAt { .. }))
+        );
     }
 
     #[test]

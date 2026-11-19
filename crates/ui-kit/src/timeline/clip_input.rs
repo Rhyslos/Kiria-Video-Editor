@@ -511,6 +511,7 @@ impl TimelineView {
         } else if r.hovered() && still {
             match (self.tool, zone) {
                 (Tool::Blade, Some(_)) => ui.ctx().set_cursor_icon(CursorIcon::Crosshair),
+                (Tool::Text, None) => ui.ctx().set_cursor_icon(CursorIcon::Text),
                 (Tool::Select | Tool::Ripple | Tool::Roll, Some(DragKind::Trim(_))) => {
                     ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal)
                 }
@@ -930,6 +931,12 @@ impl TimelineView {
             };
             events.push(match (self.tool, hit) {
                 (Tool::Blade, Some(c)) => TimelineEvent::Blade { clip: c.id, at: t },
+                (Tool::Text, None) => TimelineEvent::AddTitleAt {
+                    at: t,
+                    track: hit_track
+                        .map(|track| track.id)
+                        .filter(|id| data.video.iter().any(|v| v.id == *id)),
+                },
                 (_, Some(c)) => TimelineEvent::Select { clip: c.id, add },
                 (_, None) => TimelineEvent::ClearSelection,
             });

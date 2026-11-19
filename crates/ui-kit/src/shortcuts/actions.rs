@@ -142,6 +142,7 @@ actions! {
     RollTool, Timeline, "Roll tool: move the cut between two clips";
     SlipTool, Timeline, "Slip tool: show another part of a clip";
     SlideTool, Timeline, "Slide tool: move a clip between its neighbours";
+    TextTool, Timeline, "Text tool: click the timeline to add a title there";
     ToggleSnapping, Timeline, "Snapping on or off";
     ZoomToFit, Timeline, "Show the whole timeline";
     ZoomIn, Timeline, "Zoom in on the timeline";
@@ -186,6 +187,7 @@ impl Action {
             Action::ToggleLoop => &["repeat"],
             Action::SlipTool => &["slip"],
             Action::SlideTool => &["slide"],
+            Action::TextTool => &["text", "title", "words", "caption"],
             Action::NestSelection => &["compound clip", "group", "nested timeline"],
             Action::AddAdjustmentLayer => &["grade", "colour all", "color"],
             Action::SaveFrame => &["still", "snapshot", "screenshot", "export frame"],

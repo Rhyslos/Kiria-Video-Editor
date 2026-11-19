@@ -158,6 +158,12 @@ impl Editor {
             }
             E::OpenNested { clip } => self.open_nested(project::ClipId(clip)),
             E::FitNested { clip } => self.fit_nested(project::ClipId(clip)),
+            E::AddTitleAt { at, track } => {
+                let style = project::TitleStyle::LowerThird;
+                if let Err(err) = self.add_title(style, seconds(at), track.map(project::TrackId)) {
+                    self.errors.push(&err);
+                }
+            }
             E::AddAdjustment { at, track } => {
                 if let Err(err) = self.add_adjustment(seconds(at), track.map(project::TrackId)) {
                     self.errors.push(&err);

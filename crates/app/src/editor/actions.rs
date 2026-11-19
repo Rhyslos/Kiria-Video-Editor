@@ -14,6 +14,7 @@ pub(super) fn toolbar_action(click: ui_kit::timeline::ToolbarClick) -> Action {
         C::Tool(ui_kit::Tool::Roll) => Action::RollTool,
         C::Tool(ui_kit::Tool::Slip) => Action::SlipTool,
         C::Tool(ui_kit::Tool::Slide) => Action::SlideTool,
+        C::Tool(ui_kit::Tool::Text) => Action::TextTool,
         C::Snapping => Action::ToggleSnapping,
         C::Fit => Action::ZoomToFit,
         C::RoughCut => Action::RoughCut,
@@ -291,12 +292,14 @@ impl Editor {
             | Action::RippleTool
             | Action::RollTool
             | Action::SlipTool
-            | Action::SlideTool => {
+            | Action::SlideTool
+            | Action::TextTool => {
                 self.shown_view().tool = match action {
                     Action::BladeTool => ui_kit::Tool::Blade,
                     Action::RippleTool => ui_kit::Tool::Ripple,
                     Action::RollTool => ui_kit::Tool::Roll,
                     Action::SlipTool => ui_kit::Tool::Slip,
+                    Action::TextTool => ui_kit::Tool::Text,
                     _ => ui_kit::Tool::Slide,
                 };
                 Ok(())

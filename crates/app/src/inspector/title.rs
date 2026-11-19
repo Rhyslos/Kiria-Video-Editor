@@ -35,6 +35,7 @@ pub fn section(
     clip: ClipId,
     stored: &Title,
     shown: &Title,
+    focus: bool,
 ) -> Asked {
     let mut title = shown.clone();
     // Whether a hand is still on something: the words' field has the
@@ -49,6 +50,18 @@ pub fn section(
                 .desired_width(f32::INFINITY)
                 .hint_text("What it says"),
         );
+        if focus {
+            // A title just added: its words chosen, ready to type over.
+            words.request_focus();
+            if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), words.id) {
+                let all = egui::text::CCursorRange::two(
+                    egui::text::CCursor::new(0),
+                    egui::text::CCursor::new(title.text.chars().count()),
+                );
+                state.cursor.set_char_range(Some(all));
+                state.store(ui.ctx(), words.id);
+            }
+        }
         busy |= words.has_focus();
         ui.add_space(4.0);
         ui.horizontal(|ui| {

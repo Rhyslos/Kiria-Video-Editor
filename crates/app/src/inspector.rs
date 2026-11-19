@@ -83,6 +83,9 @@ pub struct Inspector {
     pending_effects: Pending<ClipId, project::Effects>,
     /// A title's words being typed or size dragged, not yet an undo step.
     pending_title: Pending<ClipId, project::Title>,
+    /// A title just added: its words' field takes the keys the next time
+    /// its Title section is drawn, its words chosen to type over.
+    focus_words: Option<ClipId>,
     /// A sound clip's volume (thousandths of a decibel) being dragged on
     /// the timeline, by its level line: shown as it moves. The timeline
     /// makes the undo step when it is let go, not the panel.
@@ -343,6 +346,12 @@ impl Inspector {
         commands
     }
 
+    /// Gives the words' field of title `clip` the keys the next time its
+    /// Title section is drawn (a title just added).
+    pub fn focus_title_words(&mut self, clip: ClipId) {
+        self.focus_words = Some(clip);
+    }
+
     /// The Title section, on a title. Words typed into another title are
     /// finished before it, by [`Inspector::finish_left_behind`].
     fn title_step(&mut self, ui: &mut egui::Ui, theme: &Theme, at: &Shown) -> Vec<Command> {
@@ -350,7 +359,8 @@ impl Inspector {
         let mut commands = Vec::new();
         if let Some(stored) = clip.title.as_deref().filter(|_| clip.is_title()) {
             let shown = self.pending_title.value_for(&clip.id).unwrap_or(stored).clone();
-            let asked = title::section(ui, theme, sequence, clip.id, stored, &shown);
+            let focus = self.focus_words.take_if(|c| *c == clip.id).is_some();
+            let asked = title::section(ui, theme, sequence, clip.id, stored, &shown, focus);
             match asked.changing {
                 Some(title) => self.pending_title.set(clip.id, title),
                 None => self.pending_title.clear(),
