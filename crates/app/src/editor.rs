@@ -1242,6 +1242,9 @@ impl Editor {
                         self.errors.push(&err);
                     }
                 }
+                ErrorResponse::Fix(action)
+                    if ui_kit::settings::open_at_id(&action.command)
+                        .is_some_and(|id| self.open_settings_at(id)) => {}
                 ErrorResponse::Fix(action) => match import::whats_there_id(&action.command) {
                     Some(id) => {
                         if self.importer.whats_there(&self.jobs, ui.ctx(), id) {

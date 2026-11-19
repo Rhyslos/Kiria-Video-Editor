@@ -488,6 +488,65 @@ fn limit<T: egui::emath::Numeric>(
 mod tests {
     use super::*;
 
+    /// The tab every "Settings › …" in interface text (the editor's and
+    /// ui-kit's, shown in the editor) names exists by that name. Comments
+    /// may name a section; text the person reads names a tab.
+    #[test]
+    fn every_settings_place_named_in_interface_text_is_a_tab() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let mut files = Vec::new();
+        let mut folders = vec![root.join("app/src"), root.join("ui-kit/src")];
+        while let Some(folder) = folders.pop() {
+            for entry in std::fs::read_dir(&folder).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    folders.push(path);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    files.push(path);
+                }
+            }
+        }
+        assert!(files.len() > 20, "found the sources");
+        // Put together, so this test's own lines aren't read as text.
+        let needle = ["Settings", " › "].concat();
+        let mut wrong = Vec::new();
+        for file in &files {
+            let text = std::fs::read_to_string(file).unwrap();
+            for (n, line) in text.lines().enumerate() {
+                if line.trim_start().starts_with("//") {
+                    continue;
+                }
+                for (at, _) in line.match_indices(needle.as_str()) {
+                    let after = &line[at + needle.len()..];
+                    let named = after.starts_with('{')
+                        || CATEGORIES.iter().any(|c| {
+                            after
+                                .strip_prefix(c.label)
+                                .is_some_and(|rest| !rest.starts_with(char::is_alphanumeric))
+                        });
+                    if !named {
+                        wrong.push(format!("{}:{}: {}", file.display(), n + 1, line.trim()));
+                    }
+                }
+            }
+        }
+        assert!(wrong.is_empty(), "no such Settings tab:\n{}", wrong.join("\n"));
+    }
+
+    #[test]
+    fn a_picture_too_large_opens_settings_at_the_proxies() {
+        let error = ui_kit::yuv_renderer::Refused::Size {
+            luma: (16384, 8640),
+            largest: 8192,
+        }
+        .error();
+        let fix = error.fix_action().unwrap();
+        let id = ui_kit::settings::open_at_id(&fix.command).unwrap();
+        assert_eq!(id, PROXIES);
+        let mut view = ui_kit::settings::SettingsView::default();
+        assert!(view.open_at(CATEGORIES, id));
+    }
+
     #[test]
     fn every_row_has_its_own_id_and_the_usual_words_find_it() {
         assert!(ui_kit::settings::repeated_ids(CATEGORIES).is_empty());
