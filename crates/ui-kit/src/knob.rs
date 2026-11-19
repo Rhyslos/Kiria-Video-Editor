@@ -8,15 +8,19 @@
 //!   with coloured dots at −24 and −6 (green) and +6 (orange). Past 0 dB
 //!   the ring is orange.
 //! - [`KnobLook::Detailed`]: a larger knob with a red pointer on its edge,
-//!   a thin ring on its face open at 0 dB, thin lines all the way round
+//!   a thin ring on its face that turns with it (open at the pointer), the
+//!   value upright in its middle, thin lines all the way round
 //!   (every other one longer), a blue line at the bottom of the range
 //!   (8 o'clock), an orange one at the top (half past 3), 0 dB at 2 o'clock
 //!   with its label in red, and labels from −∞ to +12.
 //!
-//! Turning it: drag in a circle around it (the angle moved is the change,
-//! so grabbing it never makes it jump; close to the middle, up and down
-//! work instead); the wheel turns it while Ctrl is held, or once the knob
-//! has been clicked (until a click elsewhere), half a decibel a notch; Shift
+//! Both turn by a fader's law below 0 dB ([`Sweep::angle`]), so −24, −12
+//! and −6 dB are far apart and the bottom of the range is short.
+//!
+//! Turning it: drag in a circle around it (half the angle moved is the
+//! change, so grabbing it never makes it jump and small moves are small;
+//! close to the middle, up and down work instead); the wheel turns it while Ctrl is held, or once the knob
+//! has been clicked (until a click elsewhere), a decibel a notch; Shift
 //! makes both finer. A double-click puts it back at 0 dB. While it is
 //! dragged or wheeled the value is shown and heard ([`KnobOut::shown_db`]);
 //! letting go, or the wheel resting [`WHEEL_SETTLES`], is one change
@@ -34,8 +38,11 @@ pub const BOTTOM: Color32 = Color32::from_rgb(0x4C, 0x8D, 0xF6);
 /// How long the wheel rests before its turns become one change.
 pub const WHEEL_SETTLES: f64 = 0.5;
 /// One notch of the wheel, in decibels (Shift: [`FINE_NOTCH_DB`]).
-pub const NOTCH_DB: f32 = 0.5;
-pub const FINE_NOTCH_DB: f32 = 0.1;
+pub const NOTCH_DB: f32 = 1.0;
+pub const FINE_NOTCH_DB: f32 = 0.2;
+/// A drag around the knob turns it this share of the angle the pointer
+/// moves, so a small move is a small change.
+const DRAG_SHARE: f32 = 0.5;
 /// With Shift held a drag turns it this much slower.
 const FINE: f32 = 0.2;
 
@@ -99,12 +106,17 @@ impl KnobLook {
 }
 
 impl Sweep {
-    /// The angle for `db`: straight decibels from the bottom to 0 dB, and
-    /// from 0 dB to the top.
+    /// The angle for `db`. Below 0 dB a fader's law, the one the level
+    /// line has (the share of the way up to 0 dB is 10^(dB/40)), so the
+    /// useful cuts get most of the turn: −6 dB is under a third of the
+    /// way down from 0 dB, −12 dB half of it, −24 dB three quarters, and
+    /// the bottom (−∞) at the very end. Straight decibels from 0 dB to the top.
     pub fn angle(&self, db: f32) -> f32 {
         let db = db.clamp(BOTTOM_DB, TOP_DB);
-        if db <= 0.0 {
-            self.bottom + (self.zero - self.bottom) * (db - BOTTOM_DB) / -BOTTOM_DB
+        if db <= BOTTOM_DB {
+            self.bottom
+        } else if db <= 0.0 {
+            self.bottom + (self.zero - self.bottom) * 10f32.powf(db / 40.0)
         } else {
             self.zero + (self.top - self.zero) * db / TOP_DB
         }
@@ -114,7 +126,12 @@ impl Sweep {
     pub fn db_at(&self, angle: f32) -> f32 {
         let angle = angle.clamp(self.bottom, self.top);
         if angle <= self.zero {
-            BOTTOM_DB + (angle - self.bottom) / (self.zero - self.bottom) * -BOTTOM_DB
+            let share = (angle - self.bottom) / (self.zero - self.bottom);
+            if share <= 0.0 {
+                BOTTOM_DB
+            } else {
+                (40.0 * share.log10()).max(BOTTOM_DB)
+            }
         } else {
             (angle - self.zero) / (self.top - self.zero) * TOP_DB
         }
@@ -220,7 +237,7 @@ pub fn volume_knob(ui: &mut Ui, theme: &Theme, knob: Knob) -> KnobOut {
     if let (Some((value, last)), true) = (kept.drag, r.dragged())
         && let Some(p) = r.interact_pointer_pos()
     {
-        let scale = if shift { FINE } else { 1.0 };
+        let scale = if shift { FINE } else { 1.0 } * DRAG_SHARE;
         let (by_angle, angle) = if (p - centre).length() > radius * 0.35 {
             let angle = angle_of(centre, p);
             (turned(last, angle), angle)
@@ -335,6 +352,14 @@ fn signed(db: f32) -> String {
     }
 }
 
+/// The number written in a knob's middle: "−6.0", "+3.0", "−60".
+fn value_text(db: f32) -> String {
+    match db {
+        d if d <= BOTTOM_DB => "−60".to_owned(),
+        d => volume::number(d, volume::Bottom::Heard),
+    }
+}
+
 /// The compact knob: a ring filling up to the value, the value inside, a
 /// small scale with coloured dots around it.
 fn draw_compact(
@@ -389,14 +414,10 @@ fn draw_compact(
         arc(c, r, sweep.bottom, sweep.angle(db)),
         Stroke::new(3.0, ring),
     ));
-    let value = match db {
-        d if d <= BOTTOM_DB => "−60".to_owned(),
-        d => volume::number(d, volume::Bottom::Heard),
-    };
     p.text(
         c,
         Align2::CENTER_CENTER,
-        value,
+        value_text(db),
         FontId::proportional(10.5),
         theme.text,
     );
@@ -443,14 +464,22 @@ fn draw_detailed(p: &egui::Painter, theme: &Theme, c: Pos2, sweep: Sweep, db: f3
     if focused {
         p.circle_stroke(c, r + 2.0, Stroke::new(1.0, theme.text_secondary));
     }
-    // The ring on its face, open at 0 dB.
+    // The ring on its face turns with it, open where the pointer is.
+    let a = sweep.angle(db);
     let gap = 9.0;
     p.add(egui::Shape::line(
-        arc(c, r - 6.0, sweep.zero + gap, sweep.zero + 360.0 - gap),
+        arc(c, r - 6.0, a + gap, a + 360.0 - gap),
         Stroke::new(1.2, theme.text.gamma_multiply(0.75)),
     ));
+    // The value in its middle, upright whatever the angle.
+    p.text(
+        c,
+        Align2::CENTER_CENTER,
+        value_text(db),
+        FontId::proportional(13.0),
+        theme.text,
+    );
     // The red pointer on its edge, pointing out at the value.
-    let a = sweep.angle(db);
     let tip = polar(c, r - 1.0, a);
     let side = |d: f32| polar(c, r - 11.0, a + d);
     p.add(egui::Shape::convex_polygon(
@@ -479,10 +508,18 @@ mod tests {
         assert_eq!(d.angle(BOTTOM_DB), -120.0, "the bottom at 8 o'clock");
         assert_eq!(d.angle(0.0), 60.0, "0 dB at 2 o'clock");
         assert_eq!(d.angle(TOP_DB), 105.0, "the top at half past 3");
+        // The useful cuts are spread out: -6, -12 and -24 dB far apart.
+        let c = KnobLook::Compact.sweep();
+        assert!(c.angle(-6.0) - c.angle(-12.0) > 30.0);
+        assert!(c.angle(-12.0) - c.angle(-24.0) > 30.0);
+        assert!(
+            (c.angle(-12.0) - (c.bottom + c.zero) / 2.0).abs() < 1.0,
+            "-12 dB half way down"
+        );
         assert_eq!(d.angle(99.0), 105.0, "held to the range");
         for look in [KnobLook::Compact, KnobLook::Detailed] {
             let s = look.sweep();
-            for db in [-60.0, -24.0, -6.0, -0.5, 0.0, 3.0, 12.0] {
+            for db in [-59.0, -24.0, -6.0, -0.5, 0.0, 3.0, 12.0] {
                 assert!((s.db_at(s.angle(db)) - db).abs() < 1e-3, "{look:?} {db}");
             }
             // Louder turns further round.
@@ -565,7 +602,9 @@ mod tests {
         frame(&ctx, look, -12.0, vec![move_to(start)], none, 0.0);
         frame(&ctx, look, -12.0, vec![button(start, true)], none, 0.1);
         let mut t = 0.2;
-        // Turned 45° clockwise in small steps: 45 / (180 / 60) = 15 dB louder.
+        // Turned 45° clockwise in small steps: the knob turns half of
+        // that, from -12 dB (half way up to 0 dB) to 62.6 % of the way,
+        // 40·log10(0.626) = -8.1 dB.
         let mut last = None;
         for i in 1..=9 {
             last = Some(frame(
@@ -579,7 +618,7 @@ mod tests {
             t += 0.05;
         }
         let shown = last.map(|o| o.shown_db).unwrap_or(f32::NAN);
-        assert!((shown - 3.0).abs() < 0.6, "{shown}");
+        assert!((shown + 8.1).abs() < 0.6, "{shown}");
         let out = frame(
             &ctx,
             look,
@@ -589,7 +628,7 @@ mod tests {
             t,
         );
         let done = out.done.unwrap_or(f32::NAN);
-        assert!((done - 3.0).abs() < 0.6, "one change when let go: {done}");
+        assert!((done + 8.1).abs() < 0.6, "one change when let go: {done}");
     }
 
     #[test]
@@ -610,13 +649,13 @@ mod tests {
         // Without Ctrl (and not clicked) the wheel is the timeline's.
         let out = frame(&ctx, look, -6.0, vec![wheel(2.0, none)], none, 0.1);
         assert!(!out.takes_wheel && out.shown_db == -6.0);
-        // With Ctrl: half a decibel a notch, shown at once, one change once it rests.
+        // With Ctrl: a decibel a notch, shown at once, one change once it rests.
         let out = frame(&ctx, look, -6.0, vec![wheel(3.0, ctrl)], ctrl, 0.2);
         assert!(out.takes_wheel);
-        assert_eq!((out.shown_db, out.done), (-4.5, None));
+        assert_eq!((out.shown_db, out.done), (-3.0, None));
         let out = frame(&ctx, look, -6.0, Vec::new(), none, 0.3);
-        assert_eq!((out.shown_db, out.done), (-4.5, None), "still settling");
+        assert_eq!((out.shown_db, out.done), (-3.0, None), "still settling");
         let out = frame(&ctx, look, -6.0, Vec::new(), none, 0.3 + WHEEL_SETTLES);
-        assert_eq!(out.done, Some(-4.5));
+        assert_eq!(out.done, Some(-3.0));
     }
 }

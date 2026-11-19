@@ -221,6 +221,15 @@ impl Editor {
                 .into();
                 Ok(())
             }
+            Action::HeaderVolume => {
+                self.settings.hide_header_volume = !self.settings.hide_header_volume;
+                self.status = match self.settings.hide_header_volume {
+                    true => "No volume in the track headers: set it beside the master, or pin tracks there from their menu",
+                    false => "Volume back in the audio track headers",
+                }
+                .into();
+                Ok(())
+            }
             Action::TrackColumn => {
                 self.settings.hide_track_column = !self.settings.hide_track_column;
                 self.status = match self.settings.hide_track_column {
