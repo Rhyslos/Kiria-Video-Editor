@@ -16,7 +16,8 @@
 //!   of the range is silence (`engine::mix::volume`, `project::Sound::SILENT`)
 //!   and reads "Off"; a track's or the whole mix's volume is heard at
 //!   −60 dB there (the audio crate's `volume_gain` turns every decibel into
-//!   a factor) and reads "−60.0 dB".
+//!   a factor) and reads "−60.0 dB". The volume lines follow their owner:
+//!   a clip's line at the bottom is silence, a track's is heard.
 
 /// The top of the range, in decibels.
 pub const TOP_DB: f32 = 12.0;
@@ -200,9 +201,25 @@ mod tests {
                 crate::timeline::level::words(f64::from(db)),
                 words(db, Bottom::Silent)
             );
+            // The volume lines: a track's as the track, a clip's as the clip.
+            let volume_line = crate::timeline::LineKind::Volume;
+            assert_eq!(volume_line.words(db, crate::timeline::LineOwner::Track(1)), track);
+            assert_eq!(
+                volume_line.words(db, crate::timeline::LineOwner::Clip(1)),
+                words(db, Bottom::Silent)
+            );
         }
         assert_eq!(crate::mixer::db_words(BOTTOM_DB), "−60.0 dB");
         assert_eq!(crate::timeline::level::words(f64::from(BOTTOM_DB)), "Off");
+        assert_eq!(
+            crate::timeline::LineKind::Volume.words(BOTTOM_DB, crate::timeline::LineOwner::Track(1)),
+            "−60.0 dB",
+            "a track's line at the bottom is still heard"
+        );
+        assert_eq!(
+            crate::timeline::LineKind::Volume.words(BOTTOM_DB, crate::timeline::LineOwner::Clip(1)),
+            "Off"
+        );
         // The level line's own law shares the ends: the top at the top,
         // the bottom (silence for a clip) in its bottom few hundredths.
         assert_eq!(crate::timeline::level::db_at(0.0), BOTTOM_DB);
