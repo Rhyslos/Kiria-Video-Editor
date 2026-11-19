@@ -50,9 +50,6 @@ pub struct Settings {
     /// The track of the selected audio clip shows the detailed knob,
     /// growing to fit it while the clip is selected (Settings › Editing).
     pub detailed_gain_selected: bool,
-    /// No column for the selected audio track beside the master on the Edit
-    /// page (Display menu); pinned tracks still have theirs.
-    pub hide_track_column: bool,
     /// No volume control in the audio tracks' headers, for the shortest
     /// tracks (Display menu); before the knobs and the slider.
     pub hide_header_volume: bool,
@@ -399,6 +396,12 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settings_from_before_the_track_column_went_still_read() {
+        let older: Settings = ron::from_str("(hide_track_column: true, rough_cut: true)").unwrap();
+        assert!(older.rough_cut, "the rest is kept");
+    }
 
     #[test]
     fn proxies_are_auto_until_set_and_kept() {

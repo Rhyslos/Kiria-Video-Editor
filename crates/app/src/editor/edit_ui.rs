@@ -837,37 +837,18 @@ impl Editor {
             };
             let status_height = if self.status.is_empty() { 0.0 } else { 24.0 };
             let height = (ui.available_height() - status_height).max(160.0);
-            // The selected audio track's column: the track of the selected
-            // sound clip, else the one it was last for, else the first.
-            let picked = seq
-                .audio_tracks
-                .iter()
-                .find(|t| t.clips.iter().any(|c| self.selected.contains(&c.id)))
-                .or_else(|| {
-                    seq.audio_tracks
-                        .iter()
-                        .find(|t| Some(t.id) == self.track_column_for)
-                })
-                .or_else(|| seq.audio_tracks.front());
-            self.track_column_for = picked.map(|t| t.id);
-            // The pinned tracks' columns first, in the order they were
-            // pinned, then the selected track's (unless it is pinned, or
-            // that column is switched off); as many as leave the timeline room.
+            // The pinned tracks' columns, in the order they were pinned,
+            // as many as leave the timeline room.
             let pinned = self
                 .timeline
                 .pinned
                 .iter()
-                .filter_map(|id| seq.audio_tracks.iter().find(|t| t.id.0 == *id))
-                .map(|t| (t, true));
-            let auto = picked
-                .filter(|t| !self.settings.hide_track_column && !self.timeline.pinned.contains(&t.id.0))
-                .map(|t| (t, false));
+                .filter_map(|id| seq.audio_tracks.iter().find(|t| t.id.0 == *id));
             let room = ((width - TIMELINE_LEAST - layout::MASTER_WIDTH) / (layout::MASTER_WIDTH + 8.0))
                 .max(0.0) as usize;
             let columns: Vec<ColumnShown> = pinned
-                .chain(auto)
                 .take(room)
-                .map(|(t, closable)| {
+                .map(|t| {
                     let index = seq.audio_tracks.iter().position(|o| o.id == t.id).unwrap_or(0);
                     ColumnShown {
                         id: t.id,
@@ -880,7 +861,6 @@ impl Editor {
                         muted: t.muted,
                         solo: t.solo,
                         levels: meters.get(&t.id).copied(),
-                        closable,
                     }
                 })
                 .collect();
@@ -916,12 +896,9 @@ impl Editor {
                         muted: c.muted,
                         solo: c.solo,
                         levels: c.levels,
-                        closable: c.closable,
+                        closable: true,
                     };
-                    let column = match c.closable {
-                        true => self.pinned_columns.entry(c.id.0).or_default(),
-                        false => &mut self.track_column,
-                    };
+                    let column = self.pinned_columns.entry(c.id.0).or_default();
                     let asked = column.show(ui, &self.theme, rect, strip);
                     let (muted, solo) = asked.mute_solo.unwrap_or((c.muted, c.solo));
                     if asked.gain_db.is_some() || asked.mute_solo.is_some() {
@@ -996,8 +973,6 @@ struct ColumnShown {
     muted: bool,
     solo: bool,
     levels: Option<([f32; 2], f32)>,
-    /// A pinned track's column, with its × to unpin it.
-    closable: bool,
 }
 
 #[cfg(test)]
