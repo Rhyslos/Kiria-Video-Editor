@@ -2827,6 +2827,42 @@ pub(crate) mod tests {
         (p, seq, first)
     }
 
+    /// A speed keyframe's mark on the timeline works like any other: moved,
+    /// eased or removed in one step, the clip's length following.
+    #[test]
+    fn a_speed_keyframes_mark_moves_eases_and_removes_it() {
+        let (p, seq, clip) = ramped();
+        let rate = p.active().unwrap().settings.frame_rate;
+        let change = |p: &Project, at: Time, change| {
+            Command::ChangeKeyframes {
+                sequence: seq,
+                clip,
+                frames: vec![rate.snap(at)],
+                change,
+            }
+            .apply(p)
+        };
+        let keys = |p: &Project| first_video(p, 0).ramp.keys().to_vec();
+        // Moved a second later: the slow-down starts later, the clip is shorter.
+        let moved = change(&p, Time::seconds(12), KeyframesChange::Move(Time::seconds(1))).unwrap();
+        assert_eq!(keys(&moved)[1].at, Time::seconds(13));
+        assert!(first_video(&moved, 0).duration < first_video(&p, 0).duration);
+        assert_eq!(
+            first_video(&moved, 0).source_len(),
+            Time::seconds(30),
+            "the same part of the file"
+        );
+        // Eased.
+        let eased = change(&p, Time::seconds(10), KeyframesChange::Ease(crate::Ease::Smooth)).unwrap();
+        assert_eq!(keys(&eased)[0].ease, crate::Ease::Smooth);
+        // Removed: one speed keyframe left, so one speed (half) all along.
+        let removed = change(&p, Time::seconds(10), KeyframesChange::Remove).unwrap();
+        assert_eq!(keys(&removed).len(), 1);
+        // Onto the other speed keyframe's frame: refused.
+        assert!(change(&p, Time::seconds(10), KeyframesChange::Move(Time::seconds(2))).is_err());
+        assert!(removed.problems().is_empty());
+    }
+
     #[test]
     fn a_ramp_keeps_the_same_part_of_the_file_and_its_length_follows() {
         let (p, _, _) = ramped();
