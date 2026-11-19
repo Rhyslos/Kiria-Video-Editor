@@ -945,22 +945,31 @@ footer p { color: var(--muted); }
 
 <section id="display-menu">
 <h3>The Display menu and views<a class="anchor" href="#display-menu" aria-label="Link to this section">#</a></h3>
-<figure><img loading="lazy" src="images/display-menu.jpg" width="1440" height="900" alt="The Display menu under the viewer: Split view, Viewer in its own window, Full screen, and under Timeline: Rough cut, Compact tracks, Divider between video and audio, Clicking the timeline moves the edit needle, Edit at the playhead."><figcaption>The Display menu: how to show the picture, and how to look at the timeline.</figcaption></figure>
+<figure><img loading="lazy" src="images/display-menu.jpg" width="1440" height="900" alt="The Display menu under the viewer, a checkbox per line in four groups: Picture, Timeline, Editing and Audio tracks."><figcaption>The Display menu: a checkbox per line, in four groups.</figcaption></figure>
+<p>Every line is a checkbox: ticked is on. Click as many as you like; the menu stays open until you click outside it (Viewer in its own window and Full screen close it, since the picture moves). A line's keys, if it has any, are on its right.</p>
+<p><strong>Picture</strong></p>
 <ul>
 <li><strong>Split view:</strong> the selected clip's own picture (“Source”, raw: no position, crop or colour) beside the timeline's (“Program”). Handy for checking what part of a recording a clip plays.</li>
 <li><strong>Viewer in its own window:</strong> the picture in a window you can drag to another screen. <kbd>F</kbd> or a double-click there fills that screen, <kbd>Esc</kbd> gives it back; close it (or click <strong>Bring it back</strong>) to return the picture to the page.</li>
 <li><strong>Full screen</strong> (<kbd>F</kbd>): the picture fills the screen; <kbd>Esc</kbd> returns. A thin bar along the bottom is the whole timeline: click or drag on it to move the playhead. Small ticks show where the picture cuts from one clip to another, and the region is lit.</li>
+<li><strong>Nothing over the picture</strong> (<kbd>H</kbd>): the play buttons move to the row under it, and handles, notes and captions are away.</li>
 </ul>
-<p>Under the <strong>Timeline</strong> heading:</p>
+<p><strong>Timeline</strong></p>
 <ul>
 <li><strong>Rough cut</strong> (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd>): one strip per clip with its picture and its sound together, for quick cutting of long recordings. Every tool works the same.</li>
 <li><strong>Compact tracks:</strong> every track a thin strip, to see twenty tracks at a glance. Your track heights come back when you turn it off.</li>
 <li><strong>Divider between video and audio:</strong> off, all tracks are one list that scrolls together.</li>
-<li><strong>Volume knobs:</strong> each audio track gets a knob beside its buttons instead of the slider under them (the column of track names is a little wider). Its ring fills up to the volume, which is written in its middle; around it are −∞, −12, a red 0 and +12, green dots at −24 and −6 and an orange one at +6, and past 0 dB the ring turns orange. <strong>Detailed audio gain</strong> gives every audio track the large knob instead, with its full scale and the volume written in its middle (taller tracks). Both knobs give the useful cuts most of their turn: −24, −12 and −6 dB are well apart and the quietest part of the range is short.</li>
-<li><strong>Volume in the track headers:</strong> off, audio tracks keep only their buttons (no slider, no knob) and can be shorter; set their volume in the columns beside Master (pin as many tracks there as you like), on the Audio page or with the level lines.</li>
-<li><strong>Selected track column:</strong> the tall fader and meter for the selected audio track beside the Master column, on the Edit page. Off, only tracks you pin there have one.</li>
 <li><strong>Zoom to playhead:</strong> zooming the timeline, with the wheel, a pinch or <kbd>=</kbd> and <kbd>-</kbd>, keeps the playhead where it is on screen instead of zooming at the pointer; a playhead out of view is brought to the middle first.</li>
+</ul>
+<p><strong>Editing</strong></p>
+<ul>
 <li><strong>Clicking the timeline moves the edit needle</strong> and <strong>Edit at the playhead</strong>: see <a href="#playhead-needle">The playhead and the red edit needle</a>.</li>
+</ul>
+<p><strong>Audio tracks</strong></p>
+<ul>
+<li><strong>Volume in the track headers:</strong> off, audio tracks keep only their buttons (no slider, no knob) and can be shorter; set their volume in the columns beside Master (pin as many tracks there as you like), on the Audio page or with the level lines. While it is off, the two lines under it are greyed: they choose which control the headers have.</li>
+<li><strong>Volume knobs:</strong> each audio track gets a knob beside its buttons instead of the slider under them (the column of track names is a little wider). Its ring fills up to the volume, which is written in its middle; around it are −∞, −12, a red 0 and +12, green dots at −24 and −6 and an orange one at +6, and past 0 dB the ring turns orange. <strong>Detailed audio gain</strong> gives every audio track the large knob instead, with its full scale and the volume written in its middle (taller tracks). Both knobs give the useful cuts most of their turn: −24, −12 and −6 dB are well apart and the quietest part of the range is short.</li>
+<li><strong>Selected track column:</strong> the tall fader and meter for the selected audio track beside the Master column, on the Edit page. Off, only tracks you pin there have one.</li>
 </ul>
 <p>These are ways of working, kept in your settings for every project.</p>
 <figure><img loading="lazy" src="images/split-view.jpg" width="1440" height="900" alt="Split view: the Source picture of the selected clip on the left and the Program picture of the timeline on the right."><figcaption>Split view: Source on the left, Program on the right.</figcaption></figure>

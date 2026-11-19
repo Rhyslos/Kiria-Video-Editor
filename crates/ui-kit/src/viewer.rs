@@ -368,87 +368,204 @@ pub struct Display {
     pub clean: bool,
 }
 
-/// The Display menu's lines: the command each runs, its words, and whether
-/// it is on.
-pub fn display_lines(display: Display) -> [(Action, &'static str, bool); 4] {
-    [
-        (Action::SplitView, "Split view", display.split),
-        (
-            Action::ViewerWindow,
-            "Viewer in its own window",
-            display.own_window,
-        ),
-        (Action::FullScreenViewer, "Full screen", display.full_screen),
-        (Action::CleanPicture, "Nothing over the picture", display.clean),
+/// One line of the Display menu: the command it runs, its words, whether
+/// it is on (its box ticked), and whether it does anything now (greyed when
+/// another line makes it moot).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DisplayLine {
+    pub action: Action,
+    pub words: &'static str,
+    pub on: bool,
+    pub enabled: bool,
+}
+
+/// A titled group of the Display menu's lines.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DisplayGroup {
+    pub title: &'static str,
+    pub lines: Vec<DisplayLine>,
+}
+
+/// The Display menu, group by group: how the picture is shown, how the
+/// timeline looks, how edits are placed, and how audio tracks set their
+/// volume.
+pub fn display_groups(display: Display) -> Vec<DisplayGroup> {
+    let line = |action, words, on| DisplayLine {
+        action,
+        words,
+        on,
+        enabled: true,
+    };
+    vec![
+        DisplayGroup {
+            title: "Picture",
+            lines: vec![
+                line(Action::SplitView, "Split view", display.split),
+                line(
+                    Action::ViewerWindow,
+                    "Viewer in its own window",
+                    display.own_window,
+                ),
+                line(Action::FullScreenViewer, "Full screen", display.full_screen),
+                line(Action::CleanPicture, "Nothing over the picture", display.clean),
+            ],
+        },
+        DisplayGroup {
+            title: "Timeline",
+            lines: vec![
+                line(Action::RoughCut, "Rough cut", display.rough_cut),
+                line(Action::CompactTracks, "Compact tracks", display.compact_tracks),
+                line(
+                    Action::TrackDivider,
+                    "Divider between video and audio",
+                    display.track_divider,
+                ),
+                line(
+                    Action::ZoomToPlayhead,
+                    "Zoom to playhead",
+                    display.zoom_to_playhead,
+                ),
+            ],
+        },
+        DisplayGroup {
+            title: "Editing",
+            lines: vec![
+                line(
+                    Action::ClickMovesNeedle,
+                    "Clicking the timeline moves the edit needle",
+                    display.click_moves_needle,
+                ),
+                line(
+                    Action::EditAtPlayhead,
+                    "Edit at the playhead",
+                    display.edit_at_playhead,
+                ),
+            ],
+        },
+        DisplayGroup {
+            title: "Audio tracks",
+            lines: vec![
+                line(
+                    Action::HeaderVolume,
+                    "Volume in the track headers",
+                    display.header_volume,
+                ),
+                // Which control the headers have: moot without one.
+                DisplayLine {
+                    enabled: display.header_volume,
+                    ..line(Action::TrackKnobs, "Volume knobs", display.track_knobs)
+                },
+                DisplayLine {
+                    enabled: display.header_volume,
+                    ..line(Action::DetailedGain, "Detailed audio gain", display.detailed_gain)
+                },
+                line(Action::TrackColumn, "Selected track column", display.track_column),
+            ],
+        },
     ]
 }
 
-/// The Display menu's lines under its Timeline heading: how the timeline's
-/// tracks are looked at.
-pub fn timeline_lines(display: Display) -> [(Action, &'static str, bool); 10] {
-    [
-        (Action::RoughCut, "Rough cut", display.rough_cut),
-        (Action::CompactTracks, "Compact tracks", display.compact_tracks),
-        (
-            Action::TrackDivider,
-            "Divider between video and audio",
-            display.track_divider,
-        ),
-        (
-            Action::ClickMovesNeedle,
-            "Clicking the timeline moves the edit needle",
-            display.click_moves_needle,
-        ),
-        (
-            Action::ZoomToPlayhead,
-            "Zoom to playhead",
-            display.zoom_to_playhead,
-        ),
-        (
-            Action::EditAtPlayhead,
-            "Edit at the playhead",
-            display.edit_at_playhead,
-        ),
-        (Action::TrackKnobs, "Volume knobs", display.track_knobs),
-        (Action::DetailedGain, "Detailed audio gain", display.detailed_gain),
-        (
-            Action::HeaderVolume,
-            "Volume in the track headers",
-            display.header_volume,
-        ),
-        (Action::TrackColumn, "Selected track column", display.track_column),
-    ]
+/// How wide the Display menu's lines are.
+const MENU_WIDTH: f32 = 330.0;
+
+/// Lines that change where the picture is: the menu closes after them.
+fn closes_the_menu(action: Action) -> bool {
+    matches!(action, Action::ViewerWindow | Action::FullScreenViewer)
+}
+
+/// One line of the menu as a checkbox: its box, its words and its keys on
+/// the right. True when clicked.
+fn checkbox_line(ui: &mut Ui, line: DisplayLine, keys: &str) -> bool {
+    let height = 22.0;
+    let width = MENU_WIDTH;
+    let (rect, r) = ui.allocate_exact_size(vec2(width, height), egui::Sense::click());
+    let r = r.on_hover_text(line.action.label());
+    let visuals = ui.visuals().clone();
+    let p = ui.painter();
+    if r.hovered() && line.enabled {
+        p.rect_filled(rect, 3.0, visuals.widgets.hovered.weak_bg_fill);
+    }
+    let text = if line.enabled {
+        visuals.text_color()
+    } else {
+        visuals.weak_text_color()
+    };
+    let check =
+        egui::Rect::from_center_size(egui::pos2(rect.left() + 13.0, rect.center().y), vec2(13.0, 13.0));
+    if line.on {
+        let fill = if line.enabled {
+            visuals.selection.bg_fill
+        } else {
+            visuals.widgets.inactive.bg_fill
+        };
+        p.rect_filled(check, 3.0, fill);
+        let c = check.center();
+        p.add(egui::Shape::line(
+            vec![c + vec2(-3.5, 0.2), c + vec2(-1.0, 2.8), c + vec2(3.8, -2.8)],
+            egui::Stroke::new(1.8, visuals.selection.stroke.color),
+        ));
+    } else {
+        p.rect_stroke(
+            check,
+            3.0,
+            egui::Stroke::new(1.2, visuals.widgets.inactive.fg_stroke.color.gamma_multiply(0.6)),
+            egui::StrokeKind::Inside,
+        );
+    }
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    p.text(
+        egui::pos2(check.right() + 9.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        line.words,
+        font.clone(),
+        text,
+    );
+    if !keys.is_empty() {
+        p.text(
+            egui::pos2(rect.right() - 6.0, rect.center().y),
+            egui::Align2::RIGHT_CENTER,
+            keys,
+            font,
+            visuals.weak_text_color(),
+        );
+    }
+    r.clicked() && line.enabled
 }
 
 /// The Display menu: a small button in the viewer's bottom row that opens
-/// the ways to show the picture and, under a Timeline heading, the ways to
-/// look at the timeline's tracks, each with the keys it has in
-/// `shortcuts`. Returns the command picked; the page runs it like the same
-/// command from the keyboard or search.
+/// the ways to show the picture and look at the timeline, in titled groups,
+/// each a checkbox with the keys it has in `shortcuts`. Returns the command
+/// picked; the page runs it like the same command from the keyboard or
+/// search. The menu stays open to tick several, except after a line that
+/// moves the picture.
 pub fn display_menu(ui: &mut Ui, display: Display, shortcuts: &ShortcutTable) -> Option<Action> {
     let mut picked = None;
-    let mut line = |ui: &mut Ui, (action, words, on): (Action, &str, bool)| {
-        // A tick says which are on; the room for it keeps the words lined up.
-        let words = format!("{}  {words}", if on { "\u{2713}" } else { "\u{2003}" });
-        let line = egui::Button::selectable(on, words).shortcut_text(shortcuts.keys_for(action));
-        if ui.add(line).on_hover_text(action.label()).clicked() {
-            picked = Some(action);
-            ui.close();
-        }
-    };
-    ui.menu_button("Display", |ui| {
-        ui.set_min_width(260.0);
-        for each in display_lines(display) {
-            line(ui, each);
-        }
-        ui.separator();
-        ui.label(egui::RichText::new("Timeline").small().weak());
-        for each in timeline_lines(display) {
-            line(ui, each);
-        }
-    })
-    .response
-    .on_hover_text("How the picture is shown (split, in its own window, full screen), how the timeline's tracks are looked at and what a click on it moves");
+    // Clicks inside keep it open, so several lines can be ticked in turn.
+    let config = egui::containers::menu::MenuConfig::new()
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+    let (button, _) = egui::containers::menu::MenuButton::new("Display")
+        .config(config)
+        .ui(ui, |ui| {
+            ui.set_width(MENU_WIDTH);
+            ui.spacing_mut().item_spacing.y = 1.0;
+            for (i, group) in display_groups(display).into_iter().enumerate() {
+                if i > 0 {
+                    ui.add_space(4.0);
+                    ui.separator();
+                }
+                ui.add_space(2.0);
+                ui.label(egui::RichText::new(group.title).small().strong().weak());
+                for line in group.lines {
+                    if checkbox_line(ui, line, &shortcuts.keys_for(line.action)) {
+                        picked = Some(line.action);
+                        if closes_the_menu(line.action) {
+                            ui.close();
+                        }
+                    }
+                }
+            }
+        });
+    button.on_hover_text("How the picture is shown, how the timeline looks, where edits happen and how audio tracks set their volume");
     picked
 }
 
@@ -472,53 +589,119 @@ mod tests {
     }
 
     #[test]
-    fn the_display_menu_runs_the_commands_and_shows_what_is_on() {
-        let lines = display_lines(Display {
+    fn the_display_menu_is_in_groups_and_shows_what_is_on() {
+        let groups = display_groups(Display {
             split: true,
-            ..Display::default()
-        });
-        let actions: Vec<Action> = lines.iter().map(|(a, _, _)| *a).collect();
-        assert_eq!(
-            actions,
-            [
-                Action::SplitView,
-                Action::ViewerWindow,
-                Action::FullScreenViewer,
-                Action::CleanPicture
-            ]
-        );
-        assert_eq!(lines.map(|(_, _, on)| on), [true, false, false, false]);
-        let timeline = timeline_lines(Display {
             compact_tracks: true,
-            track_divider: false,
             click_moves_needle: true,
-            zoom_to_playhead: true,
             detailed_gain: true,
             ..Display::default()
         });
+        let titles: Vec<&str> = groups.iter().map(|g| g.title).collect();
+        assert_eq!(titles, ["Picture", "Timeline", "Editing", "Audio tracks"]);
+        let on: Vec<(Action, bool)> = groups
+            .iter()
+            .flat_map(|g| &g.lines)
+            .map(|l| (l.action, l.on))
+            .collect();
         assert_eq!(
-            timeline.map(|(a, _, on)| (a, on)),
+            on,
             [
+                (Action::SplitView, true),
+                (Action::ViewerWindow, false),
+                (Action::FullScreenViewer, false),
+                (Action::CleanPicture, false),
                 (Action::RoughCut, false),
                 (Action::CompactTracks, true),
                 (Action::TrackDivider, false),
+                (Action::ZoomToPlayhead, false),
                 (Action::ClickMovesNeedle, true),
-                (Action::ZoomToPlayhead, true),
                 (Action::EditAtPlayhead, false),
+                (Action::HeaderVolume, false),
                 (Action::TrackKnobs, false),
                 (Action::DetailedGain, true),
-                (Action::HeaderVolume, false),
-                (Action::TrackColumn, false)
+                (Action::TrackColumn, false),
             ]
         );
+        // Without a volume control in the headers, which one is moot.
+        let moot: Vec<Action> = groups
+            .iter()
+            .flat_map(|g| &g.lines)
+            .filter(|l| !l.enabled)
+            .map(|l| l.action)
+            .collect();
+        assert_eq!(moot, [Action::TrackKnobs, Action::DetailedGain]);
         // Each line's words are in its command's name, so the menu, search
         // and the shortcuts page say the same thing.
-        for (action, words, _) in lines.into_iter().chain(timeline) {
+        for line in groups.iter().flat_map(|g| &g.lines) {
             assert!(
-                action.label().to_lowercase().contains(&words.to_lowercase()),
-                "{words} / {}",
-                action.label()
+                line.action
+                    .label()
+                    .to_lowercase()
+                    .contains(&line.words.to_lowercase()),
+                "{} / {}",
+                line.words,
+                line.action.label()
             );
+        }
+        assert!(closes_the_menu(Action::FullScreenViewer) && !closes_the_menu(Action::CompactTracks));
+    }
+
+    #[test]
+    fn ticking_a_line_keeps_the_display_menu_open() {
+        let ctx = egui::Context::default();
+        let table = ShortcutTable::default();
+        let mut picked = Vec::new();
+        let frame = |events: Vec<egui::Event>, picked: &mut Vec<Action>| {
+            let input = egui::RawInput {
+                events,
+                screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(800.0, 800.0))),
+                ..Default::default()
+            };
+            let output = ctx.run_ui(input, |ui| {
+                if let Some(action) = display_menu(ui, Display::default(), &table) {
+                    picked.push(action);
+                }
+            });
+            output.drop_without_applying_deltas();
+        };
+        let click = |at: egui::Pos2| {
+            vec![
+                vec![egui::Event::PointerMoved(at)],
+                vec![egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+                vec![egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            ]
+        };
+        frame(Vec::new(), &mut picked);
+        // The Display button sits at the top left.
+        for events in click(pos2(20.0, 10.0)) {
+            frame(events, &mut picked);
+        }
+        frame(Vec::new(), &mut picked);
+        assert!(egui::Popup::is_any_open(&ctx), "the menu opened");
+        // Lines down the menu until one is ticked.
+        for y in (40..400).step_by(6) {
+            if !picked.is_empty() {
+                break;
+            }
+            for events in click(pos2(80.0, y as f32)) {
+                frame(events, &mut picked);
+            }
+        }
+        frame(Vec::new(), &mut picked);
+        assert!(!picked.is_empty(), "a line was ticked");
+        if !closes_the_menu(picked[0]) {
+            assert!(egui::Popup::is_any_open(&ctx), "still open after {:?}", picked[0]);
         }
     }
 
