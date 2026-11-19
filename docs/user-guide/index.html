@@ -791,6 +791,7 @@ footer p { color: var(--muted); }
 <li><strong>Loop it:</strong> <kbd>L</kbd>.</li>
 <li><strong>Cut with it</strong> (right-click the region, in the ruler or on the tracks): <strong>Remove the region</strong> cuts it out of every track and closes the gap; <strong>Remove the region, leave a gap</strong> cuts it out and leaves the space; <strong>Keep only the region</strong> removes everything before and after it. Each is one undo step.</li>
 <li><strong>Clear it:</strong> right-click › <strong>Clear the region</strong>.</li>
+<li><strong>Label it:</strong> <kbd>Shift</kbd>+<kbd>M</kbd>, or right-click › <strong>Label the region</strong>. An orange band in the Labels row covers the whole stretch and asks for a name. It stays with the timeline after the region moves on, moves along with ripple edits and grows or shrinks with them, and can be dragged like any label. Right-click it › <strong>Set the region to it</strong> to mark that stretch again, and the Export page offers it as a range of its own.</li>
 </ul>
 </section>
 
@@ -1192,7 +1193,7 @@ footer p { color: var(--muted); }
 <h3>Settings<a class="anchor" href="#export-settings" aria-label="Link to this section">#</a></h3>
 <ul>
 <li><strong>File name</strong> and <strong>folder</strong> (<strong>Browse…</strong>).</li>
-<li><strong>Range:</strong> the whole timeline, or the region (in to out).</li>
+<li><strong>Range:</strong> the whole timeline, the region (in to out), or a labelled stretch (a region you labelled with <kbd>Shift</kbd>+<kbd>M</kbd>), by its name.</li>
 <li><strong>Video:</strong> container (MP4 or MKV), codec (H.264, H.265, AV1; what this computer can't encode is greyed), size (the timeline's, 4K, 1440p, 1080p, 720p, 480p, vertical, wide, square), frame rate (the timeline's or a standard one below it), quality (<strong>High</strong>, <strong>Medium</strong>, <strong>Small</strong>, with the bit rate it means) and whether the graphics card's encoder is used.</li>
 <li><strong>Audio:</strong> codec (AAC, Opus, FLAC in MKV), bit rate, sample rate, <strong>Normalise</strong> to the loudness you aim for, and <strong>Also save the sound as a separate WAV</strong>.</li>
 </ul>
@@ -1487,6 +1488,7 @@ footer p { color: var(--muted); }
 <tr><td>Delete the selected clip</td><td><kbd>Delete</kbd></td></tr>
 <tr><td>Delete and close the gap</td><td><kbd>Backspace</kbd></td></tr>
 <tr><td>Add a timeline label</td><td><kbd>M</kbd></td></tr>
+<tr><td>Label the region: one label over all of it</td><td><kbd>Shift</kbd>+<kbd>M</kbd></td></tr>
 <tr><td>Select nothing (and leave full screen)</td><td><kbd>Esc</kbd></td></tr>
 <tr><td>Select all: every clip of the open timeline (on the Library page, every file shown)</td><td><kbd>Ctrl</kbd>+<kbd>A</kbd></td></tr>
 <tr><td>Clear the region</td><td><span class="none">none (give it one on the shortcuts page)</span></td></tr>

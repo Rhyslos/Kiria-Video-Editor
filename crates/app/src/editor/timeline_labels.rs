@@ -5,7 +5,7 @@
 //! (`windows.rs`).
 
 use super::Editor;
-use project::{Command, LabelColor, LabelId};
+use project::{Command, LabelColor, LabelId, TimelineLabel};
 
 impl Editor {
     /// Chooses timeline label `label` (none for `None`); choosing one lets
@@ -55,6 +55,44 @@ impl Editor {
                 color,
             })
         });
+    }
+
+    /// Labels the region as a whole (one undo step), then asks for the
+    /// label's name; without a region, says how to mark one.
+    pub(super) fn label_region(&mut self) -> diag::Result<()> {
+        let Some(region) = self.region() else {
+            self.status = "Mark a region first: Shift-drag in the ruler, or I and O.".into();
+            return Ok(());
+        };
+        let mut added = None;
+        self.with_document(|d| {
+            let Some(seq) = d.project().active() else {
+                return Ok(());
+            };
+            let (sequence, name) = (seq.id, seq.next_label_name());
+            let before: Vec<LabelId> = seq.labels.iter().map(|l| l.id).collect();
+            d.apply(Command::AddLabel {
+                sequence,
+                label: TimelineLabel {
+                    id: LabelId(0),
+                    name,
+                    at: region.start,
+                    color: LabelColor::Orange,
+                    until: Some(region.end),
+                },
+            })?;
+            added = d
+                .project()
+                .active()
+                .and_then(|s| s.labels.iter().find(|l| !before.contains(&l.id)).cloned());
+            Ok(())
+        })?;
+        if let Some(label) = added {
+            self.select_label(Some(label.id.0));
+            self.label_editor = Some(crate::label_editor::LabelEditor::new(&label));
+            self.status = "Region labelled: give it a name. Its menu sets the region to it again.".into();
+        }
+        Ok(())
     }
 
     /// Deletes timeline label `label`; it is no longer the chosen one.

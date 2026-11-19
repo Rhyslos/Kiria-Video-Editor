@@ -35,6 +35,7 @@ impl Editor {
                 let at = self.edit_point();
                 self.add_label(at)
             }
+            Action::LabelRegion => self.label_region(),
             Action::ToggleLoop => {
                 self.looping = !self.looping;
                 let has_region = self.region().is_some();

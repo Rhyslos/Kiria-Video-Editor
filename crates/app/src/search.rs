@@ -277,6 +277,7 @@ mod tests {
                 name: "Big fight".into(),
                 at: Time::seconds(12),
                 color: LabelColor::Red,
+                until: None,
             },
         }
         .apply(&p)

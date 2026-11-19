@@ -481,6 +481,7 @@ pub fn drawn(
                 name: l.name.clone(),
                 colour: label_colour(l.color),
                 selected: false,
+                until: l.until.map(project::Time::as_secs_f64),
             })
             .collect(),
     }
