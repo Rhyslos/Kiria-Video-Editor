@@ -212,6 +212,17 @@ impl Editor {
                 .into();
                 Ok(())
             }
+            Action::ZoomToPlayhead => {
+                self.settings.zoom_to_playhead = !self.settings.zoom_to_playhead;
+                self.timeline.zoom_to_playhead = self.settings.zoom_to_playhead;
+                self.status = if self.settings.zoom_to_playhead {
+                    "Zoom to playhead: zooming keeps the playhead where it is, and brings it into view"
+                } else {
+                    "Zooming with the wheel zooms at the pointer again"
+                }
+                .into();
+                Ok(())
+            }
             Action::ClickMovesNeedle => {
                 self.settings.click_moves = match self.settings.click_moves {
                     ui_kit::ClickMoves::Playhead => ui_kit::ClickMoves::EditNeedle,

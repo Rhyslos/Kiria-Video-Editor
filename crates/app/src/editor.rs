@@ -1089,6 +1089,7 @@ impl Editor {
             compact_tracks: self.settings.compact_tracks,
             track_divider: !self.settings.one_track_list,
             click_moves_needle: self.settings.click_moves == ui_kit::ClickMoves::EditNeedle,
+            zoom_to_playhead: self.settings.zoom_to_playhead,
             rough_cut: self.settings.rough_cut,
             edit_at_playhead: self.settings.edit_at_playhead,
             clean: self.settings.clean_picture,

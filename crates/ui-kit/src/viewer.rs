@@ -349,6 +349,8 @@ pub struct Display {
     pub track_divider: bool,
     /// A click in the timeline's ruler moves the edit needle.
     pub click_moves_needle: bool,
+    /// Zooming the timeline keeps the playhead in place.
+    pub zoom_to_playhead: bool,
     /// The timeline is in the rough cut view.
     pub rough_cut: bool,
     /// Cuts, splits and pastes happen at the playhead (no edit needle).
@@ -375,7 +377,7 @@ pub fn display_lines(display: Display) -> [(Action, &'static str, bool); 4] {
 
 /// The Display menu's lines under its Timeline heading: how the timeline's
 /// tracks are looked at.
-pub fn timeline_lines(display: Display) -> [(Action, &'static str, bool); 5] {
+pub fn timeline_lines(display: Display) -> [(Action, &'static str, bool); 6] {
     [
         (Action::RoughCut, "Rough cut", display.rough_cut),
         (Action::CompactTracks, "Compact tracks", display.compact_tracks),
@@ -388,6 +390,11 @@ pub fn timeline_lines(display: Display) -> [(Action, &'static str, bool); 5] {
             Action::ClickMovesNeedle,
             "Clicking the timeline moves the edit needle",
             display.click_moves_needle,
+        ),
+        (
+            Action::ZoomToPlayhead,
+            "Zoom to playhead",
+            display.zoom_to_playhead,
         ),
         (
             Action::EditAtPlayhead,
@@ -469,6 +476,7 @@ mod tests {
             compact_tracks: true,
             track_divider: false,
             click_moves_needle: true,
+            zoom_to_playhead: true,
             ..Display::default()
         });
         assert_eq!(
@@ -478,6 +486,7 @@ mod tests {
                 (Action::CompactTracks, true),
                 (Action::TrackDivider, false),
                 (Action::ClickMovesNeedle, true),
+                (Action::ZoomToPlayhead, true),
                 (Action::EditAtPlayhead, false)
             ]
         );
