@@ -147,37 +147,6 @@ impl Editor {
         }
     }
 
-    /// Takes the chosen files out of the project as one step: those no
-    /// timeline uses (the others stay, and the status line says so).
-    fn remove_from_project(&mut self, media: Vec<project::MediaId>) {
-        let Some(document) = &self.document else { return };
-        let used = project::prune::used_media(document.project());
-        let (kept, going): (Vec<_>, Vec<_>) = media.into_iter().partition(|m| used.contains(m));
-        if going.is_empty() {
-            self.errors.push(
-                &diag::AppError::new("These files are used on a timeline")
-                    .why("Only files no timeline uses can be taken out of the project; a clip still plays each of them.")
-                    .fix("Remove their clips first, or choose files that are \"Not in a timeline\"."),
-            );
-            return;
-        }
-        let count = going.len();
-        match self.with_document(|d| d.apply(project::Command::RemoveMedia { media: going })) {
-            Ok(()) => {
-                let undo = self.shortcuts.keys_or_name(Action::Undo);
-                let stayed = match kept.len() {
-                    0 => String::new(),
-                    1 => "; 1 a timeline uses stayed".into(),
-                    n => format!("; {n} a timeline uses stayed"),
-                };
-                self.status = format!(
-                    "Took {count} files out of the project{stayed}. Nothing was deleted from disk ({undo} brings them back)."
-                );
-            }
-            Err(err) => self.errors.push(&err),
-        }
-    }
-
     /// Settings › Library changed where marks are kept. To the project: the
     /// marks made this session are written into it at once, as one step.
     /// To the session: the page keeps the project's marks for the session,

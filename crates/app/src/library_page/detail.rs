@@ -143,7 +143,7 @@ fn several(
         }
         if ui
             .button("Remove from project…")
-            .on_hover_text("Files a timeline uses stay. Nothing is deleted from disk; undo brings them back.")
+            .on_hover_text("Asks first when a timeline uses any of them. Nothing is deleted from disk; undo brings them back.")
             .clicked()
         {
             picked.push(Picked::Remove(page.chosen.files().to_vec()));
