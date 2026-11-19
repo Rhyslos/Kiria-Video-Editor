@@ -1,19 +1,26 @@
 //! "Follow it from here" on a blur or pixelate box: the box's Left and Top
 //! keyframes from the playhead to the clip's end, found on a thread of its
 //! own (`engine::track`) while the page goes on. The status line says how
-//! far it is; the command bound to Escape stops it, keeping what it found. What it finds is one
-//! undo step on the effect.
+//! far it is; the command bound to Escape stops it, keeping what it found.
+//! What it finds is one undo step on the effect. What it shares with
+//! Stabilise is in `clip_job.rs`.
 
 use super::Editor;
+use super::clip_job::{self, Doing, Target};
 use engine::track::{Follow, Followed, Following};
-use project::{ClipId, Command, EffectId, SequenceId, Time};
+use project::{ClipId, EffectId, Time};
+
+/// Following a box, in the words its messages use.
+const FOLLOWING: Doing = Doing {
+    running: "Following the box…",
+    verb: "follow",
+    during: "the box was being followed",
+};
 
 /// A follow under way.
 #[derive(Debug)]
 pub struct FollowJob {
-    sequence: SequenceId,
-    clip: ClipId,
-    effect: EffectId,
+    target: Target,
     following: Following,
 }
 
@@ -24,54 +31,35 @@ impl FollowJob {
     }
 }
 
-/// Millionths in one whole.
-const ONE: f64 = 1_000_000.0;
-
 impl Editor {
     /// Starts following the box of `effect` on `clip` from the playhead.
     pub(super) fn start_follow(&mut self, clip: ClipId, effect: EffectId) -> diag::Result<()> {
         let Some(document) = self.document.as_ref() else {
             return Ok(());
         };
-        let project = document.project();
-        let sequence = project.active_sequence;
-        let seq = project.active().ok_or_else(|| missing("timeline"))?;
-        let found = seq
-            .video_tracks
-            .iter()
-            .flat_map(|t| t.clips.iter())
-            .find(|c| c.id == clip)
-            .ok_or_else(|| missing("clip"))?;
-        let media = project.media.get(&found.media).ok_or_else(|| missing("file"))?;
-        let video = media.info.video.as_ref().ok_or_else(|| {
-            diag::AppError::new("There is no picture to follow").why("The clip's file has no video.")
-        })?;
-        let fx = found.effects.get(effect).ok_or_else(|| missing("effect"))?;
-        let rate = seq.settings.frame_rate;
-        let from = found.source_at(self.playhead_on_frame().max(found.start));
-        let last = rate.frame_start(rate.frame_at(found.end()) - 1).max(found.start);
-        let to = found.source_at(last);
-        let numbers = fx.kind_at(from).numbers();
-        let Some(range) = fx.kind.spot_numbers() else {
+        let found = clip_job::find(document.project(), clip, effect, FOLLOWING)?;
+        let from = found
+            .clip
+            .source_at(self.playhead_on_frame().max(found.clip.start));
+        let numbers = found.effect.kind_at(from).numbers();
+        let Some(range) = found.effect.kind.spot_numbers() else {
             return Ok(());
         };
-        let area = [0, 1, 2, 3].map(|i| f64::from(numbers[range.start + i]) / ONE);
+        let area = [0, 1, 2, 3].map(|i| clip_job::share(numbers[range.start + i]));
         let following = Following::start(Follow {
-            path: media.path.clone(),
-            stream: found.stream,
-            rotation: video.rotation,
-            rate: video.frame_rate,
+            path: found.media.path.clone(),
+            stream: found.clip.stream,
+            rotation: found.video.rotation,
+            rate: found.video.frame_rate,
             from,
-            to,
+            to: found.last_frame(),
             area,
         })?;
         self.following = Some(FollowJob {
-            sequence,
-            clip,
-            effect,
+            target: found.target,
             following,
         });
-        self.status = format!("Following the box…{}", super::stops_it(&self.shortcuts));
+        self.status = clip_job::started(FOLLOWING, &self.shortcuts);
         Ok(())
     }
 
@@ -82,15 +70,11 @@ impl Editor {
         let Some(job) = self.following.as_ref() else {
             return;
         };
-        ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        ctx.request_repaint_after(clip_job::NEWS_EVERY);
         match job.following.news() {
             None => {}
             Some(Followed::Going(done)) => {
-                self.status = format!(
-                    "Following the box… {:.0} %{}",
-                    done * 100.0,
-                    super::stops_it(&self.shortcuts)
-                );
+                self.status = clip_job::going(FOLLOWING, done, &self.shortcuts);
             }
             Some(Followed::Failed(why)) => {
                 self.following = None;
@@ -101,10 +85,7 @@ impl Editor {
                 let Some(job) = self.following.take() else {
                     return;
                 };
-                let places: Vec<(Time, (i32, i32))> = places
-                    .into_iter()
-                    .map(|(at, (x, y))| (at, ((x * ONE).round() as i32, (y * ONE).round() as i32)))
-                    .collect();
+                let places = clip_job::places_in_millionths(&places);
                 if let Err(err) = self.finish_follow(&job, &places) {
                     self.errors.push(&err);
                     return;
@@ -128,34 +109,7 @@ impl Editor {
         if places.len() < 2 {
             return Ok(());
         }
-        let (sequence, clip, effect) = (job.sequence, job.clip, job.effect);
-        self.with_document(|d| {
-            let project = d.project();
-            let effects = project
-                .sequence(sequence)
-                .and_then(|seq| {
-                    seq.video_tracks
-                        .iter()
-                        .flat_map(|t| t.clips.iter())
-                        .find(|c| c.id == clip)
-                })
-                .map(|c| c.effects.clone())
-                .ok_or_else(|| missing("clip"))?;
-            let mut next = effects.clone();
-            let Some(at) = next.0.iter().position(|e| e.id == effect) else {
-                return Err(missing("effect"));
-            };
-            next.0[at] = next.0[at].following(places);
-            d.apply(Command::SetEffects {
-                sequence,
-                clip,
-                effects: Box::new(next),
-            })
-        })
+        let target = job.target;
+        self.with_document(|d| clip_job::write_back(d, target, FOLLOWING, |e| e.following(places)))
     }
-}
-
-fn missing(what: &str) -> diag::AppError {
-    diag::AppError::new(format!("That {what} no longer exists"))
-        .why("It may have been removed while the box was being followed.")
 }
