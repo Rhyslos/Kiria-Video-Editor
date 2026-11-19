@@ -124,6 +124,19 @@ pub mod labels {
     pub const PURPLE: Color32 = Color32::from_rgb(0x9A, 0x6C, 0xD8);
     pub const RED: Color32 = Color32::from_rgb(0xE5, 0x48, 0x4D);
     pub const GREY: Color32 = Color32::from_rgb(0x8A, 0x8F, 0x96);
+    /// Every label colour with its name, in the order a label's menu
+    /// offers them (the project's `LabelColor::ALL`; a test in the app
+    /// crate keeps the two in step).
+    pub const ALL: [(&str, Color32); 8] = [
+        ("Blue", BLUE),
+        ("Green", GREEN),
+        ("Pink", PINK),
+        ("Yellow", YELLOW),
+        ("Orange", ORANGE),
+        ("Purple", PURPLE),
+        ("Red", RED),
+        ("Grey", GREY),
+    ];
 }
 
 /// The colours of the Color page's curves for the red, green and blue

@@ -90,6 +90,12 @@ impl Editor {
             }
             Action::Delete | Action::RippleDelete => {
                 if self.selected.is_empty()
+                    && let Some(label) = self.label_chosen()
+                {
+                    // A chosen timeline label: removed, whichever key.
+                    self.remove_label(label);
+                    Ok(())
+                } else if self.selected.is_empty()
                     && let Some(gap) = self.shown_view().selected_gap()
                 {
                     // A selected gap: closed on every track, whichever key.
@@ -103,6 +109,7 @@ impl Editor {
             }
             Action::SelectAll => {
                 if let Some(seq) = self.document.as_ref().and_then(|d| d.project().active()) {
+                    self.selected_label = None;
                     self.selected = timeline_panel::all_clips(seq);
                     let count = self.selected.len();
                     let delete = self.shortcuts.keys_or_name(Action::Delete);

@@ -480,8 +480,16 @@ pub fn drawn(
                 at: l.at.as_secs_f64(),
                 name: l.name.clone(),
                 colour: label_colour(l.color),
+                selected: false,
             })
             .collect(),
+    }
+}
+
+/// Draws timeline label `label` as the chosen one.
+pub fn show_chosen_label(drawn: &mut Drawn, label: Option<project::LabelId>) {
+    for marker in &mut drawn.markers {
+        marker.selected = label.is_some_and(|l| l.0 == marker.id);
     }
 }
 

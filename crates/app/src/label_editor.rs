@@ -1,5 +1,6 @@
 //! The small window for one timeline label: its name, its colour, or
-//! removing it. Opened by double-clicking the label.
+//! removing it. Opened by double-clicking the label or "Rename…" in its
+//! menu, with the name chosen, ready to type over.
 
 use crate::timeline_panel::label_colour;
 use project::{LabelColor, LabelId, TimelineLabel};
@@ -10,6 +11,8 @@ pub struct LabelEditor {
     id: LabelId,
     name: String,
     color: LabelColor,
+    /// The name field has been given the keys once.
+    focused: bool,
 }
 
 /// What the window asked for.
@@ -30,6 +33,7 @@ impl LabelEditor {
             id: label.id,
             name: label.name.clone(),
             color: label.color,
+            focused: false,
         }
     }
 
@@ -42,6 +46,19 @@ impl LabelEditor {
             .resizable(false)
             .show(ctx, |ui| {
                 let field = ui.add(egui::TextEdit::singleline(&mut self.name).hint_text("Name"));
+                // Opened to name the label: the name is ready to type over.
+                if !self.focused {
+                    self.focused = true;
+                    field.request_focus();
+                    if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), field.id) {
+                        let all = egui::text::CCursorRange::two(
+                            egui::text::CCursor::new(0),
+                            egui::text::CCursor::new(self.name.chars().count()),
+                        );
+                        state.cursor.set_char_range(Some(all));
+                        state.store(ui.ctx(), field.id);
+                    }
+                }
                 if field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                     asked = self.save();
                 }

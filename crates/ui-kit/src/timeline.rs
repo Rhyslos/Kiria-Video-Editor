@@ -312,6 +312,8 @@ pub struct TimelineMarker {
     pub at: f64,
     pub name: String,
     pub colour: Color32,
+    /// Chosen by a click: drawn lit, and Delete removes it.
+    pub selected: bool,
 }
 
 /// What to draw.
@@ -440,8 +442,18 @@ pub enum TimelineEvent {
     HideTrack { track: u64, hidden: bool },
     /// "Speed" from a clip's right-click menu: play it `num / den` times as fast.
     SetSpeed { clip: u64, num: u32, den: u32 },
-    /// A timeline label was double-clicked (or "Edit" chosen on it).
+    /// A timeline label was double-clicked (or "Rename…" chosen in its menu).
     EditLabel(u64),
+    /// A timeline label was clicked: it is the one chosen now. `None`: no
+    /// label is chosen any more.
+    SelectLabel(Option<u64>),
+    /// A timeline label was dragged to `at` (the start of a frame).
+    MoveLabel { label: u64, at: f64 },
+    /// A colour was picked in a timeline label's menu: an index into
+    /// [`crate::theme::labels::ALL`].
+    ColourLabel { label: u64, colour: usize },
+    /// "Delete" in a timeline label's menu.
+    RemoveLabel(u64),
     /// "Add a label here" from the right-click menu.
     AddLabel(f64),
     /// "Split here" from the right-click menu: one clip (with its linked
@@ -694,6 +706,10 @@ pub struct TimelineView {
     line_drag: Option<lines::LineDrag>,
     /// Where a line's right-click menu was opened: whose line, and the point.
     line_menu: Option<(LineOwner, Option<usize>)>,
+    /// A timeline label pressed and maybe being dragged.
+    label_drag: Option<ruler::LabelDrag>,
+    /// The timeline label whose right-click menu is open.
+    label_menu: Option<u64>,
 }
 
 impl Default for TimelineView {
@@ -747,6 +763,8 @@ impl Default for TimelineView {
             lines: None,
             line_drag: None,
             line_menu: None,
+            label_drag: None,
+            label_menu: None,
         }
     }
 }
@@ -1754,6 +1772,7 @@ mod tests {
         modifiers: egui::Modifiers,
         needle: Option<f64>,
         region: Option<(f64, f64)>,
+        markers: Vec<TimelineMarker>,
     }
 
     const OVER_RULER: Pos2 = pos2(640.0, 10.0);
@@ -1776,6 +1795,7 @@ mod tests {
                 modifiers: egui::Modifiers::NONE,
                 needle: None,
                 region: None,
+                markers: Vec::new(),
             }
         }
 
@@ -1803,7 +1823,7 @@ mod tests {
                             playhead: 2.0,
                             needle: self.needle,
                             region: self.region,
-                            markers: &[],
+                            markers: &self.markers,
                             highlights: &[],
                             spans: &[],
                             follow: false,
@@ -1875,6 +1895,70 @@ mod tests {
         fn move_to(&mut self, at: Pos2) -> Vec<TimelineEvent> {
             self.frame(vec![egui::Event::PointerMoved(at)])
         }
+    }
+
+    /// A label in the labels row: where it is drawn on screen.
+    fn over_label(rig: &Rig, at: f64) -> Pos2 {
+        pos2(rig.view.x_of(HEADER_WIDTH, at), RULER + LABELS / 2.0)
+    }
+
+    #[test]
+    fn a_label_is_chosen_by_a_click_and_moved_by_a_drag() {
+        let primary = egui::PointerButton::Primary;
+        let mut rig = Rig::new(1, 1);
+        let label = |id: u64, at: f64| TimelineMarker {
+            id,
+            at,
+            name: format!("Label {id}"),
+            colour: Color32::WHITE,
+            selected: false,
+        };
+        rig.markers = vec![label(1, 2.0), label(2, 8.0)];
+        rig.frame(Vec::new());
+        // A click chooses it on the press and goes there on letting go.
+        let at = over_label(&rig, 2.0);
+        rig.move_to(at);
+        let pressed = rig.button(at, primary, true);
+        assert!(
+            pressed.contains(&TimelineEvent::SelectLabel(Some(1))),
+            "{pressed:?}"
+        );
+        let let_go = rig.button(at, primary, false);
+        assert!(let_go.contains(&TimelineEvent::Seek(2.0)), "{let_go:?}");
+        assert!(
+            !let_go
+                .iter()
+                .any(|e| matches!(e, TimelineEvent::MoveLabel { .. }))
+        );
+        // A drag moves it to the start of the frame under the pointer, and
+        // nothing else moves (not the playhead).
+        let to = pos2(rig.view.x_of(HEADER_WIDTH, 5.004), at.y);
+        let moved = drag(&mut rig, at, to);
+        let frame = (5.004_f64 * 60.0).floor() / 60.0;
+        let Some(TimelineEvent::MoveLabel { label: 1, at: landed }) = moved
+            .iter()
+            .find(|e| matches!(e, TimelineEvent::MoveLabel { .. }))
+            .cloned()
+        else {
+            panic!("no move: {moved:?}");
+        };
+        assert!((landed - frame).abs() < 1e-9, "{landed} is the frame at {frame}");
+        assert!(
+            !moved.iter().any(|e| matches!(e, TimelineEvent::Seek(_))),
+            "{moved:?}"
+        );
+        // A press in the labels row away from every label lets go of the
+        // chosen one.
+        rig.markers[1].selected = true;
+        let away = pos2(rig.view.x_of(HEADER_WIDTH, 3.5), at.y);
+        rig.move_to(away);
+        let pressed = rig.button(away, primary, true);
+        assert!(pressed.contains(&TimelineEvent::SelectLabel(None)), "{pressed:?}");
+        rig.button(away, primary, false);
+        // A right-click chooses it too (its menu is then its own).
+        let other = over_label(&rig, 8.0);
+        let right = click(&mut rig, other, egui::PointerButton::Secondary);
+        assert!(right.contains(&TimelineEvent::SelectLabel(Some(2))), "{right:?}");
     }
 
     #[test]
@@ -2129,6 +2213,7 @@ mod tests {
             at,
             name: String::new(),
             colour: Color32::WHITE,
+            selected: false,
         };
         let markers = [marker(1, 1.0), marker(2, 1.1)];
         // At 100 px a second, the labels sit at x = 100 and 110.
@@ -4165,6 +4250,7 @@ mod tests {
                     at: quarter(160),
                     name: String::new(),
                     colour: Color32::WHITE,
+                    selected: false,
                 })
                 .collect();
             let data = TimelineData {

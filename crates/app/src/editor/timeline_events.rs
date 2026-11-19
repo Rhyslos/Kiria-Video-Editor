@@ -19,7 +19,14 @@ impl Editor {
             }),
             E::Line { owner, kind, points } => self.line_event(owner, kind, &points),
             E::TrackRole { track, role } => self.role_event(track, role),
-            E::Select { clip, add } => timeline_panel::select(&mut self.selected, project::ClipId(clip), add),
+            E::Select { clip, add } => {
+                self.selected_label = None;
+                timeline_panel::select(&mut self.selected, project::ClipId(clip), add);
+            }
+            E::SelectLabel(label) => self.select_label(label),
+            E::MoveLabel { label, at } => self.move_label(label, at),
+            E::ColourLabel { label, colour } => self.colour_label(label, colour),
+            E::RemoveLabel(label) => self.remove_label(project::LabelId(label)),
             E::ClearSelection => self.selected.clear(),
             E::RegionCut(cut) => {
                 if let Err(err) = self.cut_region(cut) {
@@ -226,7 +233,7 @@ impl Editor {
 
     /// Builds one command from the open timeline (`None`: nothing to do)
     /// and applies it, reporting what went wrong.
-    fn apply_on_open(&mut self, f: impl FnOnce(&Sequence) -> Option<Command>) {
+    pub(super) fn apply_on_open(&mut self, f: impl FnOnce(&Sequence) -> Option<Command>) {
         let result = self.with_document(|d| match d.project().active().and_then(f) {
             Some(command) => d.apply(command),
             None => Ok(()),

@@ -84,6 +84,7 @@ fn name(c: &Command) -> &'static str {
         Command::AddLabel { .. } => "AddLabel",
         Command::RemoveLabel { .. } => "RemoveLabel",
         Command::EditLabel { .. } => "EditLabel",
+        Command::MoveLabel { .. } => "MoveLabel",
         Command::SetRegion { .. } => "SetRegion",
         Command::SetEditNeedle { .. } => "SetEditNeedle",
         Command::SetMasterGain { .. } => "SetMasterGain",
@@ -423,6 +424,11 @@ fn every_command() -> Vec<Command> {
             label: LabelId(5),
             name: "Ace".into(),
             color: LabelColor::Purple,
+        },
+        Command::MoveLabel {
+            sequence,
+            label: LabelId(5),
+            at,
         },
         Command::SetRegion {
             sequence,
