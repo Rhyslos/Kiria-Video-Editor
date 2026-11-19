@@ -42,6 +42,7 @@ cp docs/user-guide/images/* "$APPDIR/usr/share/user-guide/images/"
 
 cp LICENSE "$APPDIR/usr/share/licenses/LICENSE.txt"
 cp crates/ui-kit/assets/fonts/*-OFL.txt "$APPDIR/usr/share/licenses/"
+cp crates/ui-kit/assets/fonts/*-LICENSE.txt "$APPDIR/usr/share/licenses/"
 
 # Desktop entry and icon.
 cp packaging/icons/icon.png "$APPDIR/$APP_ID.png"

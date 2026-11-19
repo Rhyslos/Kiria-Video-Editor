@@ -1187,7 +1187,7 @@ mod tests {
         show(&SystemKeyboard::from_windows_language(0x0411), &mut table);
         assert_eq!(table.layout(), LayoutId::Japanese);
         // One the drawing doesn't know: US English.
-        show(&SystemKeyboard::from_xkb_name("ru"), &mut table);
+        show(&SystemKeyboard::from_xkb_name("de"), &mut table);
         assert_eq!(table.layout(), LayoutId::Us);
     }
 

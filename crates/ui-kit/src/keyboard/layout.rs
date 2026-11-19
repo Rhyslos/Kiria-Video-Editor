@@ -343,6 +343,10 @@ pub struct Layout {
     /// What this layout prints where a US keyboard prints something else
     /// (or has no key).
     printed: &'static [(Spot, &'static str)],
+    /// Its keys carry the US characters too (a keyboard of another script,
+    /// whose shortcuts are known by those): shortcuts are written with
+    /// them, and the drawing shows both.
+    dual: bool,
 }
 
 impl Layout {
@@ -375,6 +379,9 @@ impl Layout {
     /// where it prints what a US keyboard does. A printed "+" is written
     /// "Plus", so "Alt+Plus" never reads as two keys.
     pub fn written(&self, keys: crate::Shortcut) -> String {
+        if self.dual {
+            return keys.label();
+        }
         match self
             .us_mark(Spot::Key(keys.key))
             .map(|_| self.legend(Spot::Key(keys.key)))
@@ -390,6 +397,9 @@ impl Layout {
     /// keyboard)". For the shortcuts page and the cheat sheet, where a
     /// shortcut is looked up as well as read.
     pub fn describe(&self, keys: crate::Shortcut) -> String {
+        if self.dual {
+            return keys.label();
+        }
         match self.us_mark(Spot::Key(keys.key)) {
             Some(_) => format!("{} ({} on a US keyboard)", self.written(keys), keys.key.name()),
             None => keys.label(),
@@ -400,11 +410,13 @@ impl Layout {
 const US: Layout = Layout {
     shape: Shape::Ansi,
     printed: &[],
+    dual: false,
 };
 
 const UK: Layout = Layout {
     shape: Shape::Iso,
     printed: &[(Spot::Key(Key::Backslash), "#"), (Spot::Extra, "\\")],
+    dual: false,
 };
 
 const NORWEGIAN: Layout = Layout {
@@ -421,6 +433,7 @@ const NORWEGIAN: Layout = Layout {
         (Spot::Key(Key::Slash), "-"),
         (Spot::Extra, "<"),
     ],
+    dual: false,
 };
 
 const JAPANESE: Layout = Layout {
@@ -435,6 +448,91 @@ const JAPANESE: Layout = Layout {
         (Spot::Key(Key::Backslash), "]"),
         (Spot::Ro, "\\"),
     ],
+    dual: false,
+};
+
+/// Russian (ЙЦУКЕН): Cyrillic letters, the US ones printed beside them.
+const RUSSIAN: Layout = Layout {
+    shape: Shape::Ansi,
+    printed: &[
+        (Spot::Key(Key::Backtick), "Ё"),
+        (Spot::Key(Key::Q), "Й"),
+        (Spot::Key(Key::W), "Ц"),
+        (Spot::Key(Key::E), "У"),
+        (Spot::Key(Key::R), "К"),
+        (Spot::Key(Key::T), "Е"),
+        (Spot::Key(Key::Y), "Н"),
+        (Spot::Key(Key::U), "Г"),
+        (Spot::Key(Key::I), "Ш"),
+        (Spot::Key(Key::O), "Щ"),
+        (Spot::Key(Key::P), "З"),
+        (Spot::Key(Key::OpenBracket), "Х"),
+        (Spot::Key(Key::CloseBracket), "Ъ"),
+        (Spot::Key(Key::A), "Ф"),
+        (Spot::Key(Key::S), "Ы"),
+        (Spot::Key(Key::D), "В"),
+        (Spot::Key(Key::F), "А"),
+        (Spot::Key(Key::G), "П"),
+        (Spot::Key(Key::H), "Р"),
+        (Spot::Key(Key::J), "О"),
+        (Spot::Key(Key::K), "Л"),
+        (Spot::Key(Key::L), "Д"),
+        (Spot::Key(Key::Semicolon), "Ж"),
+        (Spot::Key(Key::Quote), "Э"),
+        (Spot::Key(Key::Z), "Я"),
+        (Spot::Key(Key::X), "Ч"),
+        (Spot::Key(Key::C), "С"),
+        (Spot::Key(Key::V), "М"),
+        (Spot::Key(Key::B), "И"),
+        (Spot::Key(Key::N), "Т"),
+        (Spot::Key(Key::M), "Ь"),
+        (Spot::Key(Key::Comma), "Б"),
+        (Spot::Key(Key::Period), "Ю"),
+        (Spot::Key(Key::Slash), "."),
+    ],
+    dual: true,
+};
+
+/// Arabic (101): Arabic letters, the US ones printed beside them.
+const ARABIC: Layout = Layout {
+    shape: Shape::Ansi,
+    printed: &[
+        (Spot::Key(Key::Backtick), "ذ"),
+        (Spot::Key(Key::Q), "ض"),
+        (Spot::Key(Key::W), "ص"),
+        (Spot::Key(Key::E), "ث"),
+        (Spot::Key(Key::R), "ق"),
+        (Spot::Key(Key::T), "ف"),
+        (Spot::Key(Key::Y), "غ"),
+        (Spot::Key(Key::U), "ع"),
+        (Spot::Key(Key::I), "ه"),
+        (Spot::Key(Key::O), "خ"),
+        (Spot::Key(Key::P), "ح"),
+        (Spot::Key(Key::OpenBracket), "ج"),
+        (Spot::Key(Key::CloseBracket), "د"),
+        (Spot::Key(Key::A), "ش"),
+        (Spot::Key(Key::S), "س"),
+        (Spot::Key(Key::D), "ي"),
+        (Spot::Key(Key::F), "ب"),
+        (Spot::Key(Key::G), "ل"),
+        (Spot::Key(Key::H), "ا"),
+        (Spot::Key(Key::J), "ت"),
+        (Spot::Key(Key::K), "ن"),
+        (Spot::Key(Key::L), "م"),
+        (Spot::Key(Key::Semicolon), "ك"),
+        (Spot::Key(Key::Quote), "ط"),
+        (Spot::Key(Key::Z), "ئ"),
+        (Spot::Key(Key::X), "ء"),
+        (Spot::Key(Key::C), "ؤ"),
+        (Spot::Key(Key::V), "ر"),
+        (Spot::Key(Key::B), "لا"),
+        (Spot::Key(Key::N), "ى"),
+        (Spot::Key(Key::M), "ة"),
+        (Spot::Key(Key::Comma), "و"),
+        (Spot::Key(Key::Period), "ز"),
+        (Spot::Key(Key::Slash), "ظ"),
+    ],
+    dual: true,
 };
 
 /// The layouts the drawing knows, as settings and the dropdown name them.
@@ -445,14 +543,18 @@ pub enum LayoutId {
     Uk,
     Norwegian,
     Japanese,
+    Russian,
+    Arabic,
 }
 
 impl LayoutId {
-    pub const ALL: [LayoutId; 4] = [
+    pub const ALL: [LayoutId; 6] = [
         LayoutId::Us,
         LayoutId::Uk,
         LayoutId::Norwegian,
         LayoutId::Japanese,
+        LayoutId::Russian,
+        LayoutId::Arabic,
     ];
 
     pub fn label(self) -> &'static str {
@@ -461,6 +563,8 @@ impl LayoutId {
             LayoutId::Uk => "UK English",
             LayoutId::Norwegian => "Norwegian",
             LayoutId::Japanese => "Japanese",
+            LayoutId::Russian => "Russian",
+            LayoutId::Arabic => "Arabic",
         }
     }
 
@@ -470,6 +574,8 @@ impl LayoutId {
             LayoutId::Uk => &UK,
             LayoutId::Norwegian => &NORWEGIAN,
             LayoutId::Japanese => &JAPANESE,
+            LayoutId::Russian => &RUSSIAN,
+            LayoutId::Arabic => &ARABIC,
         }
     }
 
@@ -482,6 +588,8 @@ impl LayoutId {
             (_, 0x09) => Some(LayoutId::Us),
             (_, 0x14) => Some(LayoutId::Norwegian),
             (_, 0x11) => Some(LayoutId::Japanese),
+            (_, 0x19) => Some(LayoutId::Russian),
+            (_, 0x01) => Some(LayoutId::Arabic),
             _ => None,
         }
     }
@@ -494,6 +602,8 @@ impl LayoutId {
             "gb" => Some(LayoutId::Uk),
             "no" => Some(LayoutId::Norwegian),
             "jp" => Some(LayoutId::Japanese),
+            "ru" => Some(LayoutId::Russian),
+            "ara" => Some(LayoutId::Arabic),
             _ => None,
         }
     }
@@ -526,7 +636,7 @@ impl KeyboardChoice {
 pub struct SystemKeyboard {
     /// The layout, when the drawing knows it.
     pub layout: Option<LayoutId>,
-    /// The system's own name for a layout the drawing doesn't know ("ru"),
+    /// The system's own name for a layout the drawing doesn't know ("de"),
     /// to say which one it is.
     pub unknown: Option<String>,
 }
@@ -728,6 +838,54 @@ mod tests {
         assert_eq!(uk.printed_on(&backspace(Shape::Iso)), "Backspace");
     }
 
+    /// Keyboards of another script print it and the US letters both, and
+    /// shortcuts are written with the US ones, as those keyboards show them.
+    #[test]
+    fn russian_and_arabic_keyboards_show_both_and_write_shortcuts_the_us_way() {
+        for (id, c, shape) in [
+            (LayoutId::Russian, "С", Shape::Ansi),
+            (LayoutId::Arabic, "ؤ", Shape::Ansi),
+        ] {
+            let layout = id.layout();
+            assert_eq!(layout.shape, shape);
+            assert_eq!(layout.legend(Spot::Key(Key::C)), c);
+            assert_eq!(
+                layout.us_mark(Spot::Key(Key::C)),
+                Some("C"),
+                "the letter shortcuts go by"
+            );
+            assert_eq!(layout.written(Shortcut::ctrl(Key::C)), "Ctrl+C");
+            assert_eq!(layout.describe(Shortcut::ctrl(Key::Slash)), "Ctrl+Slash");
+            assert_eq!(layout.written(Shortcut::alt(Key::Semicolon)), "Alt+Semicolon");
+        }
+        assert_eq!(LayoutId::from_windows_language(0x0419), Some(LayoutId::Russian));
+        assert_eq!(LayoutId::from_windows_language(0x0401), Some(LayoutId::Arabic));
+        assert_eq!(LayoutId::from_windows_language(0x0C01), Some(LayoutId::Arabic));
+        assert_eq!(LayoutId::from_xkb_name("ru"), Some(LayoutId::Russian));
+        assert_eq!(LayoutId::from_xkb_name("ara,us"), Some(LayoutId::Arabic));
+    }
+
+    /// Every letter of every layout drawn is in the fonts the interface has.
+    #[test]
+    fn every_printed_character_has_a_glyph() {
+        let fonts = [
+            include_bytes!("../../assets/fonts/Inter_400Regular.ttf").as_slice(),
+            include_bytes!("../../assets/fonts/DejaVuSans_Arabic.ttf").as_slice(),
+        ];
+        use skrifa::MetadataProvider;
+        let faces: Vec<skrifa::FontRef> = fonts.iter().map(|f| skrifa::FontRef::new(f).unwrap()).collect();
+        for id in LayoutId::ALL {
+            for (_, text) in id.layout().printed {
+                for c in text.chars() {
+                    assert!(
+                        faces.iter().any(|f| f.charmap().map(c).is_some()),
+                        "{id:?}: no font draws {c:?}"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn a_layout_only_prints_on_keys_its_shape_has() {
         for id in LayoutId::ALL {
@@ -759,12 +917,12 @@ mod tests {
         assert_eq!(LayoutId::from_windows_language(0x0414), Some(LayoutId::Norwegian));
         assert_eq!(LayoutId::from_windows_language(0x0814), Some(LayoutId::Norwegian));
         assert_eq!(LayoutId::from_windows_language(0x0411), Some(LayoutId::Japanese));
-        assert_eq!(LayoutId::from_windows_language(0x0419), None, "not drawn yet");
+        assert_eq!(LayoutId::from_windows_language(0x0407), None, "not drawn yet");
         assert_eq!(LayoutId::from_xkb_name("no"), Some(LayoutId::Norwegian));
         assert_eq!(LayoutId::from_xkb_name("gb,us"), Some(LayoutId::Uk));
         assert_eq!(LayoutId::from_xkb_name("jp"), Some(LayoutId::Japanese));
         assert_eq!(LayoutId::from_xkb_name("us"), Some(LayoutId::Us));
-        assert_eq!(LayoutId::from_xkb_name("ru"), None);
+        assert_eq!(LayoutId::from_xkb_name("de"), None);
         assert_eq!(LayoutId::from_xkb_name(""), None);
     }
 
@@ -779,13 +937,13 @@ mod tests {
         );
 
         // A layout the drawing doesn't know, or none reported: US English.
-        let russian = SystemKeyboard::from_windows_language(0x0419);
-        assert_eq!(russian.layout, None);
-        assert_eq!(russian.summary(), "language 0419, not drawn here yet");
-        assert_eq!(KeyboardChoice::Automatic.resolve(&russian), LayoutId::Us);
+        let german = SystemKeyboard::from_windows_language(0x0407);
+        assert_eq!(german.layout, None);
+        assert_eq!(german.summary(), "language 0407, not drawn here yet");
+        assert_eq!(KeyboardChoice::Automatic.resolve(&german), LayoutId::Us);
         assert_eq!(
-            SystemKeyboard::from_xkb_name("ru").summary(),
-            "\"ru\", not drawn here yet"
+            SystemKeyboard::from_xkb_name("de").summary(),
+            "\"de\", not drawn here yet"
         );
         let nothing = SystemKeyboard::default();
         assert_eq!(nothing.summary(), "not reported");

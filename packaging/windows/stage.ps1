@@ -64,6 +64,7 @@ Copy-Item docs/user-guide/images/* (Join-Path $guide "images")
 # Our licence and the bundled fonts' licences.
 Copy-Item LICENSE (Join-Path $licenses "LICENSE.txt")
 Copy-Item crates/ui-kit/assets/fonts/*-OFL.txt $licenses
+Copy-Item crates/ui-kit/assets/fonts/*-LICENSE.txt $licenses
 
 # The update package: the contents of versions/<version>.
 $package = Join-Path $Out "$name-$version-windows-x64.zip"

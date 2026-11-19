@@ -4923,6 +4923,7 @@ dependencies = [
  "os",
  "render",
  "serde",
+ "skrifa",
  "tempfile",
  "tracing",
 ]
