@@ -8,7 +8,8 @@ use super::{
     level, loading, tracks_of,
 };
 use crate::Theme;
-use egui::{Align2, CursorIcon, FontId, Rect, Sense, Stroke, Ui, pos2, vec2};
+use crate::knob::KnobLook;
+use egui::{Align2, CursorIcon, FontId, Pos2, Rect, Sense, Stroke, Ui, pos2, vec2};
 
 /// A track's height being changed by dragging the edge of its name.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -95,7 +96,19 @@ impl TimelineView {
             .on_hover_text(loading.explanation());
         }
         if audio {
-            self.track_controls(ui, theme, track, header, events);
+            let index = data.audio.iter().position(|t| t.id == track.id).unwrap_or(0);
+            // The knob is placed by the whole row; what of it is out of
+            // the area's view is cut off, as the clips are.
+            let whole =
+                Rect::from_min_max(pos2(header.left(), row.top()), pos2(header.right(), row.bottom()));
+            self.track_controls(
+                ui,
+                theme,
+                track,
+                [header, whole],
+                super::audio_colour(index),
+                events,
+            );
         } else {
             headers::eye(ui, theme, track, header, self.compact, events);
         }
@@ -150,21 +163,101 @@ impl TimelineView {
         ui: &mut Ui,
         theme: &Theme,
         track: &TimelineTrack,
-        header: Rect,
+        [header, whole]: [Rect; 2],
+        colour: egui::Color32,
         events: &mut Vec<TimelineEvent>,
     ) {
         if header.height() < headers::least_for_buttons(self.compact) {
             return;
         }
         let id = ui.scope_id().with(("track", track.id));
-        let button = |i: f32| headers::button_rect(header, i);
+        let knob = self.knob_of(track.id).filter(|_| !self.compact).and_then(|look| {
+            // The detailed knob under the buttons; the compact one beside
+            // them. Too short for it: the compact one, or none.
+            let fits = |look: KnobLook| match look {
+                KnobLook::Detailed => whole.height() >= 28.0 + look.size().y,
+                KnobLook::Compact => whole.height() >= look.size().y,
+            };
+            [look, KnobLook::Compact].into_iter().find(|l| fits(*l))
+        });
+        // The buttons sit left of a compact knob.
+        let buttons = match knob {
+            Some(KnobLook::Compact) => header.with_max_x(header.right() - KnobLook::Compact.size().x - 4.0),
+            _ => header,
+        };
+        let button = |i: f32| headers::button_rect(buttons, i);
         if !self.compact {
             self.level_button(ui, theme, track.id, button(-1.0), id);
         }
-        self.mute_and_solo(ui, theme, track, header, id, events);
-        // The fader, in a header with room for it under the buttons.
-        if !self.compact {
-            self.fader(ui, theme, track, header, id, events);
+        self.mute_and_solo(ui, theme, track, buttons, id, events);
+        match knob {
+            Some(look) => {
+                // Drawn within what is in view of the header (a scope
+                // would take room in the page's row, so the clip is set
+                // and put back).
+                let before = ui.clip_rect();
+                ui.set_clip_rect(before.intersect(header));
+                self.knob(ui, theme, track, whole, (look, colour), id, events);
+                ui.set_clip_rect(before);
+            }
+            // The fader, in a header with room for it under the buttons.
+            None if !self.compact && self.knob_of(track.id).is_none() => {
+                self.fader(ui, theme, track, header, id, events)
+            }
+            None => {}
+        }
+    }
+
+    /// The track's volume knob: beside the buttons (compact) or under them
+    /// (detailed), on the right of the header. Turned, it is drawn and
+    /// heard at once; let go, it is one change.
+    #[allow(clippy::too_many_arguments)]
+    fn knob(
+        &mut self,
+        ui: &mut Ui,
+        theme: &Theme,
+        track: &TimelineTrack,
+        header: Rect,
+        (look, colour): (KnobLook, egui::Color32),
+        id: egui::Id,
+        events: &mut Vec<TimelineEvent>,
+    ) {
+        let size = look.size();
+        let min = match look {
+            KnobLook::Compact => pos2(header.right() - size.x - 2.0, header.center().y - size.y / 2.0),
+            KnobLook::Detailed => pos2(header.right() - size.x - 4.0, header.top() + 26.0),
+        };
+        let knob_id = id.with("knob");
+        let tip = crate::knob::tip(&track.name, track.gain_db);
+        let knob = crate::knob::Knob {
+            look,
+            at: min,
+            id: knob_id,
+            db: track.gain_db,
+            colour,
+            tip: &tip,
+        };
+        let out = crate::knob::volume_knob(ui, theme, knob);
+        let area = Rect::from_min_size(min, size);
+        if area.contains(
+            ui.input(|i| i.pointer.hover_pos())
+                .unwrap_or(Pos2::new(f32::NAN, f32::NAN)),
+        ) {
+            self.knob_under = Some((area, knob_id));
+        }
+        // Drawn (the waveforms follow) while it is being turned.
+        if out.shown_db != track.gain_db {
+            self.fader_drag = Some((track.id, out.shown_db));
+        } else if self.fader_drag.is_some_and(|(t, _)| t == track.id) {
+            self.fader_drag = None;
+        }
+        if let Some(gain_db) = out.done {
+            events.push(TimelineEvent::TrackMix {
+                track: track.id,
+                muted: track.muted,
+                solo: track.solo,
+                gain_db,
+            });
         }
     }
 
@@ -337,7 +430,7 @@ impl TimelineView {
         };
         let handle = Rect::from_min_max(
             pos2(area.left(), edge - 3.0),
-            pos2(area.left() + HEADER_WIDTH, edge + 3.0),
+            pos2(area.left() + self.header_width(), edge + 3.0),
         )
         .intersect(area);
         // A drag goes on while the button is held, also when the edge has

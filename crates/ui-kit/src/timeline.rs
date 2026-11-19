@@ -85,6 +85,31 @@ mod transitions;
 
 pub use cache_bar::{CacheBar, CacheRange, CacheState};
 pub use fades::{ClipFades, ClipSound, FadeEnd};
+
+/// How an audio track's volume is set in its header.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum VolumeControl {
+    /// A slider under its buttons, as tracks always had.
+    #[default]
+    Slider,
+    /// The compact knob beside its buttons ([`crate::knob::KnobLook::Compact`]).
+    Knob,
+    /// The detailed knob under its buttons on every audio track
+    /// ([`crate::knob::KnobLook::Detailed`]); the tracks are taller for it.
+    Detailed,
+}
+
+/// The colour of the `index`-th audio track (its clips, its knob).
+pub fn audio_colour(index: usize) -> Color32 {
+    AUDIO_COLOURS[index % AUDIO_COLOURS.len()]
+}
+
+/// An audio track with the detailed knob is at least this tall.
+pub const DETAILED_TRACK: f32 = 136.0;
+/// An audio track with the compact knob is at least this tall.
+pub const KNOB_TRACK: f32 = 66.0;
+/// The column of track names with knobs: wider, for the knob beside the buttons.
+pub const KNOB_HEADER_WIDTH: f32 = 230.0;
 pub use keyframes::KeyframeMark;
 pub use lines::{LineBeingSet, LineKind, LineOwner, LinePoints, LinesShown};
 pub use loading::{LoadKind, LoadState, Loading, percent};
@@ -727,6 +752,17 @@ pub struct TimelineView {
     /// playhead where it is on screen, or brings it to the middle when it
     /// is out of view, instead of zooming at the pointer.
     pub zoom_to_playhead: bool,
+    /// How an audio track's volume is set in its header: a slider, the
+    /// compact knob, or the detailed knob on every track. A setting.
+    pub volume_control: VolumeControl,
+    /// The track of the selected clip shows the detailed knob (and grows to
+    /// fit it) while the other tracks keep `volume_control`. A setting.
+    pub detailed_on_selected: bool,
+    /// The audio track opened up for its detailed knob this frame.
+    opened: Option<u64>,
+    /// A knob under the pointer last frame and its id: while it takes the
+    /// wheel, the wheel turns it rather than scrolling or zooming.
+    knob_under: Option<(Rect, egui::Id)>,
     /// Which of the project's timelines it shows, by id: the page sets it,
     /// and keeps it with the layout so the project opens on it again.
     pub showing: Option<u64>,
@@ -797,6 +833,10 @@ impl Default for TimelineView {
             list_scroll: 0.0,
             click_moves: ClickMoves::Playhead,
             zoom_to_playhead: false,
+            volume_control: VolumeControl::Slider,
+            detailed_on_selected: false,
+            opened: None,
+            knob_under: None,
             showing: None,
             playhead_lit: false,
             scrub: false,
@@ -890,15 +930,15 @@ struct Layout {
 
 impl Layout {
     /// The areas with the divider at `split` (the share of the body above it).
-    fn new(rect: Rect, split: f32) -> Layout {
+    fn new(rect: Rect, split: f32, header: f32) -> Layout {
         let video_h = (Layout::body_height(rect) * split.clamp(0.1, 0.9)).round();
-        Layout::with(rect, video_h, DIVIDER)
+        Layout::with(rect, video_h, DIVIDER, header)
     }
 
     /// The areas with no divider: the video area `video_h` tall at the top
     /// of the body and the audio area under it, touching.
-    fn one_list(rect: Rect, video_h: f32) -> Layout {
-        Layout::with(rect, video_h, 0.0)
+    fn one_list(rect: Rect, video_h: f32, header: f32) -> Layout {
+        Layout::with(rect, video_h, 0.0, header)
     }
 
     /// The height of the body with no divider in it.
@@ -906,8 +946,8 @@ impl Layout {
         Layout::body_height(rect) + DIVIDER
     }
 
-    fn with(rect: Rect, video_h: f32, divider_h: f32) -> Layout {
-        let left = rect.left() + HEADER_WIDTH;
+    fn with(rect: Rect, video_h: f32, divider_h: f32, header: f32) -> Layout {
+        let left = rect.left() + header;
         let ruler = Rect::from_min_max(pos2(left, rect.top()), pos2(rect.right(), rect.top() + RULER));
         let labels = Rect::from_min_max(
             pos2(left, ruler.bottom()),
@@ -1128,7 +1168,32 @@ impl TimelineView {
         match half {
             Half::Video if self.rough_cut => ROUGH_CUT_TRACK,
             Half::Video => VIDEO_TRACK,
-            Half::Audio => AUDIO_TRACK,
+            Half::Audio => match self.volume_control {
+                VolumeControl::Slider => AUDIO_TRACK,
+                VolumeControl::Knob => KNOB_TRACK,
+                VolumeControl::Detailed => DETAILED_TRACK,
+            },
+        }
+    }
+
+    /// How wide the column of track names is: wider with knobs.
+    pub fn header_width(&self) -> f32 {
+        match (self.volume_control, self.detailed_on_selected) {
+            (VolumeControl::Slider, false) => HEADER_WIDTH,
+            _ => KNOB_HEADER_WIDTH,
+        }
+    }
+
+    /// Which knob an audio track's header shows, if any.
+    pub(crate) fn knob_of(&self, track: u64) -> Option<crate::knob::KnobLook> {
+        use crate::knob::KnobLook;
+        if self.opened == Some(track) {
+            return Some(KnobLook::Detailed);
+        }
+        match self.volume_control {
+            VolumeControl::Slider => None,
+            VolumeControl::Knob => Some(KnobLook::Compact),
+            VolumeControl::Detailed => Some(KnobLook::Detailed),
         }
     }
 
@@ -1137,6 +1202,11 @@ impl TimelineView {
     fn track_height(&self, half: Half, track: u64) -> f32 {
         if self.compact {
             COMPACT_TRACK
+        } else if half == Half::Audio && self.opened == Some(track) {
+            // Opened up for its detailed knob while its clip is selected.
+            self.heights
+                .height(track, self.usual_height(half))
+                .max(DETAILED_TRACK)
         } else {
             self.heights.height(track, self.usual_height(half))
         }
@@ -1227,10 +1297,14 @@ impl TimelineView {
     /// kind's rows of the one list are in view.
     fn layout(&self, rect: Rect, data: &TimelineData) -> Layout {
         if self.divider {
-            Layout::new(rect, self.shown_split(Layout::body_height(rect), data))
+            Layout::new(
+                rect,
+                self.shown_split(Layout::body_height(rect), data),
+                self.header_width(),
+            )
         } else {
             let list = self.one_list(Layout::list_height(rect), data);
-            Layout::one_list(rect, list.video_area())
+            Layout::one_list(rect, list.video_area(), self.header_width())
         }
     }
 
@@ -1415,9 +1489,20 @@ impl TimelineView {
     ) -> Vec<TimelineEvent> {
         let mut events = Vec::new();
         let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+        // The audio track of the selected clip opens up for its detailed knob.
+        self.opened = match self.detailed_on_selected && self.volume_control != VolumeControl::Detailed {
+            true => data
+                .audio
+                .iter()
+                .find(|t| t.clips.iter().any(|c| c.selected))
+                .map(|t| t.id),
+            false => None,
+        };
         self.notice_new_tracks(rect, data);
         self.forget_gone_gap(data);
         let panning = self.move_view(ui, rect, data);
+        // Found again as the headers are drawn.
+        self.knob_under = None;
         // With the divider off the areas follow the list's scroll, which
         // the wheel or a command may just have changed.
         let layout = self.layout(rect, data);
@@ -1552,11 +1637,7 @@ impl TimelineView {
                     audio,
                     events,
                 );
-                let colour = if audio {
-                    AUDIO_COLOURS[i % AUDIO_COLOURS.len()]
-                } else {
-                    theme.line_strong
-                };
+                let colour = if audio { audio_colour(i) } else { theme.line_strong };
                 // Waveforms are as loud as the track is set, following its
                 // fader while it is dragged.
                 let track_gain = match self.fader_drag {
@@ -1640,6 +1721,13 @@ impl TimelineView {
         let Some(pos) = ui.input(|i| i.pointer.hover_pos()) else {
             return;
         };
+        // A knob that takes the wheel turns instead.
+        if let Some((rect, id)) = self.knob_under
+            && rect.contains(pos)
+            && crate::knob::takes_wheel(ui, id)
+        {
+            return;
+        }
         // Not when a window or a menu lies over the timeline there.
         if !layout.whole().contains(pos) || !ui.rect_contains_pointer(layout.whole()) {
             return;
@@ -1921,7 +2009,7 @@ mod tests {
             };
             let rect = Rect::from_min_size(Pos2::ZERO, vec2(1000.0, 400.0));
             let share = self.view.shown_split(Layout::body_height(rect), &data);
-            Layout::new(rect, share).video.height()
+            Layout::new(rect, share, HEADER_WIDTH).video.height()
         }
 
         /// Turns the wheel by `delta` points with the pointer at `at`.
@@ -3962,6 +4050,35 @@ mod tests {
             let layout = self.view.layout(rect, &data);
             self.view.rows(half, &layout, &data).rects().to_vec()
         }
+    }
+
+    #[test]
+    fn knobs_widen_the_names_and_the_selected_track_opens_up_for_the_detailed_one() {
+        let mut rig = Rig::new(1, 3);
+        let heights =
+            |rig: &Rig| -> Vec<f32> { rig.rows_of(Half::Audio).iter().map(|r| r.height()).collect() };
+        assert_eq!(rig.view.header_width(), HEADER_WIDTH);
+        assert_eq!(heights(&rig), [AUDIO_TRACK; 3]);
+        // The compact knob: wider names, tracks a little taller.
+        rig.view.volume_control = VolumeControl::Knob;
+        assert_eq!(rig.view.header_width(), KNOB_HEADER_WIDTH);
+        assert_eq!(heights(&rig), [KNOB_TRACK; 3]);
+        assert_eq!(rig.view.knob_of(100), Some(crate::knob::KnobLook::Compact));
+        // The detailed knob on the selected clip's track only, while it is selected.
+        rig.view.detailed_on_selected = true;
+        rig.audio[1].clips[0].selected = true;
+        rig.frame(Vec::new());
+        assert_eq!(heights(&rig), [KNOB_TRACK, DETAILED_TRACK, KNOB_TRACK]);
+        assert_eq!(rig.view.knob_of(101), Some(crate::knob::KnobLook::Detailed));
+        rig.audio[1].clips[0].selected = false;
+        rig.frame(Vec::new());
+        assert_eq!(heights(&rig), [KNOB_TRACK; 3], "closed again");
+        // With the slider and the detailed knob on the selected track, names are wide too.
+        rig.view.volume_control = VolumeControl::Slider;
+        assert_eq!(rig.view.header_width(), KNOB_HEADER_WIDTH);
+        // The detailed knob on every track: every one is tall enough.
+        rig.view.volume_control = VolumeControl::Detailed;
+        assert_eq!(heights(&rig), [DETAILED_TRACK; 3]);
     }
 
     #[test]

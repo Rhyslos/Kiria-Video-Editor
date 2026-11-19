@@ -351,6 +351,10 @@ pub struct Display {
     pub click_moves_needle: bool,
     /// Zooming the timeline keeps the playhead in place.
     pub zoom_to_playhead: bool,
+    /// Audio tracks have volume knobs instead of sliders.
+    pub track_knobs: bool,
+    /// Audio tracks have the detailed volume knob.
+    pub detailed_gain: bool,
     /// The timeline is in the rough cut view.
     pub rough_cut: bool,
     /// Cuts, splits and pastes happen at the playhead (no edit needle).
@@ -377,7 +381,7 @@ pub fn display_lines(display: Display) -> [(Action, &'static str, bool); 4] {
 
 /// The Display menu's lines under its Timeline heading: how the timeline's
 /// tracks are looked at.
-pub fn timeline_lines(display: Display) -> [(Action, &'static str, bool); 6] {
+pub fn timeline_lines(display: Display) -> [(Action, &'static str, bool); 8] {
     [
         (Action::RoughCut, "Rough cut", display.rough_cut),
         (Action::CompactTracks, "Compact tracks", display.compact_tracks),
@@ -401,6 +405,8 @@ pub fn timeline_lines(display: Display) -> [(Action, &'static str, bool); 6] {
             "Edit at the playhead",
             display.edit_at_playhead,
         ),
+        (Action::TrackKnobs, "Volume knobs", display.track_knobs),
+        (Action::DetailedGain, "Detailed audio gain", display.detailed_gain),
     ]
 }
 
@@ -477,6 +483,7 @@ mod tests {
             track_divider: false,
             click_moves_needle: true,
             zoom_to_playhead: true,
+            detailed_gain: true,
             ..Display::default()
         });
         assert_eq!(
@@ -487,7 +494,9 @@ mod tests {
                 (Action::TrackDivider, false),
                 (Action::ClickMovesNeedle, true),
                 (Action::ZoomToPlayhead, true),
-                (Action::EditAtPlayhead, false)
+                (Action::EditAtPlayhead, false),
+                (Action::TrackKnobs, false),
+                (Action::DetailedGain, true)
             ]
         );
         // Each line's words are in its command's name, so the menu, search

@@ -43,6 +43,13 @@ pub struct Settings {
     /// Zooming the timeline keeps the playhead in place instead of zooming
     /// at the pointer (the Display menu's Zoom to playhead).
     pub zoom_to_playhead: bool,
+    /// Audio tracks have a volume knob instead of a slider (Display menu).
+    pub track_knobs: bool,
+    /// Audio tracks have the detailed volume knob, taller (Display menu).
+    pub detailed_gain: bool,
+    /// The track of the selected audio clip shows the detailed knob,
+    /// growing to fit it while the clip is selected (Settings › Editing).
+    pub detailed_gain_selected: bool,
     /// How the height is shared between the viewer and the timeline (the
     /// handle between them), on every page that has both.
     pub viewer_split: ui_kit::splitter::Split,
@@ -367,6 +374,18 @@ impl SettingsKeeper {
             self.writing = None;
         }
         result
+    }
+}
+
+impl Settings {
+    /// How audio tracks' volume is set in their headers.
+    pub fn volume_control(&self) -> ui_kit::timeline::VolumeControl {
+        use ui_kit::timeline::VolumeControl;
+        match (self.detailed_gain, self.track_knobs) {
+            (true, _) => VolumeControl::Detailed,
+            (false, true) => VolumeControl::Knob,
+            (false, false) => VolumeControl::Slider,
+        }
     }
 }
 

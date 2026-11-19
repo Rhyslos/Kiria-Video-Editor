@@ -544,15 +544,14 @@ impl Editor {
         view.divider = true;
         view.click_moves = self.settings.click_moves;
         view.zoom_to_playhead = self.settings.zoom_to_playhead;
+        view.volume_control = self.settings.volume_control();
+        view.detailed_on_selected = self.settings.detailed_gain_selected;
         view.lines = self.lines_on.then_some(self.lines);
         view.heights.keep_only(&timeline_panel::track_ids(seq));
         // The reference row keeps to one track's height.
         view.split = 0.0;
         if !self.audio_page.fitted {
-            view.fit(
-                seq.length().as_secs_f64(),
-                r.width() - ui_kit::timeline::HEADER_WIDTH,
-            );
+            view.fit(seq.length().as_secs_f64(), r.width() - view.header_width());
             self.audio_page.fitted = true;
         }
         let needle = (!self.settings.edit_at_playhead).then_some(seq.edit_needle);
