@@ -344,6 +344,7 @@ fn unfilled(kind: ClipKind, at: Time, length: Time) -> Clip {
         transition: None,
         title: None,
         grade: Default::default(),
+        fades: crate::fades::PictureFades::NONE,
         id: ClipId(0),
         media: MediaId::NONE,
         stream: 0,

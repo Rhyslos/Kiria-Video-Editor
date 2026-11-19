@@ -7,7 +7,7 @@
 
 use super::{
     COMPACT_TRACK, ClipPictures, ClipShows, ClipWaveform, Half, Layout, LineOwner, NEW_TRACK_STRIP, Rows,
-    SHORT_CLIP, TimelineClip, TimelineData, TimelineTrack, TimelineView,
+    SHORT_CLIP, TimelineClip, TimelineData, TimelineTrack, TimelineView, Tool,
     clip_input::{ClipDrag, DragKind, Landing},
     empty_end, fades, find_clip, gaps, keyframes, level, loading, slip, speed, transitions,
 };
@@ -208,16 +208,7 @@ impl TimelineView {
             true => (clip.pictures.as_ref(), clip.waveform.as_ref()),
             false => (None, None),
         };
-        let (pic_r, wave_r) = match (pictures, waveform) {
-            (Some(_), Some(_)) => {
-                let split = r.top() + r.height() * 0.62;
-                (
-                    Rect::from_min_max(r.min, pos2(r.right(), split)),
-                    Rect::from_min_max(pos2(r.left(), split - 17.0), r.max),
-                )
-            }
-            _ => (r, r),
-        };
+        let (pic_r, wave_r) = parts(r, pictures.is_some() && waveform.is_some());
         if let Some(pictures) = pictures {
             self.draw_pictures(clip_painter, pic_r, clip, start, pictures);
         }
@@ -233,8 +224,19 @@ impl TimelineView {
             };
             self.draw_waveform(clip_painter, wave_r, clip, start, w, look);
         }
+        // The fades of the kind its track has (a sound's on audio tracks, a
+        // picture's on video tracks), as they are being dragged.
+        let dragged = self.fade_drag.filter(|d| d.clip == clip.id);
+        let (fade_r, own_fades) = match audio {
+            true => (wave_r, dragged.map_or(clip.sound.fades, |d| d.now)),
+            false => (pic_r, dragged.map_or(clip.fades, |d| d.now)),
+        };
         if full {
-            fades::draw(clip_painter, wave_r, &clip.sound, self.zoom);
+            fades::draw(clip_painter, fade_r, &own_fades, audio, self.zoom);
+            if !audio && waveform.is_some() && pictures.is_some() {
+                // The rough cut view: its sound's fades under its pictures.
+                fades::draw(clip_painter, wave_r, &clip.sound.fades, true, self.zoom);
+            }
         }
         if full && let Some(curve) = &clip.speed_curve {
             speed::draw(clip_painter, r, curve, theme.accent);
@@ -273,6 +275,18 @@ impl TimelineView {
         }
         if self.clip_drag.is_some_and(|d| d.refused && d.moves(clip)) {
             draw_refused(clip_painter, r);
+        }
+        // Fade handles show on the clip under the pointer and selected
+        // ones, over its name.
+        let pointer = ui.input(|i| i.pointer.hover_pos());
+        let handles = full
+            && self.clip_drag.is_none()
+            && matches!(self.tool, Tool::Select | Tool::Ripple)
+            && (clip.selected
+                || dragged.is_some()
+                || pointer.is_some_and(|p| r.contains(p) && clip_painter.clip_rect().contains(p)));
+        if handles {
+            fades::draw_handles(clip_painter, fade_r, &own_fades, audio, self.zoom);
         }
         if full && !clip.keyframes.is_empty() {
             // On top of everything else in the clip, where it is
@@ -652,4 +666,18 @@ fn draw_what_it_shows(p: &egui::Painter, theme: &Theme, r: Rect, shows: ClipShow
             p.rect_stroke(front, 1.0, stroke, egui::StrokeKind::Inside);
         }
     }
+}
+
+/// Where a clip drawn in `r` shows its pictures and its sound: with both
+/// (the rough cut view) pictures fill the top and the sound the bottom,
+/// else each the whole clip.
+pub(super) fn parts(r: Rect, both: bool) -> (Rect, Rect) {
+    if !both {
+        return (r, r);
+    }
+    let split = r.top() + r.height() * 0.62;
+    (
+        Rect::from_min_max(r.min, pos2(r.right(), split)),
+        Rect::from_min_max(pos2(r.left(), split - 17.0), r.max),
+    )
 }

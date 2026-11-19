@@ -448,6 +448,7 @@ pub fn drawn(
                     transition_in: project::transitions::played(t, c)
                         .map(|(_, start, end)| (end - start).as_secs_f64()),
                     graded: c.grade.is_graded(),
+                    fades: drawn_fades(&c.fades),
                 }
             })
             .collect();
@@ -511,8 +512,27 @@ pub fn show_sounds(drawn: &mut Drawn, sounds: &[(ClipId, project::Sound)]) {
 fn drawn_sound(sound: &project::Sound) -> ui_kit::ClipSound {
     ui_kit::ClipSound {
         gain: engine::mix::volume(sound.gain_mdb),
-        fade_in: sound.fade_in.as_secs_f64(),
-        fade_out: sound.fade_out.as_secs_f64(),
+        fades: ui_kit::ClipFades {
+            fade_in: sound.fade_in.as_secs_f64(),
+            fade_out: sound.fade_out.as_secs_f64(),
+            in_curve: curve(sound.fade_in_curve),
+            out_curve: curve(sound.fade_out_curve),
+        },
+    }
+}
+
+/// A fade's curve as the timeline draws it, -1 to 1, from millionths.
+fn curve(millionths: i32) -> f32 {
+    millionths as f32 / project::fades::CURVE_ONE as f32
+}
+
+/// A picture's fades as the timeline draws them.
+fn drawn_fades(fades: &project::fades::PictureFades) -> ui_kit::ClipFades {
+    ui_kit::ClipFades {
+        fade_in: fades.fade_in.as_secs_f64(),
+        fade_out: fades.fade_out.as_secs_f64(),
+        in_curve: curve(fades.fade_in_curve),
+        out_curve: curve(fades.fade_out_curve),
     }
 }
 
@@ -884,6 +904,54 @@ pub fn gain_mdb(db: f32) -> i32 {
     }
 }
 
+/// The undo step for a fade's handle or curve point let go: `clip`'s sound
+/// fades (`sound`) or picture fades set to `fades`, lengths on whole frames
+/// of the timeline and both within the clip, curves in millionths. `None`
+/// when the clip is gone or nothing changes.
+pub fn clip_fade_command(
+    seq: &Sequence,
+    clip: ClipId,
+    sound: bool,
+    fades: ui_kit::ClipFades,
+) -> Option<project::Command> {
+    let rate = seq.settings.frame_rate;
+    let on_frame = |secs: f64| rate.frame_start((secs.max(0.0) * rate.as_f64()).round() as i64);
+    let curve =
+        |c: f32| (f64::from(c.clamp(-1.0, 1.0)) * f64::from(project::fades::CURVE_ONE)).round() as i32;
+    let tracks = match sound {
+        true => &seq.audio_tracks,
+        false => &seq.video_tracks,
+    };
+    let found = tracks.iter().flat_map(|t| &t.clips).find(|c| c.id == clip)?;
+    let length = found.duration;
+    let fade_in = on_frame(fades.fade_in).min(length);
+    let fade_out = on_frame(fades.fade_out).min(length - fade_in);
+    if sound {
+        let set = project::Sound {
+            fade_in,
+            fade_out,
+            fade_in_curve: curve(fades.in_curve),
+            fade_out_curve: curve(fades.out_curve),
+            ..found.sound
+        };
+        (set != found.sound).then(|| project::Command::SetSound {
+            sequence: seq.id,
+            sounds: vec![(clip, set)],
+        })
+    } else {
+        let set = project::fades::PictureFades {
+            fade_in,
+            fade_out,
+            fade_in_curve: curve(fades.in_curve),
+            fade_out_curve: curve(fades.out_curve),
+        };
+        (set != found.fades).then(|| project::Command::SetFades {
+            sequence: seq.id,
+            fades: vec![(clip, set)],
+        })
+    }
+}
+
 /// The undo step for a clip's level line let go at `gain_db`: that clip's
 /// volume only, its pan and fades as they are. `None` when the clip is gone
 /// or its volume is already that.
@@ -1159,6 +1227,7 @@ mod tests {
             plays_until: None,
             transition_in: None,
             graded: false,
+            fades: Default::default(),
         }
     }
 
@@ -1642,6 +1711,70 @@ mod tests {
         assert_eq!(gain_mdb(-3.04), -3_040);
         assert_eq!(clip_volume_command(seq, first, 0.0), None);
         assert_eq!(clip_volume_command(seq, ClipId(999_999), -3.0), None);
+    }
+
+    #[test]
+    fn a_fade_let_go_lands_on_whole_frames_within_the_clip_for_sound_or_picture() {
+        use project::{Command, SequenceSettings, Sound, Time};
+        let p = Project::new("Test", SequenceSettings::GAME_CLIP);
+        let sequence = p.active_sequence;
+        let p = Command::Import {
+            sequence,
+            media: recording(2, 10),
+        }
+        .apply(&p)
+        .unwrap();
+        let seq = p.active().unwrap();
+        let (picture, mic) = (seq.video_tracks[0].clips[0].id, seq.audio_tracks[1].clips[0].id);
+        let rate = seq.settings.frame_rate;
+        // The mic fades in over about 0.51 s on a curve up; the picture out
+        // over far longer than the clip.
+        let fades = ui_kit::ClipFades {
+            fade_in: 0.509,
+            in_curve: 0.5,
+            ..ui_kit::ClipFades::default()
+        };
+        let after = clip_fade_command(seq, mic, true, fades)
+            .unwrap()
+            .apply(&p)
+            .unwrap();
+        let s = after.active().unwrap();
+        let sound = s.audio_tracks[1].clips[0].sound;
+        assert_eq!(sound.fade_in, rate.frame_start(31), "on a whole frame");
+        assert_eq!(sound.fade_in_curve, 500_000);
+        assert_eq!(
+            s.audio_tracks[0].clips[0].sound,
+            Sound::PLAIN,
+            "the game stream is left alone"
+        );
+        let long = ui_kit::ClipFades {
+            fade_in: 2.0,
+            fade_out: 99.0,
+            out_curve: -2.0,
+            ..ui_kit::ClipFades::default()
+        };
+        let after = clip_fade_command(seq, picture, false, long)
+            .unwrap()
+            .apply(&p)
+            .unwrap();
+        let fades = after.active().unwrap().video_tracks[0].clips[0].fades;
+        assert_eq!(
+            (fades.fade_in, fades.fade_out),
+            (Time::seconds(2), Time::seconds(8))
+        );
+        assert_eq!(fades.fade_out_curve, -project::fades::CURVE_ONE);
+        // Nothing changed is no step; a clip that is gone neither.
+        assert_eq!(
+            clip_fade_command(seq, picture, false, ui_kit::ClipFades::default()),
+            None
+        );
+        assert_eq!(clip_fade_command(seq, ClipId(999_999), true, fades_none()), None);
+        // The timeline draws what was set.
+        assert_eq!(drawn_fades(&fades).out_curve, -1.0);
+    }
+
+    fn fades_none() -> ui_kit::ClipFades {
+        ui_kit::ClipFades::default()
     }
 
     /// The open timeline of `project_with_a_clip`, its clip copied to `n`

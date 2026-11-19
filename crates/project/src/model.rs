@@ -393,6 +393,11 @@ pub struct Clip {
     /// colour and before its effects; none when missing. Pictures only.
     #[serde(default, skip_serializing_if = "crate::defaults::is_default")]
     pub grade: crate::grade::Grade,
+    /// How its picture fades in and out (format 32), to see-through at its
+    /// ends; none when missing. Pictures only (a sound's fades are in
+    /// `sound`).
+    #[serde(default, skip_serializing_if = "crate::defaults::is_default")]
+    pub fades: crate::fades::PictureFades,
 }
 
 /// How a picture mixes with what is below it. Every mode leaves what is
@@ -542,9 +547,18 @@ impl Clip {
             problems.push(format!("{place} starts before zero"));
         }
         if self.sound != self.sound.within_limits() {
-            problems.push(format!("{place} has a volume or pan out of range"));
+            problems.push(format!(
+                "{place} has a volume or pan out of range, or a fade curve"
+            ));
         }
-        if !self.sound.fits(self.duration) {
+        if self
+            .fades
+            .fitted(self.duration.max(self.fades.fade_in + self.fades.fade_out))
+            != self.fades
+        {
+            problems.push(format!("{place} has a fade curve out of range"));
+        }
+        if !self.sound.fits(self.duration) || !self.fades.fits(self.duration) {
             problems.push(format!("{place} has fades longer than itself"));
         }
         if let Err(err) = self.lines.check() {
@@ -967,7 +981,12 @@ impl Project {
     /// after every change. Only tracks with a clip that needs it are
     /// touched, so snapshots keep sharing everything else.
     pub fn fit_fades(&mut self) {
-        let needs = |track: &Track| track.clips.iter().any(|c| !c.sound.fits(c.duration));
+        let needs = |track: &Track| {
+            track
+                .clips
+                .iter()
+                .any(|c| !c.sound.fits(c.duration) || !c.fades.fits(c.duration))
+        };
         for i in 0..self.sequences.len() {
             let Some(seq) = self.sequences.get(i) else {
                 continue;
@@ -984,6 +1003,7 @@ impl Project {
                 }
                 for clip in track.clips.iter_mut() {
                     clip.sound = clip.sound.fitted(clip.duration);
+                    clip.fades = clip.fades.fitted(clip.duration);
                 }
             }
         }
@@ -1039,6 +1059,7 @@ mod tests {
             transition: None,
             title: None,
             grade: Default::default(),
+            fades: crate::fades::PictureFades::NONE,
             id: clip_id,
             media,
             stream: 0,

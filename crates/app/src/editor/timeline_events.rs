@@ -211,6 +211,14 @@ impl Editor {
                 });
                 self.play_on_with_new_mix();
             }
+            E::ClipFade { clip, sound, fades } => {
+                self.apply_on_open(|seq| {
+                    timeline_panel::clip_fade_command(seq, project::ClipId(clip), sound, fades)
+                });
+                if sound {
+                    self.play_on_with_new_mix();
+                }
+            }
             E::SetSpeed { clip, num, den } => match project::Speed::new(num, den) {
                 Ok(speed) => self.apply_on_open(|seq| {
                     Some(Command::SetSpeed {

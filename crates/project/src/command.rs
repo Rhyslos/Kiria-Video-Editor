@@ -152,6 +152,13 @@ pub enum Command {
         sequence: SequenceId,
         sounds: Vec<(ClipId, Sound)>,
     },
+    /// Sets how pictures fade in and out (format 32), each clip its own, as
+    /// one undo step. Only clips on video tracks: a sound's fades are set
+    /// with `SetSound`.
+    SetFades {
+        sequence: SequenceId,
+        fades: Vec<(ClipId, crate::fades::PictureFades)>,
+    },
     /// Puts back a whole earlier state of the project (a saved version).
     /// Undo returns to how it was just before.
     Restore {
@@ -773,6 +780,7 @@ impl Command {
                 fields,
             } => crate::animate::reset_look(&mut p, *sequence, *clip, fields)?,
             Command::SetSound { sequence, sounds } => set_sound(&mut p, *sequence, sounds)?,
+            Command::SetFades { sequence, fades } => set_fades(&mut p, *sequence, fades)?,
             Command::Restore { project } => {
                 if project.active().is_none() {
                     return Err(AppError::new("That version can't be restored")
@@ -1219,6 +1227,37 @@ fn set_sound(p: &mut Project, sequence: SequenceId, sounds: &[(ClipId, Sound)]) 
     Ok(())
 }
 
+fn set_fades(
+    p: &mut Project,
+    sequence: SequenceId,
+    fades: &[(ClipId, crate::fades::PictureFades)],
+) -> diag::Result<()> {
+    if fades.is_empty() {
+        return Err(AppError::new("No fades to set").why("No clips were given."));
+    }
+    let seq = sequence_mut(p, sequence)?;
+    for (clip, set) in fades {
+        if seq
+            .audio_tracks
+            .iter()
+            .any(|t| t.clips.iter().any(|c| c.id == *clip))
+        {
+            return Err(AppError::new("Sound fades are set on the sound")
+                .why("A sound clip's fades are part of its sound.")
+                .fix("Drag the fade handles on the sound clip."));
+        }
+        let found = seq
+            .video_tracks
+            .iter_mut()
+            .flat_map(|track| track.clips.iter_mut())
+            .find(|c| c.id == *clip)
+            .ok_or_else(|| missing("clip"))?;
+        set.check(found.duration)?;
+        found.fades = *set;
+    }
+    Ok(())
+}
+
 /// One end of a clip.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Edge {
@@ -1310,6 +1349,7 @@ pub(crate) fn halves(clip: &Clip, at: Time, right_id: ClipId, right_link: Option
         duration: clip.duration - first,
         link: right_link,
         sound: clip.sound.without_fade_in(),
+        fades: clip.fades.without_fade_in(),
         keyframes: clip.keyframes.cut_to(cut, clip.source_at(clip.end())),
         // Both halves keep the whole ramp, in its place.
         ramp: clip.ramp.shifted(Time::ZERO - first),
@@ -1320,6 +1360,7 @@ pub(crate) fn halves(clip: &Clip, at: Time, right_id: ClipId, right_link: Option
     let left = Clip {
         duration: first,
         sound: clip.sound.without_fade_out(),
+        fades: clip.fades.without_fade_out(),
         keyframes: clip.keyframes.cut_to(clip.source_in, cut),
         ..clip.clone()
     };
@@ -1484,6 +1525,7 @@ pub(crate) mod tests {
             transition: None,
             title: None,
             grade: Default::default(),
+            fades: crate::fades::PictureFades::NONE,
             id: ClipId(0),
             media: f.media,
             stream: 0,
@@ -2642,6 +2684,8 @@ pub(crate) mod tests {
             pan: 500_000,
             fade_in: Time::seconds(2),
             fade_out: Time::seconds(3),
+            fade_in_curve: 0,
+            fade_out_curve: 0,
         }
     }
 
@@ -2724,6 +2768,73 @@ pub(crate) mod tests {
         let clips = &near.active().unwrap().audio_tracks[0].clips;
         assert_eq!(clips[0].sound.fade_in, Time::seconds(1));
         assert_eq!(clips[1].sound.fade_out, Time::seconds(3));
+    }
+
+    #[test]
+    fn a_pictures_fades_are_set_in_one_step_kept_through_a_split_and_cut_by_a_trim() {
+        use crate::fades::PictureFades;
+        let (p, seq) = imported();
+        let picture = first_video(&p, 0).id;
+        let game = p.active().unwrap().audio_tracks[0].clips[0].id;
+        let fades = PictureFades {
+            fade_in: Time::seconds(2),
+            fade_out: Time::seconds(3),
+            fade_in_curve: 300_000,
+            fade_out_curve: -200_000,
+        };
+        let set = Command::SetFades {
+            sequence: seq,
+            fades: vec![(picture, fades)],
+        }
+        .apply(&p)
+        .unwrap();
+        assert_eq!(first_video(&set, 0).fades, fades);
+        // On a sound clip, too long for the clip, or a curve past one: refused.
+        let refused = |clip, fades| {
+            Command::SetFades {
+                sequence: seq,
+                fades: vec![(clip, fades)],
+            }
+            .apply(&p)
+            .is_err()
+        };
+        assert!(refused(game, fades));
+        let long = PictureFades {
+            fade_out: Time::seconds(29),
+            ..fades
+        };
+        assert!(refused(picture, long));
+        let bent = PictureFades {
+            fade_in_curve: 2 * crate::fades::CURVE_ONE,
+            ..fades
+        };
+        assert!(refused(picture, bent));
+        // A split: the fade in on the left half, the fade out on the right.
+        let cut = Command::Split {
+            sequence: seq,
+            at: Time::seconds(10),
+            clip: Some(picture),
+        }
+        .apply(&set)
+        .unwrap();
+        let clips = &cut.active().unwrap().video_tracks[0].clips;
+        assert_eq!(clips[0].fades, fades.without_fade_out());
+        assert_eq!(clips[1].fades, fades.without_fade_in());
+        // Trimmed to 4 s: the fade out is cut to what the fade in leaves.
+        let trimmed = Command::Trim {
+            sequence: seq,
+            clip: picture,
+            edge: Edge::End,
+            to: Time::seconds(4),
+        }
+        .apply(&set)
+        .unwrap();
+        let fitted = first_video(&trimmed, 0).fades;
+        assert_eq!(
+            (fitted.fade_in, fitted.fade_out),
+            (Time::seconds(2), Time::seconds(2))
+        );
+        assert!(trimmed.problems().is_empty(), "{:?}", trimmed.problems());
     }
 
     #[test]

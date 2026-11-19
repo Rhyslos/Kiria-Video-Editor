@@ -250,12 +250,14 @@ fn cut_to(clip: &Clip, range: Region) -> Option<Clip> {
     let start = clip.start.max(range.start);
     let end = clip.end().min(range.end);
     // A cut end loses its fade there, as a split does.
-    let mut sound = clip.sound;
+    let (mut sound, mut fades) = (clip.sound, clip.fades);
     if start > clip.start {
         sound = sound.without_fade_in();
+        fades = fades.without_fade_in();
     }
     if end < clip.end() {
         sound = sound.without_fade_out();
+        fades = fades.without_fade_out();
     }
     (start < end).then(|| Clip {
         start: start - range.start,
@@ -263,6 +265,7 @@ fn cut_to(clip: &Clip, range: Region) -> Option<Clip> {
         source_in: clip.source_at(start),
         duration: end - start,
         sound: sound.fitted(end - start),
+        fades: fades.fitted(end - start),
         // Only the keyframes of the part kept, with its ends held.
         keyframes: clip.keyframes.cut_to(clip.source_at(start), clip.source_at(end)),
         // The ramp keeps its place on the picture.
@@ -756,6 +759,7 @@ mod tests {
             transition: None,
             title: None,
             grade: Default::default(),
+            fades: crate::fades::PictureFades::NONE,
             id: ClipId(0),
             media,
             stream,

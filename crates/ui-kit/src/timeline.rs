@@ -83,7 +83,7 @@ mod track_views;
 mod transitions;
 
 pub use cache_bar::{CacheBar, CacheRange, CacheState};
-pub use fades::ClipSound;
+pub use fades::{ClipFades, ClipSound, FadeEnd};
 pub use keyframes::KeyframeMark;
 pub use lines::{LineBeingSet, LineKind, LineOwner, LinePoints, LinesShown};
 pub use loading::{LoadKind, LoadState, Loading, percent};
@@ -157,6 +157,9 @@ pub struct TimelineClip {
     pub transition_in: Option<f64>,
     /// It has a grade from the Color page: a small dot in its bottom left.
     pub graded: bool,
+    /// Its picture's fades (clips on video tracks): drawn on it, with the
+    /// handles that change them ([`fades`]). A sound's are in `sound`.
+    pub fades: ClipFades,
 }
 
 /// What a clip plays, as the timeline draws it.
@@ -405,6 +408,14 @@ pub enum TimelineEvent {
     /// A clip's level line was dragged (or double-clicked, for 0 dB):
     /// that clip's volume in decibels, [`level::SILENT_DB`] being silence.
     ClipVolume { clip: u64, gain_db: f32 },
+    /// A fade's handle or curve point was dragged (or the curve point
+    /// double-clicked, to make it plain): `clip`'s fades as they are now,
+    /// its sound's when `sound`, else its picture's.
+    ClipFade {
+        clip: u64,
+        sound: bool,
+        fades: ClipFades,
+    },
     /// A track's mute, solo or volume changed.
     TrackMix {
         track: u64,
@@ -654,6 +665,10 @@ pub struct TimelineView {
     level_lines: std::collections::BTreeSet<u64>,
     /// A clip's level line being dragged.
     level_drag: Option<level::LevelDrag>,
+    /// A fade's handle or curve point being dragged.
+    fade_drag: Option<fades::FadeDrag>,
+    /// Where the dragged fade's clip was drawn when the drag began.
+    fade_rect: Option<Rect>,
     region_drag: Option<(RegionDrag, (f64, f64))>,
     /// Where the right-click menu was opened: time, and the clip under it.
     menu_at: Option<MenuSpot>,
@@ -754,6 +769,8 @@ impl Default for TimelineView {
             fader_drag: None,
             level_lines: Default::default(),
             level_drag: None,
+            fade_drag: None,
+            fade_rect: None,
             region_drag: None,
             menu_at: None,
             menu_track: None,
@@ -1777,6 +1794,7 @@ mod tests {
             plays_until: None,
             transition_in: None,
             graded: false,
+            fades: Default::default(),
         }
     }
 
@@ -2934,6 +2952,49 @@ mod tests {
             track: None,
             new_track: true,
         }]
+    }
+
+    #[test]
+    fn a_fade_handle_dragged_sets_the_fade_and_its_curve_point_bends_it() {
+        // Track 0's clip runs from x = 200 to 440 (60 points a second), its
+        // row from y = 158 to 212: the handles sit inside its top corners.
+        let mut rig = Rig::new(2, 2);
+        rig.view.snapping = false;
+        let fade_of = |events: Vec<TimelineEvent>| {
+            events.into_iter().find_map(|e| match e {
+                TimelineEvent::ClipFade { clip, sound, fades } => Some((clip, sound, fades)),
+                _ => None,
+            })
+        };
+        let (clip, sound, fades) = fade_of(drag(&mut rig, pos2(204.5, 167.5), pos2(260.0, 167.5)))
+            .expect("a fade in on the picture");
+        assert_eq!((clip, sound), (0, false));
+        assert!(
+            (fades.fade_in - 1.0).abs() < 0.02 && fades.fade_out == 0.0,
+            "{fades:?}"
+        );
+        let (_, _, out) =
+            fade_of(drag(&mut rig, pos2(435.5, 167.5), pos2(380.0, 167.5))).expect("a fade out");
+        assert!((out.fade_out - 1.0).abs() < 0.02, "{out:?}");
+        // On a sound clip (track 100, y 218 to 276), its sound's fades.
+        let (clip, sound, _) =
+            fade_of(drag(&mut rig, pos2(204.5, 227.5), pos2(230.0, 227.5))).expect("a sound fade");
+        assert_eq!((clip, sound), (100, true));
+
+        // With a 2 s fade in drawn, its curve point sits halfway along it:
+        // dragged up, the curve comes in sooner; the clip is not moved.
+        rig.video[0].clips[0].fades.fade_in = 2.0;
+        rig.frame(Vec::new());
+        let inner_top = 158.0 + 3.0 + 2.0;
+        let inner_bottom = 212.0 - 3.0 - 2.0;
+        let middle = pos2(260.0, (inner_top + inner_bottom) / 2.0);
+        let events = drag(&mut rig, middle, pos2(260.0, inner_top + 6.0));
+        assert!(
+            !events.iter().any(|e| matches!(e, TimelineEvent::Move { .. })),
+            "{events:?}"
+        );
+        let (_, _, bent) = fade_of(events).expect("a bent fade");
+        assert!(bent.in_curve > 0.3 && bent.fade_in == 2.0, "{bent:?}");
     }
 
     #[test]

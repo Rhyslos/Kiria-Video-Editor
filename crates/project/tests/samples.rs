@@ -89,6 +89,7 @@ fn rich_project() -> Project {
         transition: None,
         title: None,
         grade: Default::default(),
+        fades: project::fades::PictureFades::NONE,
         id,
         media: video,
         stream,
@@ -219,6 +220,8 @@ fn rich_project() -> Project {
         pan: -200_000,
         fade_in: Time::from_ratio(1, 2).expect("half a second"),
         fade_out: Rate::NTSC_60.frame_start(45),
+        fade_in_curve: 0,
+        fade_out_curve: 0,
     };
     // Its own volume line dips under a shout and its pan line swings
     // right, at moments of the file (format 17).
@@ -420,7 +423,37 @@ fn rich_project() -> Project {
         },
     }
     .apply(&p)
-    .expect("a labelled stretch")
+    .expect("a labelled stretch");
+    // The first picture fades in on a curve and the first sound fades out
+    // on one (format 32).
+    let seq = p.active().expect("an open timeline");
+    let picture = seq.video_tracks[0].clips[0].id;
+    let sound_clip = seq.audio_tracks[0].clips[0].clone();
+    let p = project::Command::SetFades {
+        sequence,
+        fades: vec![(
+            picture,
+            project::fades::PictureFades {
+                fade_in: Time::seconds(1),
+                fade_in_curve: 400_000,
+                ..project::fades::PictureFades::NONE
+            },
+        )],
+    }
+    .apply(&p)
+    .expect("picture fades");
+    project::Command::SetSound {
+        sequence,
+        sounds: vec![(
+            sound_clip.id,
+            project::Sound {
+                fade_out_curve: -500_000,
+                ..sound_clip.sound
+            },
+        )],
+    }
+    .apply(&p)
+    .expect("a curved sound fade")
 }
 
 /// The header read from the text before the project gives what reading

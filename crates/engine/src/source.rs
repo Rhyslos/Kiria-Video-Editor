@@ -154,6 +154,7 @@ pub fn file_alone(media: &MediaRef) -> Option<Project> {
         transition: None,
         title: None,
         grade: Default::default(),
+        fades: project::fades::PictureFades::NONE,
         id,
         media: media.id,
         stream: video.index,

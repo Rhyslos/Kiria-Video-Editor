@@ -252,7 +252,7 @@ fn seen(project: &Project, sequence: &Sequence, at: Time, depth: usize) -> (Vec<
                 let look = clip.look_at(at);
                 let adjust = Adjust {
                     clip: clip.id,
-                    opacity: fraction(look.opacity),
+                    opacity: faded(clip, at, fraction(look.opacity)),
                     colour: colour(&look),
                 };
                 if adjust.opacity > 0.0 && !adjust.colour.is_neutral() {
@@ -292,7 +292,7 @@ fn nested(
     }
     let inner = project.sequence(id)?;
     let look = clip.look_at(at);
-    let opacity = fraction(look.opacity);
+    let opacity = faded(clip, at, fraction(look.opacity));
     if opacity <= 0.0 {
         return None;
     }
@@ -357,7 +357,7 @@ fn layer_seen(
         source_time,
         area: shown_area(&look, video.display_size(), frame),
         part,
-        opacity: fraction(look.opacity),
+        opacity: faded(clip, at, fraction(look.opacity)),
         colour: colour(&look),
         effects: effects(clip, at),
         mode: mode(clip.mode),
@@ -367,6 +367,16 @@ fn layer_seen(
         },
         title: None,
     })
+}
+
+/// `opacity` with `clip`'s picture fades at `at` (timeline time): see-through
+/// at its faded ends ([`project::fades::PictureFades::level`]).
+fn faded(clip: &Clip, at: Time, opacity: f32) -> f32 {
+    if !clip.fades.is_faded() {
+        return opacity;
+    }
+    let from_start = (at - clip.start).as_secs_f64();
+    opacity * clip.fades.level(from_start, clip.duration.as_secs_f64()) as f32
 }
 
 /// A title's words at `at`: placed as a picture the size of the frame
@@ -384,7 +394,7 @@ fn title_layer(clip: &Clip, frame: (u32, u32), at: Time) -> Option<Layer> {
         source_time: Time::ZERO,
         area: Area::of_part(placement(&look, frame, frame), shown),
         part: Part::WHOLE,
-        opacity: fraction(look.opacity),
+        opacity: faded(clip, at, fraction(look.opacity)),
         colour: colour(&look),
         effects: effects(clip, at),
         mode: mode(clip.mode),
@@ -1092,6 +1102,27 @@ mod tests {
             ..Look::PLAIN
         };
         assert!(frame_of(&with_look(&project, gone)).layers.is_empty());
+
+        // A picture fading in over 4 s from its start (at 0 s): a quarter
+        // in at 1 s, times its opacity; at its very start it is not drawn.
+        let mut faded = with_look(&project, faint);
+        let clip = faded.active().unwrap().video_tracks[0].clips[0].id;
+        faded = Command::SetFades {
+            sequence: faded.active_sequence,
+            fades: vec![(
+                clip,
+                project::fades::PictureFades {
+                    fade_in: Time::seconds(4),
+                    ..project::fades::PictureFades::NONE
+                },
+            )],
+        }
+        .apply(&faded)
+        .unwrap();
+        let layer = &frame_of(&faded).layers[0];
+        assert!((layer.opacity - 0.125).abs() < 1e-6, "{}", layer.opacity);
+        let start = describe(&faded, faded.active().unwrap(), Time::ZERO);
+        assert!(start.layers.is_empty(), "see-through at the fade's start");
     }
 
     #[test]

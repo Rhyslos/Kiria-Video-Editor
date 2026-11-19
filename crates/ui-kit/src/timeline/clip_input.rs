@@ -5,8 +5,8 @@
 use super::{
     ClipEdge, ClipShows, DraggedEffect, DraggedMedia, DraggedTimeline, DraggedTitle, DraggedTransition,
     KeyframeMark, Layout, MarksChange, NEW_TRACK_EDGE, NEW_TRACK_PAST, Rows, STAYS_ON_ITS_TRACK,
-    TimelineClip, TimelineData, TimelineEvent, TimelineTrack, TimelineView, Tool, find_clip, gaps, keyframes,
-    level,
+    TimelineClip, TimelineData, TimelineEvent, TimelineTrack, TimelineView, Tool, clip_draw, fades,
+    find_clip, gaps, keyframes, level,
     menus::{Menu, clip_menu},
     obstacles::Obstacles,
     slip, transitions,
@@ -77,8 +77,32 @@ struct Targets<'d> {
     on_mark: Option<(&'d TimelineClip, &'d KeyframeMark)>,
     /// Its level line (where it is drawn, and its volume in dB).
     on_line: Option<(&'d TimelineClip, Rect, f32)>,
+    /// A handle or curve point of one of its fades: it comes before
+    /// everything else on the clip.
+    on_fade: Option<FadeTarget<'d>>,
     /// The strip along its bottom that its marks lie in, away from them.
     on_strip: Option<&'d TimelineClip>,
+}
+
+/// A fade's handle or curve point under the pointer.
+#[derive(Debug, Clone, Copy)]
+struct FadeTarget<'d> {
+    clip: &'d TimelineClip,
+    /// Where those fades are drawn.
+    rect: Rect,
+    /// The sound's fades (else the picture's).
+    sound: bool,
+    end: fades::FadeEnd,
+    grip: fades::FadeGrip,
+}
+
+impl FadeTarget<'_> {
+    fn fades(&self) -> fades::ClipFades {
+        match self.sound {
+            true => self.clip.sound.fades,
+            false => self.clip.fades,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -256,6 +280,7 @@ impl TimelineView {
         self.follow_marks(ui, &r, data, area);
         self.finish_mark_drag(&r, data, events);
         self.level_drag_input(ui, &r, events);
+        self.fade_drag_input(ui, &r, events);
         double_clicks(&r, &targets, events);
         self.finish_clip_drag(&r, events);
         self.menu_input(&r, data, area, at, &targets, menu, events);
@@ -428,6 +453,24 @@ impl TimelineView {
             )),
             _ => None,
         };
+        // A fade's handle or curve point, with the tools that move clips.
+        let on_fade = drawn
+            .filter(|_| matches!(self.tool, Tool::Select | Tool::Ripple))
+            .and_then(|(c, r)| {
+                let sound = !area.video;
+                let rect = match sound {
+                    true => r,
+                    false => clip_draw::parts(r, c.pictures.is_some() && c.waveform.is_some()).0,
+                };
+                let fades = if sound { c.sound.fades } else { c.fades };
+                fades::grab(rect, &fades, self.zoom, sound, p).map(|(end, grip)| FadeTarget {
+                    clip: c,
+                    rect,
+                    sound,
+                    end,
+                    grip,
+                })
+            });
         // A keyframe mark on the clip under the pointer: it comes before
         // the clip itself.
         let on_mark = drawn.filter(|(c, _)| !c.keyframes.is_empty()).and_then(|(c, r)| {
@@ -454,6 +497,7 @@ impl TimelineView {
             zone,
             on_mark,
             on_line,
+            on_fade,
             on_strip,
         }
     }
@@ -489,14 +533,38 @@ impl TimelineView {
             zone,
             on_mark,
             on_line,
+            on_fade,
             on_strip,
             ..
         } = *targets;
         let still = self.clip_drag.is_none()
             && self.level_drag.is_none()
+            && self.fade_drag.is_none()
             && self.mark_drag.is_none()
             && self.mark_box.is_none();
         if r.hovered()
+            && still
+            && let Some(fade) = on_fade
+        {
+            let what = if fade.sound { "sound" } else { "picture" };
+            let end = match fade.end {
+                fades::FadeEnd::In => "in",
+                fades::FadeEnd::Out => "out",
+            };
+            let says = match fade.grip {
+                fades::FadeGrip::Length => {
+                    ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
+                    format!("Fade the {what} {end}: drag sideways")
+                }
+                fades::FadeGrip::Curve => {
+                    ui.ctx().set_cursor_icon(CursorIcon::ResizeVertical);
+                    format!(
+                        "The fade's curve: drag up to come {end} sooner, down for later; double-click for a plain fade"
+                    )
+                }
+            };
+            r.clone().on_hover_text_at_pointer(says);
+        } else if r.hovered()
             && still
             && let Some((_, mark)) = on_mark
         {
@@ -553,9 +621,30 @@ impl TimelineView {
             zone,
             on_mark,
             on_line,
+            on_fade,
             on_strip,
         } = *targets;
         if r.drag_started_by(egui::PointerButton::Primary)
+            && let Some(fade) = on_fade
+        {
+            let now = fade.fades();
+            self.fade_drag = Some(fades::FadeDrag {
+                clip: fade.clip.id,
+                sound: fade.sound,
+                end: fade.end,
+                grip: fade.grip,
+                from: now,
+                now,
+                length: fade.clip.duration,
+            });
+            self.fade_rect = Some(fade.rect);
+            if !fade.clip.selected {
+                events.push(TimelineEvent::Select {
+                    clip: fade.clip.id,
+                    add: false,
+                });
+            }
+        } else if r.drag_started_by(egui::PointerButton::Primary)
             && let Some((c, mark)) = on_mark
         {
             // The chosen marks move with the grabbed one; a mark that
@@ -783,6 +872,35 @@ impl TimelineView {
                         gain_db: drag.db,
                     });
                 }
+            }
+        }
+    }
+
+    /// A fade's handle or curve point being dragged follows the pointer;
+    /// let go, the clip gets those fades.
+    fn fade_drag_input(&mut self, ui: &Ui, r: &egui::Response, events: &mut Vec<TimelineEvent>) {
+        let (Some(drag), Some(rect)) = (&mut self.fade_drag, self.fade_rect) else {
+            return;
+        };
+        if r.dragged()
+            && let Some(now) = r.interact_pointer_pos()
+        {
+            drag.follow(rect, self.zoom, now);
+            ui.ctx().set_cursor_icon(match drag.grip {
+                fades::FadeGrip::Length => CursorIcon::ResizeHorizontal,
+                fades::FadeGrip::Curve => CursorIcon::ResizeVertical,
+            });
+        }
+        if r.drag_stopped() {
+            let drag = *drag;
+            self.fade_drag = None;
+            self.fade_rect = None;
+            if drag.changed() {
+                events.push(TimelineEvent::ClipFade {
+                    clip: drag.clip,
+                    sound: drag.sound,
+                    fades: drag.now,
+                });
             }
         }
     }
@@ -1063,7 +1181,27 @@ impl TimelineView {
 /// Double-clicks on a clip: on its level line, 0 dB; on a nested
 /// timeline's clip, that timeline opens.
 fn double_clicks(r: &egui::Response, targets: &Targets, events: &mut Vec<TimelineEvent>) {
-    let Targets { hit, on_line, .. } = *targets;
+    let Targets {
+        hit,
+        on_line,
+        on_fade,
+        ..
+    } = *targets;
+    // A fade's curve point: a plain fade again.
+    if r.double_clicked()
+        && let Some(fade) = on_fade.filter(|f| f.grip == fades::FadeGrip::Curve)
+    {
+        let now = fade.fades();
+        let (length, curve) = now.of(fade.end);
+        if curve != 0.0 {
+            events.push(TimelineEvent::ClipFade {
+                clip: fade.clip.id,
+                sound: fade.sound,
+                fades: now.with(fade.end, length, 0.0),
+            });
+        }
+        return;
+    }
     if r.double_clicked()
         && on_line.is_none()
         && let Some(c) = hit.filter(|c| c.shows == ClipShows::Timeline)
