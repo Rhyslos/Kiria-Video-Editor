@@ -765,6 +765,8 @@ impl Editor {
             self.timeline.divider = !self.settings.one_track_list;
             self.timeline.click_moves = self.settings.click_moves;
             self.timeline.zoom_to_playhead = self.settings.zoom_to_playhead;
+            self.timeline.volume_control = self.settings.volume_control();
+            self.timeline.detailed_on_selected = self.settings.detailed_gain_selected;
             if self.settings.rough_cut {
                 timeline_panel::fold_sound(&mut drawn);
             }
@@ -774,7 +776,7 @@ impl Editor {
             let length = seq.length().as_secs_f64();
             let width = ui.available_width();
             if !self.fitted {
-                self.timeline.fit(length, width - ui_kit::timeline::HEADER_WIDTH);
+                self.timeline.fit(length, width - self.timeline.header_width());
                 self.fitted = true;
             }
             let roles = crate::audio_page::roles::offered();
@@ -791,7 +793,34 @@ impl Editor {
             };
             let status_height = if self.status.is_empty() { 0.0 } else { 24.0 };
             let height = (ui.available_height() - status_height).max(160.0);
-            let size = egui::vec2(width - layout::MASTER_WIDTH - 8.0, height);
+            // The selected audio track's column: the track of the selected
+            // sound clip, else the one it was last for, else the first.
+            let picked = seq
+                .audio_tracks
+                .iter()
+                .find(|t| t.clips.iter().any(|c| self.selected.contains(&c.id)))
+                .or_else(|| {
+                    seq.audio_tracks
+                        .iter()
+                        .find(|t| Some(t.id) == self.track_column_for)
+                })
+                .or_else(|| seq.audio_tracks.front());
+            self.track_column_for = picked.map(|t| t.id);
+            let column = picked.map(|t| {
+                let index = seq.audio_tracks.iter().position(|o| o.id == t.id).unwrap_or(0);
+                let levels = self.playback.as_ref().and_then(|p| {
+                    p.track_meters()
+                        .into_iter()
+                        .find(|(id, _)| *id == t.id)
+                        .map(|(_, meter)| {
+                            let l = meter.take();
+                            (l.peak_db, l.short_term)
+                        })
+                });
+                (t.id, t.name.clone(), index, t.gain_db, t.muted, t.solo, levels)
+            });
+            let columns = if column.is_some() { 2.0 } else { 1.0 };
+            let size = egui::vec2(width - (layout::MASTER_WIDTH + 8.0) * columns, height);
             let levels = self.playback.as_ref().map(|p| {
                 let l = p.levels();
                 ui_kit::master::MeterLevels {
@@ -807,6 +836,30 @@ impl Editor {
             ui.horizontal_top(|ui| {
                 timeline_events = self.timeline.show(ui, &self.theme, &data, size);
                 ui.add_space(8.0);
+                if let Some((id, name, index, gain_db, muted, solo, levels)) = column {
+                    let (rect, _) =
+                        ui.allocate_exact_size(egui::vec2(layout::MASTER_WIDTH, height), egui::Sense::hover());
+                    let strip = ui_kit::track_column::TrackStrip {
+                        id: id.0,
+                        name: &name,
+                        colour: ui_kit::timeline::audio_colour(index),
+                        gain_db,
+                        muted,
+                        solo,
+                        levels,
+                    };
+                    let asked = self.track_column.show(ui, &self.theme, rect, strip);
+                    let (muted, solo) = asked.mute_solo.unwrap_or((muted, solo));
+                    if asked.gain_db.is_some() || asked.mute_solo.is_some() {
+                        timeline_events.push(ui_kit::TimelineEvent::TrackMix {
+                            track: id.0,
+                            muted,
+                            solo,
+                            gain_db: asked.gain_db.unwrap_or(gain_db),
+                        });
+                    }
+                    ui.add_space(8.0);
+                }
                 let (rect, _) = ui.allocate_exact_size(egui::vec2(layout::MASTER_WIDTH, height), egui::Sense::hover());
                 let mix = ui_kit::master::Mix {
                     levels,

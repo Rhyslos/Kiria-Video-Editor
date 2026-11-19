@@ -194,7 +194,7 @@ impl Editor {
         let length = seq.length().as_secs_f64();
         if !self.fitted {
             self.timeline
-                .fit(length, timeline.width() - ui_kit::timeline::HEADER_WIDTH);
+                .fit(length, timeline.width() - self.timeline.header_width());
             self.fitted = true;
         }
         let roles = crate::audio_page::roles::offered();

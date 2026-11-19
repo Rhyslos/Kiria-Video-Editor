@@ -183,6 +183,10 @@ pub struct Editor {
     /// The timeline label chosen by a click: Delete removes it.
     selected_label: Option<LabelId>,
     master: ui_kit::master::MasterColumn,
+    /// The selected audio track's column beside the master column, and the
+    /// track it was last for (it stays on it when nothing is selected).
+    track_column: ui_kit::track_column::TrackColumn,
+    track_column_for: Option<project::TrackId>,
     versions: crate::versions_window::VersionsWindow,
     templates: crate::templates_window::TemplatesWindow,
     /// Prune: the files no timeline uses, to take out of the project.
@@ -446,6 +450,8 @@ impl Editor {
             label_editor: None,
             selected_label: None,
             master: ui_kit::master::MasterColumn::default(),
+            track_column: ui_kit::track_column::TrackColumn::default(),
+            track_column_for: None,
             versions: crate::versions_window::VersionsWindow::default(),
             templates: crate::templates_window::TemplatesWindow::default(),
             prune: crate::prune_window::PruneWindow::default(),
@@ -1090,6 +1096,8 @@ impl Editor {
             track_divider: !self.settings.one_track_list,
             click_moves_needle: self.settings.click_moves == ui_kit::ClickMoves::EditNeedle,
             zoom_to_playhead: self.settings.zoom_to_playhead,
+            track_knobs: self.settings.track_knobs,
+            detailed_gain: self.settings.detailed_gain,
             rough_cut: self.settings.rough_cut,
             edit_at_playhead: self.settings.edit_at_playhead,
             clean: self.settings.clean_picture,

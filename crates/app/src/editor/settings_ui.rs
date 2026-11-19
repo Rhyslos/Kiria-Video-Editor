@@ -17,6 +17,7 @@ pub const EDIT_AT_PLAYHEAD: &str = "edit-at-playhead";
 pub const CLICK_MOVES: &str = "click-moves";
 pub const CUT_CLOSES_GAP: &str = "cut-closes-gap";
 pub const ALWAYS_UNLINKED: &str = "always-unlinked";
+pub const DETAILED_GAIN_SELECTED: &str = "detailed-gain-selected";
 pub const CLIP_PICTURES: &str = "clip-pictures";
 pub const CLEAR_WAVEFORMS: &str = "clear-waveforms";
 pub const PROXIES: &str = "proxies";
@@ -84,12 +85,20 @@ pub const CATEGORIES: &[Category] = &[
         Section {
             id: "timeline-pictures",
             title: "Timeline",
-            settings: &[Setting::new(
-                CLIP_PICTURES,
-                "Clip pictures",
-                "How the small pictures inside video clips are taken from long recordings.",
-            )
-            .keywords("thumbnails pictures filmstrip quick exact key frame")],
+            settings: &[
+                Setting::new(
+                    CLIP_PICTURES,
+                    "Clip pictures",
+                    "How the small pictures inside video clips are taken from long recordings.",
+                )
+                .keywords("thumbnails pictures filmstrip quick exact key frame"),
+                Setting::new(
+                    DETAILED_GAIN_SELECTED,
+                    "Detailed gain control on the selected audio clip",
+                    "The track of the selected audio clip shows the large volume knob with its full scale, growing to fit it, and shrinks back when nothing on it is selected.",
+                )
+                .keywords("knob gain volume detailed fine track selected"),
+            ],
         }],
     },
     Category {
@@ -315,6 +324,9 @@ impl Editor {
                     }
                     ALWAYS_UNLINKED => {
                         ui_kit::settings::toggle(row.ui, row.theme, &mut s.always_unlinked);
+                    }
+                    DETAILED_GAIN_SELECTED => {
+                        ui_kit::settings::toggle(row.ui, row.theme, &mut s.detailed_gain_selected);
                     }
                     CLIP_PICTURES => {
                         let options: Vec<_> = ClipPictureWay::ALL.iter().map(|w| (*w, w.short())).collect();

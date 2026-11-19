@@ -212,6 +212,24 @@ impl Editor {
                 .into();
                 Ok(())
             }
+            Action::TrackKnobs => {
+                self.settings.track_knobs = !self.settings.track_knobs;
+                self.status = match self.settings.track_knobs {
+                    true => "Volume knobs: drag around a knob, or Ctrl+wheel over it; Shift for fine steps",
+                    false => "Volume sliders on the audio tracks",
+                }
+                .into();
+                Ok(())
+            }
+            Action::DetailedGain => {
+                self.settings.detailed_gain = !self.settings.detailed_gain;
+                self.status = match self.settings.detailed_gain {
+                    true => "Detailed audio gain: the large knob on every audio track",
+                    false => "Detailed audio gain off",
+                }
+                .into();
+                Ok(())
+            }
             Action::ZoomToPlayhead => {
                 self.settings.zoom_to_playhead = !self.settings.zoom_to_playhead;
                 self.timeline.zoom_to_playhead = self.settings.zoom_to_playhead;
