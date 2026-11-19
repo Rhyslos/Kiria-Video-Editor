@@ -106,8 +106,6 @@ pub struct Editor {
     thumbnail_shows: Option<engine::thumbnail::Shows>,
     importer: Importer,
     import_requested: bool,
-    /// What the timeline's settings settled on during the import under way.
-    import_settled: import::SettledNote,
     viewer: Viewer,
     /// Split view's Source and the viewer's own window (the Display menu).
     display: crate::display::ViewerDisplay,
@@ -403,7 +401,6 @@ impl Editor {
             thumbnail_shows: None,
             importer,
             import_requested: false,
-            import_settled: Default::default(),
             viewer,
             display,
             playback: None,
@@ -858,7 +855,7 @@ impl Editor {
         // fit in a few milliseconds go in each frame (at least one).
         let started = Instant::now();
         while started.elapsed() < IMPORT_BUDGET {
-            let Some((read, batch)) = self.importer.next_read() else {
+            let Some((read, mut batch)) = self.importer.next_read() else {
                 break;
             };
             if self.importer.busy() > 0 {
@@ -919,7 +916,7 @@ impl Editor {
                             None => format!("Imported {line}"),
                         };
                         // Said again when the batch is summed up.
-                        self.import_settled.keep(settled);
+                        self.importer.note_settled(batch.as_mut(), settled);
                         if let Some(words) = end_missing {
                             self.status = format!("{}. {words}", self.status.trim_end_matches('.'));
                         }
@@ -951,7 +948,7 @@ impl Editor {
             // Files picked or dropped together: one line for them all, and
             // one message for those refused.
             if let Some(batch) = batch
-                && let Some(line) = self.import_settled.finished(&batch)
+                && let Some(line) = batch.line()
             {
                 self.status = line;
                 let whats_there = (!batch.cut_short.is_empty())
