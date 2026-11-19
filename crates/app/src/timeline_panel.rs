@@ -709,12 +709,13 @@ pub fn keyframes_moved(timeline: &ui_kit::TimelineView, project: &Project) -> Op
 /// them (or linked to one) and another selected clip is not linked to it,
 /// as the timeline drew the drag.
 pub fn moves_together(seq: &Sequence, selected: &[ClipId], clip: ClipId) -> bool {
-    let link_of = |id: ClipId| {
-        seq.tracks()
-            .flat_map(|t| t.clips.iter())
-            .find(|c| c.id == id)
-            .and_then(|c| c.link)
-    };
+    // One pass over the clips into a map, whatever the size of the
+    // selection: this runs when a clip is let go.
+    let links: HashMap<ClipId, Option<project::LinkId>> = seq
+        .tracks()
+        .flat_map(|t| t.clips.iter().map(|c| (c.id, c.link)))
+        .collect();
+    let link_of = |id: ClipId| links.get(&id).copied().flatten();
     let link = link_of(clip);
     let same = |id: ClipId| id == clip || (link.is_some() && link_of(id) == link);
     selected.iter().any(|id| same(*id)) && selected.iter().any(|id| !same(*id))
@@ -1632,5 +1633,73 @@ mod tests {
         assert_eq!(gain_mdb(-3.04), -3_040);
         assert_eq!(clip_volume_command(seq, first, 0.0), None);
         assert_eq!(clip_volume_command(seq, ClipId(999_999), -3.0), None);
+    }
+
+    /// The open timeline of `project_with_a_clip`, its clip copied to `n`
+    /// clips one after another (ids from 1000), every pair linked.
+    fn linked_pairs(n: u64) -> Sequence {
+        let p = crate::inspector::tests::project_with_a_clip();
+        let mut seq = p.active().unwrap().clone();
+        let clip = seq.video_tracks[0].clips[0].clone();
+        seq.video_tracks[0].clips = (0..n)
+            .map(|i| {
+                let mut c = clip.clone();
+                c.id = ClipId(1000 + i);
+                c.link = Some(project::LinkId(i / 2));
+                c
+            })
+            .collect();
+        seq
+    }
+
+    #[test]
+    fn a_clip_moves_with_the_selection_when_another_not_linked_is_selected() {
+        let seq = linked_pairs(6);
+        let ids = |ids: &[u64]| ids.iter().map(|i| ClipId(*i)).collect::<Vec<_>>();
+        // Selected with a clip it is not linked to: they move together.
+        assert!(moves_together(&seq, &ids(&[1000, 1002]), ClipId(1000)));
+        // Its linked clip is selected, with another: together too.
+        assert!(moves_together(&seq, &ids(&[1001, 1004]), ClipId(1000)));
+        // Only itself and its linked clip: not "together", it moves alone.
+        assert!(!moves_together(&seq, &ids(&[1000, 1001]), ClipId(1000)));
+        // Not among the selected: alone.
+        assert!(!moves_together(&seq, &ids(&[1002, 1004]), ClipId(1000)));
+        assert!(!moves_together(&seq, &[], ClipId(1000)));
+        // A clip without a link is not linked to other clips without one;
+        // a clip that is gone and not selected moves alone.
+        let mut plain = seq.clone();
+        for c in plain.video_tracks[0].clips.iter_mut() {
+            c.link = None;
+        }
+        assert!(moves_together(&plain, &ids(&[1000, 1001]), ClipId(1000)));
+        assert!(!moves_together(&plain, &ids(&[1000, 1001]), ClipId(7)));
+        assert!(moves_together(&plain, &ids(&[1000, 7]), ClipId(1000)));
+    }
+
+    /// Prints how long letting go of a clip takes to know whether the
+    /// selection moves with it, after Select all on 5 000 clips, against
+    /// the two clip scans per selected clip it was before.
+    #[test]
+    #[ignore = "a measurement: cargo test -p app -- --ignored --nocapture moves_together"]
+    fn moves_together_among_five_thousand_is_quick() {
+        let seq = linked_pairs(5000);
+        let selected: Vec<ClipId> = (1000..6000).map(ClipId).collect();
+        let clip = ClipId(5998);
+        let start = std::time::Instant::now();
+        let now = moves_together(&seq, &selected, clip);
+        let mapped = start.elapsed();
+        let start = std::time::Instant::now();
+        let link_of = |id: ClipId| {
+            seq.tracks()
+                .flat_map(|t| t.clips.iter())
+                .find(|c| c.id == id)
+                .and_then(|c| c.link)
+        };
+        let link = link_of(clip);
+        let same = |id: ClipId| id == clip || (link.is_some() && link_of(id) == link);
+        let before = selected.iter().any(|id| same(*id)) && selected.iter().any(|id| !same(*id));
+        let scanning = start.elapsed();
+        assert!(now && before);
+        println!("moves together, 5 000 clips: map {mapped:?}, clip scans {scanning:?}");
     }
 }
