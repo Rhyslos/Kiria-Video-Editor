@@ -355,8 +355,6 @@ pub struct Display {
     pub track_knobs: bool,
     /// Audio tracks have the detailed volume knob.
     pub detailed_gain: bool,
-    /// The selected audio track has a column beside the master.
-    pub track_column: bool,
     /// Audio track headers have a volume control.
     pub header_volume: bool,
     /// The timeline is in the rough cut view.
@@ -459,7 +457,6 @@ pub fn display_groups(display: Display) -> Vec<DisplayGroup> {
                     enabled: display.header_volume,
                     ..line(Action::DetailedGain, "Detailed audio gain", display.detailed_gain)
                 },
-                line(Action::TrackColumn, "Selected track column", display.track_column),
             ],
         },
     ]
@@ -620,7 +617,6 @@ mod tests {
                 (Action::HeaderVolume, false),
                 (Action::TrackKnobs, false),
                 (Action::DetailedGain, true),
-                (Action::TrackColumn, false),
             ]
         );
         // Without a volume control in the headers, which one is moot.

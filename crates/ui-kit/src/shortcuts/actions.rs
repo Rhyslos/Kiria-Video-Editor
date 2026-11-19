@@ -156,7 +156,6 @@ actions! {
     TrackDivider, Timeline, "Divider between video and audio tracks, or one list that scrolls together";
     TrackKnobs, Timeline, "Volume knobs on the audio tracks: a knob beside each track's buttons instead of the slider under them";
     HeaderVolume, Timeline, "Volume in the track headers: off, audio tracks are only their buttons and can be shorter (the volume is beside the master)";
-    TrackColumn, Timeline, "Selected track column: the selected audio track's tall fader and meter beside the master";
     DetailedGain, Timeline, "Detailed audio gain: the large knob with its full scale on every audio track (taller tracks)";
     ZoomToPlayhead, Timeline, "Zoom to playhead: zooming the timeline keeps the playhead in place (out of view, brings it to the middle) instead of zooming at the pointer";
     ClickMovesNeedle, Timeline, "Clicking the timeline moves the edit needle (the playhead by its handle), or the playhead";

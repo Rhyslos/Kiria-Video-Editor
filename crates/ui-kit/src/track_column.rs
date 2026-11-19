@@ -1,10 +1,9 @@
-//! The selected audio track's column beside the master column: the same
-//! tall meter that is also the fader, for the track the page is working
-//! on, so its volume can be set finely. Its name in its colour at the top;
-//! the two channels' peaks and the loudness over 3 s on the master's scale;
-//! the volume, and M and S, underneath. Built from the master column's
-//! parts, so both read the same (working rule 1). The same column serves
-//! tracks pinned beside the master, with an × to unpin them.
+//! A pinned audio track's column beside the master column: the same tall
+//! meter that is also the fader, so its volume can be set finely. Its name
+//! in its colour at the top, with an × to unpin it; the two channels'
+//! peaks and the loudness over 3 s on the master's scale; the volume, and
+//! M and S, underneath. Built from the master column's parts, so both read
+//! the same (working rule 1).
 
 use crate::Theme;
 use crate::master::{db_at, db_text, falling, volume_text, y_of};
@@ -195,7 +194,7 @@ impl TrackColumn {
             )
             .on_hover_cursor(CursorIcon::ResizeVertical)
             .on_hover_text(format!(
-                "{}: the selected audio track's volume. Drag (Shift: finer), double-click for 0 dB. The lanes are its two channels and its loudness over 3 s.",
+                "{}: this track's volume. Drag (Shift: finer), double-click for 0 dB. The lanes are its two channels and its loudness over 3 s.",
                 strip.name
             ));
         let shift = ui.input(|i| i.modifiers.shift);

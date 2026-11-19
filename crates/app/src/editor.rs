@@ -183,10 +183,6 @@ pub struct Editor {
     /// The timeline label chosen by a click: Delete removes it.
     selected_label: Option<LabelId>,
     master: ui_kit::master::MasterColumn,
-    /// The selected audio track's column beside the master column, and the
-    /// track it was last for (it stays on it when nothing is selected).
-    track_column: ui_kit::track_column::TrackColumn,
-    track_column_for: Option<project::TrackId>,
     /// The columns of the tracks pinned beside the master, by track.
     pinned_columns: std::collections::HashMap<u64, ui_kit::track_column::TrackColumn>,
     /// Effects copied from a track (its menu's "Copy its effects"), to paste on another.
@@ -454,8 +450,6 @@ impl Editor {
             label_editor: None,
             selected_label: None,
             master: ui_kit::master::MasterColumn::default(),
-            track_column: ui_kit::track_column::TrackColumn::default(),
-            track_column_for: None,
             pinned_columns: Default::default(),
             track_effects: None,
             versions: crate::versions_window::VersionsWindow::default(),
@@ -1104,7 +1098,6 @@ impl Editor {
             zoom_to_playhead: self.settings.zoom_to_playhead,
             track_knobs: self.settings.track_knobs,
             detailed_gain: self.settings.detailed_gain,
-            track_column: !self.settings.hide_track_column,
             header_volume: !self.settings.hide_header_volume,
             rough_cut: self.settings.rough_cut,
             edit_at_playhead: self.settings.edit_at_playhead,
