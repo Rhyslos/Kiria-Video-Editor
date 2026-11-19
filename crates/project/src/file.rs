@@ -540,10 +540,10 @@ pub fn backup_path(path: &Path, old_version: u32) -> PathBuf {
 
 /// Copies a project file before an upgrade changes it, whole or not at all
 /// (`disk::copy_atomic`). It is called while the file is still in format
-/// `old_version` (before anything is written to it), so a copy already
-/// there that reads as a format `old_version` project is the true original
-/// and is kept; one that doesn't (cut short by a crash or a full disk when
-/// an earlier version copied it in place) is made again from the file.
+/// `old_version` (before anything is written to it), so a whole copy of a
+/// format `old_version` file already there is the true original and is
+/// kept; one that isn't (cut short by a crash or a full disk when an
+/// earlier version copied it in place) is made again from the file.
 pub fn back_up_before_upgrade(path: &Path, old_version: u32) -> diag::Result<PathBuf> {
     let backup = backup_path(path, old_version);
     if !is_whole_backup(&backup, old_version) {
@@ -559,10 +559,54 @@ pub fn back_up_before_upgrade(path: &Path, old_version: u32) -> diag::Result<Pat
     Ok(backup)
 }
 
-/// Whether `backup` is there and reads whole as a format `old_version` project.
+/// Whether `backup` is there, says it is in format `old_version` and is a
+/// whole file: its header reads (`read_info`) and its text closes every
+/// bracket it opens and stops there ([`is_whole_ron`]). The project is not
+/// parsed, migrated or checked, so this stays cheap for big projects, and a
+/// sound copy is never thrown away because it fails a check added later.
 fn is_whole_backup(backup: &Path, old_version: u32) -> bool {
     read_info(backup).is_ok_and(|info| info.format_version == old_version)
-        && fs::read_to_string(backup).is_ok_and(|text| from_str(&text).is_ok())
+        && fs::read(backup).is_ok_and(|bytes| is_whole_ron(&bytes))
+}
+
+/// Whether `text` is one whole bracketed RON value: a `(` at its start,
+/// whose matching `)` ends it (only white space after). Brackets inside
+/// strings don't count. A copy cut short anywhere leaves a bracket open or
+/// a string unclosed, so it never passes.
+fn is_whole_ron(text: &[u8]) -> bool {
+    let text = text.trim_ascii();
+    if text.first() != Some(&b'(') {
+        return false;
+    }
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (at, &byte) in text.iter().enumerate() {
+        if in_string {
+            match byte {
+                _ if escaped => escaped = false,
+                b'\\' => escaped = true,
+                b'"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+        match byte {
+            b'"' => in_string = true,
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => {
+                depth = match depth.checked_sub(1) {
+                    Some(depth) => depth,
+                    None => return false,
+                };
+                if depth == 0 {
+                    return at + 1 == text.len();
+                }
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 /// Parses project file text, migrating it from an older format if needed.
@@ -908,6 +952,61 @@ mod tests {
             fs::write(&backup, wrong).unwrap();
             back_up_before_upgrade(&path, version).unwrap();
             assert_eq!(fs::read_to_string(&backup).unwrap(), original);
+        }
+    }
+
+    #[test]
+    fn a_whole_backup_failing_later_checks_is_kept() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("p.project");
+        let version = FORMAT_VERSION - 1;
+        let original = text_of_format(version);
+        fs::write(&path, &original).unwrap();
+        let backup = backup_path(&path, version);
+        // A whole copy of that format whose project this version refuses
+        // (as a stricter load check would): still the original, kept.
+        let head = head_of(&original).unwrap();
+        let refused = format!(
+            "{}{PROJECT_FIELD}(not_a_project: \"a ) ] }} \\\" (\"),\n)\n",
+            &head[..head.len() - 1]
+        );
+        assert!(from_str(&refused).is_err());
+        fs::write(&backup, &refused).unwrap();
+        back_up_before_upgrade(&path, version).unwrap();
+        assert_eq!(fs::read_to_string(&backup).unwrap(), refused);
+    }
+
+    #[test]
+    fn whole_ron_is_told_from_text_cut_short() {
+        for whole in [
+            "(a: 1)",
+            "(a: \"x)\\\"(\")\n",
+            "  (a: [1, (2)], b: {\"k\": 3})\r\n",
+        ] {
+            assert!(is_whole_ron(whole.as_bytes()), "{whole}");
+        }
+        for cut in [
+            "",
+            "(",
+            "(a: (1)",
+            "(a: \"x)",
+            "(a: 1))",
+            "(a: 1) x",
+            "a: 1)",
+            "(a: \"\\\")",
+        ] {
+            assert!(!is_whole_ron(cut.as_bytes()), "{cut}");
+        }
+        // Every stored sample of an earlier format is whole; every way of
+        // cutting one short is not.
+        let samples = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/samples");
+        for version in 1..=FORMAT_VERSION {
+            let text = fs::read(samples.join(format!("project-v{version}.ron"))).unwrap();
+            assert!(is_whole_ron(&text), "format {version}");
+            let end = text.trim_ascii_end().len();
+            for len in (0..end).step_by(61).chain(end.saturating_sub(64)..end) {
+                assert!(!is_whole_ron(&text[..len]), "format {version} cut at {len}");
+            }
         }
     }
 
