@@ -152,6 +152,9 @@ pub struct Band {
     /// Correlation, smoothed so its needle doesn't jitter.
     pub correlation: Option<f32>,
     pub balance: f32,
+    /// What the analyser last listened to: the spectrum, spectrogram and
+    /// stereo picture are of it, and start again when it changes.
+    listening: Option<engine::Listen>,
     /// Loudness: the mix's readings, oldest first.
     pub loudness: VecDeque<Reading>,
     /// The highest true peak since the last kept reading.
@@ -180,6 +183,7 @@ impl Band {
     ) {
         self.playing = live.playing;
         self.now = at;
+        self.follow_listening(live.listening);
         self.follow_spectrum(live.spectrum, dt);
         if let Some(stereo) = stereo {
             self.follow_stereo(stereo);
@@ -231,6 +235,24 @@ impl Band {
             keep_since(readings, at - TRACK_SECONDS, |r| r.at);
         }
         self.tracks.retain(|id, _| roles.iter().any(|(t, _)| t == id));
+    }
+
+    /// When the analyser starts listening to something else (Mix or Track,
+    /// the EQ tool taking it for its track), what was kept of the other
+    /// sound is dropped, so nothing of it is shown as this one's. Not
+    /// listening (stopped, a view without the analyser) keeps the pictures.
+    fn follow_listening(&mut self, listening: Option<engine::Listen>) {
+        let Some(listening) = listening else { return };
+        if self.listening.is_some_and(|last| last != listening) {
+            self.held = None;
+            self.hold_left.clear();
+            self.columns.clear();
+            self.columns_changed = true;
+            self.stereo.clear();
+            self.correlation = None;
+            self.balance = 0.0;
+        }
+        self.listening = Some(listening);
     }
 
     fn follow_spectrum(&mut self, levels: Option<[f32; COUNT]>, dt: f32) {
@@ -432,6 +454,45 @@ mod tests {
         assert!(held[10] < -6.0 && held[10] >= -90.0, "then falls: {}", held[10]);
         assert_eq!(band.columns.len(), 2, "a column per new window, not per frame");
         assert_eq!(band.correlation, Some(1.0));
+    }
+
+    #[test]
+    fn what_was_kept_goes_when_the_analyser_listens_to_something_else() {
+        let mut band = Band::default();
+        let picture = |windows| Stereo {
+            correlation: -0.5,
+            balance: 0.8,
+            windows,
+            points: vec![(0.1, -0.1)],
+        };
+        let mut loud = [-90.0; COUNT];
+        loud[10] = -6.0;
+        let mut live = Live {
+            playing: true,
+            spectrum: Some(loud),
+            listening: Some(engine::Listen::Mix),
+            ..Live::default()
+        };
+        for w in 1..=5 {
+            band.follow(&live, Some(picture(w)), &[], 0.0, 0.1);
+        }
+        assert_eq!(band.columns.len(), 5);
+        // Stopped: nothing listens, and the pictures stay.
+        let stopped = Live::default();
+        band.follow(&stopped, None, &[], 0.0, 0.1);
+        assert_eq!(band.columns.len(), 5);
+        assert!(band.correlation.is_some());
+        band.columns_changed = false;
+        // Now the track, much quieter: nothing of the mix is shown as its.
+        let quiet = [-80.0; COUNT];
+        live.spectrum = Some(quiet);
+        live.listening = Some(engine::Listen::Track(TrackId(2)));
+        band.follow(&live, None, &[], 0.0, 0.1);
+        assert!(band.columns.is_empty() && band.columns_changed);
+        assert!(band.stereo.is_empty());
+        assert_eq!(band.correlation, None);
+        assert_eq!(band.balance, 0.0);
+        assert_eq!(band.held.expect("held")[10], -80.0, "no high held from the mix");
     }
 
     #[test]
