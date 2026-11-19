@@ -446,7 +446,7 @@ impl LibraryPage {
         let length = self.player.length();
         match action {
             Action::PlayPause => self.player.play_pause(marks),
-            Action::Stop => self.player.stop_here(),
+            Action::Stop => self.player.stop_back(),
             Action::PreviousFrame => self.player.step(-1, marks),
             Action::NextFrame => self.player.step(1, marks),
             Action::GoToStart => self.player.go_to(0.0, marks),

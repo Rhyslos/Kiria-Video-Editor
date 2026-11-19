@@ -8,7 +8,7 @@
 //! imported into a new timeline, every sound stream on its own track), so
 //! what is heard is what the timeline would play; the playback clock moves
 //! the picture. Play, pause, stop and stepping behave as on the Edit page:
-//! pausing goes back to where playing began, Stop stays where it is.
+//! pausing stays where it got to, Stop goes back to where playing began.
 
 use crate::viewer::Viewer;
 use project::{Command, MediaId, MediaKind, MediaRef, Project, SequenceId};
@@ -82,14 +82,19 @@ impl Player {
         self.media.as_ref().map_or(0.0, |m| m.duration.as_secs_f64())
     }
 
-    /// Play from here, or pause (back to where playing began).
+    /// Play from here, or pause where it got to.
     pub fn play_pause(&mut self, marks: Marks) {
-        match self.playing.take() {
-            Some(playing) => {
-                self.at = playing.playback.started_at().as_secs_f64();
-                self.set_viewer_playing(false);
-            }
-            None => self.start(marks),
+        match self.playing.is_some() {
+            true => self.stop_here(),
+            false => self.start(marks),
+        }
+    }
+
+    /// Stops and goes back to where playing began (Stop).
+    pub fn stop_back(&mut self) {
+        if let Some(playing) = self.playing.take() {
+            self.at = playing.playback.started_at().as_secs_f64();
+            self.set_viewer_playing(false);
         }
     }
 
@@ -279,7 +284,7 @@ mod tests {
     }
 
     #[test]
-    fn pausing_goes_back_and_marks_bound_playing() {
+    fn pausing_stays_stop_goes_back_and_marks_bound_playing() {
         let media = voice();
         let mut player = Player::default();
         let marks = Marks {
@@ -294,7 +299,16 @@ mod tests {
         assert_eq!(player.at, 0.5, "outside the marks it plays from the in mark");
         player.play_pause(marks);
         assert!(!player.playing());
-        assert_eq!(player.at, 0.5, "pausing goes back to where it began");
+        assert!(
+            (0.5..=1.0).contains(&player.at),
+            "pausing stays where it got to: {}",
+            player.at
+        );
+        player.at = 0.6;
+        player.play_pause(marks);
+        player.stop_back();
+        assert!(!player.playing());
+        assert_eq!(player.at, 0.6, "stop goes back to where it began");
         player.go_to(99.0, marks);
         assert_eq!(player.at, media.duration.as_secs_f64(), "never past the end");
         player.step(-1, marks);

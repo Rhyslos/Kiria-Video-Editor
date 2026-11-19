@@ -314,7 +314,7 @@ fn transport_under(
     // The player has no looping: its button is greyed.
     match transport(ui, theme, rect, page.player.playing(), None, about.shortcuts) {
         Some(TransportClick::PlayPause) => page.player.play_pause(marks),
-        Some(TransportClick::Stop) => page.player.stop_here(),
+        Some(TransportClick::Stop) => page.player.stop_back(),
         Some(TransportClick::FrameBack) => page.player.step(-1, marks),
         Some(TransportClick::FrameForward) => page.player.step(1, marks),
         Some(click) => {
