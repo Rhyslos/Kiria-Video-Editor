@@ -234,6 +234,9 @@ fn encode(strip: &Strip, exact: bool) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
+/// The bytes before each picture's JPEG: its time and the JPEG's length.
+const FRAME_HEADER: usize = 12;
+
 fn decode(bytes: &[u8], exact: bool) -> Option<Strip> {
     let rest = bytes.strip_prefix(MAGIC.as_slice())?;
     let every = f64::from_le_bytes(rest.get(0..8)?.try_into().ok()?);
@@ -242,7 +245,11 @@ fn decode(bytes: &[u8], exact: bool) -> Option<Strip> {
     }
     let count = u32::from_le_bytes(rest.get(9..13)?.try_into().ok()?) as usize;
     let mut at = 13;
-    let mut frames = Vec::with_capacity(count);
+    // The count is read from a file anyone can change: room is made only
+    // for the pictures the bytes left can hold (each takes at least
+    // `FRAME_HEADER` bytes), never for a count a damaged file claims.
+    let fits = rest.len().saturating_sub(at) / FRAME_HEADER;
+    let mut frames = Vec::with_capacity(count.min(fits));
     for _ in 0..count {
         let time = f64::from_le_bytes(rest.get(at..at + 8)?.try_into().ok()?);
         let len = u32::from_le_bytes(rest.get(at + 8..at + 12)?.try_into().ok()?) as usize;
@@ -422,6 +429,33 @@ mod tests {
             0,
             "nothing written"
         );
+    }
+
+    #[test]
+    fn a_damaged_count_is_refused_without_making_room_for_it() {
+        let header = |count: u32, tail: &[u8]| {
+            let mut bytes = MAGIC.to_vec();
+            bytes.extend_from_slice(&2.0f64.to_le_bytes());
+            bytes.push(0);
+            bytes.extend_from_slice(&count.to_le_bytes());
+            bytes.extend_from_slice(tail);
+            bytes
+        };
+        // Room for u32::MAX pictures would be hundreds of gigabytes: an
+        // allocation that aborts the process instead of failing.
+        assert!(decode(&header(u32::MAX, &[]), false).is_none());
+        assert!(decode(&header(u32::MAX, &[0; 100]), false).is_none());
+        assert!(decode(&header(1, &[]), false).is_none(), "a picture short");
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().to_path_buf());
+        let fingerprint = crate::naming::print(7);
+        let path = store.file_for(&fingerprint, 0).unwrap();
+        std::fs::write(&path, header(u32::MAX, &[0; 24])).unwrap();
+        assert!(store.load(&fingerprint, 0, false).is_none());
+        let cover = store.file_named(&fingerprint, 0, COVER).unwrap();
+        std::fs::write(&cover, header(u32::MAX, &[])).unwrap();
+        assert!(store.load_cover(&fingerprint, 0).is_none());
     }
 
     #[test]
