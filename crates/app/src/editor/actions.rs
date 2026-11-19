@@ -253,8 +253,7 @@ impl Editor {
             Action::AddVideoTrack => self.add_track(project::TrackKind::Video),
             Action::AddAudioTrack => self.add_track(project::TrackKind::Audio),
             Action::ZoomToFit => {
-                self.fitted = false;
-                self.audio_page.fitted = false;
+                self.refit();
                 Ok(())
             }
             Action::ZoomIn

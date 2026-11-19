@@ -315,7 +315,7 @@ impl Editor {
                 }
             };
             if placed {
-                self.fitted = false;
+                self.refit();
             }
         }
     }
