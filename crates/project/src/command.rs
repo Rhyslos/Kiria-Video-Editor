@@ -918,6 +918,10 @@ impl Command {
                         AppError::new("A label can't go there").why("That is before the timeline starts.")
                     );
                 }
+                if label.until.is_some_and(|until| until <= label.at) {
+                    return Err(AppError::new("A label can't cover that")
+                        .why("A labelled stretch must end after it starts."));
+                }
                 let id: LabelId = p.allocate_id();
                 let seq = sequence_mut(&mut p, *sequence)?;
                 let index = seq
@@ -957,9 +961,12 @@ impl Command {
                     .iter()
                     .position(|l| l.id == *label)
                     .ok_or_else(|| missing("label"))?;
+                let was = seq.labels.remove(index);
+                // A stretch moves whole.
                 let moved = TimelineLabel {
                     at: *at,
-                    ..seq.labels.remove(index)
+                    until: was.until.map(|until| *at + (until - was.at)),
+                    ..was
                 };
                 let index = seq
                     .labels
@@ -1540,6 +1547,7 @@ pub(crate) mod tests {
             name: "x".into(),
             at: Time::seconds(at),
             color: crate::model::LabelColor::Blue,
+            until: None,
         };
         let p = Command::AddLabel {
             sequence: f.seq,
@@ -1565,6 +1573,7 @@ pub(crate) mod tests {
             name: name.into(),
             at: Time::seconds(at),
             color: crate::model::LabelColor::Green,
+            until: None,
         };
         let mut p = f.p.clone();
         for (name, at) in [("a", 10), ("b", 20), ("c", 30)] {
@@ -1610,6 +1619,64 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_labelled_stretch_moves_whole_and_follows_ripple_edits() {
+        let f = fixture();
+        let p = Command::AddLabel {
+            sequence: f.seq,
+            label: TimelineLabel {
+                id: LabelId(0),
+                name: "Round".into(),
+                at: Time::seconds(10),
+                color: crate::model::LabelColor::Orange,
+                until: Some(Time::seconds(20)),
+            },
+        }
+        .apply(&f.p)
+        .unwrap();
+        let id = p.active().unwrap().labels[0].id;
+        let stretch = |p: &Project| p.active().unwrap().labels[0].stretch();
+        // Moved: both ends go along.
+        let moved = Command::MoveLabel {
+            sequence: f.seq,
+            label: id,
+            at: Time::seconds(30),
+        }
+        .apply(&p)
+        .unwrap();
+        assert_eq!(
+            stretch(&moved),
+            Region::between(Time::seconds(30), Time::seconds(40))
+        );
+        // A stretch can't end before it starts.
+        let backwards = Command::AddLabel {
+            sequence: f.seq,
+            label: TimelineLabel {
+                id: LabelId(0),
+                name: "x".into(),
+                at: Time::seconds(5),
+                color: crate::model::LabelColor::Blue,
+                until: Some(Time::seconds(5)),
+            },
+        };
+        assert!(backwards.apply(&p).is_err());
+        // Room opened inside it: it grows. Cut out of it: it shrinks, and a
+        // stretch cut out whole becomes a moment.
+        let mut label = p.active().unwrap().labels[0].clone();
+        label.open_at(Time::seconds(15), Time::seconds(5));
+        assert_eq!(
+            (label.at, label.until),
+            (Time::seconds(10), Some(Time::seconds(25)))
+        );
+        label.close_up(Region::between(Time::seconds(12), Time::seconds(17)).unwrap());
+        assert_eq!(
+            (label.at, label.until),
+            (Time::seconds(10), Some(Time::seconds(20)))
+        );
+        label.close_up(Region::between(Time::seconds(5), Time::seconds(30)).unwrap());
+        assert_eq!((label.at, label.until), (Time::seconds(5), None));
+    }
+
+    #[test]
     fn a_new_label_never_takes_a_name_in_use() {
         let f = fixture();
         let add = |p: &Project, at| {
@@ -1621,6 +1688,7 @@ pub(crate) mod tests {
                     name: seq.next_label_name(),
                     at: Time::seconds(at),
                     color: crate::model::LabelColor::Blue,
+                    until: None,
                 },
             }
             .apply(p)
@@ -2496,6 +2564,7 @@ pub(crate) mod tests {
                 name: "Label 1".into(),
                 at: Time::seconds(3),
                 color: LabelColor::Blue,
+                until: None,
             },
         }
         .apply(&p)

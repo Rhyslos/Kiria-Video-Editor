@@ -619,6 +619,7 @@ fn command_for(action: &Action, p: &Project, media: MediaId, recording: MediaId)
                 name: "Label".into(),
                 at: Time::seconds(at),
                 color: LabelColor::Blue,
+                until: None,
             },
         },
         Action::RemoveLabel { pick } => {

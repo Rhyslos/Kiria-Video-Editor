@@ -314,6 +314,8 @@ pub struct TimelineMarker {
     pub colour: Color32,
     /// Chosen by a click: drawn lit, and Delete removes it.
     pub selected: bool,
+    /// Where a labelled stretch ends (a labelled region); none for a moment.
+    pub until: Option<f64>,
 }
 
 /// What to draw.
@@ -454,6 +456,8 @@ pub enum TimelineEvent {
     ColourLabel { label: u64, colour: usize },
     /// "Delete" in a timeline label's menu.
     RemoveLabel(u64),
+    /// "Label the region" from the region's menu.
+    LabelRegion,
     /// "Add a label here" from the right-click menu.
     AddLabel(f64),
     /// "Split here" from the right-click menu: one clip (with its linked
@@ -1920,6 +1924,7 @@ mod tests {
             name: format!("Label {id}"),
             colour: Color32::WHITE,
             selected: false,
+            until: None,
         };
         rig.markers = vec![label(1, 2.0), label(2, 8.0)];
         rig.frame(Vec::new());
@@ -2267,6 +2272,7 @@ mod tests {
             name: String::new(),
             colour: Color32::WHITE,
             selected: false,
+            until: None,
         };
         let markers = [marker(1, 1.0), marker(2, 1.1)];
         // At 100 px a second, the labels sit at x = 100 and 110.
@@ -4304,6 +4310,7 @@ mod tests {
                     name: String::new(),
                     colour: Color32::WHITE,
                     selected: false,
+                    until: None,
                 })
                 .collect();
             let data = TimelineData {

@@ -56,8 +56,11 @@ pub struct ExportPage {
     folder: String,
     /// The project the name and folder were set up for.
     for_project: Option<PathBuf>,
-    /// Export the region only (when there is one).
-    region_only: bool,
+    /// What part of the timeline to export: all of it, the region, or a
+    /// labelled stretch.
+    range_choice: RangeChoice,
+    /// A queued job's stretch being edited again, to choose its range by.
+    job_range: Option<(Time, Time)>,
     /// The loudness aimed for, from Settings › Audio (none: no target).
     target: Option<f32>,
     /// What this machine can encode, once a worker has found out.
@@ -119,7 +122,8 @@ impl ExportPage {
             name: String::new(),
             folder: String::new(),
             for_project: None,
-            region_only: false,
+            range_choice: RangeChoice::Whole,
+            job_range: None,
             target: Some(-14.0),
             encoders: None,
             finding: None,
@@ -354,6 +358,9 @@ struct Plan {
     /// The file's picture size (none for sound alone).
     frame_size: Option<(u32, u32)>,
     region: Option<(Time, Time)>,
+    /// The timeline's labelled stretches: label, name, start and end
+    /// (inside the timeline).
+    stretches: Vec<(project::LabelId, String, Time, Time)>,
     range: Option<(Time, Time)>,
     folder: PathBuf,
     path: PathBuf,
@@ -382,10 +389,15 @@ impl ExportPage {
             .region
             .map(|r| (r.start, r.end.min(end)))
             .filter(|(from, to)| to > from);
-        if region.is_none() {
-            self.region_only = false;
+        let stretches = stretches(seq);
+        if let Some(range) = self.job_range.take() {
+            self.range_choice = job_range_choice(range, region, &stretches);
         }
-        let range = if self.region_only { region } else { None };
+        let range = self.range_choice.range(region, &stretches);
+        if self.range_choice != RangeChoice::Whole && range.is_none() {
+            // The region or the label is gone: the whole timeline again.
+            self.range_choice = RangeChoice::Whole;
+        }
         let stretch = range.map_or(end, |(from, to)| to - from);
         let length = Duration::from_secs_f64(stretch.as_secs_f64().max(0.0));
         let timeline_size = (seq.settings.width, seq.settings.height);
@@ -462,6 +474,7 @@ impl ExportPage {
             timeline_size,
             frame_size,
             region,
+            stretches,
             range,
             folder,
             path,
@@ -657,17 +670,43 @@ impl ExportPage {
                     ),
                     None => "Region, in to out (none marked)".to_owned(),
                 };
+                let stretch_text = |name: &str, from: Time, to: Time| {
+                    format!("{name} ({} – {})", from.timecode(rate), to.timecode(rate))
+                };
+                let selected = match self.range_choice {
+                    RangeChoice::Whole => whole.clone(),
+                    RangeChoice::Region => region_text.clone(),
+                    RangeChoice::Label(id) => plan.stretches.iter().find(|s| s.0 == id).map_or_else(
+                        || whole.clone(),
+                        |(_, name, from, to)| stretch_text(name, *from, *to),
+                    ),
+                };
                 egui::ComboBox::from_id_salt("export range")
                     .width(range_width)
-                    .selected_text(if self.region_only { &region_text } else { &whole })
+                    .selected_text(selected)
                     .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut self.region_only, false, &whole);
+                        ui.selectable_value(&mut self.range_choice, RangeChoice::Whole, &whole);
                         ui.add_enabled_ui(plan.region.is_some(), |ui| {
-                            ui.selectable_value(&mut self.region_only, true, &region_text)
+                            ui.selectable_value(&mut self.range_choice, RangeChoice::Region, &region_text)
                                 .on_disabled_hover_text(
                                     "Mark in and out (or Shift-drag in the timeline's ruler) first",
                                 );
                         });
+                        if !plan.stretches.is_empty() {
+                            ui.separator();
+                            ui.label(
+                                egui::RichText::new("Labelled stretches")
+                                    .color(theme.muted)
+                                    .small(),
+                            );
+                        }
+                        for (id, name, from, to) in &plan.stretches {
+                            ui.selectable_value(
+                                &mut self.range_choice,
+                                RangeChoice::Label(*id),
+                                stretch_text(name, *from, *to),
+                            );
+                        }
                     });
             });
         });
@@ -1167,7 +1206,10 @@ impl ExportPage {
                         if let Some(folder) = job.settings.path.parent() {
                             self.folder = folder.display().to_string();
                         }
-                        self.region_only = job.settings.range.is_some();
+                        self.range_choice = RangeChoice::Whole;
+                        // Matched to the region or a labelled stretch when
+                        // the page is next drawn.
+                        self.job_range = job.settings.range;
                     }
                 }
                 JobAct::Show(path) => {
@@ -1518,8 +1560,109 @@ fn find_free_name(
     )
 }
 
+/// What part of the timeline an export covers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RangeChoice {
+    Whole,
+    /// The region, in to out.
+    Region,
+    /// A labelled stretch (a labelled region), by its label.
+    Label(project::LabelId),
+}
+
+impl RangeChoice {
+    /// The stretch to export: none for the whole timeline, or when what
+    /// was chosen is no longer there.
+    fn range(
+        self,
+        region: Option<(Time, Time)>,
+        stretches: &[(project::LabelId, String, Time, Time)],
+    ) -> Option<(Time, Time)> {
+        match self {
+            RangeChoice::Whole => None,
+            RangeChoice::Region => region,
+            RangeChoice::Label(id) => stretches.iter().find(|s| s.0 == id).map(|s| (s.2, s.3)),
+        }
+    }
+}
+
+/// The labelled stretches of `seq` that lie in it: label, name, start and
+/// end (cut at the timeline's end), in time order.
+fn stretches(seq: &project::Sequence) -> Vec<(project::LabelId, String, Time, Time)> {
+    let end = seq.length();
+    seq.labels
+        .iter()
+        .filter_map(|l| {
+            let r = l.stretch()?;
+            let to = r.end.min(end);
+            (to > r.start).then(|| (l.id, l.name.clone(), r.start, to))
+        })
+        .collect()
+}
+
+/// The choice that gives a queued job's `range` back: the region when it
+/// is that, else a labelled stretch that is, else the region (the job's
+/// own stretch is kept in it either way when it is exported).
+fn job_range_choice(
+    range: (Time, Time),
+    region: Option<(Time, Time)>,
+    stretches: &[(project::LabelId, String, Time, Time)],
+) -> RangeChoice {
+    if region == Some(range) {
+        return RangeChoice::Region;
+    }
+    stretches
+        .iter()
+        .find(|s| (s.2, s.3) == range)
+        .map_or(RangeChoice::Region, |s| RangeChoice::Label(s.0))
+}
+
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_labelled_stretch_is_a_range_to_export() {
+        let p = crate::inspector::tests::project_with_a_clip();
+        let mut seq = p.active().unwrap().clone();
+        let end = seq.length();
+        let label = |id: u64, at: Time, until: Option<Time>| project::TimelineLabel {
+            id: project::LabelId(id),
+            name: format!("Label {id}"),
+            at,
+            color: project::LabelColor::Orange,
+            until,
+        };
+        seq.labels.push_back(label(1, Time::ZERO, None));
+        seq.labels
+            .push_back(label(2, Time::seconds(1), Some(Time::seconds(2))));
+        // Past the end: cut at it; wholly past it: not offered.
+        seq.labels
+            .push_back(label(3, Time::seconds(2), Some(end + Time::seconds(9))));
+        seq.labels.push_back(label(4, end, Some(end + Time::seconds(1))));
+        let found = stretches(&seq);
+        let ids: Vec<u64> = found.iter().map(|s| s.0.0).collect();
+        assert_eq!(ids, [2, 3], "moments and stretches past the end are not offered");
+        assert_eq!((found[1].2, found[1].3), (Time::seconds(2), end));
+        let marked = (Time::ZERO, Time::seconds(1));
+        let region = Some(marked);
+        assert_eq!(RangeChoice::Whole.range(region, &found), None);
+        assert_eq!(RangeChoice::Region.range(region, &found), region);
+        let second = project::LabelId(2);
+        assert_eq!(
+            RangeChoice::Label(second).range(region, &found),
+            Some((Time::seconds(1), Time::seconds(2)))
+        );
+        assert_eq!(
+            RangeChoice::Label(project::LabelId(9)).range(region, &found),
+            None
+        );
+        // A queued job edited again comes back with the choice it was made with.
+        assert_eq!(
+            job_range_choice((Time::seconds(1), Time::seconds(2)), region, &found),
+            RangeChoice::Label(second)
+        );
+        assert_eq!(job_range_choice(marked, region, &found), RangeChoice::Region);
+    }
     use super::*;
 
     #[test]

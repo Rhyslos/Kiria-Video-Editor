@@ -413,6 +413,7 @@ fn every_command() -> Vec<Command> {
                 name: "Clutch".into(),
                 at,
                 color: LabelColor::Orange,
+                until: None,
             },
         },
         Command::RemoveLabel {

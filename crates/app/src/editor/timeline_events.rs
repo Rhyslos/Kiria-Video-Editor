@@ -27,6 +27,11 @@ impl Editor {
             E::MoveLabel { label, at } => self.move_label(label, at),
             E::ColourLabel { label, colour } => self.colour_label(label, colour),
             E::RemoveLabel(label) => self.remove_label(project::LabelId(label)),
+            E::LabelRegion => {
+                if let Err(err) = self.label_region() {
+                    self.errors.push(&err);
+                }
+            }
             E::ClearSelection => self.selected.clear(),
             E::RegionCut(cut) => {
                 if let Err(err) = self.cut_region(cut) {
