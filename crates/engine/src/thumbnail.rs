@@ -102,6 +102,32 @@ pub fn save_frame(project: &Project, sequence: SequenceId, at: Time, out: &Path)
     )
 }
 
+/// Saves `rgba` (`size`, a picture of the timeline as [`crate::export::still`]
+/// makes it) as a PNG at that size.
+pub fn save_picture(rgba: &[u8], size: (u32, u32), out: &Path) -> diag::Result<()> {
+    save_png(rgba, size.0, size.1, out, "The frame can't be saved")
+}
+
+/// Writes the project's picture from `rgba` (`size`, a picture of the
+/// timeline): made smaller to fit [`WIDTH`] × [`HEIGHT`], centred on black.
+pub fn write_picture(rgba: &[u8], size: (u32, u32), out: &Path) -> diag::Result<()> {
+    let what = "The project picture can't be saved";
+    let full = image::RgbaImage::from_raw(size.0, size.1, rgba.to_vec()).ok_or_else(|| {
+        AppError::new(what)
+            .why("The picture handed over was not as large as its size says.")
+            .fix("Try again. If it keeps happening, report it with the Diagnostics details.")
+    })?;
+    let scale =
+        (f64::from(WIDTH) / f64::from(size.0.max(1))).min(f64::from(HEIGHT) / f64::from(size.1.max(1)));
+    let (w, h) = (
+        ((f64::from(size.0) * scale).round() as u32).clamp(1, WIDTH),
+        ((f64::from(size.1) * scale).round() as u32).clamp(1, HEIGHT),
+    );
+    let small = image::imageops::resize(&full, w, h, image::imageops::FilterType::Triangle);
+    let picture = letterbox(small.as_raw(), w, h);
+    save_png(&picture, WIDTH, HEIGHT, out, what)
+}
+
 /// Writes the picture whole or not at all (see [`project::disk::write_atomic`]):
 /// through a temporary file of this write's own, so nobody reads half a
 /// file and two writes of one picture at once never share one.
@@ -147,6 +173,31 @@ fn letterbox(rgba: &[u8], w: u32, h: u32) -> Vec<u8> {
 mod tests {
     use super::*;
     use project::Command;
+
+    /// A picture of the timeline is made small to fit the project's
+    /// picture, whatever its shape, on black.
+    #[test]
+    fn a_timeline_picture_is_fitted_into_the_project_picture() {
+        let dir = tempfile::tempdir().unwrap();
+        for (size, inside) in [((1920, 1080), (WIDTH, HEIGHT)), ((1080, 1920), (152, HEIGHT))] {
+            let red = [255u8, 0, 0, 255].repeat((size.0 * size.1) as usize);
+            let out = dir.path().join(format!("{}x{}.png", size.0, size.1));
+            write_picture(&red, size, &out).unwrap();
+            let read = image::open(&out).unwrap().to_rgba8();
+            assert_eq!(read.dimensions(), (WIDTH, HEIGHT));
+            assert_eq!(read.get_pixel(WIDTH / 2, HEIGHT / 2).0, [255, 0, 0, 255]);
+            let edge = read.get_pixel(0, HEIGHT / 2).0;
+            if inside.0 == WIDTH {
+                assert_eq!(edge, [255, 0, 0, 255], "wide fills it");
+            } else {
+                assert_eq!(edge, [0, 0, 0, 255], "tall is centred on black");
+            }
+        }
+        // A buffer smaller than its size says: refused, nothing written.
+        let short = dir.path().join("short.png");
+        assert!(write_picture(&[0; 8], (10, 10), &short).is_err());
+        assert!(!short.exists());
+    }
 
     #[test]
     fn letterbox_centres_the_picture() {

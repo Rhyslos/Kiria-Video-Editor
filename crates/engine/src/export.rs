@@ -1136,7 +1136,7 @@ fn feed(
             if index + 1 < plan.count {
                 ask(p, index + 1);
             }
-            let out = p.read_back(shown, plan, &pipe.pictures)?;
+            let out = p.read_back(shown, plan.picture_size, plan.frame_size, &pipe.pictures)?;
             if pipe.to_writer.send(out).is_err() {
                 return Ok(true);
             }
@@ -1327,7 +1327,8 @@ impl Picturing {
     fn read_back(
         &mut self,
         shown: Picture,
-        plan: &Plan<'_>,
+        picture_size: (u32, u32),
+        frame_size: (u32, u32),
         spares: &Receiver<Vec<u8>>,
     ) -> diag::Result<Out> {
         if let Some(err) = shown.error {
@@ -1358,9 +1359,9 @@ impl Picturing {
                 ))
                 .fix("Export again. If it keeps happening, update the graphics driver.")
             })?;
-        if plan.picture_size != plan.frame_size {
+        if picture_size != frame_size {
             let mut boxed = spares.try_recv().unwrap_or_default();
-            letterbox(&picture, plan.picture_size, plan.frame_size, &mut boxed);
+            letterbox(&picture, picture_size, frame_size, &mut boxed);
             picture = boxed;
         }
         Ok(Out::Picture(picture))
@@ -1371,6 +1372,84 @@ impl Drop for Picturing {
     fn drop(&mut self) {
         self.preview.close(Duration::from_secs(5));
     }
+}
+
+/// The timeline's picture at `at` as the viewer and an export show it
+/// (every layer, look, grade, effect and title), at the timeline's size,
+/// as RGBA rows: put together on `devices` by a worker of its own, closed
+/// before this returns. Takes a moment: run it on a worker. Refused where
+/// no clip is on a video track; black where they show nothing.
+pub fn still(
+    project: &Project,
+    sequence: SequenceId,
+    at: Time,
+    devices: Devices,
+) -> diag::Result<(Vec<u8>, (u32, u32))> {
+    let seq = project
+        .sequences
+        .iter()
+        .find(|s| s.id == sequence)
+        .ok_or_else(|| cannot("The timeline is not in the project any more."))?;
+    let size = (seq.settings.width, seq.settings.height);
+    let rate = seq.settings.frame_rate;
+    let at = rate.frame_start(rate.frame_at(at));
+    let covered = seq
+        .video_tracks
+        .iter()
+        .flat_map(|t| t.clips.iter())
+        .any(|c| c.start <= at && at < c.end());
+    if !covered {
+        return Err(AppError::new("There is no picture here")
+            .why("No clip on a video track is at the playhead.")
+            .fix("Move the playhead onto a video clip or a title."));
+    }
+    let device = devices.composing.device.clone();
+    let reader = render::caught(&device, || Reader::new(&device, size)).map_err(|err| {
+        cannot(format!(
+            "The graphics card can't read back a picture of {}×{} ({}).",
+            size.0,
+            size.1,
+            render::caught::describe(&err)
+        ))
+        .fix("Update the graphics driver, or try again after closing other programs.")
+    })?;
+    let mut picturing = Picturing::start(devices, reader, size, || {});
+    picturing.preview.show(project, sequence, at, size.0, size.1);
+    let shown = wait_for(&picturing.preview, at, &Shared::default())?
+        .ok_or_else(|| cannot("The picture was not put together."))?;
+    let (_, spares) = channel::<Vec<u8>>();
+    let nv12 = match picturing.read_back(shown, size, size, &spares)? {
+        Out::Picture(picture) => picture,
+        _ => picturing.black.clone(),
+    };
+    Ok((nv12_to_rgba(&nv12, size), size))
+}
+
+/// RGBA rows from a picture read back for the encoder (NV12, BT.709,
+/// limited range: brightness at full size, then the two colour samples
+/// interleaved at half size). Short input reads as black.
+fn nv12_to_rgba(nv12: &[u8], (w, h): (u32, u32)) -> Vec<u8> {
+    let (w, h) = (w as usize, h as usize);
+    let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
+    let (luma, chroma) = nv12.split_at(nv12.len().min(w * h));
+    let mut out = Vec::with_capacity(w * h * 4);
+    for y in 0..h {
+        for x in 0..w {
+            let at = |plane: &[u8], i: usize, middle: f32| plane.get(i).map_or(middle, |v| f32::from(*v));
+            let luma = (at(luma, y * w + x, 16.0) - 16.0) * (255.0 / 219.0);
+            let c = ((y / 2).min(ch.saturating_sub(1)) * cw + x / 2) * 2;
+            let cb = (at(chroma, c, 128.0) - 128.0) * (255.0 / 224.0);
+            let cr = (at(chroma, c + 1, 128.0) - 128.0) * (255.0 / 224.0);
+            let byte = |v: f32| v.round().clamp(0.0, 255.0) as u8;
+            out.extend_from_slice(&[
+                byte(luma + 1.5748 * cr),
+                byte(luma - 0.1873 * cb - 0.4681 * cr),
+                byte(luma + 1.8556 * cb),
+                255,
+            ]);
+        }
+    }
+    out
 }
 
 /// What the export hands its encoder's thread, in the file's order.

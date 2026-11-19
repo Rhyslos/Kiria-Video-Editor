@@ -108,7 +108,9 @@ pub struct Editor {
     thumbnail_due: Thumbnail,
     /// What the launcher's picture was last written of, this session: a
     /// save that leaves it the same writes nothing.
-    thumbnail_shows: Option<engine::thumbnail::Shows>,
+    /// What the project's picture last written shows, and the journal's
+    /// newest entry then: the same again needs no new picture.
+    thumbnail_shows: Option<(engine::thumbnail::Shows, u64)>,
     importer: Importer,
     import_requested: bool,
     viewer: Viewer,
@@ -1044,7 +1046,8 @@ impl Editor {
                 &document.project().name,
                 &at.timecode(seq.settings.frame_rate),
             );
-            self.frame_grab.start(ctx, document.project(), at, name);
+            let devices = self.viewer.export_devices();
+            self.frame_grab.start(ctx, document.project(), at, name, devices);
         }
         match self.frame_grab.poll(&self.jobs, ctx) {
             Some(crate::frame_grab::Saved::Done(path)) => {
@@ -1794,8 +1797,13 @@ impl eframe::App for Editor {
             let p = document.project();
             let out = project::thumbnail_path(document.path());
             let shows = engine::thumbnail::shows(p, p.active_sequence, self.viewer.playhead);
-            if let Some(shows) = shows.filter(|s| self.thumbnail_shows.as_ref() != Some(s))
-                && let Err(err) = engine::thumbnail::write_shown(&shows, &out)
+            let seq = document.newest_entry();
+            let still = self
+                .viewer
+                .export_devices()
+                .map(|devices| (p.clone(), p.active_sequence, self.viewer.playhead, devices));
+            if let Some(shows) = shows.filter(|s| self.thumbnail_shows.as_ref() != Some(&(s.clone(), seq)))
+                && let Err(err) = saving::write_project_picture(still, &shows, &out)
             {
                 tracing::info!("no project picture: {}", err.report());
             }
