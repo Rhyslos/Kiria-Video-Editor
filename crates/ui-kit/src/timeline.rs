@@ -71,6 +71,7 @@ mod lines_input;
 mod loading;
 mod menus;
 mod obstacles;
+pub mod pins;
 mod rows;
 mod ruler;
 mod slip;
@@ -852,8 +853,10 @@ pub struct TimelineView {
     /// The timeline label whose right-click menu is open.
     label_menu: Option<u64>,
     /// Audio tracks pinned beside the master column, in the order they
-    /// were pinned (their menu's "Pin beside the master"). Kept with the layout.
-    pub pinned: Vec<u64>,
+    /// Which audio tracks have a column beside the master column: pinned
+    /// from their menu, or every one (a setting) but those taken off.
+    /// Kept with the layout.
+    pub columns: pins::Pins,
     /// Audio tracks can be pinned here (their menu offers it). The page sets it.
     pub pins: bool,
     /// The target tracks, by id: the video track a placed file's picture
@@ -928,7 +931,7 @@ impl Default for TimelineView {
             line_menu: None,
             label_drag: None,
             label_menu: None,
-            pinned: Vec::new(),
+            columns: pins::Pins::default(),
             pins: false,
             target_video: None,
             target_audio: None,
@@ -3940,16 +3943,6 @@ mod tests {
                 synced: true
             }]
         );
-    }
-
-    #[test]
-    fn pinning_keeps_the_order_and_each_track_once() {
-        let mut pinned = vec![3, 5];
-        headers::pin(&mut pinned, 3, true);
-        assert_eq!(pinned, [5, 3], "pinned again: at the end");
-        headers::pin(&mut pinned, 7, true);
-        headers::pin(&mut pinned, 5, false);
-        assert_eq!(pinned, [3, 7]);
     }
 
     #[test]

@@ -837,11 +837,12 @@ impl Editor {
             };
             let status_height = if self.status.is_empty() { 0.0 } else { 24.0 };
             let height = (ui.available_height() - status_height).max(160.0);
-            // The pinned tracks' columns, in the order they were pinned,
-            // as many as leave the timeline room.
-            let pinned = self
-                .timeline
-                .pinned
+            // The pinned tracks' columns (with the setting, every audio
+            // track's but those taken off), as many as leave the timeline room.
+            self.timeline.columns.all = self.settings.columns_for_every_track;
+            let audio_ids: Vec<u64> = seq.audio_tracks.iter().map(|t| t.id.0).collect();
+            let shown_ids = self.timeline.columns.columns(&audio_ids);
+            let pinned = shown_ids
                 .iter()
                 .filter_map(|id| seq.audio_tracks.iter().find(|t| t.id.0 == *id));
             let room = ((width - TIMELINE_LEAST - layout::MASTER_WIDTH) / (layout::MASTER_WIDTH + 8.0))
@@ -864,8 +865,7 @@ impl Editor {
                     }
                 })
                 .collect();
-            self.pinned_columns
-                .retain(|id, _| self.timeline.pinned.contains(id));
+            self.pinned_columns.retain(|id, _| shown_ids.contains(id));
             let size = egui::vec2(
                 width - (layout::MASTER_WIDTH + 8.0) * (columns.len() as f32 + 1.0),
                 height,
@@ -913,7 +913,7 @@ impl Editor {
                         timeline_events.push(ui_kit::TimelineEvent::SoloOnly { track: c.id.0 });
                     }
                     if asked.close {
-                        self.timeline.pinned.retain(|t| *t != c.id.0);
+                        self.timeline.columns.set(c.id.0, false);
                     }
                     ui.add_space(8.0);
                 }

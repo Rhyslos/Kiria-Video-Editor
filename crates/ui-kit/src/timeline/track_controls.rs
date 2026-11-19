@@ -194,7 +194,7 @@ impl TimelineView {
                 headers::MenuState {
                     rename: &mut self.rename,
                     level_lines: &mut self.level_lines,
-                    pinned: self.pins.then_some(&mut self.pinned),
+                    pins: self.pins.then_some(&mut self.columns),
                     effects_copied: self.effects_copied,
                 },
                 events,

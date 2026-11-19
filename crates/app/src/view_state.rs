@@ -42,6 +42,9 @@ pub struct ProjectView {
     pub open_timeline: Option<u64>,
     /// Audio tracks pinned beside the master column, in order.
     pub pinned_tracks: Vec<u64>,
+    /// Audio tracks taken off from beside the master column while every
+    /// track has a column there (a setting), so they stay off.
+    pub unpinned_tracks: Vec<u64>,
     /// The target tracks (the video track and the audio track placed files
     /// land on); none: the first of each.
     pub target_video: Option<u64>,
@@ -57,6 +60,7 @@ impl Default for ProjectView {
             level_lines: Vec::new(),
             open_timeline: None,
             pinned_tracks: Vec::new(),
+            unpinned_tracks: Vec::new(),
             target_video: None,
             target_audio: None,
         }
@@ -72,7 +76,8 @@ impl ProjectView {
             video_fits_tracks: timeline.fit_video,
             level_lines: timeline.level_lines(),
             open_timeline: timeline.showing,
-            pinned_tracks: timeline.pinned.clone(),
+            pinned_tracks: timeline.columns.pinned.clone(),
+            unpinned_tracks: timeline.columns.unpinned.clone(),
             target_video: timeline.target_video,
             target_audio: timeline.target_audio,
         }
@@ -87,7 +92,8 @@ impl ProjectView {
         timeline.fit_video = self.video_fits_tracks;
         timeline.set_level_lines(self.level_lines.iter().copied());
         timeline.showing = self.open_timeline;
-        timeline.pinned = self.pinned_tracks.clone();
+        timeline.columns.pinned = self.pinned_tracks.clone();
+        timeline.columns.unpinned = self.unpinned_tracks.clone();
         timeline.target_video = self.target_video;
         timeline.target_audio = self.target_audio;
     }
@@ -119,7 +125,15 @@ impl ProjectView {
 /// revision, the divider, whether the video area fits its tracks, the
 /// tracks with level lines, and the timeline shown and the pinned tracks.
 #[derive(Debug, Clone, PartialEq)]
-struct Looks(u64, f32, bool, Vec<u64>, Option<u64>, Vec<u64>, [Option<u64>; 2]);
+struct Looks(
+    u64,
+    f32,
+    bool,
+    Vec<u64>,
+    Option<u64>,
+    [Vec<u64>; 2],
+    [Option<u64>; 2],
+);
 
 impl Looks {
     fn of(timeline: &TimelineView) -> Looks {
@@ -129,7 +143,7 @@ impl Looks {
             timeline.fit_video,
             timeline.level_lines(),
             timeline.showing,
-            timeline.pinned.clone(),
+            [timeline.columns.pinned.clone(), timeline.columns.unpinned.clone()],
             [timeline.target_video, timeline.target_audio],
         )
     }
@@ -240,6 +254,9 @@ mod tests {
         timeline.fit_video = false;
         timeline.set_level_line(12, true);
         timeline.showing = Some(42);
+        timeline.columns.set(5, true);
+        timeline.columns.set(9, false);
+        timeline.target_audio = Some(5);
         timeline
     }
 
@@ -265,6 +282,15 @@ mod tests {
             "level lines where they were"
         );
         assert_eq!(reopened.showing, Some(42), "the timeline that was open");
+        assert_eq!(
+            (
+                reopened.columns.pinned.as_slice(),
+                reopened.columns.unpinned.as_slice()
+            ),
+            (&[5][..], &[9][..]),
+            "the columns pinned and taken off"
+        );
+        assert_eq!(reopened.target_audio, Some(5));
         assert_eq!(keeper.kept, ProjectView::of(&reopened));
     }
 

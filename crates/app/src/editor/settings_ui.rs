@@ -23,6 +23,7 @@ pub const CLEAR_WAVEFORMS: &str = "clear-waveforms";
 pub const PROXIES: &str = "proxies";
 pub const JUMP_PICTURE: &str = "jump-picture";
 pub const LOUDNESS_TARGET: &str = "loudness-target";
+pub const EVERY_TRACK_COLUMN: &str = "every-track-column";
 pub const LIBRARY_MARKS: &str = "library-marks";
 pub const WORKER_THREADS: &str = "worker-threads";
 pub const RAM_CACHE: &str = "ram-cache";
@@ -126,16 +127,28 @@ pub const CATEGORIES: &[Category] = &[
     Category {
         id: "audio",
         label: "Audio",
-        sections: &[Section {
-            id: "loudness",
-            title: "Loudness",
-            settings: &[Setting::new(
-                LOUDNESS_TARGET,
-                "Loudness to aim for",
-                "A line across the master column's loudness lane; I turns green within 1 LU of it.",
-            )
-            .keywords("lufs target master meter normalise normalize")],
-        }],
+        sections: &[
+            Section {
+                id: "loudness",
+                title: "Loudness",
+                settings: &[Setting::new(
+                    LOUDNESS_TARGET,
+                    "Loudness to aim for",
+                    "A line across the master column's loudness lane; I turns green within 1 LU of it.",
+                )
+                .keywords("lufs target master meter normalise normalize")],
+            },
+            Section {
+                id: "track-columns",
+                title: "Track columns",
+                settings: &[Setting::new(
+                    EVERY_TRACK_COLUMN,
+                    "A column for every audio track",
+                    "Every audio track gets its tall fader and meter beside the master column on the Edit page, as if pinned. The × on one takes it off.",
+                )
+                .keywords("pin pinned fader strip meter mixer column master ultrawide")],
+            },
+        ],
     },
     Category {
         id: "library",
@@ -324,6 +337,9 @@ impl Editor {
                     }
                     ALWAYS_UNLINKED => {
                         ui_kit::settings::toggle(row.ui, row.theme, &mut s.always_unlinked);
+                    }
+                    EVERY_TRACK_COLUMN => {
+                        ui_kit::settings::toggle(row.ui, row.theme, &mut s.columns_for_every_track);
                     }
                     DETAILED_GAIN_SELECTED => {
                         ui_kit::settings::toggle(row.ui, row.theme, &mut s.detailed_gain_selected);
