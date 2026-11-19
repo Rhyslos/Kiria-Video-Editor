@@ -55,9 +55,7 @@ impl Script {
     pub(super) fn new(automation: &Automation) -> Script {
         Script {
             pointer: automation.pointer,
-            screenshot_wait: automation
-                .screenshot_wait
-                .map_or(SCREENSHOT_WAIT, Duration::from_secs_f64),
+            screenshot_wait: screenshot_wait(automation.screenshot_wait),
             actions: named(&automation.actions),
             then_actions: named(&automation.then_actions),
             select_first_clip: automation.select_first_clip,
@@ -102,6 +100,14 @@ impl Script {
     pub(super) fn setting_up(&self, frames: u64) -> bool {
         self.making_tracks() || self.audio_demo_made.is_some_and(|made| frames < made + 5)
     }
+}
+
+/// How long a screenshot waits: `--screenshot-wait` when it is a length a
+/// [`Duration`] can hold, else the usual [`SCREENSHOT_WAIT`].
+fn screenshot_wait(seconds: Option<f64>) -> Duration {
+    seconds
+        .and_then(|s| Duration::try_from_secs_f64(s).ok())
+        .unwrap_or(SCREENSHOT_WAIT)
 }
 
 /// Commands by name; a name that is none is logged and left out.
@@ -349,6 +355,14 @@ mod tests {
         assert_eq!(script.then_actions, [Action::Copy]);
         assert!(script.syncing() && script.making_tracks() && script.setting_up(100));
         assert!(!script.waited_too_long(Duration::from_secs(59)));
+    }
+
+    #[test]
+    fn a_screenshot_wait_too_long_to_hold_falls_back_to_the_usual_one() {
+        assert_eq!(screenshot_wait(None), SCREENSHOT_WAIT);
+        assert_eq!(screenshot_wait(Some(2.5)), Duration::from_millis(2500));
+        assert_eq!(screenshot_wait(Some(1e300)), SCREENSHOT_WAIT);
+        assert_eq!(screenshot_wait(Some(f64::MAX)), SCREENSHOT_WAIT);
     }
 
     #[test]
