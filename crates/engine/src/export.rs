@@ -1136,7 +1136,7 @@ fn feed(
             if index + 1 < plan.count {
                 ask(p, index + 1);
             }
-            let out = p.read_back(shown, plan, &pipe.pictures)?;
+            let out = p.read_back(shown, plan.picture_size, plan.frame_size, &pipe.pictures)?;
             if pipe.to_writer.send(out).is_err() {
                 return Ok(true);
             }
@@ -1327,7 +1327,8 @@ impl Picturing {
     fn read_back(
         &mut self,
         shown: Picture,
-        plan: &Plan<'_>,
+        picture_size: (u32, u32),
+        frame_size: (u32, u32),
         spares: &Receiver<Vec<u8>>,
     ) -> diag::Result<Out> {
         if let Some(err) = shown.error {
@@ -1358,9 +1359,9 @@ impl Picturing {
                 ))
                 .fix("Export again. If it keeps happening, update the graphics driver.")
             })?;
-        if plan.picture_size != plan.frame_size {
+        if picture_size != frame_size {
             let mut boxed = spares.try_recv().unwrap_or_default();
-            letterbox(&picture, plan.picture_size, plan.frame_size, &mut boxed);
+            letterbox(&picture, picture_size, frame_size, &mut boxed);
             picture = boxed;
         }
         Ok(Out::Picture(picture))
@@ -1371,6 +1372,52 @@ impl Drop for Picturing {
     fn drop(&mut self) {
         self.preview.close(Duration::from_secs(5));
     }
+}
+
+/// The timeline's picture at `at` as the viewer and an export show it
+/// (every layer, look, grade, effect and title), at the timeline's size,
+/// as RGBA rows: put together on `devices` by a worker of its own, closed
+/// before this returns. Takes a moment: run it on a worker. Refused where
+/// nothing is on the timeline.
+pub fn still(
+    project: &Project,
+    sequence: SequenceId,
+    at: Time,
+    devices: Devices,
+) -> diag::Result<(Vec<u8>, (u32, u32))> {
+    let seq = project
+        .sequences
+        .iter()
+        .find(|s| s.id == sequence)
+        .ok_or_else(|| cannot("The timeline is not in the project any more."))?;
+    let size = (seq.settings.width, seq.settings.height);
+    let rate = seq.settings.frame_rate;
+    let at = rate.frame_start(rate.frame_at(at));
+    let device = devices.composing.device.clone();
+    let reader = render::caught(&device, || Reader::new(&device, size)).map_err(|err| {
+        cannot(format!(
+            "The graphics card can't read back a picture of {}×{} ({}).",
+            size.0,
+            size.1,
+            render::caught::describe(&err)
+        ))
+        .fix("Update the graphics driver, or try again after closing other programs.")
+    })?;
+    let mut picturing = Picturing::start(devices, reader, size, || {});
+    picturing.preview.show(project, sequence, at, size.0, size.1);
+    let shown = wait_for(&picturing.preview, at, &Shared::default())?
+        .ok_or_else(|| cannot("The picture was not put together."))?;
+    if shown.composed.is_none() && shown.error.is_none() && !shown.refused {
+        return Err(AppError::new("There is no picture here")
+            .why("Nothing on the timeline shows a picture at the playhead.")
+            .fix("Move the playhead onto a video clip or a title."));
+    }
+    let (_, spares) = channel::<Vec<u8>>();
+    let picture = match picturing.read_back(shown, size, size, &spares)? {
+        Out::Picture(picture) => picture,
+        _ => picturing.black.clone(),
+    };
+    Ok((picture, size))
 }
 
 /// What the export hands its encoder's thread, in the file's order.

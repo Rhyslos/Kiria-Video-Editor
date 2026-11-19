@@ -10,7 +10,7 @@ pub(super) const THUMBNAIL_ENDS_WITHIN: Duration = Duration::from_secs(5);
 
 /// Records what a finished job writing the launcher's picture means for
 /// `shows`, what the picture is known to show: after a failure, nothing.
-fn thumbnail_finished(result: diag::Result<bool>, shows: &mut Option<engine::thumbnail::Shows>) {
+fn thumbnail_finished<T>(result: diag::Result<bool>, shows: &mut Option<T>) {
     if let Err(err) = result {
         tracing::info!("no project picture: {}", err.report());
         *shows = None;
@@ -20,10 +20,10 @@ fn thumbnail_finished(result: diag::Result<bool>, shows: &mut Option<engine::thu
 /// Waits at most `within` for `job`, the launcher's picture being written,
 /// and records its outcome (see [`thumbnail_finished`]). Whether nothing is
 /// writing the picture any more, so it may be written now.
-pub(super) fn thumbnail_settled(
+pub(super) fn thumbnail_settled<T>(
     job: Option<JobHandle<bool>>,
     within: Duration,
-    shows: &mut Option<engine::thumbnail::Shows>,
+    shows: &mut Option<T>,
 ) -> bool {
     let Some(job) = job else { return true };
     match job.wait_within(within) {
@@ -32,6 +32,33 @@ pub(super) fn thumbnail_settled(
             true
         }
         None => false,
+    }
+}
+
+/// Writes the project's picture to `out`: the timeline's picture put
+/// together as `still` asks (project, timeline, the playhead, the devices),
+/// or else the file's frame `shows`.
+pub(super) fn write_project_picture(
+    still: Option<(
+        project::Project,
+        project::SequenceId,
+        Time,
+        engine::export::Devices,
+    )>,
+    shows: &engine::thumbnail::Shows,
+    out: &Path,
+) -> diag::Result<()> {
+    let Some((project, sequence, playhead, devices)) = still else {
+        return engine::thumbnail::write_shown(shows, out);
+    };
+    // In a gap the first clip's frame is shown, as for the file's frame.
+    let at = engine::thumbnail::frame_time(&project, sequence, playhead).unwrap_or(playhead);
+    match engine::export::still(&project, sequence, at, devices) {
+        Ok((rgba, size)) => engine::thumbnail::write_picture(&rgba, size, out),
+        Err(err) => {
+            tracing::info!("the project picture is the file's frame: {}", err.report());
+            engine::thumbnail::write_shown(shows, out)
+        }
     }
 }
 
@@ -150,13 +177,26 @@ impl Editor {
             return;
         };
         // After a save that left the picture as it was (the playhead on the
-        // same frame of the same file), nothing is decoded again.
-        if self.thumbnail_shows.as_ref() == Some(&shows) {
+        // same frame of the same file, and nothing edited since), nothing is
+        // put together again.
+        let key = (shows, document.journal_seq());
+        if self.thumbnail_shows.as_ref() == Some(&key) {
             return;
         }
+        let shows = key.0.clone();
         // When only written if missing, what the one there shows is unknown.
-        self.thumbnail_shows = (!only_if_missing).then(|| shows.clone());
+        self.thumbnail_shows = (!only_if_missing).then_some(key);
         let out = project::thumbnail_path(document.path());
+        // The timeline's picture as it is seen (looks, grades, titles), put
+        // together on the window's graphics card; without one, the file's frame.
+        let still = self.viewer.export_devices().map(|devices| {
+            (
+                project.clone(),
+                project.active_sequence,
+                self.viewer.playhead,
+                devices,
+            )
+        });
         // Written even when closing comes first: closing waits for it.
         self.thumbnail = Some(self.jobs.submit_write(
             PoolKind::Analysis,
@@ -166,7 +206,7 @@ impl Editor {
                 if only_if_missing && out.exists() {
                     return Ok(false);
                 }
-                engine::thumbnail::write_shown(&shows, &out).map(|()| true)
+                write_project_picture(still, &shows, &out).map(|()| true)
             },
         ));
     }
