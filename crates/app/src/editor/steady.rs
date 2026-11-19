@@ -1,21 +1,27 @@
 //! "Analyse the clip" on a Stabilise effect: how the camera moves over the
 //! whole clip is found on a thread of its own (`engine::steady`) while the
-//! page goes on; the status line says how far it is and the command bound
-//! to Escape stops it
-//! (nothing set). What it finds becomes the effect's view keyframes and
-//! zoom, one undo step.
+//! page goes on. The status line says how far it is; the command bound to
+//! Escape stops it, setting nothing. What it finds becomes the effect's
+//! view keyframes and zoom, one undo step. What it shares with following a
+//! box is in `clip_job.rs`.
 
 use super::Editor;
+use super::clip_job::{self, Doing, Target};
 use engine::steady::{Analyse, Analysed, Analysing, Steadied};
 use project::effects::Stabilise;
-use project::{ClipId, Command, EffectId, EffectKind, SequenceId, Time};
+use project::{ClipId, EffectId, EffectKind};
+
+/// Analysing a clip, in the words its messages use.
+const ANALYSING: Doing = Doing {
+    running: "Analysing the camera's movement…",
+    verb: "steady",
+    during: "the clip was being analysed",
+};
 
 /// An analysis under way.
 #[derive(Debug)]
 pub struct SteadyJob {
-    sequence: SequenceId,
-    clip: ClipId,
-    effect: EffectId,
+    target: Target,
     analysing: Analysing,
 }
 
@@ -26,52 +32,30 @@ impl SteadyJob {
     }
 }
 
-/// Millionths in one whole.
-const ONE: f64 = 1_000_000.0;
-
 impl Editor {
     /// Starts analysing `clip` for its Stabilise `effect`.
     pub(super) fn start_steady(&mut self, clip: ClipId, effect: EffectId) -> diag::Result<()> {
         let Some(document) = self.document.as_ref() else {
             return Ok(());
         };
-        let project = document.project();
-        let sequence = project.active_sequence;
-        let seq = project.active().ok_or_else(|| missing("timeline"))?;
-        let found = seq
-            .video_tracks
-            .iter()
-            .flat_map(|t| t.clips.iter())
-            .find(|c| c.id == clip)
-            .ok_or_else(|| missing("clip"))?;
-        let media = project.media.get(&found.media).ok_or_else(|| missing("file"))?;
-        let video = media.info.video.as_ref().ok_or_else(|| {
-            diag::AppError::new("There is no picture to steady").why("The clip's file has no video.")
-        })?;
-        let Some(EffectKind::Stabilise(settings)) = found.effects.get(effect).map(|e| e.kind) else {
-            return Err(missing("effect"));
+        let found = clip_job::find(document.project(), clip, effect, ANALYSING)?;
+        let EffectKind::Stabilise(settings) = found.effect.kind else {
+            return Err(clip_job::missing("effect", ANALYSING));
         };
-        let rate = seq.settings.frame_rate;
-        let last = rate.frame_start(rate.frame_at(found.end()) - 1).max(found.start);
         let analysing = Analysing::start(Analyse {
-            path: media.path.clone(),
-            stream: found.stream,
-            rotation: video.rotation,
-            rate: video.frame_rate,
-            from: found.source_at(found.start),
-            to: found.source_at(last),
-            smoothing: f64::from(settings.smoothing) / ONE,
+            path: found.media.path.clone(),
+            stream: found.clip.stream,
+            rotation: found.video.rotation,
+            rate: found.video.frame_rate,
+            from: found.clip.source_at(found.clip.start),
+            to: found.last_frame(),
+            smoothing: clip_job::share(settings.smoothing),
         })?;
         self.steadying = Some(SteadyJob {
-            sequence,
-            clip,
-            effect,
+            target: found.target,
             analysing,
         });
-        self.status = format!(
-            "Analysing the camera's movement…{}",
-            super::stops_it(&self.shortcuts)
-        );
+        self.status = clip_job::started(ANALYSING, &self.shortcuts);
         Ok(())
     }
 
@@ -82,15 +66,11 @@ impl Editor {
         let Some(job) = self.steadying.as_ref() else {
             return;
         };
-        ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        ctx.request_repaint_after(clip_job::NEWS_EVERY);
         match job.analysing.news() {
             None => {}
             Some(Analysed::Going(done)) => {
-                self.status = format!(
-                    "Analysing the camera's movement… {:.0} %{}",
-                    done * 100.0,
-                    super::stops_it(&self.shortcuts)
-                );
+                self.status = clip_job::going(ANALYSING, done, &self.shortcuts);
             }
             Some(Analysed::Stopped) => {
                 self.steadying = None;
@@ -114,49 +94,24 @@ impl Editor {
     }
 
     fn finish_steady(&mut self, job: &SteadyJob, found: &Steadied) -> diag::Result<()> {
-        let (sequence, clip, effect) = (job.sequence, job.clip, job.effect);
-        let places: Vec<(Time, (i32, i32))> = found
-            .places
-            .iter()
-            .map(|(at, (x, y))| (*at, ((x * ONE).round() as i32, (y * ONE).round() as i32)))
-            .collect();
+        let target = job.target;
+        let places = clip_job::places_in_millionths(&found.places);
         self.with_document(|d| {
-            let effects = d
-                .project()
-                .sequence(sequence)
-                .and_then(|seq| {
-                    seq.video_tracks
-                        .iter()
-                        .flat_map(|t| t.clips.iter())
-                        .find(|c| c.id == clip)
-                })
-                .map(|c| c.effects.clone())
-                .ok_or_else(|| missing("clip"))?;
-            let mut next = effects;
-            let at = next
-                .0
-                .iter()
-                .position(|e| e.id == effect)
-                .ok_or_else(|| missing("effect"))?;
-            let mut changed = next.0[at].clone();
-            // The analysis covers the whole clip: its view keys start afresh.
-            changed.keys.clear(Stabilise::MIDDLE..Stabilise::MIDDLE + 2);
-            changed = changed.keyed_pair(Stabilise::MIDDLE, &places);
-            if let EffectKind::Stabilise(mut settings) = changed.kind {
-                settings.zoom = (found.zoom * ONE).round() as i32;
-                changed.kind = EffectKind::Stabilise(settings);
-            }
-            next.0[at] = changed;
-            d.apply(Command::SetEffects {
-                sequence,
-                clip,
-                effects: Box::new(next),
-            })
+            clip_job::write_back(d, target, ANALYSING, |e| steadied(e, &places, found.zoom))
         })
     }
 }
 
-fn missing(what: &str) -> diag::AppError {
-    diag::AppError::new(format!("That {what} no longer exists"))
-        .why("It may have been removed while the clip was being analysed.")
+/// `effect` with the analysis's view keyframes (`places`, in millionths)
+/// and `zoom`.
+fn steadied(effect: &project::Effect, places: &[(project::Time, (i32, i32))], zoom: f64) -> project::Effect {
+    let mut changed = effect.clone();
+    // The analysis covers the whole clip: its view keys start afresh.
+    changed.keys.clear(Stabilise::MIDDLE..Stabilise::MIDDLE + 2);
+    changed = changed.keyed_pair(Stabilise::MIDDLE, places);
+    if let EffectKind::Stabilise(mut settings) = changed.kind {
+        settings.zoom = clip_job::millionths(zoom);
+        changed.kind = EffectKind::Stabilise(settings);
+    }
+    changed
 }

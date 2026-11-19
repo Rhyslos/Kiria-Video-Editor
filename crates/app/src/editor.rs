@@ -3,6 +3,7 @@
 mod actions;
 mod audio_ui;
 mod clip_clipboard;
+mod clip_job;
 mod color_ui;
 mod edit_ui;
 mod follow;
