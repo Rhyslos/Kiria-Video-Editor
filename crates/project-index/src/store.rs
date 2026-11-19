@@ -215,9 +215,12 @@ impl Index {
     /// project and other folders, re-reads files that changed, and marks
     /// missing ones. Slow on big folders; run it on a worker thread.
     ///
-    /// A file that can't be stored (a name that isn't valid Unicode, say)
+    /// A file whose name can't be stored (one that isn't valid Unicode)
     /// is logged and skipped so the others still come up to date; the
-    /// result is how many were skipped.
+    /// result is how many were skipped. A file that can't be read is
+    /// listed as damaged, not skipped. A problem with the list itself (the
+    /// database busy, damaged or on a full disk) stops the refresh with
+    /// its error, so a stale list is never passed off as up to date.
     pub fn refresh(&self) -> diag::Result<usize> {
         let mut paths: BTreeSet<PathBuf> = BTreeSet::new();
         for folder in self.folders()? {
@@ -252,10 +255,12 @@ impl Index {
         }
         let mut skipped = 0;
         for path in paths {
-            if let Err(err) = self.store(&path, true) {
+            if let Err(err) = path_text(&path) {
                 tracing::warn!(path = %path.display(), "skipped in the project list: {}", err.report());
                 skipped += 1;
+                continue;
             }
+            self.store(&path, true)?;
         }
         Ok(skipped)
     }
@@ -673,6 +678,27 @@ mod tests {
         assert_eq!(index.refresh().unwrap(), 1, "one skipped");
         let names: Vec<String> = index.projects().unwrap().into_iter().map(|p| p.name).collect();
         assert_eq!(names, ["B"]);
+    }
+
+    #[test]
+    fn a_database_failure_stops_the_refresh() {
+        let tmp = tempfile::tempdir().unwrap();
+        let index = Index::open_in_memory().unwrap();
+        index.add_folder(tmp.path(), FolderKind::Projects).unwrap();
+        write_project(
+            &tmp.path().join(format!("a.{}", ext())),
+            "A",
+            SequenceSettings::GAME_CLIP,
+        );
+        // Stands in for a busy, damaged or full database: every new row fails.
+        index
+            .conn
+            .execute_batch(
+                "CREATE TEMP TRIGGER fail BEFORE INSERT ON projects
+                 BEGIN SELECT RAISE(ABORT, 'database or disk is full'); END;",
+            )
+            .unwrap();
+        assert!(index.refresh().is_err(), "not passed off as a skipped file");
     }
 
     #[test]

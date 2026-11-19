@@ -90,6 +90,9 @@ pub struct Editor {
     page: Page,
     shortcuts: ShortcutTable,
     errors: ErrorCenter,
+    /// The first uncaught graphics error on the window's device, for the
+    /// error list (`graphics_errors::watch`; the rest go to the log only).
+    graphics_errors: Option<std::sync::mpsc::Receiver<AppError>>,
     jobs: JobSystem,
     usage: UsageMonitor,
     document: Option<Document>,
@@ -107,8 +110,6 @@ pub struct Editor {
     thumbnail_shows: Option<engine::thumbnail::Shows>,
     importer: Importer,
     import_requested: bool,
-    /// What the timeline's settings settled on during the import under way.
-    import_settled: import::SettledNote,
     viewer: Viewer,
     /// Split view's Source and the viewer's own window (the Display menu).
     display: crate::display::ViewerDisplay,
@@ -349,9 +350,10 @@ impl Editor {
         if !imports.is_empty() {
             importer.read(&jobs, &cc.egui_ctx, imports);
         }
-        if let Some(state) = cc.wgpu_render_state.as_ref() {
-            crate::viewer::log_graphics_errors(&state.device);
-        }
+        let graphics_errors = cc
+            .wgpu_render_state
+            .as_ref()
+            .map(|state| crate::graphics_errors::watch(&state.device));
         let mut viewer = Viewer::new(
             &cc.egui_ctx,
             automation.playhead,
@@ -395,6 +397,7 @@ impl Editor {
             page: Page::default(),
             shortcuts,
             errors,
+            graphics_errors,
             jobs,
             usage: UsageMonitor::start(Duration::from_secs(1)),
             document,
@@ -405,7 +408,6 @@ impl Editor {
             thumbnail_shows: None,
             importer,
             import_requested: false,
-            import_settled: Default::default(),
             viewer,
             display,
             playback: None,
@@ -866,7 +868,7 @@ impl Editor {
         // fit in a few milliseconds go in each frame (at least one).
         let started = Instant::now();
         while started.elapsed() < IMPORT_BUDGET {
-            let Some((read, batch)) = self.importer.next_read() else {
+            let Some((read, mut batch)) = self.importer.next_read() else {
                 break;
             };
             if self.importer.busy() > 0 {
@@ -927,7 +929,7 @@ impl Editor {
                             None => format!("Imported {line}"),
                         };
                         // Said again when the batch is summed up.
-                        self.import_settled.keep(settled);
+                        self.importer.note_settled(batch.as_mut(), settled);
                         if let Some(words) = end_missing {
                             self.status = format!("{}. {words}", self.status.trim_end_matches('.'));
                         }
@@ -959,7 +961,7 @@ impl Editor {
             // Files picked or dropped together: one line for them all, and
             // one message for those refused.
             if let Some(batch) = batch
-                && let Some(line) = self.import_settled.finished(&batch)
+                && let Some(line) = batch.line()
             {
                 self.status = line;
                 let whats_there = (!batch.cut_short.is_empty())
@@ -1242,6 +1244,9 @@ impl Editor {
                         self.errors.push(&err);
                     }
                 }
+                ErrorResponse::Fix(action)
+                    if ui_kit::settings::open_at_id(&action.command)
+                        .is_some_and(|id| self.open_settings_at(id)) => {}
                 ErrorResponse::Fix(action) => match import::whats_there_id(&action.command) {
                     Some(id) => {
                         if self.importer.whats_there(&self.jobs, ui.ctx(), id) {
@@ -1548,6 +1553,12 @@ impl eframe::App for Editor {
         // A picture the graphics card turned down says why, once per cause.
         if let Some(state) = frame.wgpu_render_state() {
             for problem in ui_kit::video_picture::refusals(state) {
+                self.errors.push(&problem);
+            }
+        }
+        // An uncaught graphics error says so once; the log has the rest.
+        if let Some(told) = &self.graphics_errors {
+            for problem in told.try_iter() {
                 self.errors.push(&problem);
             }
         }

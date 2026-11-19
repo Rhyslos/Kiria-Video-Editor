@@ -197,6 +197,7 @@ mod tests {
             SideFile::DiscardedJournal(Some(20261113090000)),
             SideFile::UnfinishedSave(None),
             SideFile::UnfinishedSave(Some(3)),
+            SideFile::UnfinishedWrite(project::side_files::Written::View, Some(4)),
             SideFile::Thumbnail,
             SideFile::View,
         ] {
@@ -239,6 +240,7 @@ mod tests {
                 "Unsaved work set aside after a crash",
                 "Unfinished save",
                 "Unfinished save",
+                "Unfinished write of a file beside it",
                 "Backup from before an upgrade",
                 "Picture for the project list",
                 "Timeline layout",
@@ -246,7 +248,7 @@ mod tests {
             ]
         );
         assert_eq!(plan.items()[0].path, path);
-        assert_eq!(plan.items()[10].detail.as_deref(), Some("2 versions"));
+        assert_eq!(plan.items()[11].detail.as_deref(), Some("2 versions"));
         assert!(plan.items().iter().all(|i| i.path.exists()));
     }
 
@@ -265,7 +267,7 @@ mod tests {
 
         let plan = plan(&path).unwrap();
         let moved = run(&plan, &Bin::Folder(bin.clone())).unwrap();
-        assert_eq!(moved, 11);
+        assert_eq!(moved, 12);
         let left = names_in(&folder);
         assert_eq!(
             left.iter().filter(|n| n.contains("Clip 2")).count(),
@@ -286,7 +288,7 @@ mod tests {
 
         // Everything can be taken back out, the saved versions whole.
         let binned = names_in(&bin);
-        assert_eq!(binned.len(), 11);
+        assert_eq!(binned.len(), 12);
         assert!(binned.contains(&format!("Clip.{}", ext())));
         assert_eq!(names_in(&bin.join(format!("Clip.{}.versions", ext()))).len(), 2);
         assert_eq!(
@@ -306,7 +308,7 @@ mod tests {
         // Between the question and the answer, some files went away.
         fs::remove_file(&path).unwrap();
         fs::remove_file(project::view_path(&path)).unwrap();
-        assert_eq!(run(&plan_before, &bin).unwrap(), 9);
+        assert_eq!(run(&plan_before, &bin).unwrap(), 10);
         assert!(names_in(&folder).is_empty());
 
         // A project whose file is missing can still be cleared away...
@@ -314,7 +316,7 @@ mod tests {
         fs::remove_file(&gone).unwrap();
         let plan_gone = plan(&gone).unwrap();
         assert!(!whats(&plan_gone).contains(&"Project file"));
-        assert_eq!(run(&plan_gone, &bin).unwrap(), 10);
+        assert_eq!(run(&plan_gone, &bin).unwrap(), 11);
         assert!(names_in(&folder).is_empty());
 
         // ...and one with nothing left on disk at all.
@@ -337,7 +339,7 @@ mod tests {
         assert!(err.why_text().is_some_and(|w| w.contains(".versions")));
         assert!(!err.fix_text().is_empty());
         assert!(path.exists(), "nothing was lost");
-        assert_eq!(names_in(&folder).len(), 11);
+        assert_eq!(names_in(&folder).len(), 12);
     }
 
     #[test]

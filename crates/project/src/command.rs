@@ -955,9 +955,9 @@ impl Command {
                 sequence_mut(&mut p, *sequence)?.region = *region;
             }
             Command::SetMasterGain { sequence, gain_db } => {
-                if !(-60.0..=12.0).contains(gain_db) {
+                if !Track::GAINS_DB.contains(gain_db) {
                     return Err(AppError::new("That volume is out of range")
-                        .why("The mix's volume goes from -60 dB to +12 dB."));
+                        .why(format!("The mix's volume goes from {}.", Track::gains_text())));
                 }
                 sequence_mut(&mut p, *sequence)?.master_gain_db = *gain_db;
             }
@@ -968,9 +968,11 @@ impl Command {
                 solo,
                 gain_db,
             } => {
-                if !gain_db.is_finite() || !(-60.0..=12.0).contains(gain_db) {
-                    return Err(AppError::new("That volume can't be set")
-                        .why("Track volume goes from -60 dB (nearly silent) to +12 dB."));
+                if !gain_db.is_finite() || !Track::GAINS_DB.contains(gain_db) {
+                    return Err(AppError::new("That volume can't be set").why(format!(
+                        "Track volume goes from {} (the bottom nearly silent).",
+                        Track::gains_text()
+                    )));
                 }
                 let t = track_mut(sequence_mut(&mut p, *sequence)?, *track)?;
                 t.muted = *muted;
@@ -1673,6 +1675,44 @@ pub(crate) mod tests {
             gain_db: 40.0,
         };
         assert!(loud.apply(&f.p).is_err());
+    }
+
+    /// A volume a command accepts loads again: the commands and load
+    /// validation keep one range, so an edit never makes a project that
+    /// fails to open. Just past either end, both refuse.
+    #[test]
+    fn volumes_at_the_ends_of_the_range_load_again() {
+        let f = fixture();
+        let (low, high) = (*Track::GAINS_DB.start(), *Track::GAINS_DB.end());
+        assert_eq!(Track::gains_text(), "-60 dB to +12 dB");
+        let mix = |gain_db| Command::SetTrackMix {
+            sequence: f.seq,
+            track: f.a1,
+            muted: false,
+            solo: false,
+            gain_db,
+        };
+        let master = |gain_db| Command::SetMasterGain {
+            sequence: f.seq,
+            gain_db,
+        };
+        for (track_db, master_db) in [(low, high), (high, low)] {
+            let p = mix(track_db).apply(&f.p).unwrap();
+            let p = master(master_db).apply(&p).unwrap();
+            let text = crate::file::to_string(&p).unwrap();
+            let loaded = crate::file::from_str(&text).unwrap();
+            let seq = loaded.active().unwrap();
+            assert_eq!(seq.audio_tracks[0].gain_db, track_db);
+            assert_eq!(seq.master_gain_db, master_db);
+        }
+        for outside in [low - 0.01, high + 0.01, f32::NAN, f32::INFINITY] {
+            let error = mix(outside).apply(&f.p).unwrap_err();
+            assert!(error.to_string().contains(&Track::gains_text()), "{error}");
+            assert!(master(outside).apply(&f.p).is_err(), "{outside}");
+            let mut p = f.p.clone();
+            p.sequences[0].audio_tracks[0].gain_db = outside;
+            assert!(p.validate().is_err(), "{outside} is refused on load too");
+        }
     }
 
     #[test]

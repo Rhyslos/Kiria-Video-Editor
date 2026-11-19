@@ -21,12 +21,15 @@
 //!
 //! The volume line sits on the same scale as the level line ([`super::level`]:
 //! 0 dB two thirds of the way up, +12 dB at the top, a fader's law below
-//! with silence at the very bottom); a point dragged with Shift or Alt
-//! held moves a fifth as fast, for fine changes. The pan
+//! with the bottom of the range at the very bottom); a point dragged with
+//! Shift or Alt held moves a fifth as fast, for fine changes. Its value is
+//! written as what is heard ([`LineOwner::bottom`]): at the bottom a
+//! clip's line is silence ("Off"), a track's is heard at −60 dB. The pan
 //! line has the centre in the middle, all left at the top and all right
 //! at the bottom.
 
 use super::level;
+use crate::volume::{self, Bottom};
 use egui::{Color32, FontId, Pos2, Rect, Stroke, pos2, vec2};
 use std::sync::Arc;
 
@@ -57,10 +60,12 @@ impl LineKind {
         }
     }
 
-    /// A value as the interface writes it: "−6.0 dB", "Off", "L 40", "C", "R 20".
-    pub fn words(self, value: f32) -> String {
+    /// A value on `owner`'s line as the interface writes it: "−6.0 dB",
+    /// at the bottom "Off" or "−60.0 dB" as [`LineOwner::bottom`] says,
+    /// "L 40", "C", "R 20".
+    pub fn words(self, value: f32, owner: LineOwner) -> String {
         match self {
-            LineKind::Volume => level::words(f64::from(value)),
+            LineKind::Volume => volume::words(value, owner.bottom()),
             LineKind::Pan => pan_words(value),
         }
     }
@@ -92,6 +97,19 @@ pub enum LineOwner {
     Clip(u64),
 }
 
+impl LineOwner {
+    /// What the bottom of its volume line is heard as. A track's line is
+    /// turned into a factor like any decibel (the audio crate's track
+    /// lines), so its bottom is heard at −60 dB; a clip's line at the
+    /// bottom is silence (`engine::mix`, as the clip's own volume).
+    pub fn bottom(self) -> Bottom {
+        match self {
+            LineOwner::Track(_) => Bottom::Heard,
+            LineOwner::Clip(_) => Bottom::Silent,
+        }
+    }
+}
+
 /// Which lines the timeline shows and edits: the page's choice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct LinesShown {
@@ -119,7 +137,7 @@ pub fn y_of(kind: LineKind, rect: Rect, value: f32) -> f32 {
 }
 
 /// The value at `y` in `rect`, settled as a drag stops on it: tenths of a
-/// decibel (0 dB within half a decibel, the bottom silent), or hundredths
+/// decibel (0 dB within half a decibel, the very bottom the bottom), or hundredths
 /// of a pan (the centre within 0.03).
 pub fn value_at(kind: LineKind, rect: Rect, y: f32) -> f32 {
     let t = travel(rect);
@@ -278,6 +296,8 @@ impl LineDrag {
 /// How a line is drawn.
 pub(super) struct Look {
     pub kind: LineKind,
+    /// Whose line, for how its value is written.
+    pub owner: LineOwner,
     /// Its points are shown and can be taken.
     pub editable: bool,
     /// The point pointed at or dragged.
@@ -351,7 +371,7 @@ pub(super) fn draw(
             Stroke::new(1.0, Color32::from_black_alpha(160)),
         );
         if lit && let Some(tag_x) = look.tag_x {
-            tag(p, rect, kind, v, pos2(tag_x, c.y), colour);
+            tag(p, rect, kind.words(v, look.owner), pos2(tag_x, c.y), colour);
         }
     }
 }
@@ -391,13 +411,9 @@ fn fix_edges(
     }
 }
 
-/// The value on a small tag beside a point being dragged.
-fn tag(p: &egui::Painter, rect: Rect, kind: LineKind, value: f32, at: Pos2, colour: Color32) {
-    let galley = p.layout_no_wrap(
-        kind.words(value),
-        FontId::proportional(11.0),
-        Color32::from_gray(20),
-    );
+/// The value (`words`) on a small tag beside a point being dragged.
+fn tag(p: &egui::Painter, rect: Rect, words: String, at: Pos2, colour: Color32) {
+    let galley = p.layout_no_wrap(words, FontId::proportional(11.0), Color32::from_gray(20));
     let size = galley.size() + vec2(10.0, 4.0);
     let top = if at.y - size.y - 6.0 >= rect.top() {
         at.y - size.y - 6.0

@@ -550,7 +550,7 @@ pub struct DiskWatch {
     asked: Option<(PathBuf, PathBuf, Instant)>,
     /// The folder and file asked for now, and since when.
     wanted: Option<(PathBuf, PathBuf, Instant)>,
-    looking: Option<Receiver<Disk>>,
+    looking: Option<Receiver<Option<Disk>>>,
     found: Option<Disk>,
 }
 
@@ -561,26 +561,17 @@ const LOOK_AGAIN: Duration = Duration::from_secs(5);
 const DISK_SETTLE: Duration = Duration::from_millis(300);
 
 impl DiskWatch {
-    pub fn look(&mut self, folder: &Path, file: &Path, notify: impl Fn() + Send + 'static) -> Option<Disk> {
+    pub fn look(&mut self, folder: &Path, file: &Path, ctx: &egui::Context) -> Option<Disk> {
         self.look_at(folder, file, Instant::now(), |folder, file| {
-            let (tell, answer) = channel();
-            let spawned = std::thread::Builder::new()
-                .name("export disk".into())
-                .spawn(move || {
-                    let _ = tell.send(Disk {
-                        folder_exists: folder.is_dir(),
-                        free: jobs::free_space(&folder),
-                        file_exists: file.exists(),
-                    });
-                    notify();
-                });
-            match spawned {
-                Ok(_) => Some(answer),
-                Err(err) => {
-                    tracing::error!("the disk check could not start: {err}");
-                    None
-                }
-            }
+            let look = move || {
+                Some(Disk {
+                    folder_exists: folder.is_dir(),
+                    free: jobs::free_space(&folder),
+                    file_exists: file.exists(),
+                })
+            };
+            // A look that can't start answers nothing; the next frame asks again.
+            ui_kit::worker::answer(ctx, "export disk", look, |_| None)
         })
     }
 
@@ -590,14 +581,16 @@ impl DiskWatch {
         folder: &Path,
         file: &Path,
         now: Instant,
-        start: impl FnOnce(PathBuf, PathBuf) -> Option<Receiver<Disk>>,
+        start: impl FnOnce(PathBuf, PathBuf) -> Receiver<Option<Disk>>,
     ) -> Option<Disk> {
         let is_now = |(f, p, _): &(PathBuf, PathBuf, Instant)| f == folder && p == file;
         if let Some(looking) = &self.looking {
             match looking.try_recv() {
                 Ok(found) => {
                     // An answer about a path no longer asked for is dropped.
-                    if self.asked.as_ref().is_some_and(is_now) {
+                    if let Some(found) = found
+                        && self.asked.as_ref().is_some_and(is_now)
+                    {
                         self.found = Some(found);
                     }
                     self.looking = None;
@@ -622,7 +615,7 @@ impl DiskWatch {
         };
         if due && self.looking.is_none() {
             self.asked = Some((folder.to_path_buf(), file.to_path_buf(), now));
-            self.looking = start(folder.to_path_buf(), file.to_path_buf());
+            self.looking = Some(start(folder.to_path_buf(), file.to_path_buf()));
         }
         self.found.clone()
     }
@@ -836,9 +829,10 @@ mod tests {
         let file = dir.path().join("out.mp4");
         std::fs::write(&file, b"x").unwrap();
         let mut watch = DiskWatch::default();
+        let ctx = egui::Context::default();
         let give_up = Instant::now() + Duration::from_secs(10);
         let found = loop {
-            if let Some(found) = watch.look(dir.path(), &file, || {}) {
+            if let Some(found) = watch.look(dir.path(), &file, &ctx) {
                 break found;
             }
             assert!(Instant::now() < give_up);
@@ -848,7 +842,7 @@ mod tests {
         assert!(watch.settled());
         let missing = dir.path().join("not here");
         assert_eq!(
-            watch.look(&missing, &missing.join("a.mp4"), || {}),
+            watch.look(&missing, &missing.join("a.mp4"), &ctx),
             None,
             "asked again"
         );
@@ -867,7 +861,7 @@ mod tests {
         let mut watch = DiskWatch::default();
         let t0 = Instant::now();
         let mut started: Vec<PathBuf> = Vec::new();
-        let answers: std::cell::RefCell<Vec<std::sync::mpsc::Sender<Disk>>> = Default::default();
+        let answers: std::cell::RefCell<Vec<std::sync::mpsc::Sender<Option<Disk>>>> = Default::default();
         let look = |watch: &mut DiskWatch, file: &str, ms: u64, started: &mut Vec<PathBuf>| {
             watch.look_at(
                 folder,
@@ -877,14 +871,14 @@ mod tests {
                     started.push(file);
                     let (tell, answer) = channel();
                     answers.borrow_mut().push(tell);
-                    Some(answer)
+                    answer
                 },
             )
         };
         // The page opens: looked at at once.
         assert_eq!(look(&mut watch, "/out/T.mp4", 0, &mut started), None);
         assert_eq!(started.len(), 1);
-        answers.borrow()[0].send(disk.clone()).unwrap();
+        answers.borrow()[0].send(Some(disk.clone())).unwrap();
         assert_eq!(
             look(&mut watch, "/out/T.mp4", 10, &mut started),
             Some(disk.clone())
@@ -910,14 +904,14 @@ mod tests {
         assert_eq!(look(&mut watch, "/out/Trip2.mp4", 600, &mut started), None);
         assert_eq!(look(&mut watch, "/out/Trip2.mp4", 1000, &mut started), None);
         assert_eq!(started.len(), 2, "one look at a time");
-        answers.borrow()[1].send(disk.clone()).unwrap();
+        answers.borrow()[1].send(Some(disk.clone())).unwrap();
         assert_eq!(look(&mut watch, "/out/Trip2.mp4", 1010, &mut started), None);
         assert_eq!(
             started.last(),
             Some(&PathBuf::from("/out/Trip2.mp4")),
             "the newest, once free"
         );
-        answers.borrow()[2].send(disk.clone()).unwrap();
+        answers.borrow()[2].send(Some(disk.clone())).unwrap();
         assert_eq!(
             look(&mut watch, "/out/Trip2.mp4", 1020, &mut started),
             Some(disk.clone())

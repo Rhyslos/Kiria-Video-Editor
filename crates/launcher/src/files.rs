@@ -379,6 +379,8 @@ mod tests {
             SideFile::DiscardedJournal(Some(20261113090000)),
             SideFile::UnfinishedSave(None),
             SideFile::UnfinishedSave(Some(3)),
+            SideFile::UnfinishedWrite(project::side_files::Written::Journal, Some(5)),
+            SideFile::UnfinishedWrite(project::side_files::Written::Backup(3), None),
             SideFile::Thumbnail,
             SideFile::View,
         ] {
@@ -410,6 +412,8 @@ mod tests {
         let mut names = vec![
             format!(".{file}.saving"),
             format!(".{file}.3.saving"),
+            format!(".{file}.backup-v3.saving"),
+            format!(".{file}.journal.5.saving"),
             file.clone(),
             format!("{file}.backup-v3"),
             format!("{file}.journal"),

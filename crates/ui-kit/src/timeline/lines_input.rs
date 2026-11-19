@@ -39,6 +39,7 @@ impl TimelineView {
         });
         let look = lines::Look {
             kind,
+            owner,
             editable,
             lit: lit.filter(|_| editable),
             tag_x: drag

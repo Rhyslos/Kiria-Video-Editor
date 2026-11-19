@@ -140,9 +140,10 @@ pub struct Live {
     pub unheard: bool,
 }
 
-/// A value being dragged and not yet an undo step.
+/// A track's or the master's sound being dragged and not yet an undo
+/// step (the page's own, not the shared [`crate::pending::Pending`]).
 #[derive(Debug, Clone, PartialEq)]
-enum Pending {
+enum Waiting {
     Track(TrackId, Box<TrackSound>),
     Master(MasterSound),
 }
@@ -166,7 +167,7 @@ pub struct AudioPage {
     /// The track the tools work on (the first audio track until one is chosen).
     pub track: Option<TrackId>,
     pub show: Show,
-    pending: Option<Pending>,
+    pending: Option<Waiting>,
     eq: eq::EqTool,
     pub mixer: ui_kit::mixer::Mixer,
     pub master: ui_kit::master::MasterColumn,
@@ -268,12 +269,12 @@ impl AudioPage {
         let mut shown: Option<Project> = None;
         if let Some(pending) = &self.pending {
             let command = match pending {
-                Pending::Track(track, sound) => Command::SetTrackSound {
+                Waiting::Track(track, sound) => Command::SetTrackSound {
                     sequence,
                     track: *track,
                     sound: sound.clone(),
                 },
-                Pending::Master(sound) => Command::SetMasterSound {
+                Waiting::Master(sound) => Command::SetMasterSound {
                     sequence,
                     sound: *sound,
                 },
@@ -308,7 +309,7 @@ impl AudioPage {
         asks: &mut Asks,
     ) {
         if touched.changed {
-            self.pending = Some(Pending::Track(track.id, Box::new(sound)));
+            self.pending = Some(Waiting::Track(track.id, Box::new(sound)));
         }
         if !touched.busy {
             self.finish(seq, asks);
@@ -317,7 +318,7 @@ impl AudioPage {
 
     fn master_edit(&mut self, seq: &Sequence, sound: MasterSound, touched: Touched, asks: &mut Asks) {
         if touched.changed {
-            self.pending = Some(Pending::Master(sound));
+            self.pending = Some(Waiting::Master(sound));
         }
         if !touched.busy {
             self.finish(seq, asks);
@@ -327,7 +328,7 @@ impl AudioPage {
     /// The change in waiting becomes an undo step, unless it changes nothing.
     fn finish(&mut self, seq: &Sequence, asks: &mut Asks) {
         match self.pending.take() {
-            Some(Pending::Track(id, sound)) => {
+            Some(Waiting::Track(id, sound)) => {
                 if seq.audio_tracks.iter().any(|t| t.id == id && t.sound != *sound) {
                     asks.commands.push(Command::SetTrackSound {
                         sequence: seq.id,
@@ -336,13 +337,13 @@ impl AudioPage {
                     });
                 }
             }
-            Some(Pending::Master(sound)) if seq.master_sound != sound => {
+            Some(Waiting::Master(sound)) if seq.master_sound != sound => {
                 asks.commands.push(Command::SetMasterSound {
                     sequence: seq.id,
                     sound,
                 });
             }
-            Some(Pending::Master(_)) | None => {}
+            Some(Waiting::Master(_)) | None => {}
         }
     }
 
@@ -712,7 +713,7 @@ impl AudioPage {
         asks: &mut Asks,
     ) {
         let mut sound = match &self.pending {
-            Some(Pending::Master(s)) => *s,
+            Some(Waiting::Master(s)) => *s,
             _ => seq.master_sound,
         };
         ui.painter().rect_filled(r, 6.0, theme.panel);
@@ -888,5 +889,15 @@ mod tests {
             t.iter().map(|(n, tool, _)| (*n, *tool)).collect::<Vec<_>>(),
             [("Low cut", Tool::Eq), ("Duck", Tool::Ducking)]
         );
+    }
+
+    #[test]
+    fn the_volume_range_is_the_same_in_the_project_and_on_screen() {
+        // The project checks volumes against `Track::GAINS_DB`; the
+        // faders and fields show `ui_kit::volume`'s range. They must agree,
+        // or a fader could set a volume the project refuses on load.
+        let gains = project::Track::GAINS_DB;
+        assert_eq!(*gains.start(), ui_kit::volume::BOTTOM_DB);
+        assert_eq!(*gains.end(), ui_kit::volume::TOP_DB);
     }
 }

@@ -32,6 +32,10 @@ pub enum SideFile {
     /// `.<file>.<number>.saving`: a save that a crash or power cut
     /// interrupted (`None`: `.<file>.saving`, the name earlier versions used).
     UnfinishedSave(Option<u64>),
+    /// `.<side file>.<number>.saving`: a write of one of the side files in
+    /// [`Written`] that a crash or power cut interrupted (`None`: the name
+    /// earlier versions used, `.<side file>.saving`).
+    UnfinishedWrite(Written, Option<u64>),
     /// `<file>.backup-v<N>`: the file as it was before an upgrade from format `N`.
     Backup(u32),
     /// `<file>.thumbnail.png`: the picture on the project's card.
@@ -50,6 +54,9 @@ impl SideFile {
             SideFile::JournalStart => document::journal_start_path(project_file),
             SideFile::DiscardedJournal(stamp) => document::discarded_journal_path(project_file, stamp),
             SideFile::UnfinishedSave(number) => disk::temp_path(project_file, number),
+            SideFile::UnfinishedWrite(of, number) => {
+                disk::temp_path(&of.side_file().path(project_file), number)
+            }
             SideFile::Backup(format) => file::backup_path(project_file, format),
             SideFile::Thumbnail => document::thumbnail_path(project_file),
             SideFile::View => document::view_path(project_file),
@@ -64,10 +71,36 @@ impl SideFile {
             SideFile::JournalStart => "Autosave starting point",
             SideFile::DiscardedJournal(_) => "Unsaved work set aside after a crash",
             SideFile::UnfinishedSave(_) => "Unfinished save",
+            SideFile::UnfinishedWrite(..) => "Unfinished write of a file beside it",
             SideFile::Backup(_) => "Backup from before an upgrade",
             SideFile::Thumbnail => "Picture for the project list",
             SideFile::View => "Timeline layout",
             SideFile::Versions => "Saved versions",
+        }
+    }
+}
+
+/// The side files written whole or not at all through a temporary file
+/// beside them ([`disk::write_atomic`]), so a crash can leave one of those
+/// behind: [`SideFile::UnfinishedWrite`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Written {
+    Journal,
+    JournalStart,
+    Backup(u32),
+    Thumbnail,
+    View,
+}
+
+impl Written {
+    /// The side file being written.
+    pub fn side_file(self) -> SideFile {
+        match self {
+            Written::Journal => SideFile::Journal,
+            Written::JournalStart => SideFile::JournalStart,
+            Written::Backup(format) => SideFile::Backup(format),
+            Written::Thumbnail => SideFile::Thumbnail,
+            Written::View => SideFile::View,
         }
     }
 }
@@ -103,7 +136,7 @@ pub fn existing(project_file: &Path) -> Vec<Found> {
 }
 
 /// The side files whose names hold a number (set-aside journals,
-/// unfinished saves, backups), found by listing the folder.
+/// unfinished saves and writes, backups), found by listing the folder.
 fn numbered(project_file: &Path) -> Vec<SideFile> {
     let (Some(folder), Some(name)) = (project_file.parent(), project_file.file_name()) else {
         return Vec::new();
@@ -132,7 +165,43 @@ fn numbered_kind(candidate: &str, project_name: &str) -> Option<SideFile> {
     if let Some(number) = disk::temp_number(candidate, project_name) {
         return Some(SideFile::UnfinishedSave(number));
     }
+    if let Some(unfinished) = unfinished_write(candidate, project_name) {
+        return Some(unfinished);
+    }
     document::discarded_stamp(candidate, project_name).map(SideFile::DiscardedJournal)
+}
+
+/// What `candidate` is when it is the temporary file of a write of one of
+/// the project's [`Written`] side files (`.<side file>.<number>.saving`
+/// or `.<side file>.saving`), by exactly the name [`disk::temp_path`] gives.
+fn unfinished_write(candidate: &str, project_name: &str) -> Option<SideFile> {
+    let inner = candidate.strip_prefix('.')?.strip_suffix(".saving")?;
+    // The side file's name is all of `inner`, or all of it but a number.
+    let targets = [Some(inner), inner.rsplit_once('.').map(|(target, _)| target)];
+    targets.into_iter().flatten().find_map(|target| {
+        let of = written_kind(target, project_name)?;
+        let number = disk::temp_number(candidate, target)?;
+        Some(SideFile::UnfinishedWrite(of, number))
+    })
+}
+
+/// Which of the project's [`Written`] side files is called `candidate`.
+fn written_kind(candidate: &str, project_name: &str) -> Option<Written> {
+    let fixed = [
+        Written::Journal,
+        Written::JournalStart,
+        Written::Thumbnail,
+        Written::View,
+    ];
+    let named = |kind: &Written| {
+        let name = kind.side_file().path(Path::new(project_name));
+        let name = name.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
+        disk::strip_name(candidate, &name) == Some("")
+    };
+    fixed
+        .into_iter()
+        .find(named)
+        .or_else(|| backup_format(candidate, project_name).map(Written::Backup))
 }
 
 /// The format in `candidate` when it is `<project name>.backup-v<format>`
@@ -169,6 +238,17 @@ mod tests {
         .unwrap();
         fs::write(disk::temp_path(project_file, None), "half a save").unwrap();
         fs::write(disk::temp_path(project_file, Some(77)), "half a save").unwrap();
+        // Writes of the files beside it that a crash cut short.
+        for (side, number) in [
+            (document::journal_path(project_file), Some(5)),
+            (document::journal_start_path(project_file), Some(6)),
+            (document::journal_start_path(project_file), None),
+            (file::backup_path(project_file, 11), Some(7)),
+            (document::thumbnail_path(project_file), Some(8)),
+            (document::view_path(project_file), Some(9)),
+        ] {
+            fs::write(disk::temp_path(&side, number), "half a write").unwrap();
+        }
         file::back_up_before_upgrade(project_file, 2).unwrap();
         file::back_up_before_upgrade(project_file, 11).unwrap();
         fs::write(document::thumbnail_path(project_file), "png").unwrap();
@@ -203,6 +283,12 @@ mod tests {
                 SideFile::DiscardedJournal(Some(20261113153000)),
                 SideFile::UnfinishedSave(None),
                 SideFile::UnfinishedSave(Some(77)),
+                SideFile::UnfinishedWrite(Written::Journal, Some(5)),
+                SideFile::UnfinishedWrite(Written::JournalStart, None),
+                SideFile::UnfinishedWrite(Written::JournalStart, Some(6)),
+                SideFile::UnfinishedWrite(Written::Backup(11), Some(7)),
+                SideFile::UnfinishedWrite(Written::Thumbnail, Some(8)),
+                SideFile::UnfinishedWrite(Written::View, Some(9)),
                 SideFile::Backup(2),
                 SideFile::Backup(11),
                 SideFile::Thumbnail,
@@ -280,6 +366,14 @@ mod tests {
             format!(".{name}.x.saving"),
             format!(".{name}.007.saving"),
             format!(".{name} 2.saving"),
+            format!(".{name}.journal.x.saving"),
+            format!(".{name}.journal.05.saving"),
+            format!(".{name}.journals.5.saving"),
+            format!(".{name}.journal.discarded.5.saving"),
+            format!(".{name}.backup-v02.5.saving"),
+            format!(".{name}.view.5.saving.x"),
+            format!("{name}.view.5.saving"),
+            format!(".{name}.versions.5.saving"),
         ];
         for other in &others {
             fs::write(tmp.path().join(other), "not ours").unwrap();
@@ -322,6 +416,14 @@ mod tests {
         assert_eq!(
             SideFile::UnfinishedSave(Some(9)).path(&old),
             Path::new("a").join(".old.x.9.saving")
+        );
+        assert_eq!(
+            SideFile::UnfinishedWrite(Written::JournalStart, Some(9)).path(&old),
+            Path::new("a").join(".old.x.journal.start.9.saving")
+        );
+        assert_eq!(
+            SideFile::UnfinishedWrite(Written::Backup(4), None).path(&new),
+            Path::new("b").join(".new.x.backup-v4.saving")
         );
         assert_eq!(
             SideFile::DiscardedJournal(None).path(&old),

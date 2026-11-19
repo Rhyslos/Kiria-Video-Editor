@@ -24,7 +24,7 @@ Phases 2 and 3 done (both gates accepted by the owner): the project browser (fol
 
 ## Renaming, moving and deleting a project
 
-A project is its file plus the files kept beside it: the autosave file and its starting point, unsaved work set aside after a crash, unfinished saves, backups from before upgrades, its picture, the timeline layout and the folder of saved versions. The list is in one place, `project::side_files`, and all three actions go by it.
+A project is its file plus the files kept beside it: the autosave file and its starting point, unsaved work set aside after a crash, unfinished saves and writes, backups from before upgrades, its picture, the timeline layout and the folder of saved versions. The list is in one place, `project::side_files`, and all three actions go by it.
 
 - **Rename…** and **Move to** take every one of those files along, renamed to match. A file that can't follow (something is in the way, or it is in use) is reported in the error strip; the others still move and the project itself is complete. Nothing is ever overwritten: a name counts as taken while files that would belong to it are there.
 - **Delete project…** first shows what would go: the project file and each file that belongs to it, with the folder they are in. **Move to recycle bin** then moves them there (the `trash` crate: the recycle bin on Windows, the trash on Linux), so a mistake can be undone by restoring them. The project leaves the list. If nothing of the project is left on disk, it is only taken off the list.
