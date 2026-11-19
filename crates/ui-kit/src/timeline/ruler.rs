@@ -571,7 +571,23 @@ impl TimelineView {
         );
         let labels_seen = label_painter.clip_rect().x_range();
         for marker in data.markers {
-            let x = self.x_of(left, self.label_shown_at(marker));
+            let at = self.label_shown_at(marker);
+            let x = self.x_of(left, at);
+            // A labelled stretch: a band from its start to its end, behind its mark.
+            if let Some(until) = marker.until {
+                let end = self.x_of(left, at + (until - marker.at));
+                if end >= labels_seen.min && x <= labels_seen.max {
+                    let band = egui::Rect::from_min_max(
+                        pos2(x, layout.labels.top() + cache_bar::HEIGHT + 1.0),
+                        pos2(end.max(x + 1.0), layout.labels.bottom() - 2.0),
+                    );
+                    label_painter.rect_filled(band, 2.0, marker.colour.gamma_multiply(0.25));
+                    label_painter.line_segment(
+                        [pos2(end, band.top()), pos2(end, band.bottom())],
+                        Stroke::new(1.0, marker.colour),
+                    );
+                }
+            }
             // Out of view: its mark and its name (never wider than a
             // label's size per byte) would be clipped away whole.
             let widest = marker.name.len() as f32 * LABEL_SIZE;
@@ -796,7 +812,14 @@ fn label_menu(ui: &mut Ui, label: u64, data: &TimelineData, events: &mut Vec<Tim
         events.push(TimelineEvent::EditLabel(label));
         ui.close();
     }
-    let own = data.markers.iter().find(|m| m.id == label).map(|m| m.colour);
+    let marker = data.markers.iter().find(|m| m.id == label);
+    if let Some(stretch) = marker.and_then(|m| m.until.map(|until| (m.at, until)))
+        && ui.button("Set the region to it").clicked()
+    {
+        events.push(TimelineEvent::SetRegion(Some(stretch)));
+        ui.close();
+    }
+    let own = marker.map(|m| m.colour);
     ui.menu_button("Colour", |ui| {
         for (index, (name, colour)) in crate::theme::labels::ALL.iter().enumerate() {
             let text = egui::RichText::new(format!("●  {name}")).color(*colour);

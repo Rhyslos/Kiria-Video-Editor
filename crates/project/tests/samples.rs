@@ -270,6 +270,7 @@ fn rich_project() -> Project {
         name: "First kill".into(),
         at: Time::seconds(24),
         color: LabelColor::Green,
+        until: None,
     });
     seq.region = Region::between(Time::seconds(20), Time::seconds(50));
     seq.edit_needle = Time::seconds(81);
@@ -393,7 +394,7 @@ fn rich_project() -> Project {
     .expect("a note");
     // Its marked part and a stream's level are kept (format 15).
     let stream = p.media[&video].info.audio[0].index;
-    project::Command::SetMediaUses {
+    let p = project::Command::SetMediaUses {
         uses: vec![(
             video,
             project::MediaUse {
@@ -404,7 +405,22 @@ fn rich_project() -> Project {
         )],
     }
     .apply(&p)
-    .expect("marks")
+    .expect("marks");
+    // A labelled stretch: the region labelled as a whole (format 31). Last,
+    // so the ids of everything above stay as older samples have them.
+    let sequence = p.active_sequence;
+    project::Command::AddLabel {
+        sequence,
+        label: TimelineLabel {
+            id: project::LabelId(0),
+            name: "Clutch round".into(),
+            at: Time::seconds(30),
+            color: LabelColor::Orange,
+            until: Some(Time::seconds(45)),
+        },
+    }
+    .apply(&p)
+    .expect("a labelled stretch")
 }
 
 /// The header read from the text before the project gives what reading

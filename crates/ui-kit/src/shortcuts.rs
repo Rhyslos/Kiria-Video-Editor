@@ -173,6 +173,7 @@ const USUAL: &[(Action, Shortcut)] = &[
     (Action::Delete, Shortcut::key(Key::Delete)),
     (Action::RippleDelete, Shortcut::key(Key::Backspace)),
     (Action::AddLabel, Shortcut::key(Key::M)),
+    (Action::LabelRegion, Shortcut::shift(Key::M)),
     (Action::Undo, Shortcut::ctrl(Key::Z)),
     (Action::Redo, Shortcut::ctrl_shift(Key::Z)),
     (Action::Redo, Shortcut::ctrl(Key::Y)),

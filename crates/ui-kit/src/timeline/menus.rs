@@ -142,6 +142,14 @@ pub(super) fn region_menu(ui: &mut Ui, events: &mut Vec<TimelineEvent>) {
             ui.close();
         }
     }
+    if ui
+        .button("Label the region")
+        .on_hover_text("A label over the whole region, named and kept with the timeline")
+        .clicked()
+    {
+        events.push(TimelineEvent::LabelRegion);
+        ui.close();
+    }
 }
 
 /// What the right-click menu of a timeline area is about.

@@ -245,8 +245,8 @@ pub(crate) fn open_space(p: &mut Project, sequence: SequenceId, at: Time, length
             c.start = c.start + length;
         }
     }
-    for label in seq.labels.iter_mut().filter(|l| l.at >= at) {
-        label.at = label.at + length;
+    for label in seq.labels.iter_mut() {
+        label.open_at(at, length);
     }
     Ok(())
 }
@@ -385,9 +385,8 @@ pub(crate) fn remove_ranges(p: &mut Project, sequence: SequenceId, ranges: &[Reg
         track.clips = before;
     }
     for r in merged.iter().rev() {
-        let length = r.length();
-        for label in seq.labels.iter_mut().filter(|l| l.at > r.start) {
-            label.at = (label.at - length).max(r.start);
+        for label in seq.labels.iter_mut() {
+            label.close_up(*r);
         }
     }
     Ok(())

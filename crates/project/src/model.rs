@@ -662,13 +662,55 @@ fn sequences_seen(sequences: &Vector<Sequence>, id: SequenceId) -> usize {
     sequences.iter().filter(|s| s.id == id).count()
 }
 
-/// A named, coloured marker on the timeline.
+/// A named, coloured marker on the timeline: a moment, or (format 31) a
+/// stretch from `at` to `until`, such as a labelled region.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TimelineLabel {
     pub id: LabelId,
     pub name: String,
     pub at: Time,
     pub color: LabelColor,
+    /// Where a stretch ends (after `at`); none for a moment.
+    #[serde(default, skip_serializing_if = "crate::defaults::is_default")]
+    pub until: Option<Time>,
+}
+
+impl TimelineLabel {
+    /// The stretch it covers, when it is one.
+    pub fn stretch(&self) -> Option<Region> {
+        Region::between(self.at, self.until?)
+    }
+
+    /// Everything from `from` on moved `by` later (room opened there): a
+    /// stretch across `from` grows by as much.
+    pub(crate) fn open_at(&mut self, from: Time, by: Time) {
+        if self.at >= from {
+            self.at = self.at + by;
+        }
+        if let Some(until) = self.until.as_mut()
+            && *until > from
+        {
+            *until = *until + by;
+        }
+    }
+
+    /// `removed` cut out and the gap closed: what was after it moves back,
+    /// what was in it lands at its start. A stretch left with nothing in it
+    /// becomes a moment.
+    pub(crate) fn close_up(&mut self, removed: Region) {
+        fn close(t: Time, removed: Region) -> Time {
+            if t > removed.start {
+                (t - removed.length()).max(removed.start)
+            } else {
+                t
+            }
+        }
+        self.at = close(self.at, removed);
+        self.until = self
+            .until
+            .map(|t| close(t, removed))
+            .filter(|until| *until > self.at);
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

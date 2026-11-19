@@ -4,7 +4,7 @@ The project model, edit commands, undo/redo and autosave.
 
 ## Status
 
-Model, project file (format 30), commands, undo/redo, autosave journal and crash recovery done in Phases 0.3 and 0.4; the model and its commands grow with each page since (formats 2 to 30, every one with a migration and a stored sample).
+Model, project file (format 31), commands, undo/redo, autosave journal and crash recovery done in Phases 0.3 and 0.4; the model and its commands grow with each page since (formats 2 to 31, every one with a migration and a stored sample).
 
 ## Files
 
@@ -155,6 +155,7 @@ RON text with the extension from `brand::PROJECT_FILE_EXTENSION`:
 | 28 | Picture clips gain `grade` (`Grade`: layers of `Primary` corrections with four `Wheel`s) | Version number only: older files are ungraded |
 | 29 | A grade's layers gain `curves` (`Curves`: master, red, green and blue `Curve`s of points) | Version number only: older layers have straight ones |
 | 30 | A grade's layers gain `range` (`ColorRange`) and `mask` (`Mask`), where the layer applies | Version number only: older layers apply everywhere |
+| 31 | A timeline label can cover a stretch: `until` (a labelled region), moved whole by `MoveLabel` and kept in step by ripple edits (`open_at`, `close_up`) | Version number only: older labels are moments |
 
 ### Changing the format
 

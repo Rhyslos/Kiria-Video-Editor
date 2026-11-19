@@ -295,6 +295,7 @@ pub(super) mod tests {
                 name: "Label 1".into(),
                 at: project::Time::seconds(1),
                 color: project::LabelColor::Blue,
+                until: None,
             });
         }));
     }

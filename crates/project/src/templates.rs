@@ -984,6 +984,7 @@ mod tests {
                 name: "After the break".into(),
                 at: Time::seconds(45),
                 color: crate::LabelColor::Green,
+                until: None,
             },
         }
         .apply(&p)

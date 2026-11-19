@@ -128,6 +128,7 @@ actions! {
     Delete, Timeline, "Delete the selected clip";
     RippleDelete, Timeline, "Delete and close the gap";
     AddLabel, Timeline, "Add a timeline label";
+    LabelRegion, Timeline, "Label the region: one label over all of it";
     ClearSelection, Timeline, "Select nothing (and leave full screen)";
     SelectAll, Timeline, "Select all: every clip of the open timeline (on the Library page, every file shown)";
     ClearRegion, Timeline, "Clear the region";
@@ -172,6 +173,7 @@ impl Action {
         match self {
             Action::RippleDelete => &["ripple delete", "remove gap", "extract"],
             Action::RemoveRegion => &["ripple", "extract", "cut region", "in out"],
+            Action::LabelRegion => &["marker", "name the region", "chapter", "in out"],
             Action::LiftRegion => &["lift", "cut region", "in out"],
             Action::KeepRegion => &["trim to region", "crop timeline", "in out"],
             Action::EditAtPlayhead => &["edit needle", "single needle", "cut at the playhead"],

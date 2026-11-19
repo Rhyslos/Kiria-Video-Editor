@@ -568,6 +568,7 @@ impl Editor {
                     name,
                     at: seq.settings.frame_rate.snap(at),
                     color: LabelColor::Blue,
+                    until: None,
                 },
             })
         })
