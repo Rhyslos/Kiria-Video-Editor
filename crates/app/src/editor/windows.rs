@@ -399,6 +399,7 @@ impl Editor {
                     .map_or_else(|| "missing".into(), |n| n.to_string_lossy().into_owned())
             },
             files.as_deref(),
+            project.map(|p| &p.library),
         );
         let answer = crate::search::palette(ctx, &self.theme, &mut self.search_text, &hits, fps);
         let chosen = match answer {
@@ -414,11 +415,26 @@ impl Editor {
                 self.selected = vec![id];
                 self.seek(at);
             }
+            Some(Hit::File { id, .. }) if self.page == Page::Library => {
+                if let Some(p) = self.document.as_ref().map(|d| d.project()) {
+                    self.library_page.show_file(p, id);
+                }
+            }
             Some(Hit::File { name, .. }) => {
                 self.page = Page::Edit;
                 self.drawer.open = true;
                 self.drawer.tab = ui_kit::drawer::DrawerTab::Media;
                 self.drawer.filter = name;
+            }
+            Some(Hit::MediaLabel { id, .. }) => {
+                if let Some(p) = self.document.as_ref().map(|d| d.project()) {
+                    self.library_page.show_label(p, id);
+                    self.page = Page::Library;
+                }
+            }
+            Some(Hit::MediaList { id, .. }) => {
+                self.library_page.show_list(id);
+                self.page = Page::Library;
             }
             Some(Hit::Settings) => self.show_settings = true,
             Some(Hit::Setting(section)) => {
