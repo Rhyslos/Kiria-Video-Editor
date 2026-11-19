@@ -467,7 +467,10 @@ pub enum FrameBlend {
 }
 
 impl Track {
-    /// The volume a track or a whole mix can have, in decibels.
+    /// The volume a track or a whole mix can have, in decibels. The same
+    /// as `ui_kit::volume::{BOTTOM_DB, TOP_DB}`; a test in the app crate
+    /// (`the_volume_range_is_the_same_in_the_project_and_on_screen`)
+    /// keeps them so.
     pub const GAINS_DB: std::ops::RangeInclusive<f32> = -60.0..=12.0;
 
     /// What is wrong with the track's own settings (its volume and sound),
