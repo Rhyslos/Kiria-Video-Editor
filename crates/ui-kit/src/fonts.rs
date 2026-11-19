@@ -8,6 +8,8 @@ use std::sync::Arc;
 const SANS: &[u8] = include_bytes!("../assets/fonts/Inter_400Regular.ttf");
 const SANS_SEMIBOLD: &[u8] = include_bytes!("../assets/fonts/Inter_600SemiBold.ttf");
 const MONO: &[u8] = include_bytes!("../assets/fonts/JetBrainsMono_400Regular.ttf");
+/// Arabic letters, which Inter lacks: DejaVu Sans cut down to that block.
+const ARABIC: &[u8] = include_bytes!("../assets/fonts/DejaVuSans_Arabic.ttf");
 
 /// The font family for headings, names and the active tab.
 pub fn semibold() -> FontFamily {
@@ -33,13 +35,18 @@ pub fn install(ctx: &egui::Context) {
     fonts
         .font_data
         .insert("mono".into(), Arc::new(FontData::from_static(MONO)));
+    fonts
+        .font_data
+        .insert("arabic".into(), Arc::new(FontData::from_static(ARABIC)));
 
     let fallbacks = |family: &FontFamily| fonts.families.get(family).cloned().unwrap_or_default();
     let proportional = fallbacks(&FontFamily::Proportional);
     let monospace = fallbacks(&FontFamily::Monospace);
 
+    // Each family's own font first, then the Arabic letters, then egui's.
     let with = |first: &str, rest: &[String]| {
-        std::iter::once(first.to_owned())
+        [first.to_owned(), "arabic".to_owned()]
+            .into_iter()
             .chain(rest.iter().cloned())
             .collect::<Vec<_>>()
     };
