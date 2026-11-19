@@ -70,6 +70,10 @@ pub struct Updates {
     progress: Progress,
     /// Whether the update window is open.
     window_open: bool,
+    /// Set when this copy runs from an AppImage whose file can't be tied to
+    /// it (`updater::apply::appimage_left_alone`): a download is never
+    /// installed, so no restart is offered.
+    left_alone: bool,
 }
 
 impl std::fmt::Debug for Updates {
@@ -99,6 +103,10 @@ impl Updates {
             problem: None,
             progress: Progress::new(),
             window_open: false,
+            left_alone: updater::apply::appimage_left_alone(
+                cfg!(target_os = "linux"),
+                &updater::apply::AppImageSigns::of_this_process(),
+            ),
         };
         if check {
             updates.check(ctx);
@@ -258,6 +266,7 @@ impl Updates {
         let (line, colour) = self.state_line(theme);
         ui.label(RichText::new(line).size(11.5).color(colour));
         if matches!(self.state, UpdateState::Ready(_))
+            && !self.left_alone
             && ui_kit::accent_button(ui, theme, "Restart to update")
                 .on_hover_text("Installs it now. Otherwise it installs the next time you open the app.")
                 .clicked()
@@ -327,6 +336,10 @@ impl Updates {
                     None => format!("Downloading {v}…"),
                 },
                 theme.text_secondary,
+            ),
+            UpdateState::Ready(v) if self.left_alone => (
+                format!("{v} downloaded, but this AppImage can't be updated in place"),
+                status::WARNING,
             ),
             UpdateState::Ready(v) => (format!("{v} downloaded and verified"), status::GOOD),
             UpdateState::Failed(what) => (what.clone(), theme.muted),
@@ -424,6 +437,20 @@ impl Updates {
                         }
                     });
                 }
+                UpdateState::Ready(version) if self.left_alone => {
+                    heading(ui, "Update downloaded");
+                    body(
+                        ui,
+                        theme,
+                        &format!("{version} is downloaded and checked, but {ALONE}"),
+                    );
+                    ui.add_space(14.0);
+                    buttons(ui, |ui| {
+                        if ui.button("Close").clicked() {
+                            close = true;
+                        }
+                    });
+                }
                 UpdateState::Ready(version) => {
                     heading(ui, "Update ready");
                     body(
@@ -472,6 +499,10 @@ impl Updates {
         restart
     }
 }
+
+/// Why a download is not installed when `Updates::left_alone` is set.
+const ALONE: &str = "this copy can't tell which AppImage file it was started from, so it can't \
+replace it. Download the new AppImage and replace this one by hand.";
 
 /// The update choices made in one window, each `None` until it is changed
 /// there. Versions marked bad are never among them: only the start check
@@ -526,6 +557,21 @@ mod tests {
     fn megabytes_read_naturally() {
         assert_eq!(mb(0), "0.0");
         assert_eq!(mb(63_500_000), "63.5");
+    }
+
+    #[test]
+    fn a_download_an_appimage_cant_install_is_not_called_ready() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = egui::Context::default();
+        let theme = Theme::CARBON;
+        let mut updates = Updates::start(&ctx, "0.1.0".into(), tmp.path().to_path_buf(), false);
+        updates.state = UpdateState::Ready("0.2.0".into());
+        assert!(!updates.left_alone, "this test program is not inside an AppImage");
+        assert_eq!(updates.state_line(&theme).0, "0.2.0 downloaded and verified");
+        updates.left_alone = true;
+        let (line, colour) = updates.state_line(&theme);
+        assert!(line.contains("can't be updated in place"), "{line}");
+        assert_eq!(colour, status::WARNING);
     }
 
     #[test]
