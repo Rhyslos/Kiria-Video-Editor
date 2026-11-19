@@ -39,6 +39,39 @@ pub fn unused_media(project: &Project) -> Vec<MediaId> {
         .collect()
 }
 
+/// Where `media` is used: how many clips play one of the files, and the
+/// names of the timelines they are on, in the project's order.
+pub fn uses(project: &Project, media: &[MediaId]) -> (usize, Vec<String>) {
+    let mut clips = 0;
+    let mut timelines = Vec::new();
+    for seq in &project.sequences {
+        let here = seq
+            .tracks()
+            .flat_map(|t| t.clips.iter())
+            .filter(|c| c.is_file() && media.contains(&c.media))
+            .count();
+        if here > 0 {
+            clips += here;
+            timelines.push(seq.name.clone());
+        }
+    }
+    (clips, timelines)
+}
+
+/// Takes `media` out of the project with every clip that plays it, on every
+/// timeline (gaps stay where they were), then as [`remove_media`] does.
+pub(crate) fn remove_media_and_clips(p: &mut Project, media: &[MediaId]) -> diag::Result<()> {
+    if media.iter().any(|m| !p.media.contains_key(m)) {
+        return Err(missing("media file"));
+    }
+    for seq in p.sequences.iter_mut() {
+        for track in crate::command::tracks_mut(seq) {
+            track.clips.retain(|c| !(c.is_file() && media.contains(&c.media)));
+        }
+    }
+    remove_media(p, media)
+}
+
 /// Takes `media` out of the project, with its labels, its place in lists
 /// and its note. Refused, with nothing changed, for an empty choice, a
 /// file the project doesn't have or one that a timeline uses.
@@ -241,6 +274,41 @@ mod tests {
             .is_err()
         );
         assert!(Command::RemoveMedia { media: vec![] }.apply(&p).is_err());
+    }
+
+    #[test]
+    fn removing_anyway_takes_the_clips_on_every_timeline_and_leaves_their_gaps() {
+        let (p, [a, b, c]) = project();
+        assert_eq!(
+            uses(&p, &[a, b, c]),
+            (2, vec!["Main sequence".to_owned(), "Inner".to_owned()])
+        );
+        assert_eq!(uses(&p, &[c]), (0, vec![]));
+        let before = p.sequences[0].length();
+        let after = Command::RemoveMediaAndClips { media: vec![b, c] }
+            .apply(&p)
+            .unwrap();
+        assert!(!after.media.contains_key(&b) && !after.media.contains_key(&c));
+        assert!(after.media.contains_key(&a));
+        assert!(after.problems().is_empty(), "{:?}", after.problems());
+        assert_eq!(
+            uses(&after, &[b]),
+            (0, vec![]),
+            "b's clip in the inner timeline went"
+        );
+        let inner = &after.sequences[1];
+        assert!(inner.tracks().all(|t| t.clips.is_empty()));
+        // The outer timeline keeps a's clip and the nested clip, unmoved.
+        assert_eq!(after.sequences[0].length(), before);
+        assert_eq!(uses(&after, &[a]).0, 1);
+        assert!(
+            Command::RemoveMediaAndClips {
+                media: vec![MediaId(999)]
+            }
+            .apply(&p)
+            .is_err()
+        );
+        assert!(Command::RemoveMediaAndClips { media: vec![] }.apply(&p).is_err());
     }
 
     #[test]

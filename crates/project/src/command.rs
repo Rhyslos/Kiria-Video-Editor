@@ -178,6 +178,13 @@ pub enum Command {
     RemoveMedia {
         media: Vec<MediaId>,
     },
+    /// Takes files out of the project as `RemoveMedia` does, also those a
+    /// timeline uses: every clip playing one of them, on every timeline,
+    /// goes with it, leaving gaps (the Library's "Remove anyway"). One step;
+    /// files on disk are never touched.
+    RemoveMediaAndClips {
+        media: Vec<MediaId>,
+    },
     /// Points a media file at where it is now (it was moved or renamed).
     Relink {
         media: MediaId,
@@ -781,6 +788,7 @@ impl Command {
                 name_tracks,
             } => crate::templates::insert(&mut p, *sequence, template, *at, *name_tracks)?,
             Command::RemoveMedia { media } => crate::prune::remove_media(&mut p, media)?,
+            Command::RemoveMediaAndClips { media } => crate::prune::remove_media_and_clips(&mut p, media)?,
             Command::Relink { media, path } => {
                 p.media.get_mut(media).ok_or_else(|| missing("media file"))?.path = path.clone();
             }

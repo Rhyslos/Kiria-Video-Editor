@@ -887,7 +887,7 @@ impl LibraryPage {
         ui.separator();
         if ui
             .button(format!("Remove the {count} files from the project…"))
-            .on_hover_text("Files a timeline uses stay. Nothing is deleted from disk; undo brings them back.")
+            .on_hover_text("Asks first when a timeline uses any of them. Nothing is deleted from disk; undo brings them back.")
             .clicked()
         {
             picked = Some(Picked::Remove(files));
@@ -939,6 +939,15 @@ impl LibraryPage {
             ui.separator();
             if let Some(asked) = self.organiser.menus(ui, about.project, about.global, &[media.id]) {
                 picked = Some(asked.into());
+                ui.close();
+            }
+            ui.separator();
+            if ui
+                .button("Remove from project…")
+                .on_hover_text("Takes it out of this project; asks first when a timeline uses it. Nothing is deleted from disk; undo brings it back.")
+                .clicked()
+            {
+                picked = Some(Picked::Remove(vec![media.id]));
                 ui.close();
             }
         });

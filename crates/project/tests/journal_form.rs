@@ -51,6 +51,7 @@ fn name(c: &Command) -> &'static str {
         Command::Restore { .. } => "Restore",
         Command::InsertTemplate { .. } => "InsertTemplate",
         Command::RemoveMedia { .. } => "RemoveMedia",
+        Command::RemoveMediaAndClips { .. } => "RemoveMediaAndClips",
         Command::Relink { .. } => "Relink",
         Command::RelinkFiles { .. } => "RelinkFiles",
         Command::Import { .. } => "Import",
@@ -277,6 +278,7 @@ fn every_command() -> Vec<Command> {
             name_tracks: true,
         },
         Command::RemoveMedia { media: vec![media] },
+        Command::RemoveMediaAndClips { media: vec![media] },
         Command::Relink {
             media,
             path: PathBuf::from("/recordings/again.mp4"),

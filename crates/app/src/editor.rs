@@ -9,6 +9,7 @@ mod edit_ui;
 mod follow;
 mod keyframe_clipboard;
 mod library_ui;
+mod media_removal;
 mod region_cuts;
 mod saving;
 mod script;
@@ -186,6 +187,8 @@ pub struct Editor {
     templates: crate::templates_window::TemplatesWindow,
     /// Prune: the files no timeline uses, to take out of the project.
     prune: crate::prune_window::PruneWindow,
+    /// "Remove from project" asked for files a timeline uses: the warning.
+    removal: Option<media_removal::RemovalAsk>,
     /// Package project: the project and its media, copied into one folder.
     package: crate::package_window::PackageWindow,
     /// Package project was asked for; the folder dialog opens on the next frame.
@@ -446,6 +449,7 @@ impl Editor {
             versions: crate::versions_window::VersionsWindow::default(),
             templates: crate::templates_window::TemplatesWindow::default(),
             prune: crate::prune_window::PruneWindow::default(),
+            removal: None,
             package: crate::package_window::PackageWindow::holding_at(holds.package),
             package_requested: false,
             shortcuts_page: None,
@@ -1701,6 +1705,7 @@ impl eframe::App for Editor {
         self.versions_window(&ctx);
         self.templates_window(&ctx);
         self.prune_window(&ctx);
+        self.removal_window(&ctx);
         self.package_window(&ctx);
         self.shortcuts_window(&ctx);
         self.follow_background(&ctx);
