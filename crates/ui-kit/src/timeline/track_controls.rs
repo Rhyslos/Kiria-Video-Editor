@@ -11,6 +11,12 @@ use crate::Theme;
 use crate::knob::KnobLook;
 use egui::{Align2, CursorIcon, FontId, Pos2, Rect, Sense, Stroke, Ui, pos2, vec2};
 
+/// The width of the meter at an audio track header's right edge.
+const METER_ROOM: f32 = 7.0;
+/// An audio header at least this tall has a second row of buttons (the
+/// padlock, FX and pan) under M and S.
+const SECOND_ROW: f32 = 46.0;
+
 /// A track's height being changed by dragging the edge of its name.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct HeightDrag {
@@ -42,6 +48,10 @@ impl TimelineView {
         let mut renaming = false;
         let header =
             Rect::from_min_max(pos2(layout.header_x, row.top()), pos2(left, row.bottom())).intersect(area);
+        // A track of its own colour: the header faintly in it.
+        if let Some(colour) = track.colour {
+            header_painter.rect_filled(header.shrink2(vec2(0.0, 1.0)), 0.0, colour.gamma_multiply(0.12));
+        }
         match self.rename.as_mut().filter(|r| r.track == track.id) {
             Some(rename) => {
                 renaming = true;
@@ -76,7 +86,7 @@ impl TimelineView {
         }
         // The short line about reading stops before the header's
         // buttons; pointing at it says the whole of it.
-        let first_button = headers::button_rect(header, if audio { -1.0 } else { 1.0 });
+        let first_button = headers::button_rect(header, if audio { -1.0 } else { 0.0 });
         let text_room = Rect::from_min_max(header.min, pos2(first_button.left() - 4.0, header.bottom()));
         let text_painter = header_painter.with_clip_rect(header_painter.clip_rect().intersect(text_room));
         if let Some(loading) = &track.loading
@@ -101,16 +111,32 @@ impl TimelineView {
             // the area's view is cut off, as the clips are.
             let whole =
                 Rect::from_min_max(pos2(header.left(), row.top()), pos2(header.right(), row.bottom()));
+            // The meter takes a thin strip at the right edge; the rest is
+            // laid out left of it.
+            let meter_room = if self.compact { 0.0 } else { METER_ROOM };
+            let inner = |r: Rect| r.with_max_x(r.right() - meter_room);
             self.track_controls(
                 ui,
                 theme,
                 track,
-                [header, whole],
-                super::audio_colour(index),
+                [inner(header), inner(whole)],
+                super::track_colour(track, index, true, theme.line_strong),
                 events,
             );
+            if !self.compact {
+                self.header_meter(
+                    ui,
+                    theme,
+                    track,
+                    header,
+                    super::track_colour(track, index, true, theme.line_strong),
+                );
+            }
         } else {
             headers::eye(ui, theme, track, header, self.compact, events);
+            if header.height() >= headers::least_for_buttons(self.compact) {
+                headers::lock_button(ui, theme, track, headers::button_rect(header, 0.0), events);
+            }
         }
         renaming
     }
@@ -150,8 +176,12 @@ impl TimelineView {
                 &r,
                 self.names_menu.filter(|(h, _)| *h == half),
                 data,
-                &mut self.rename,
-                &mut self.level_lines,
+                headers::MenuState {
+                    rename: &mut self.rename,
+                    level_lines: &mut self.level_lines,
+                    pinned: self.pins.then_some(&mut self.pinned),
+                    effects_copied: self.effects_copied,
+                },
                 events,
             );
         }
@@ -190,6 +220,30 @@ impl TimelineView {
             self.level_button(ui, theme, track.id, button(-1.0), id);
         }
         self.mute_and_solo(ui, theme, track, buttons, id, events);
+        let second = match knob {
+            // Left of the detailed knob, at the bottom of the header.
+            Some(KnobLook::Detailed) => {
+                let y = header.bottom() - 24.0;
+                (y >= header.top() + 26.0).then(|| {
+                    [0.0, 24.0, 50.0]
+                        .map(|x| Rect::from_min_size(pos2(header.left() + 10.0 + x, y), vec2(20.0, 16.0)))
+                })
+            }
+            // Under the top row's buttons.
+            // With the slider under them, only where it still has room.
+            _ => (header.height()
+                >= if knob.is_none() {
+                    super::AUDIO_TRACK
+                } else {
+                    SECOND_ROW
+                })
+            .then(|| [-1.0, 0.0, 1.0].map(|i| headers::button_rect(buttons, i).translate(vec2(0.0, 22.0)))),
+        };
+        if let Some([lock, fx, pan]) = second {
+            headers::lock_button(ui, theme, track, lock, events);
+            self.fx_button(ui, theme, track, fx, id, events);
+            self.pan_knob(ui, theme, track, pan, colour, id, events);
+        }
         match knob {
             Some(look) => {
                 // Drawn within what is in view of the header (a scope
@@ -261,6 +315,120 @@ impl TimelineView {
         }
     }
 
+    /// The FX button: lit while the track's effects do something; a click
+    /// opens them on the Audio page.
+    fn fx_button(
+        &mut self,
+        ui: &mut Ui,
+        theme: &Theme,
+        track: &TimelineTrack,
+        rect: Rect,
+        id: egui::Id,
+        events: &mut Vec<TimelineEvent>,
+    ) {
+        let r = ui
+            .interact(rect, id.with("fx"), Sense::click())
+            .on_hover_text(if track.effects_on {
+                "Effects on (EQ, compressor, clean-up…): click to see them on the Audio page"
+            } else {
+                "Effects: click to add an EQ, compressor, clean-up and more on the Audio page"
+            });
+        let fill = match track.effects_on {
+            true => theme.accent,
+            false if r.hovered() => theme.line_strong,
+            false => theme.line,
+        };
+        let p = ui.painter();
+        p.rect_filled(rect, 3.0, fill);
+        p.text(
+            rect.center(),
+            Align2::CENTER_CENTER,
+            "FX",
+            FontId::proportional(9.5),
+            if track.effects_on { theme.bg } else { theme.text },
+        );
+        if r.clicked() {
+            events.push(TimelineEvent::OpenTrackEffects { track: track.id });
+        }
+    }
+
+    /// The small pan knob in `rect`; let go, it is one change.
+    #[allow(clippy::too_many_arguments)]
+    fn pan_knob(
+        &mut self,
+        ui: &mut Ui,
+        theme: &Theme,
+        track: &TimelineTrack,
+        rect: Rect,
+        colour: egui::Color32,
+        id: egui::Id,
+        events: &mut Vec<TimelineEvent>,
+    ) {
+        let knob = crate::pan_knob::PanKnob {
+            centre: rect.center(),
+            radius: (rect.height() / 2.0 - 2.0).min(6.0),
+            id: id.with("pan"),
+            pan: track.pan,
+            colour,
+            tip: "Pan: drag left or right (Shift: finer), double-click to centre",
+        };
+        let out = crate::pan_knob::pan_knob(ui, theme, knob);
+        if let Some(pan) = out.done {
+            events.push(TimelineEvent::TrackPan { track: track.id, pan });
+        }
+    }
+
+    /// The thin meter at an audio track header's right edge: its two
+    /// channels' peaks while playing, falling back slowly.
+    fn header_meter(
+        &mut self,
+        ui: &Ui,
+        theme: &Theme,
+        track: &TimelineTrack,
+        header: Rect,
+        colour: egui::Color32,
+    ) {
+        use crate::volume::{BOTTOM_DB, TOP_DB};
+        let strip = Rect::from_min_max(
+            pos2(header.right() - METER_ROOM + 1.0, header.top() + 4.0),
+            pos2(header.right() - 2.0, header.bottom() - 4.0),
+        );
+        if strip.height() < 8.0 {
+            return;
+        }
+        let peaks = track.meter.unwrap_or([f32::NEG_INFINITY; 2]);
+        let shown = self.meters.entry(track.id).or_insert([BOTTOM_DB; 2]);
+        let p = ui.painter();
+        let lane_width = (strip.width() - 1.0) / 2.0;
+        let y_of = |db: f32| {
+            let share = crate::volume::share_of(db.clamp(BOTTOM_DB, TOP_DB));
+            strip.bottom() - share * strip.height()
+        };
+        for ch in 0..2 {
+            shown[ch] = crate::master::falling(shown[ch], peaks[ch]);
+            let x = strip.left() + ch as f32 * (lane_width + 1.0);
+            let lane = Rect::from_min_max(pos2(x, strip.top()), pos2(x + lane_width, strip.bottom()));
+            p.rect_filled(lane, 1.0, theme.bg);
+            for (from, to, c) in [
+                (BOTTOM_DB, -6.0, colour),
+                (-6.0, 0.0, crate::status::WARNING),
+                (0.0, TOP_DB, crate::status::ERROR),
+            ] {
+                let top = shown[ch].min(to);
+                if top > from {
+                    p.rect_filled(
+                        Rect::from_min_max(pos2(lane.left(), y_of(top)), pos2(lane.right(), y_of(from))),
+                        0.0,
+                        c,
+                    );
+                }
+            }
+        }
+        if track.meter.is_some() || shown.iter().any(|s| *s > BOTTOM_DB) {
+            ui.ctx().request_repaint();
+        }
+    }
+
     /// The level button, left of M and S: the level line on the clips of
     /// track `track`.
     fn level_button(&mut self, ui: &mut Ui, theme: &Theme, track: u64, rect: Rect, id: egui::Id) {
@@ -301,7 +469,11 @@ impl TimelineView {
     ) {
         for (i, (label, on, tip)) in [
             ("M", track.muted, "Mute"),
-            ("S", track.solo, "Solo: hear only soloed tracks"),
+            (
+                "S",
+                track.solo,
+                "Solo: hear only soloed tracks. Ctrl+click: this track alone",
+            ),
         ]
         .into_iter()
         .enumerate()
@@ -325,7 +497,9 @@ impl TimelineView {
                 FontId::proportional(10.5),
                 if on { theme.bg } else { theme.text },
             );
-            if r.clicked() {
+            if r.clicked() && i == 1 && ui.input(|i| i.modifiers.command) {
+                events.push(TimelineEvent::SoloOnly { track: track.id });
+            } else if r.clicked() {
                 let (muted, solo) = if i == 0 {
                     (!track.muted, track.solo)
                 } else {

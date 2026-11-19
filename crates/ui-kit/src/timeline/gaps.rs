@@ -101,6 +101,11 @@ mod tests {
             loading: None,
             line: None,
             role: None,
+            colour: None,
+            locked: false,
+            pan: 0.0,
+            effects_on: false,
+            meter: None,
         }
     }
 

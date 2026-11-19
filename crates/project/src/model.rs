@@ -317,6 +317,10 @@ pub struct Track {
     /// tracks only). Every effect off when missing.
     #[serde(default, skip_serializing_if = "crate::defaults::is_default")]
     pub sound: TrackSound,
+    /// Its colour (format 33), which its clips are drawn in; the timeline's
+    /// own colours when missing.
+    #[serde(default, skip_serializing_if = "crate::defaults::is_default")]
+    pub colour: Option<LabelColor>,
 }
 
 /// A piece of a media file placed on a track.
@@ -840,6 +844,7 @@ impl Project {
             hidden: false,
             gain_db: 0.0,
             sound: TrackSound::default(),
+            colour: None,
         }
     }
 

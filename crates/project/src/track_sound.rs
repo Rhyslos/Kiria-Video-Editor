@@ -307,6 +307,31 @@ pub(crate) fn check_line(line: &Vector<LinePoint>, low: i32, high: i32) -> bool 
 }
 
 impl TrackSound {
+    /// Whether any of its effects is on (the high-pass, EQ, compressor,
+    /// clean-up, ducking or loudness).
+    pub fn effects_on(&self) -> bool {
+        self.high_pass.on
+            || self.eq.on
+            || self.compressor.on
+            || self.cleanup.on
+            || self.ducking.on
+            || self.loudness.on
+    }
+
+    /// This sound with the effects of `from` (copied from another track):
+    /// its role, pan and lines stay its own.
+    pub fn with_effects_of(&self, from: &TrackSound) -> TrackSound {
+        TrackSound {
+            high_pass: from.high_pass,
+            eq: from.eq,
+            compressor: from.compressor,
+            cleanup: from.cleanup.clone(),
+            ducking: from.ducking,
+            loudness: from.loudness,
+            ..self.clone()
+        }
+    }
+
     /// The bottom of a volume line: -60 dB.
     pub const LINE_QUIETEST: i32 = -60_000;
     /// The top of a volume line: +12 dB.
@@ -418,6 +443,26 @@ impl MasterSound {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn effects_are_copied_without_the_role_pan_or_lines() {
+        let mut from = TrackSound::default();
+        assert!(!from.effects_on());
+        from.compressor.on = true;
+        from.eq.on = true;
+        from.pan = 300_000;
+        assert!(from.effects_on());
+        let mut onto = TrackSound {
+            role: TrackRole::Dialogue,
+            pan: -200_000,
+            ..TrackSound::default()
+        };
+        onto.loudness.on = true;
+        let pasted = onto.with_effects_of(&from);
+        assert!(pasted.compressor.on && pasted.eq.on);
+        assert!(!pasted.loudness.on, "its own effects are replaced");
+        assert_eq!((pasted.role, pasted.pan), (TrackRole::Dialogue, -200_000));
+    }
 
     #[test]
     fn a_dialogue_track_gets_the_voice_high_pass() {

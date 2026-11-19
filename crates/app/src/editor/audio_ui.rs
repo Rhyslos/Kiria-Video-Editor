@@ -258,7 +258,7 @@ impl Editor {
         let (timeline_rect, mixer_rect) = (places.timeline, places.mixer);
         let mut events = Vec::new();
         if let Some(r) = timeline_rect {
-            events = self.audio_timeline(ui, r, p, shown_seq);
+            events = self.audio_timeline(ui, r, p, shown_seq, &live);
         }
         let mut mixer_asks = audio_page::MixerAsks::default();
         if let Some(r) = mixer_rect {
@@ -508,6 +508,7 @@ impl Editor {
         r: egui::Rect,
         p: &project::Project,
         seq: &project::Sequence,
+        live: &Live,
     ) -> Vec<ui_kit::TimelineEvent> {
         let (jobs, waveforms, pictures, ctx) = (
             &self.jobs,
@@ -526,6 +527,9 @@ impl Editor {
         timeline_panel::show_sounds(&mut drawn, &self.inspector.sounds_being_set());
         timeline_panel::show_chosen_label(&mut drawn, self.selected_label);
         lines::fill(&mut drawn.audio, seq, self.lines.kind);
+        for (d, t) in drawn.audio.iter_mut().zip(&seq.audio_tracks) {
+            d.meter = live.tracks.get(&t.id).filter(|_| live.playing).map(|l| l.peak_db);
+        }
         let show = self.audio_page.show;
         let shown_audio: Vec<ui_kit::TimelineTrack> = drawn
             .audio
@@ -546,6 +550,7 @@ impl Editor {
         view.zoom_to_playhead = self.settings.zoom_to_playhead;
         view.volume_control = self.settings.volume_control();
         view.detailed_on_selected = self.settings.detailed_gain_selected;
+        view.effects_copied = self.track_effects.is_some();
         view.lines = self.lines_on.then_some(self.lines);
         view.heights.keep_only(&timeline_panel::track_ids(seq));
         // The reference row keeps to one track's height.

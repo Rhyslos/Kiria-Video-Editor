@@ -83,6 +83,104 @@ pub(crate) fn add(p: &mut Project, sequence: SequenceId, kind: TrackKind, name: 
     Ok(())
 }
 
+/// Adds an empty track of `kind` at `index` among those of its kind, with
+/// the next free name.
+pub(crate) fn add_at(
+    p: &mut Project,
+    sequence: SequenceId,
+    kind: TrackKind,
+    index: usize,
+) -> diag::Result<()> {
+    let name = sequence_mut(p, sequence)?.next_track_name(kind);
+    let track = p.new_track(kind, &name);
+    let seq = sequence_mut(p, sequence)?;
+    let tracks = match kind {
+        TrackKind::Video => &mut seq.video_tracks,
+        TrackKind::Audio => &mut seq.audio_tracks,
+    };
+    tracks.insert(index.min(tracks.len()), track);
+    Ok(())
+}
+
+/// Copies `track` beside itself: its clips with new ids and no links,
+/// everything else about it as it is.
+pub(crate) fn duplicate(p: &mut Project, sequence: SequenceId, track: TrackId) -> diag::Result<()> {
+    let seq = p.sequence(sequence).ok_or_else(|| missing("timeline"))?;
+    let found = seq.track(track).ok_or_else(|| missing("track"))?.clone();
+    let name = tidy(&format!("{} copy", found.name)).unwrap_or_else(|_| found.name.clone());
+    let mut copy = p.new_track(found.kind, &name);
+    let clips: Vec<_> = found.clips.iter().cloned().collect();
+    for mut clip in clips {
+        clip.id = p.allocate_id();
+        clip.link = None;
+        copy.clips.push_back(clip);
+    }
+    copy = crate::model::Track {
+        id: copy.id,
+        kind: copy.kind,
+        name: copy.name,
+        clips: copy.clips,
+        locked: false,
+        ..found
+    };
+    let seq = sequence_mut(p, sequence)?;
+    let tracks = match copy.kind {
+        TrackKind::Video => &mut seq.video_tracks,
+        TrackKind::Audio => &mut seq.audio_tracks,
+    };
+    let at = tracks
+        .iter()
+        .position(|t| t.id == track)
+        .ok_or_else(|| missing("track"))?;
+    tracks.insert(at + 1, copy);
+    Ok(())
+}
+
+/// Moves `track` to `index` among the tracks of its kind.
+pub(crate) fn move_to(
+    p: &mut Project,
+    sequence: SequenceId,
+    track: TrackId,
+    index: usize,
+) -> diag::Result<()> {
+    let seq = sequence_mut(p, sequence)?;
+    let kind = seq.track(track).ok_or_else(|| missing("track"))?.kind;
+    let tracks = match kind {
+        TrackKind::Video => &mut seq.video_tracks,
+        TrackKind::Audio => &mut seq.audio_tracks,
+    };
+    let from = tracks
+        .iter()
+        .position(|t| t.id == track)
+        .ok_or_else(|| missing("track"))?;
+    let moved = tracks.remove(from);
+    tracks.insert(index.min(tracks.len()), moved);
+    Ok(())
+}
+
+/// Refuses a change that touches a locked track of `before`: its clips
+/// changed, or it was taken away (a timeline removed as a whole is not
+/// refused). Unlocking it first is the way.
+pub(crate) fn keep_locks(before: &Project, after: &Project) -> diag::Result<()> {
+    for seq in &before.sequences {
+        let Some(now) = after.sequence(seq.id) else {
+            continue;
+        };
+        for track in seq.tracks().filter(|t| t.locked) {
+            let same = now.track(track.id).is_some_and(|t| t.clips == track.clips);
+            if !same {
+                return Err(AppError::new(format!("{} is locked", track.name))
+                    .why("Nothing on a locked track can be moved, trimmed, cut, changed or removed.")
+                    .fix(format!(
+                        "Unlock {} (the padlock in its header) first.",
+                        track.name
+                    )));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Removes an empty track. A track that still has clips stays, and so does
 /// the last track of its kind.
 pub(crate) fn remove(p: &mut Project, sequence: SequenceId, track: TrackId) -> diag::Result<()> {
@@ -439,5 +537,97 @@ mod tests {
             history.redo();
         }
         assert_eq!(names(history.current(), TrackKind::Video), ["Game"]);
+    }
+
+    #[test]
+    fn a_locked_track_refuses_every_change_to_its_clips_but_not_its_mix() {
+        let p = project();
+        let seq = p.active().unwrap();
+        let (sequence, v1) = (seq.id, seq.video_tracks[0].id);
+        let p = with_a_clip_on(&p, v1);
+        let clip = p.active().unwrap().video_tracks[0].clips[0].id;
+        let lock = |locked| Command::SetTrackLocked {
+            sequence,
+            track: v1,
+            locked,
+        };
+        let locked = lock(true).apply(&p).unwrap();
+        let moved = Command::MoveClip {
+            sequence,
+            clip,
+            start: Time::seconds(9),
+            track: None,
+        };
+        let refused = moved.apply(&locked).unwrap_err();
+        assert!(refused.to_string().contains("V1 is locked"), "{refused}");
+        assert!(
+            Command::RemoveClips {
+                sequence,
+                clips: vec![clip],
+                ripple: false,
+            }
+            .apply(&locked)
+            .is_err()
+        );
+        // Its colour still changes; unlocked, the clip moves again.
+        let coloured = Command::SetTrackColour {
+            sequence,
+            track: v1,
+            colour: Some(crate::model::LabelColor::Red),
+        }
+        .apply(&locked)
+        .unwrap();
+        assert_eq!(
+            coloured.active().unwrap().video_tracks[0].colour,
+            Some(crate::model::LabelColor::Red)
+        );
+        let unlocked = lock(false).apply(&coloured).unwrap();
+        assert!(moved.apply(&unlocked).is_ok());
+        // Another track's edits go on while it is locked.
+        let with_a2 = add(&locked, TrackKind::Audio);
+        assert_eq!(names(&with_a2, TrackKind::Audio).len(), 2);
+    }
+
+    #[test]
+    fn tracks_are_duplicated_beside_themselves_moved_and_added_in_place() {
+        let p = project();
+        let p = add(&add(&p, TrackKind::Video), TrackKind::Video);
+        let seq = p.active().unwrap();
+        let (sequence, v1) = (seq.id, seq.video_tracks[0].id);
+        let p = with_a_clip_on(&p, v1);
+        let copied = Command::DuplicateTrack { sequence, track: v1 }.apply(&p).unwrap();
+        assert_eq!(names(&copied, TrackKind::Video), ["V1", "V1 copy", "V2", "V3"]);
+        let s = copied.active().unwrap();
+        let (a, b) = (&s.video_tracks[0].clips[0], &s.video_tracks[1].clips[0]);
+        assert!(a.id != b.id && b.link.is_none() && a.start == b.start);
+        // Moved to the top, then back to the bottom.
+        let up = Command::MoveTrack {
+            sequence,
+            track: v1,
+            index: 99,
+        }
+        .apply(&copied)
+        .unwrap();
+        assert_eq!(names(&up, TrackKind::Video), ["V1 copy", "V2", "V3", "V1"]);
+        let back = Command::MoveTrack {
+            sequence,
+            track: v1,
+            index: 0,
+        }
+        .apply(&up)
+        .unwrap();
+        assert_eq!(names(&back, TrackKind::Video), names(&copied, TrackKind::Video));
+        // A new track between the first two, with the next free name.
+        let added = Command::AddTrackAt {
+            sequence,
+            kind: TrackKind::Video,
+            index: 1,
+        }
+        .apply(&copied)
+        .unwrap();
+        assert_eq!(
+            names(&added, TrackKind::Video),
+            ["V1", "V5", "V1 copy", "V2", "V3"]
+        );
     }
 }

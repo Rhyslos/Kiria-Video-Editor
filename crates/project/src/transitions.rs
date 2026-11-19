@@ -233,6 +233,7 @@ mod tests {
             hidden: false,
             gain_db: 0.0,
             sound: Default::default(),
+            colour: None,
         }
     }
 

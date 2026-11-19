@@ -17,6 +17,7 @@ pub mod knob;
 pub mod layout;
 pub mod master;
 pub mod mixer;
+pub mod pan_knob;
 pub mod picture_handles;
 pub mod scrub;
 pub mod settings;

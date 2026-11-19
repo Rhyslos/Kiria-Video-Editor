@@ -442,7 +442,7 @@ fn rich_project() -> Project {
     }
     .apply(&p)
     .expect("picture fades");
-    project::Command::SetSound {
+    let p = project::Command::SetSound {
         sequence,
         sounds: vec![(
             sound_clip.id,
@@ -453,7 +453,16 @@ fn rich_project() -> Project {
         )],
     }
     .apply(&p)
-    .expect("a curved sound fade")
+    .expect("a curved sound fade");
+    // The first audio track in a colour of its own (format 33).
+    let first_audio = p.active().expect("an open timeline").audio_tracks[0].id;
+    project::Command::SetTrackColour {
+        sequence,
+        track: first_audio,
+        colour: Some(LabelColor::Purple),
+    }
+    .apply(&p)
+    .expect("a coloured track")
 }
 
 /// The header read from the text before the project gives what reading
@@ -1017,6 +1026,8 @@ fn the_stored_template_matches_the_model_but_for_what_came_later() {
         .chain(expected.audio_tracks.iter_mut())
     {
         track.sound = project::TrackSound::default();
+        // Track colours came with format 33.
+        track.colour = None;
     }
     assert_eq!(read_template(1), expected);
 }

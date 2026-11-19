@@ -28,7 +28,7 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 /// The format this build writes.
-pub const FORMAT_VERSION: u32 = 32;
+pub const FORMAT_VERSION: u32 = 33;
 
 /// Turns the text of a version `n` file into the text of a version `n + 1` file.
 pub type Migration = fn(&str) -> diag::Result<String>;
@@ -38,7 +38,7 @@ pub const MIGRATIONS: &[Migration] = &[
     v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8, v8_to_v9, v9_to_v10, v10_to_v11,
     v11_to_v12, v12_to_v13, v13_to_v14, v14_to_v15, v15_to_v16, v16_to_v17, v17_to_v18, v18_to_v19,
     v19_to_v20, v20_to_v21, v21_to_v22, v22_to_v23, v23_to_v24, v24_to_v25, v25_to_v26, v26_to_v27,
-    v27_to_v28, v28_to_v29, v29_to_v30, v30_to_v31, v31_to_v32,
+    v27_to_v28, v28_to_v29, v29_to_v30, v30_to_v31, v31_to_v32, v32_to_v33,
 ];
 
 /// Format 2 adds `info` (the file's streams) to each media entry. The field
@@ -246,6 +246,12 @@ fn v30_to_v31(text: &str) -> diag::Result<String> {
 /// the plain quarter sine every older fade had when missing).
 fn v31_to_v32(text: &str) -> diag::Result<String> {
     set_format_version(text, 31, 32)
+}
+
+/// Format 33 adds a colour to a track (`colour`, the timeline's own when
+/// missing).
+fn v32_to_v33(text: &str) -> diag::Result<String> {
+    set_format_version(text, 32, 33)
 }
 
 /// Rewrites the `format_version` number at the top of the file.
