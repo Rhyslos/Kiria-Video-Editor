@@ -14,6 +14,7 @@ use crate::ids::{ClipId, LinkId, MediaId, SequenceId, TrackId};
 use crate::look::Look;
 use crate::model::{Clip, MediaKind, MediaRef, Project, Sequence, SequenceSettings, Track, TrackKind};
 use crate::time::{Speed, Time};
+use crate::tracks::Targets;
 use diag::AppError;
 use std::collections::HashSet;
 
@@ -41,10 +42,45 @@ pub(crate) fn insert_media(
     sequence: SequenceId,
     media: MediaId,
     at: Time,
+    targets: Targets,
 ) -> diag::Result<()> {
-    let length = placed_length(p.media.get(&media).ok_or_else(|| missing("media file"))?);
-    crate::edits::open_space(p, sequence, at, length)?;
-    place_media(p, sequence, media, Some(at), None)
+    let found = p.media.get(&media).ok_or_else(|| missing("media file"))?;
+    let length = placed_length(found);
+    let seq = sequence_ref(p, sequence)?;
+    let picture = picture_track(seq, targets.picture_on(seq))?;
+    let landing = landing(seq, found, picture, targets.sound_from(seq));
+    crate::edits::open_space(p, sequence, at, length, &landing)?;
+    place_on_targets(p, sequence, media, Some(at), targets)
+}
+
+/// [`place_media`] on the tracks `targets` names.
+pub(crate) fn place_on_targets(
+    p: &mut Project,
+    sequence: SequenceId,
+    media: MediaId,
+    at: Option<Time>,
+    targets: Targets,
+) -> diag::Result<()> {
+    let seq = sequence_ref(p, sequence)?;
+    let (picture, from) = (targets.picture_on(seq), targets.sound_from(seq));
+    place_media_from(p, sequence, media, at, picture, from)
+}
+
+/// The tracks of `seq` a file lands on: its picture's (`picture`, when it
+/// has one) and one audio track per sound stream from `sound_from`.
+fn landing(seq: &Sequence, media: &MediaRef, picture: Option<TrackId>, sound_from: usize) -> Vec<TrackId> {
+    let (video, audio) = placed_streams(media);
+    picture
+        .filter(|_| video.is_some())
+        .into_iter()
+        .chain(
+            seq.audio_tracks
+                .iter()
+                .skip(sound_from)
+                .take(audio.len())
+                .map(|t| t.id),
+        )
+        .collect()
 }
 
 /// See [`crate::Command::OverwriteMedia`]: what the file covers from `at` is cut
@@ -326,17 +362,12 @@ pub(crate) fn drop_media(
     let length = placed_length(&media);
     let seq = sequence_ref(p, sequence)?;
     let track = picture_track(seq, track)?;
+    // The tracks it lands on: its picture's, and one audio track per
+    // sound stream, from the first.
+    let landing = landing(seq, &media, track, 0);
     if insert {
-        crate::edits::open_space(p, sequence, at, length)?;
+        crate::edits::open_space(p, sequence, at, length, &landing)?;
     } else {
-        // The tracks it lands on: its picture's, and one audio track per
-        // sound stream, from the first.
-        let (video, audio) = placed_streams(&media);
-        let landing: Vec<TrackId> = track
-            .filter(|_| video.is_some())
-            .into_iter()
-            .chain(seq.audio_tracks.iter().take(audio.len()).map(|t| t.id))
-            .collect();
         crate::edits::clear_space_on(p, sequence, at, length, &landing)?;
     }
     place_media(p, sequence, id, Some(at), track)
@@ -352,6 +383,19 @@ pub(crate) fn place_media(
     id: MediaId,
     at: Option<Time>,
     picture_on: Option<TrackId>,
+) -> diag::Result<()> {
+    place_media_from(p, sequence, id, at, picture_on, 0)
+}
+
+/// [`place_media`] with the first sound stream on the `sound_from`-th
+/// audio track (the target), the others under it.
+fn place_media_from(
+    p: &mut Project,
+    sequence: SequenceId,
+    id: MediaId,
+    at: Option<Time>,
+    picture_on: Option<TrackId>,
+    sound_from: usize,
 ) -> diag::Result<()> {
     let media = p.media.get(&id).cloned().ok_or_else(|| missing("media file"))?;
     let media = &media;
@@ -400,6 +444,7 @@ pub(crate) fn place_media(
         insert_clip(track, c)?;
     }
     for (i, stream) in audio.iter().enumerate() {
+        let i = i + sound_from;
         let c = clip(p, stream.index);
         if sequence_ref(p, sequence)?.audio_tracks.len() <= i {
             let name = crate::tracks::name_for_stream(sequence_ref(p, sequence)?, &stream.name);
@@ -519,11 +564,19 @@ fn close_stretches(
     going: &HashSet<ClipId>,
 ) -> diag::Result<()> {
     let seq = sequence_ref(p, sequence)?;
+    // The tracks that close the stretches: the sync-locked ones, and those
+    // clips go from (a track whose sync lock is off keeps its place else).
+    let on: HashSet<TrackId> = seq
+        .tracks()
+        .filter(|t| t.clips.iter().any(|c| going.contains(&c.id)))
+        .map(|t| t.id)
+        .collect();
+    let follows = |t: &Track| crate::tracks::follows(t, &on);
     // The first stretch a clip that stays is in, by a search: stretches are
     // in time order and apart. Named as a walk stretch by stretch, then
     // track by track, would find it.
     let mut first_in_the_way: Option<((usize, usize, usize), &Track, &Clip)> = None;
-    for (ti, t) in seq.tracks().enumerate() {
+    for (ti, t) in seq.tracks().enumerate().filter(|(_, t)| follows(t)) {
         for (ci, c) in t.clips.iter().enumerate() {
             if going.contains(&c.id) {
                 continue;
@@ -561,6 +614,9 @@ fn close_stretches(
     for track in tracks_mut(seq) {
         if !going.is_empty() {
             track.clips.retain(|c| !going.contains(&c.id));
+        }
+        if !crate::tracks::follows(track, &on) {
+            continue;
         }
         for clip in track.clips.iter_mut() {
             let k = stretches.partition_point(|&(_, end)| end <= clip.start);

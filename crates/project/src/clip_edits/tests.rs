@@ -615,7 +615,13 @@ fn a_gap_closes_on_every_track_or_not_at_all() {
 fn placing_a_file_again_adds_it_at_the_end() {
     let (p, seq) = imported();
     let media = first_video(&p, 0).media;
-    let q = Command::PlaceMedia { sequence: seq, media }.apply(&p).unwrap();
+    let q = Command::PlaceMedia {
+        sequence: seq,
+        media,
+        targets: Default::default(),
+    }
+    .apply(&p)
+    .unwrap();
     let s = q.active().unwrap();
     assert_eq!(q.media.len(), p.media.len(), "the same file, not a copy");
     let last = s.video_tracks[0].clips.last().unwrap();
@@ -628,6 +634,7 @@ fn placing_a_file_again_adds_it_at_the_end() {
     let gone = Command::PlaceMedia {
         sequence: seq,
         media: MediaId(9_999),
+        targets: Default::default(),
     };
     assert!(gone.apply(&p).is_err());
 }
@@ -701,6 +708,7 @@ fn insert_pushes_later_and_overwrite_covers() {
         sequence: seq,
         media: short,
         at: Time::seconds(10),
+        targets: Default::default(),
     }
     .apply(&p)
     .unwrap();
@@ -1111,4 +1119,152 @@ fn a_file_is_not_dropped_on_a_track_that_cannot_take_its_picture() {
     }
     .apply(&p);
     assert!(early.unwrap_err().what().contains("can't be placed there"));
+}
+
+/// `p` with the sync lock of `track` (by place among its kind) off.
+fn unsynced(p: &Project, seq: SequenceId, video: bool, index: usize) -> Project {
+    let s = p.active().unwrap();
+    let track = match video {
+        true => s.video_tracks[index].id,
+        false => s.audio_tracks[index].id,
+    };
+    Command::SetTrackSync {
+        sequence: seq,
+        track,
+        synced: false,
+    }
+    .apply(p)
+    .unwrap()
+}
+
+#[test]
+fn a_track_out_of_sync_lock_stays_put_through_a_ripple_delete() {
+    let (p, seq) = gap_then_streams();
+    // The layer's track out of sync lock: closing the gap before it
+    // leaves it where it is.
+    let p = unsynced(&p, seq, true, 1);
+    let first = first_video(&p, 0).id;
+    let q = Command::RippleRemoveClips {
+        sequence: seq,
+        clips: vec![first],
+    }
+    .apply(&p)
+    .unwrap();
+    let s = q.active().unwrap();
+    assert_eq!(
+        s.video_tracks[0].clips[0].start,
+        Time::ZERO,
+        "the picture moved back"
+    );
+    assert_eq!(
+        s.video_tracks[1].clips[0].start,
+        Time::seconds(15),
+        "the layer stayed"
+    );
+    // So the second recording can now be removed: the layer is no longer
+    // in the way of a gap that closes.
+    let second = first_video(&p, 1).id;
+    assert!(
+        Command::RippleRemoveClips {
+            sequence: seq,
+            clips: vec![second],
+        }
+        .apply(&p)
+        .is_ok()
+    );
+}
+
+#[test]
+fn an_insert_leaves_a_track_out_of_sync_lock_whole_unless_it_lands_there() {
+    let (p, seq) = imported(); // 0-30 s (video, game, mic) and 30-40 s (video, game)
+    let short = first_video(&p, 1).media; // the 10 s file: a picture and the game
+    let p = unsynced(&p, seq, false, 1); // the mic
+    let insert = |p: &Project, targets: Targets| {
+        Command::InsertMedia {
+            sequence: seq,
+            media: short,
+            at: Time::seconds(10),
+            targets,
+        }
+        .apply(p)
+        .unwrap()
+    };
+    let q = insert(&p, Targets::default());
+    let s = q.active().unwrap();
+    let spans_of =
+        |t: &Track| -> Vec<(Time, Time)> { t.clips.iter().map(|c| (c.start, c.duration)).collect() };
+    assert_eq!(
+        spans_of(&s.audio_tracks[1]),
+        [(Time::ZERO, Time::seconds(30))],
+        "the mic is neither cut nor moved"
+    );
+    assert_eq!(
+        s.video_tracks[0].clips[1].start,
+        Time::seconds(10),
+        "the picture went in"
+    );
+    // Its game sound aimed at the mic's track: that track takes it, so it
+    // is cut and moves as an insert on it would.
+    let mic = s.audio_tracks[1].id;
+    let q = insert(
+        &p,
+        Targets {
+            video: None,
+            audio: Some(mic),
+        },
+    );
+    let s = q.active().unwrap();
+    let landed = s.audio_tracks[1].clips.iter().find(|c| c.media == short).unwrap();
+    assert_eq!(landed.start, Time::seconds(10));
+    assert_eq!(s.audio_tracks[1].clips.len(), 3, "the mic cut around it");
+    assert!(
+        s.audio_tracks[0]
+            .clips
+            .iter()
+            .all(|c| c.media != short || c.start != Time::seconds(10)),
+        "nothing new on the game track"
+    );
+}
+
+#[test]
+fn placing_on_targets_puts_the_picture_and_sound_there() {
+    let (p, seq) = imported();
+    let short = first_video(&p, 1).media;
+    let s = p.active().unwrap();
+    let (mic, v1) = (s.audio_tracks[1].id, s.video_tracks[0].id);
+    let q = Command::PlaceMedia {
+        sequence: seq,
+        media: short,
+        targets: Targets {
+            video: Some(v1),
+            audio: Some(mic),
+        },
+    }
+    .apply(&p)
+    .unwrap();
+    let s = q.active().unwrap();
+    assert!(
+        s.audio_tracks[1]
+            .clips
+            .iter()
+            .any(|c| c.media == short && c.start == Time::seconds(40))
+    );
+    // A target that is gone: the first tracks, as before.
+    let gone = Targets {
+        video: Some(TrackId(999)),
+        audio: Some(TrackId(998)),
+    };
+    let q = Command::PlaceMedia {
+        sequence: seq,
+        media: short,
+        targets: gone,
+    }
+    .apply(&p)
+    .unwrap();
+    assert!(
+        q.active().unwrap().audio_tracks[0]
+            .clips
+            .iter()
+            .any(|c| c.start == Time::seconds(40))
+    );
 }

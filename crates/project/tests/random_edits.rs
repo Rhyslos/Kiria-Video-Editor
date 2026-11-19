@@ -597,6 +597,7 @@ fn command_for(action: &Action, p: &Project, media: MediaId, recording: MediaId)
                     Some(track) => Some(*all.get(track % all.len())?),
                     None => None,
                 },
+                sound: None,
             }
         }
         Action::MoveBetween {

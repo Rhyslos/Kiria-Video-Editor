@@ -192,7 +192,10 @@ pub(super) fn draw_in_header(
         .into_iter()
         .map(|text| p.layout_no_wrap(text, FontId::proportional(9.5), theme.muted))
         .find(|g| g.size().x <= room)?;
-    let at = pos2(header.left() + 12.0, header.top() + 11.0 - galley.size().y / 2.0);
+    let at = pos2(
+        header.left() + super::headers::NAME_LEFT,
+        header.top() + 11.0 - galley.size().y / 2.0,
+    );
     let rect = Rect::from_min_size(at, galley.size());
     p.galley(at, galley, theme.muted);
     Some(rect)

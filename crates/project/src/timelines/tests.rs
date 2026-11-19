@@ -45,7 +45,13 @@ fn project() -> Project {
     .apply(&p)
     .unwrap();
     let id = *p.media.keys().next().unwrap();
-    Command::PlaceMedia { sequence, media: id }.apply(&p).unwrap()
+    Command::PlaceMedia {
+        sequence,
+        media: id,
+        targets: Default::default(),
+    }
+    .apply(&p)
+    .unwrap()
 }
 
 fn main(p: &Project) -> SequenceId {
@@ -174,6 +180,7 @@ fn nesting_is_refused_around_a_clip_left_out() {
     p = Command::PlaceMedia {
         sequence: outer,
         media: *p.media.keys().next().unwrap(),
+        targets: Default::default(),
     }
     .apply(&p)
     .unwrap();

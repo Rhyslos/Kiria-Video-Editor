@@ -111,6 +111,7 @@ mod tests {
             pan: 0.0,
             effects_on: false,
             meter: None,
+            unsynced: false,
         }
     }
 

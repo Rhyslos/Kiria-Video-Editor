@@ -62,6 +62,7 @@ pub(crate) fn lay(
     id: MediaId,
     at: Time,
     track: Option<TrackId>,
+    sound_from: usize,
 ) -> diag::Result<()> {
     if at.is_negative() {
         return Err(
@@ -115,6 +116,7 @@ pub(crate) fn lay(
         insert_clip(track_mut(sequence_mut(p, sequence)?, track)?, c)?;
     }
     for (i, stream) in audio.iter().enumerate() {
+        let i = i + sound_from;
         let c = clip(p, stream.index);
         // The track an import would give this stream: made when missing,
         // and named after the stream while nobody has used it.
@@ -385,6 +387,7 @@ mod tests {
             media,
             at: Time::seconds(at),
             track,
+            sound: None,
         }
         .apply(p)
     }
@@ -641,6 +644,7 @@ mod tests {
             media: short,
             at: Time::seconds(-1),
             track: None,
+            sound: None,
         };
         assert!(history.apply(&refused).is_err());
         assert!(!history.can_undo() && history.current() == &p);
@@ -656,6 +660,7 @@ mod tests {
                 media: short,
                 at: Time::seconds(5),
                 track: Some(v2),
+                sound: None,
             })
             .unwrap();
         let laid = history.current().clone();

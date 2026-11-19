@@ -435,6 +435,7 @@ pub(crate) mod tests {
         p = Command::PlaceMedia {
             sequence,
             media: MediaId(1),
+            targets: Default::default(),
         }
         .apply(&p)
         .unwrap_or(p);

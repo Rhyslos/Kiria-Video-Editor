@@ -335,7 +335,21 @@ pub(crate) fn insert(
     if let Some(video) = first_video {
         settle_automatic(p, sequence, video)?;
     }
-    crate::edits::open_space(p, sequence, at, template.length)?;
+    // The tracks it lands on: those of its tracks with clips, by place.
+    let seq = sequence_ref(p, sequence)?;
+    let landing: Vec<TrackId> = [
+        (&seq.video_tracks, &template.video_tracks),
+        (&seq.audio_tracks, &template.audio_tracks),
+    ]
+    .into_iter()
+    .flat_map(|(ours, its)| {
+        ours.iter()
+            .zip(its.iter())
+            .filter(|(_, t)| !t.clips.is_empty())
+            .map(|(o, _)| o.id)
+    })
+    .collect();
+    crate::edits::open_space(p, sequence, at, template.length, &landing)?;
 
     let mut links: Vec<(LinkId, LinkId)> = Vec::new();
     for (kind, tracks) in [

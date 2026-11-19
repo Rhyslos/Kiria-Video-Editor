@@ -42,6 +42,10 @@ pub struct ProjectView {
     pub open_timeline: Option<u64>,
     /// Audio tracks pinned beside the master column, in order.
     pub pinned_tracks: Vec<u64>,
+    /// The target tracks (the video track and the audio track placed files
+    /// land on); none: the first of each.
+    pub target_video: Option<u64>,
+    pub target_audio: Option<u64>,
 }
 
 impl Default for ProjectView {
@@ -53,6 +57,8 @@ impl Default for ProjectView {
             level_lines: Vec::new(),
             open_timeline: None,
             pinned_tracks: Vec::new(),
+            target_video: None,
+            target_audio: None,
         }
     }
 }
@@ -67,6 +73,8 @@ impl ProjectView {
             level_lines: timeline.level_lines(),
             open_timeline: timeline.showing,
             pinned_tracks: timeline.pinned.clone(),
+            target_video: timeline.target_video,
+            target_audio: timeline.target_audio,
         }
     }
 
@@ -80,6 +88,8 @@ impl ProjectView {
         timeline.set_level_lines(self.level_lines.iter().copied());
         timeline.showing = self.open_timeline;
         timeline.pinned = self.pinned_tracks.clone();
+        timeline.target_video = self.target_video;
+        timeline.target_audio = self.target_audio;
     }
 
     /// Reads the view kept for a project; the usual layout when there is
@@ -109,7 +119,7 @@ impl ProjectView {
 /// revision, the divider, whether the video area fits its tracks, the
 /// tracks with level lines, and the timeline shown and the pinned tracks.
 #[derive(Debug, Clone, PartialEq)]
-struct Looks(u64, f32, bool, Vec<u64>, Option<u64>, Vec<u64>);
+struct Looks(u64, f32, bool, Vec<u64>, Option<u64>, Vec<u64>, [Option<u64>; 2]);
 
 impl Looks {
     fn of(timeline: &TimelineView) -> Looks {
@@ -120,6 +130,7 @@ impl Looks {
             timeline.level_lines(),
             timeline.showing,
             timeline.pinned.clone(),
+            [timeline.target_video, timeline.target_audio],
         )
     }
 }

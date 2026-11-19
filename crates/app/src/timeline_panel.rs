@@ -468,6 +468,7 @@ pub fn drawn(
             pan: t.sound.pan as f32 / project::Sound::SIDE as f32,
             effects_on: t.sound.effects_on(),
             meter: None,
+            unsynced: t.unsynced,
         }
     };
     let (video, audio) = (
@@ -912,6 +913,11 @@ pub fn track_option_command(seq: &Sequence, event: &ui_kit::TimelineEvent) -> Op
             sequence,
             track: TrackId(track),
             locked,
+        },
+        E::SyncTrack { track, synced } => Command::SetTrackSync {
+            sequence,
+            track: TrackId(track),
+            synced,
         },
         E::ColourTrack { track, colour } => Command::SetTrackColour {
             sequence,
@@ -1383,6 +1389,7 @@ mod tests {
             pan: 0.0,
             effects_on: false,
             meter: None,
+            unsynced: false,
         }
     }
 
@@ -1818,6 +1825,7 @@ mod tests {
                 media: second.media,
                 at: Time::seconds(at),
                 track: Some(v2),
+                sound: None,
             };
             let after = command.apply(p).unwrap();
             let says = laid_says(

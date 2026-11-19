@@ -38,16 +38,24 @@ pub enum Command {
     },
     /// Places a file already in the project at the end of the timeline, as
     /// [`Command::Import`] does.
+    /// With `targets` (the tracks' target buttons), its picture and sound
+    /// go on those tracks rather than the first ones.
     PlaceMedia {
         sequence: SequenceId,
         media: MediaId,
+        #[serde(default, skip_serializing_if = "crate::defaults::is_default")]
+        targets: crate::tracks::Targets,
     },
     /// Places a file of the project at `at`, pushing everything from there
-    /// on later to make room (clips under `at` are split).
+    /// on later to make room (clips under `at` are split; tracks whose sync
+    /// lock is off and that nothing lands on stay as they are). With
+    /// `targets`, on those tracks.
     InsertMedia {
         sequence: SequenceId,
         media: MediaId,
         at: Time,
+        #[serde(default, skip_serializing_if = "crate::defaults::is_default")]
+        targets: crate::tracks::Targets,
     },
     /// Places a file of the project at `at` over whatever is there: the
     /// clips it covers are cut away, nothing else moves.
@@ -250,6 +258,10 @@ pub enum Command {
         media: MediaId,
         at: Time,
         track: Option<TrackId>,
+        /// The audio track its first sound stream goes on (the target);
+        /// none: the first, as before there were targets.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sound: Option<TrackId>,
     },
     /// Adds an empty track after the others of its kind: a video track on
     /// top of the picture, an audio track at the bottom.
@@ -284,6 +296,14 @@ pub enum Command {
         sequence: SequenceId,
         track: TrackId,
         locked: bool,
+    },
+    /// Turns a track's sync lock on or off (format 34): with it off, an
+    /// edit that moves what comes after a point on other tracks leaves
+    /// this track alone unless it happens on it.
+    SetTrackSync {
+        sequence: SequenceId,
+        track: TrackId,
+        synced: bool,
     },
     /// Gives a track a colour its clips are drawn in, or takes it away.
     SetTrackColour {
@@ -867,12 +887,17 @@ impl Command {
             Command::SetListMember { list, media, member } => {
                 crate::library::set_member(&mut p, *list, media, *member)?
             }
-            Command::PlaceMedia { sequence, media } => {
-                clip_edits::place_media(&mut p, *sequence, *media, None, None)?
-            }
-            Command::InsertMedia { sequence, media, at } => {
-                clip_edits::insert_media(&mut p, *sequence, *media, *at)?
-            }
+            Command::PlaceMedia {
+                sequence,
+                media,
+                targets,
+            } => clip_edits::place_on_targets(&mut p, *sequence, *media, None, *targets)?,
+            Command::InsertMedia {
+                sequence,
+                media,
+                at,
+                targets,
+            } => clip_edits::insert_media(&mut p, *sequence, *media, *at, *targets)?,
             Command::OverwriteMedia { sequence, media, at } => {
                 clip_edits::overwrite_media(&mut p, *sequence, *media, *at)?
             }
@@ -888,7 +913,15 @@ impl Command {
                 media,
                 at,
                 track,
-            } => crate::layers::lay(&mut p, *sequence, *media, *at, *track)?,
+                sound,
+            } => {
+                let from = crate::tracks::Targets {
+                    video: None,
+                    audio: *sound,
+                }
+                .sound_from(sequence_ref(&p, *sequence)?);
+                crate::layers::lay(&mut p, *sequence, *media, *at, *track, from)?
+            }
             Command::AddTrack { sequence, kind, name } => {
                 crate::tracks::add(&mut p, *sequence, *kind, name)?;
             }
@@ -903,6 +936,11 @@ impl Command {
                 track,
                 locked,
             } => crate::command::track_mut(sequence_mut(&mut p, *sequence)?, *track)?.locked = *locked,
+            Command::SetTrackSync {
+                sequence,
+                track,
+                synced,
+            } => crate::command::track_mut(sequence_mut(&mut p, *sequence)?, *track)?.unsynced = !*synced,
             Command::SetTrackColour {
                 sequence,
                 track,

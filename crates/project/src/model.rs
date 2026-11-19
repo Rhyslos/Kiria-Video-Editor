@@ -321,6 +321,12 @@ pub struct Track {
     /// own colours when missing.
     #[serde(default, skip_serializing_if = "crate::defaults::is_default")]
     pub colour: Option<LabelColor>,
+    /// Its sync lock is off (format 34): an edit that moves what comes
+    /// after a point on other tracks (a ripple delete or trim, closing a
+    /// gap, an insert, a change of speed) leaves this track alone unless
+    /// it happens on it. Every track is sync-locked when missing.
+    #[serde(default, skip_serializing_if = "crate::defaults::is_default")]
+    pub unsynced: bool,
 }
 
 /// A piece of a media file placed on a track.
@@ -845,6 +851,7 @@ impl Project {
             gain_db: 0.0,
             sound: TrackSound::default(),
             colour: None,
+            unsynced: false,
         }
     }
 

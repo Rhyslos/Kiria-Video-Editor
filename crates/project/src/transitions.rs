@@ -234,6 +234,7 @@ mod tests {
             gain_db: 0.0,
             sound: Default::default(),
             colour: None,
+            unsynced: false,
         }
     }
 

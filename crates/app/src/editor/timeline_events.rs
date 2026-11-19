@@ -141,7 +141,7 @@ impl Editor {
                         .as_ref()
                         .and_then(|d| d.project().active())
                         .map_or(Time::ZERO, |seq| on_frame(seq, at));
-                    self.lay_media(media, at, track);
+                    self.lay_media(media, at, track, None);
                 }
             }
             E::DropEffect { effect, clip } => {
@@ -203,6 +203,7 @@ impl Editor {
                 }
             }
             E::LockTrack { .. }
+            | E::SyncTrack { .. }
             | E::ColourTrack { .. }
             | E::DuplicateTrack { .. }
             | E::MoveTrack { .. }

@@ -456,13 +456,21 @@ fn rich_project() -> Project {
     .expect("a curved sound fade");
     // The first audio track in a colour of its own (format 33).
     let first_audio = p.active().expect("an open timeline").audio_tracks[0].id;
-    project::Command::SetTrackColour {
+    let p = project::Command::SetTrackColour {
         sequence,
         track: first_audio,
         colour: Some(LabelColor::Purple),
     }
     .apply(&p)
-    .expect("a coloured track")
+    .expect("a coloured track");
+    // Its sync lock off (format 34).
+    project::Command::SetTrackSync {
+        sequence,
+        track: first_audio,
+        synced: false,
+    }
+    .apply(&p)
+    .expect("a track out of sync lock")
 }
 
 /// The header read from the text before the project gives what reading
@@ -1026,8 +1034,9 @@ fn the_stored_template_matches_the_model_but_for_what_came_later() {
         .chain(expected.audio_tracks.iter_mut())
     {
         track.sound = project::TrackSound::default();
-        // Track colours came with format 33.
+        // Track colours came with format 33, sync locks with 34.
         track.colour = None;
+        track.unsynced = false;
     }
     assert_eq!(read_template(1), expected);
 }

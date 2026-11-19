@@ -74,6 +74,7 @@ pub fn settings_of(sound: &TrackSound) -> audio::settings::TrackSettings {
         gain_db: 0.0,
         sound: sound.clone(),
         colour: None,
+        unsynced: false,
     })
 }
 

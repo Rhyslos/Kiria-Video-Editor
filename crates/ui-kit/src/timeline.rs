@@ -344,6 +344,8 @@ pub struct TimelineTrack {
     /// An audio track's two channels' peaks (dBFS) while playing: the thin
     /// meter at its header's right edge.
     pub meter: Option<[f32; 2]>,
+    /// Its sync lock is off: ripple edits elsewhere leave it where it is.
+    pub unsynced: bool,
 }
 
 impl TimelineClip {
@@ -536,6 +538,8 @@ pub enum TimelineEvent {
     SoloOnly { track: u64 },
     /// The FX button in an audio track's header: its effects on the Audio page.
     OpenTrackEffects { track: u64 },
+    /// A track's sync lock was clicked: on (`synced`) or off.
+    SyncTrack { track: u64, synced: bool },
     /// The pan knob in an audio track's header was let go (or
     /// double-clicked): -1 all left to 1 all right.
     TrackPan { track: u64, pan: f32 },
@@ -852,6 +856,11 @@ pub struct TimelineView {
     pub pinned: Vec<u64>,
     /// Audio tracks can be pinned here (their menu offers it). The page sets it.
     pub pins: bool,
+    /// The target tracks, by id: the video track a placed file's picture
+    /// lands on and the audio track its first sound stream does. None (or
+    /// a track that is gone): the first of its kind. Kept with the layout.
+    pub target_video: Option<u64>,
+    pub target_audio: Option<u64>,
     /// Effects were copied from a track: "Paste effects" can be chosen.
     /// The page sets it.
     pub effects_copied: bool,
@@ -921,6 +930,8 @@ impl Default for TimelineView {
             label_menu: None,
             pinned: Vec::new(),
             pins: false,
+            target_video: None,
+            target_audio: None,
             effects_copied: false,
             meters: Default::default(),
         }
@@ -1523,6 +1534,20 @@ impl TimelineView {
         }
     }
 
+    /// The tracks that are the targets now: the chosen ones while they are
+    /// there, else the first of each kind (as files were always placed).
+    pub fn targets(&self, data: &TimelineData) -> (Option<u64>, Option<u64>) {
+        let pick = |chosen: Option<u64>, tracks: &[TimelineTrack]| {
+            chosen
+                .filter(|id| tracks.iter().any(|t| t.id == *id))
+                .or_else(|| tracks.first().map(|t| t.id))
+        };
+        (
+            pick(self.target_video, data.video),
+            pick(self.target_audio, data.audio),
+        )
+    }
+
     /// The audio tracks that show their level line, in order, for keeping.
     pub fn level_lines(&self) -> Vec<u64> {
         self.level_lines.iter().copied().collect()
@@ -1986,6 +2011,7 @@ mod tests {
             pan: 0.0,
             effects_on: false,
             meter: None,
+            unsynced: false,
         }
     }
 
@@ -2549,6 +2575,7 @@ mod tests {
             pan: 0.0,
             effects_on: false,
             meter: None,
+            unsynced: false,
         };
         let tracks = [track];
         let rows = [Rect::from_min_max(pos2(0.0, 0.0), pos2(500.0, 50.0))];
@@ -3860,6 +3887,59 @@ mod tests {
             drag(&mut rig, pos2(300.0, 250.0), pos2(500.0, 250.0))[..],
             [TimelineEvent::Move { clip: 100, .. }]
         ));
+    }
+
+    #[test]
+    fn the_target_tab_chooses_a_target_and_the_chain_turns_the_sync_lock() {
+        let mut rig = Rig::new(2, 2);
+        let primary = egui::PointerButton::Primary;
+        // Before any is chosen the first of each kind is the target.
+        let data_targets = |rig: &Rig| {
+            let data = TimelineData {
+                video: &rig.video,
+                audio: &rig.audio,
+                length: 60.0,
+                fps: 60.0,
+                playhead: 0.0,
+                needle: None,
+                region: None,
+                markers: &[],
+                highlights: &[],
+                spans: &[],
+                follow: false,
+                cache: CacheBar {
+                    ranges: &[],
+                    about: "",
+                },
+                keyframe_eases: &[],
+                roles: &[],
+            };
+            rig.view.targets(&data)
+        };
+        assert_eq!(data_targets(&rig), (Some(0), Some(100)));
+        // The second audio track's tab (its row 276 to 334): x 3 to 15.
+        assert!(click(&mut rig, pos2(9.0, 290.0), primary).is_empty());
+        assert_eq!(rig.view.target_audio, Some(101));
+        assert_eq!(data_targets(&rig), (Some(0), Some(101)));
+        // A target that is gone gives way to the first track again.
+        rig.audio.pop();
+        assert_eq!(data_targets(&rig), (Some(0), Some(100)));
+        // The chain under the first audio track's tab.
+        assert_eq!(
+            click(&mut rig, pos2(9.0, 252.0), primary),
+            [TimelineEvent::SyncTrack {
+                track: 100,
+                synced: false
+            }]
+        );
+        rig.audio[0].unsynced = true;
+        assert_eq!(
+            click(&mut rig, pos2(9.0, 252.0), primary),
+            [TimelineEvent::SyncTrack {
+                track: 100,
+                synced: true
+            }]
+        );
     }
 
     #[test]
