@@ -1,9 +1,15 @@
 //! What the stores kept on disk share: a file's last use is its time of
 //! change ([`touch`]), and a folder is kept within a budget by removing the
-//! files used longest ago first ([`trim`]).
+//! files used longest ago first ([`trim`]), which also removes what
+//! writes cut short by a crash left there.
 
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
+
+/// How old the temporary file of a write into a cache folder
+/// (`diag::disk::temp_path`) must be before [`trim`] takes it for one a
+/// crash or power cut left: far longer than writing one cache file takes.
+pub(crate) const UNFINISHED_LEFT_FOR: Duration = Duration::from_secs(10 * 60);
 
 /// Marks a kept file as just used: its time of change becomes now, which
 /// is what [`trim`] keeps the newest of. Failing only makes it look older.
@@ -16,9 +22,12 @@ pub(crate) fn touch(path: &Path) {
 
 /// Removes the files in `folder` with one of `extensions` that were used
 /// longest ago, until those left take at most `budget` bytes (a budget of
-/// 0 removes them all). Other files in the folder are never touched.
-/// Returns how many went.
+/// 0 removes them all). Temporary files of writes cut short more than
+/// [`UNFINISHED_LEFT_FOR`] ago go too, whatever the budget; other files in
+/// the folder are never touched. Returns how many files with `extensions`
+/// went.
 pub(crate) fn trim(folder: &Path, extensions: &[&str], budget: u64) -> usize {
+    diag::disk::remove_old_temps(folder, UNFINISHED_LEFT_FOR);
     let Ok(entries) = std::fs::read_dir(folder) else {
         return 0;
     };
@@ -105,6 +114,27 @@ mod tests {
         assert!(!strip.exists() && !cover.exists());
         assert!(stranger.exists());
         assert!(dir.path().join("folder.pictures").is_dir());
+    }
+
+    #[test]
+    fn writes_cut_short_long_ago_go_and_younger_ones_stay() {
+        let dir = tempfile::tempdir().unwrap();
+        let kept_file = kept(dir.path(), "a.peaks", 100, 0);
+        let old = diag::disk::temp_path(&dir.path().join("b.peaks"), Some(7));
+        let older_style = diag::disk::temp_path(&dir.path().join("c.pictures"), None);
+        let young = diag::disk::temp_path(&dir.path().join("d.peaks"), Some(8));
+        let age = UNFINISHED_LEFT_FOR.as_secs() + 60;
+        for leftover in [&old, &older_style] {
+            let name = leftover.file_name().unwrap().to_string_lossy().into_owned();
+            kept(dir.path(), &name, 500, age);
+        }
+        std::fs::write(&young, "being written").unwrap();
+        let stranger = kept(dir.path(), "notes.saving.txt", 10, age);
+
+        assert_eq!(trim(dir.path(), &["peaks"], 1000), 0);
+        assert!(!old.exists() && !older_style.exists());
+        assert!(young.exists(), "a write may still be under way");
+        assert!(kept_file.exists() && stranger.exists());
     }
 
     #[test]

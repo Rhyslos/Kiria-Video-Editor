@@ -486,7 +486,10 @@ impl Shelf {
         dropped
     }
 
+    /// Removes builds and writes (of the list of cleared proxies) that a
+    /// program left behind.
     fn remove_left_behind(&self) {
+        diag::disk::remove_old_temps(&self.folder, LEFT_BEHIND);
         let Ok(entries) = std::fs::read_dir(&self.folder) else {
             return;
         };
@@ -647,6 +650,24 @@ mod tests {
         assert!(shelf.ready(&print(1), 0).is_some(), "the newest stays");
         assert!(shelf.ready(&print(2), 0).is_none() && shelf.ready(&print(3), 0).is_none());
         assert_eq!(shelf.trim(1000, &[]), 0, "inside the budget: nothing goes");
+    }
+
+    #[test]
+    fn writes_a_crash_cut_short_in_the_folder_go_once_old() {
+        let dir = tempfile::tempdir().unwrap();
+        let shelf = Shelf::new(dir.path(), ProxyMode::Auto);
+        let old = diag::disk::temp_path(&dir.path().join("cleared.txt"), Some(3));
+        let young = diag::disk::temp_path(&dir.path().join("cleared.txt"), Some(4));
+        for leftover in [&old, &young] {
+            std::fs::write(leftover, "half a list").unwrap();
+        }
+        let file = std::fs::File::options().write(true).open(&old).unwrap();
+        file.set_modified(SystemTime::now() - LEFT_BEHIND - Duration::from_secs(60))
+            .unwrap();
+        drop(file);
+        shelf.trim(u64::MAX, &[]);
+        assert!(!old.exists());
+        assert!(young.exists(), "a write may still be under way");
     }
 
     #[test]
