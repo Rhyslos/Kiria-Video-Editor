@@ -449,6 +449,12 @@ pub enum Command {
         name: String,
         color: LabelColor,
     },
+    /// Moves a timeline label to `at`, keeping the labels in time order.
+    MoveLabel {
+        sequence: SequenceId,
+        label: LabelId,
+        at: Time,
+    },
     SetRegion {
         sequence: SequenceId,
         region: Option<Region>,
@@ -938,6 +944,29 @@ impl Command {
                     .ok_or_else(|| missing("label"))?;
                 l.name = name.trim().to_owned();
                 l.color = *color;
+            }
+            Command::MoveLabel { sequence, label, at } => {
+                if at.is_negative() {
+                    return Err(
+                        AppError::new("A label can't go there").why("That is before the timeline starts.")
+                    );
+                }
+                let seq = sequence_mut(&mut p, *sequence)?;
+                let index = seq
+                    .labels
+                    .iter()
+                    .position(|l| l.id == *label)
+                    .ok_or_else(|| missing("label"))?;
+                let moved = TimelineLabel {
+                    at: *at,
+                    ..seq.labels.remove(index)
+                };
+                let index = seq
+                    .labels
+                    .iter()
+                    .position(|l| l.at > moved.at)
+                    .unwrap_or(seq.labels.len());
+                seq.labels.insert(index, moved);
             }
             Command::RemoveLabel { sequence, label } => {
                 let seq = sequence_mut(&mut p, *sequence)?;
@@ -1526,6 +1555,58 @@ pub(crate) mod tests {
         .unwrap();
         let times: Vec<_> = p.active().unwrap().labels.iter().map(|l| l.at).collect();
         assert_eq!(times, vec![Time::seconds(10), Time::seconds(30)]);
+    }
+
+    #[test]
+    fn a_moved_label_keeps_its_name_and_the_labels_their_order() {
+        let f = fixture();
+        let label = |name: &str, at| TimelineLabel {
+            id: LabelId(0),
+            name: name.into(),
+            at: Time::seconds(at),
+            color: crate::model::LabelColor::Green,
+        };
+        let mut p = f.p.clone();
+        for (name, at) in [("a", 10), ("b", 20), ("c", 30)] {
+            p = Command::AddLabel {
+                sequence: f.seq,
+                label: label(name, at),
+            }
+            .apply(&p)
+            .unwrap();
+        }
+        let first = p.active().unwrap().labels[0].clone();
+        let moved = Command::MoveLabel {
+            sequence: f.seq,
+            label: first.id,
+            at: Time::seconds(25),
+        }
+        .apply(&p)
+        .unwrap();
+        let seq = moved.active().unwrap();
+        let order: Vec<_> = seq.labels.iter().map(|l| (l.name.as_str(), l.at)).collect();
+        assert_eq!(
+            order,
+            vec![
+                ("b", Time::seconds(20)),
+                ("a", Time::seconds(25)),
+                ("c", Time::seconds(30))
+            ]
+        );
+        assert_eq!(seq.labels[1].id, first.id, "the same label, only moved");
+        assert_eq!(seq.labels[1].color, first.color);
+        // Before the start, or a label no longer there: refused.
+        let refused = |label, at| {
+            Command::MoveLabel {
+                sequence: f.seq,
+                label,
+                at,
+            }
+            .apply(&p)
+            .is_err()
+        };
+        assert!(refused(first.id, Time::ZERO - Time::seconds(1)));
+        assert!(refused(LabelId(999), Time::seconds(5)));
     }
 
     #[test]

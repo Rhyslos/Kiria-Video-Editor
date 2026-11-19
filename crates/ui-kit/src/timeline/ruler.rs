@@ -9,6 +9,22 @@ use super::{
 use crate::Theme;
 use egui::{Align2, Color32, CursorIcon, FontId, Pos2, Rect, Sense, Shape, Stroke, Ui, pos2, vec2};
 
+/// A timeline label pressed in the labels row: a click if let go where it
+/// was, a move if dragged.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct LabelDrag {
+    pub(super) label: u64,
+    /// Where the pointer was pressed, on screen.
+    pressed_x: f32,
+    /// Where the label is shown now: the start of the frame under the
+    /// pointer once it has moved a few points.
+    pub(super) at: f64,
+    pub(super) moved: bool,
+}
+
+/// How far the pointer moves before a press on a label is a drag.
+const LABEL_DRAG_AFTER: f32 = 4.0;
+
 /// The region while it is being drawn or one of its handles dragged.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) enum RegionDrag {
@@ -37,13 +53,29 @@ impl TimelineView {
             id.with("ruler"),
             Sense::click_and_drag(),
         );
-        // A right-click in the ruler offers what can be done with the region.
-        if data.region.is_some() {
+        // A right-click on a label opens its menu; elsewhere in the ruler,
+        // what can be done with the region.
+        if ruler.secondary_clicked() {
+            let left = layout.time_left();
+            self.label_menu = ruler
+                .interact_pointer_pos()
+                .filter(|p| layout.labels.contains(*p))
+                .and_then(|p| self.marker_near(left, data.markers, p.x))
+                .map(|m| m.id);
+            if let Some(label) = self.label_menu {
+                events.push(TimelineEvent::SelectLabel(Some(label)));
+            }
+        }
+        if self.label_menu.is_some() || data.region.is_some() {
             ruler.context_menu(|ui| {
-                region_menu(ui, events);
-                if ui.button("Clear the region").clicked() {
-                    events.push(TimelineEvent::SetRegion(None));
-                    ui.close();
+                if let Some(label) = self.label_menu {
+                    label_menu(ui, label, data, events);
+                } else {
+                    region_menu(ui, events);
+                    if ui.button("Clear the region").clicked() {
+                        events.push(TimelineEvent::SetRegion(None));
+                        ui.close();
+                    }
                 }
             });
         }
@@ -175,8 +207,9 @@ impl TimelineView {
         false
     }
 
-    /// Labels: click one to go to it, double-click to rename or recolour
-    /// it. True when one took the click.
+    /// Labels: a click chooses one and goes to it, a drag moves it (to
+    /// the start of a frame, one event when let go), a double-click asks
+    /// for its name. True while a label has the pointer.
     pub(super) fn labels_input(
         &mut self,
         ui: &Ui,
@@ -185,27 +218,84 @@ impl TimelineView {
         events: &mut Vec<TimelineEvent>,
     ) -> bool {
         let left = layout.time_left();
-        if let Some(pos) = ui.input(|i| i.pointer.interact_pos())
-            && layout.labels.contains(pos)
-            && let Some(marker) = self.marker_near(left, data.markers, pos.x)
-        {
-            let (double, single) = ui.input(|i| {
-                (
-                    i.pointer.button_double_clicked(egui::PointerButton::Primary),
-                    i.pointer.button_clicked(egui::PointerButton::Primary),
-                )
+        let (pos, pressed, down, double, alt) = ui.input(|i| {
+            (
+                i.pointer.interact_pos(),
+                i.pointer.button_pressed(egui::PointerButton::Primary),
+                i.pointer.primary_down(),
+                i.pointer.button_double_clicked(egui::PointerButton::Primary),
+                i.modifiers.alt,
+            )
+        });
+        if let Some(drag) = self.label_drag {
+            let Some(pos) = pos else {
+                self.label_drag = None;
+                return false;
+            };
+            if down {
+                let moved = drag.moved || (pos.x - drag.pressed_x).abs() >= LABEL_DRAG_AFTER;
+                let at = if moved {
+                    self.frame_under(left, pos.x, data)
+                } else {
+                    drag.at
+                };
+                self.label_drag = Some(LabelDrag { moved, at, ..drag });
+                ui.ctx().set_cursor_icon(if moved {
+                    CursorIcon::Grabbing
+                } else {
+                    CursorIcon::PointingHand
+                });
+                return true;
+            }
+            self.label_drag = None;
+            let was = data.markers.iter().find(|m| m.id == drag.label).map(|m| m.at);
+            if drag.moved {
+                if was.is_some_and(|was| (was - drag.at).abs() > 1e-9) {
+                    events.push(TimelineEvent::MoveLabel {
+                        label: drag.label,
+                        at: drag.at,
+                    });
+                }
+            } else if let Some(at) = was {
+                events.push(TimelineEvent::Seek(at));
+            }
+            return true;
+        }
+        let Some(pos) = pos.filter(|p| layout.labels.contains(*p)) else {
+            return false;
+        };
+        let Some(marker) = self.marker_near(left, data.markers, pos.x) else {
+            // A press in the labels row away from every label: none is
+            // chosen any more (the press goes on to the ruler).
+            if pressed && data.markers.iter().any(|m| m.selected) {
+                events.push(TimelineEvent::SelectLabel(None));
+            }
+            return false;
+        };
+        ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+        if double {
+            events.push(TimelineEvent::EditLabel(marker.id));
+            return true;
+        }
+        if pressed && !alt {
+            events.push(TimelineEvent::SelectLabel(Some(marker.id)));
+            self.label_drag = Some(LabelDrag {
+                label: marker.id,
+                pressed_x: pos.x,
+                at: marker.at,
+                moved: false,
             });
-            ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
-            if double {
-                events.push(TimelineEvent::EditLabel(marker.id));
-                return true;
-            }
-            if single && !ui.input(|i| i.modifiers.alt) {
-                events.push(TimelineEvent::Seek(marker.at));
-                return true;
-            }
+            return true;
         }
         false
+    }
+
+    /// Where label `marker` is drawn: where it is being dragged to, or its own place.
+    pub(super) fn label_shown_at(&self, marker: &TimelineMarker) -> f64 {
+        match self.label_drag {
+            Some(d) if d.label == marker.id && d.moved => d.at,
+            _ => marker.at,
+        }
     }
 
     /// Ruler: click or drag to move the playhead (or the edit needle, as
@@ -481,7 +571,7 @@ impl TimelineView {
         );
         let labels_seen = label_painter.clip_rect().x_range();
         for marker in data.markers {
-            let x = self.x_of(left, marker.at);
+            let x = self.x_of(left, self.label_shown_at(marker));
             // Out of view: its mark and its name (never wider than a
             // label's size per byte) would be clipped away whole.
             let widest = marker.name.len() as f32 * LABEL_SIZE;
@@ -495,14 +585,18 @@ impl TimelineView {
                     pos2(x, layout.labels.bottom() - 3.0),
                 ],
                 marker.colour,
-                Stroke::NONE,
+                if marker.selected {
+                    Stroke::new(1.5, theme.text)
+                } else {
+                    Stroke::NONE
+                },
             ));
             label_painter.text(
                 pos2(x + 8.0, layout.labels.center().y),
                 Align2::LEFT_CENTER,
                 &marker.name,
                 FontId::proportional(LABEL_SIZE),
-                theme.muted,
+                if marker.selected { theme.text } else { theme.muted },
             );
         }
     }
@@ -692,5 +786,29 @@ fn draw_ruler(p: &egui::Painter, theme: &Theme, view: &TimelineView, layout: &La
         }
         t = start + minor * f64::from(i + 1);
         i += 1;
+    }
+}
+
+/// A timeline label's right-click menu: rename it, give it another
+/// colour (its own ticked), or delete it.
+fn label_menu(ui: &mut Ui, label: u64, data: &TimelineData, events: &mut Vec<TimelineEvent>) {
+    if ui.button("Rename…").clicked() {
+        events.push(TimelineEvent::EditLabel(label));
+        ui.close();
+    }
+    let own = data.markers.iter().find(|m| m.id == label).map(|m| m.colour);
+    ui.menu_button("Colour", |ui| {
+        for (index, (name, colour)) in crate::theme::labels::ALL.iter().enumerate() {
+            let text = egui::RichText::new(format!("●  {name}")).color(*colour);
+            if ui.selectable_label(own == Some(*colour), text).clicked() {
+                events.push(TimelineEvent::ColourLabel { label, colour: index });
+                ui.close();
+            }
+        }
+    });
+    ui.separator();
+    if ui.button("Delete").clicked() {
+        events.push(TimelineEvent::RemoveLabel(label));
+        ui.close();
     }
 }

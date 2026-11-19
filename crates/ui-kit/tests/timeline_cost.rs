@@ -144,6 +144,7 @@ fn drag_everything_frame_cost() {
                 at: i as f64 * 10.0 + 0.3,
                 name: format!("Label {i}"),
                 colour: egui::Color32::YELLOW,
+                selected: false,
             })
             .collect();
         let length = clips_each as f64 * 4.0;

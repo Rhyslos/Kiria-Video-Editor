@@ -190,6 +190,7 @@ impl Editor {
             |m, stream| pictures.get(jobs, &ctx, m, stream),
         );
         timeline_panel::fold_sound(&mut drawn);
+        timeline_panel::show_chosen_label(&mut drawn, self.selected_label);
         let length = seq.length().as_secs_f64();
         if !self.fitted {
             self.timeline

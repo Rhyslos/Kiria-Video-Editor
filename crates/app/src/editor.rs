@@ -15,6 +15,7 @@ mod script;
 mod settings_ui;
 mod steady;
 mod timeline_events;
+mod timeline_labels;
 mod timelines;
 mod undo_says;
 mod windows;
@@ -175,6 +176,8 @@ pub struct Editor {
     /// Sync by sound: what it found, and the comparison running.
     sync: crate::sync_panel::SyncPanel,
     label_editor: Option<crate::label_editor::LabelEditor>,
+    /// The timeline label chosen by a click: Delete removes it.
+    selected_label: Option<LabelId>,
     master: ui_kit::master::MasterColumn,
     versions: crate::versions_window::VersionsWindow,
     templates: crate::templates_window::TemplatesWindow,
@@ -428,6 +431,7 @@ impl Editor {
             silence: crate::silence_panel::SilencePanel::default(),
             sync: crate::sync_panel::SyncPanel::default(),
             label_editor: None,
+            selected_label: None,
             master: ui_kit::master::MasterColumn::default(),
             versions: crate::versions_window::VersionsWindow::default(),
             templates: crate::templates_window::TemplatesWindow::default(),

@@ -524,6 +524,7 @@ impl Editor {
             |m, stream| pictures.get(jobs, &ctx, m, stream),
         );
         timeline_panel::show_sounds(&mut drawn, &self.inspector.sounds_being_set());
+        timeline_panel::show_chosen_label(&mut drawn, self.selected_label);
         lines::fill(&mut drawn.audio, seq, self.lines.kind);
         let show = self.audio_page.show;
         let shown_audio: Vec<ui_kit::TimelineTrack> = drawn
