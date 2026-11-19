@@ -9,10 +9,10 @@ use super::{
     COMPACT_TRACK, ClipPictures, ClipShows, ClipWaveform, Half, Layout, LineOwner, NEW_TRACK_STRIP, Rows,
     SHORT_CLIP, TimelineClip, TimelineData, TimelineTrack, TimelineView, Tool,
     clip_input::{ClipDrag, DragKind, Landing},
-    empty_end, fades, find_clip, gaps, keyframes, level, loading, slip, speed, transitions,
+    empty_end, fades, find_clip, gaps, keyframes, level, loading, slip, speed, transitions, wave_look,
 };
 use crate::Theme;
-use egui::{Align2, Color32, FontId, Rect, Shape, Stroke, Ui, pos2, vec2};
+use egui::{Align2, Color32, FontId, Rect, Stroke, Ui, pos2, vec2};
 
 /// How a waveform is drawn: its track's colour, dimmed when the track is
 /// muted, and how much louder or quieter than recorded (the clip's volume
@@ -488,11 +488,10 @@ impl TimelineView {
         let colour = if muted {
             colour.gamma_multiply(0.5)
         } else {
-            Color32::from_white_alpha(170)
+            Color32::from_white_alpha(200)
         };
         let levels = crate::waveform::levels_for(p.ctx(), w.id, &w.peaks);
-        let mut mesh = egui::Mesh::default();
-        let (mid, half) = (clip_area.center().y, clip_area.height() / 2.0);
+        let mut columns = Vec::with_capacity(clip_area.width() as usize + 1);
         let mut x = clip_area.left().floor();
         while x < clip_area.right() {
             let t = w.file_at(f64::from(x - left) / f64::from(self.zoom));
@@ -504,15 +503,20 @@ impl TimelineView {
             if a >= w.peaks.len() {
                 break;
             }
-            let peak = (crate::waveform::loudest(&w.peaks, levels.as_deref(), a, b) * gain).min(1.0);
-            let h = (peak.sqrt() * half).max(0.5);
-            mesh.add_colored_rect(
-                Rect::from_min_max(pos2(x, mid - h), pos2(x + 1.0, mid + h)),
-                colour,
-            );
+            columns.push(wave_look::Column {
+                x,
+                peak: crate::waveform::loudest(&w.peaks, levels.as_deref(), a, b) * gain,
+                body: wave_look::body(&w.peaks, a, b) * gain,
+            });
             x += 1.0;
         }
-        p.add(Shape::mesh(mesh));
+        // Drawn over the clip's whole height, so the room above full scale
+        // is the same on every clip.
+        let area = Rect::from_min_max(
+            pos2(clip_area.left(), below_name.top()),
+            pos2(clip_area.right(), below_name.bottom()),
+        );
+        wave_look::draw(&p.with_clip_rect(clip_area), area, &columns, colour);
     }
 }
 

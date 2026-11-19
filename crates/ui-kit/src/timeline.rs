@@ -77,6 +77,7 @@ mod slip;
 mod speed;
 mod toolbar;
 mod track_controls;
+mod wave_look;
 pub use gaps::Gap;
 pub use slip::SlipRoom;
 mod track_views;
