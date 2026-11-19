@@ -989,6 +989,39 @@ impl Editor {
         }
     }
 
+    /// Work that goes on behind every page, followed each frame: the
+    /// export queue (its errors, and how fast it went kept in settings),
+    /// the cheat sheet being written, and the user guide asked for and
+    /// being opened. Kept out of the windows so that none of them, shut
+    /// or returning early, stops it.
+    fn follow_background(&mut self, ctx: &egui::Context) {
+        for err in self.export_page.poll() {
+            self.errors.push(&err);
+        }
+        if let Some(pace) = self.export_page.take_pace() {
+            self.settings.export_pace = pace;
+        }
+        match self.cheat_sheet.poll(&self.jobs, ctx) {
+            Some(crate::cheat_sheet::Saved::Done(path)) => {
+                self.status = format!(
+                    "Saved the cheat sheet as {}. Open it to print it.",
+                    path.display()
+                );
+            }
+            Some(crate::cheat_sheet::Saved::Failed(err)) => self.errors.push(&err),
+            None => {}
+        }
+        if std::mem::take(&mut self.user_guide_requested) {
+            match self.user_guide.open(ctx) {
+                Ok(_) => self.status = "Opening the user guide in your web browser".into(),
+                Err(err) => self.errors.push(&err),
+            }
+        }
+        if let Some(err) = self.user_guide.poll() {
+            self.errors.push(&err);
+        }
+    }
+
     /// Opens the save dialog when asked, and reports finished saves.
     fn frame_grabs(&mut self, ctx: &egui::Context) {
         if std::mem::take(&mut self.save_frame_requested)
@@ -1636,6 +1669,7 @@ impl eframe::App for Editor {
         self.prune_window(&ctx);
         self.package_window(&ctx);
         self.shortcuts_window(&ctx);
+        self.follow_background(&ctx);
         let unfinished = self.export_page.unfinished();
         self.close_prompt.frame(&ctx, &self.theme, unfinished);
         if let Some(err) = self.graphics.show_warning(&ctx, &self.theme) {
