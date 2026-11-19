@@ -210,11 +210,9 @@ impl TimelineView {
             };
             [look, KnobLook::Compact].into_iter().find(|l| fits(*l))
         });
-        // The buttons sit left of a compact knob.
-        let buttons = match knob {
-            Some(KnobLook::Compact) => header.with_max_x(header.right() - KnobLook::Compact.size().x - 4.0),
-            _ => header,
-        };
+        // The buttons stay at the header's right edge whatever the knob,
+        // so they don't move when a track opens up or closes.
+        let buttons = header;
         let button = |i: f32| headers::button_rect(buttons, i);
         if !self.compact {
             self.level_button(ui, theme, track.id, button(-1.0), id);
@@ -232,7 +230,7 @@ impl TimelineView {
             // Under the top row's buttons.
             // With the slider under them, only where it still has room.
             _ => (header.height()
-                >= if knob.is_none() {
+                >= if knob.is_none() && self.volume_control != super::VolumeControl::Hidden {
                     super::AUDIO_TRACK
                 } else {
                     SECOND_ROW
@@ -255,7 +253,10 @@ impl TimelineView {
                 ui.set_clip_rect(before);
             }
             // The fader, in a header with room for it under the buttons.
-            None if !self.compact && self.knob_of(track.id).is_none() => {
+            None if !self.compact
+                && self.knob_of(track.id).is_none()
+                && self.volume_control != super::VolumeControl::Hidden =>
+            {
                 self.fader(ui, theme, track, header, id, events)
             }
             None => {}
@@ -278,8 +279,19 @@ impl TimelineView {
     ) {
         let size = look.size();
         let min = match look {
-            KnobLook::Compact => pos2(header.right() - size.x - 2.0, header.center().y - size.y / 2.0),
-            KnobLook::Detailed => pos2(header.right() - size.x - 4.0, header.top() + 26.0),
+            // Left of the buttons, in the middle of the track's height.
+            KnobLook::Compact => pos2(
+                headers::button_rect(header, -1.0).left() - size.x - 2.0,
+                header.center().y - size.y / 2.0,
+            ),
+            // Under the buttons, in the middle of the height left there.
+            KnobLook::Detailed => {
+                let below = header.height() - 26.0 - size.y;
+                pos2(
+                    header.right() - size.x - 4.0,
+                    header.top() + 26.0 + (below / 2.0).max(0.0),
+                )
+            }
         };
         let knob_id = id.with("knob");
         let tip = crate::knob::tip(&track.name, track.gain_db);

@@ -53,6 +53,9 @@ pub struct Settings {
     /// No column for the selected audio track beside the master on the Edit
     /// page (Display menu); pinned tracks still have theirs.
     pub hide_track_column: bool,
+    /// No volume control in the audio tracks' headers, for the shortest
+    /// tracks (Display menu); before the knobs and the slider.
+    pub hide_header_volume: bool,
     /// How the height is shared between the viewer and the timeline (the
     /// handle between them), on every page that has both.
     pub viewer_split: ui_kit::splitter::Split,
@@ -385,6 +388,7 @@ impl Settings {
     pub fn volume_control(&self) -> ui_kit::timeline::VolumeControl {
         use ui_kit::timeline::VolumeControl;
         match (self.detailed_gain, self.track_knobs) {
+            _ if self.hide_header_volume => VolumeControl::Hidden,
             (true, _) => VolumeControl::Detailed,
             (false, true) => VolumeControl::Knob,
             (false, false) => VolumeControl::Slider,

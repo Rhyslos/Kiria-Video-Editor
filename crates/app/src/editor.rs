@@ -1105,6 +1105,7 @@ impl Editor {
             track_knobs: self.settings.track_knobs,
             detailed_gain: self.settings.detailed_gain,
             track_column: !self.settings.hide_track_column,
+            header_volume: !self.settings.hide_header_volume,
             rough_cut: self.settings.rough_cut,
             edit_at_playhead: self.settings.edit_at_playhead,
             clean: self.settings.clean_picture,

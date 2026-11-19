@@ -97,6 +97,10 @@ pub enum VolumeControl {
     /// The detailed knob under its buttons on every audio track
     /// ([`crate::knob::KnobLook::Detailed`]); the tracks are taller for it.
     Detailed,
+    /// No volume control in the header at all, for the shortest tracks:
+    /// the volume is set beside the master column, on the Audio page or
+    /// with the level lines.
+    Hidden,
 }
 
 /// The colour of the `index`-th audio track (its clips, its knob).
@@ -118,6 +122,9 @@ pub fn track_colour(track: &TimelineTrack, index: usize, audio: bool, video: Col
 pub const DETAILED_TRACK: f32 = 136.0;
 /// An audio track with the compact knob is at least this tall.
 pub const KNOB_TRACK: f32 = 66.0;
+/// An audio track without a volume control in its header: its two rows
+/// of buttons.
+pub const BARE_TRACK: f32 = 46.0;
 /// The column of track names with knobs: wider, for the knob beside the buttons.
 pub const KNOB_HEADER_WIDTH: f32 = 230.0;
 pub use keyframes::KeyframeMark;
@@ -1243,6 +1250,7 @@ impl TimelineView {
                 VolumeControl::Slider => AUDIO_TRACK,
                 VolumeControl::Knob => KNOB_TRACK,
                 VolumeControl::Detailed => DETAILED_TRACK,
+                VolumeControl::Hidden => BARE_TRACK,
             },
         }
     }
@@ -1250,7 +1258,7 @@ impl TimelineView {
     /// How wide the column of track names is: wider with knobs.
     pub fn header_width(&self) -> f32 {
         match (self.volume_control, self.detailed_on_selected) {
-            (VolumeControl::Slider, false) => HEADER_WIDTH,
+            (VolumeControl::Slider | VolumeControl::Hidden, false) => HEADER_WIDTH,
             _ => KNOB_HEADER_WIDTH,
         }
     }
@@ -1262,7 +1270,7 @@ impl TimelineView {
             return Some(KnobLook::Detailed);
         }
         match self.volume_control {
-            VolumeControl::Slider => None,
+            VolumeControl::Slider | VolumeControl::Hidden => None,
             VolumeControl::Knob => Some(KnobLook::Compact),
             VolumeControl::Detailed => Some(KnobLook::Detailed),
         }
@@ -4311,6 +4319,31 @@ mod tests {
         // The detailed knob on every track: every one is tall enough.
         rig.view.volume_control = VolumeControl::Detailed;
         assert_eq!(heights(&rig), [DETAILED_TRACK; 3]);
+        // No volume in the headers: the shortest tracks, narrow names, no knob.
+        rig.view.volume_control = VolumeControl::Hidden;
+        rig.view.detailed_on_selected = false;
+        assert_eq!(heights(&rig), [BARE_TRACK; 3]);
+        assert_eq!(rig.view.header_width(), HEADER_WIDTH);
+        assert_eq!(rig.view.knob_of(100), None);
+    }
+
+    #[test]
+    fn the_buttons_stay_put_whatever_the_knob() {
+        // M of the first audio track, at the same place with the compact
+        // knob and with the detailed one: the header's right edge.
+        let mut rig = Rig::new(1, 1);
+        rig.view.volume_control = VolumeControl::Knob;
+        rig.frame(Vec::new());
+        let header = rig.rows_of(Half::Audio)[0];
+        let m = pos2(KNOB_HEADER_WIDTH - 7.0 - 50.0 + 10.0, header.top() + 14.0);
+        let mute = |rig: &mut Rig| {
+            let events = click(rig, m, egui::PointerButton::Primary);
+            matches!(events[..], [TimelineEvent::TrackMix { muted: true, .. }])
+        };
+        assert!(mute(&mut rig), "compact");
+        rig.view.volume_control = VolumeControl::Detailed;
+        rig.frame(Vec::new());
+        assert!(mute(&mut rig), "detailed");
     }
 
     #[test]
