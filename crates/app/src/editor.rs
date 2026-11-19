@@ -1541,8 +1541,6 @@ impl eframe::App for Editor {
             self.shortcuts
                 .set_layout(self.settings.keyboard.resolve(self.system_keyboard.now()));
         }
-        // While the shortcuts page waits for new keys, what is pressed is
-        // its answer, not a command.
         // A file chooser that could not open says why.
         if let Some(problem) = ui_kit::file_dialog::take_problem(&ctx) {
             self.errors.push(&problem);
@@ -1553,6 +1551,8 @@ impl eframe::App for Editor {
                 self.errors.push(&problem);
             }
         }
+        // While the shortcuts page waits for new keys, what is pressed is
+        // its answer, not a command.
         let listening = self.shortcuts_page.as_ref().is_some_and(|p| p.listening());
         if !listening {
             for action in self.shortcuts.pressed(&ctx) {

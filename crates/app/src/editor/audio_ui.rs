@@ -331,7 +331,8 @@ impl Editor {
             });
             match result {
                 Ok(()) => {
-                    self.status = format!("{}: done. Undo takes it back.", fix.label);
+                    let undo = self.shortcuts.keys_or_name(Action::Undo);
+                    self.status = format!("{}: done. {undo} takes it back.", fix.label);
                     self.audio_page.clarity.again();
                 }
                 Err(err) => self.errors.push(&err),
