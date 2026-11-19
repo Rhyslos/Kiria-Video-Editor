@@ -77,9 +77,10 @@ impl Editor {
             },
             Picked::Add(adding) => {
                 let at = self.edit_point();
+                let targets = self.targets();
                 let mut says = String::new();
                 let result = self.with_document(|d: &mut Document| {
-                    let command = placing::command(d.project(), adding.clone(), at)?;
+                    let command = placing::command(d.project(), adding.clone(), at, targets)?;
                     if let Some(media) = d.project().media.get(&adding.media) {
                         says = placing::says(media, &adding);
                     }
@@ -95,13 +96,14 @@ impl Editor {
             }
             Picked::AddSeveral(addings, at) => {
                 let edit_point = self.edit_point();
+                let targets = self.targets();
                 let count = addings.len();
                 let result = self.with_document(|d: &mut Document| {
                     // An automatic timeline takes what most of them share.
                     if let Some(settle) = placing::settle_first(d.project(), &addings) {
                         d.apply(settle)?;
                     }
-                    let command = placing::command_many(d.project(), addings, at, edit_point)?;
+                    let command = placing::command_many(d.project(), addings, at, edit_point, targets)?;
                     d.apply(command)
                 });
                 match result {

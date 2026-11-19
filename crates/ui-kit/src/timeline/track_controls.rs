@@ -52,6 +52,21 @@ impl TimelineView {
         if let Some(colour) = track.colour {
             header_painter.rect_filled(header.shrink2(vec2(0.0, 1.0)), 0.0, colour.gamma_multiply(0.12));
         }
+        // The target tab and the sync lock, at the header's left edge.
+        let (tab, sync) = headers::patch_rects(header, self.compact);
+        let (video_target, audio_target) = self.targets(data);
+        let target = if audio { audio_target } else { video_target };
+        if let Some(tab) = tab
+            && headers::target_tab(ui, theme, track, tab, target == Some(track.id))
+        {
+            match audio {
+                true => self.target_audio = Some(track.id),
+                false => self.target_video = Some(track.id),
+            }
+        }
+        if let Some(sync) = sync {
+            headers::sync_button(ui, theme, track, sync, events);
+        }
         match self.rename.as_mut().filter(|r| r.track == track.id) {
             Some(rename) => {
                 renaming = true;
@@ -73,14 +88,14 @@ impl TimelineView {
                 header_painter,
                 theme,
                 track,
-                pos2(layout.header_x + 12.0, row.center().y),
+                pos2(layout.header_x + headers::NAME_LEFT, row.center().y),
             ),
         }
         // A track's role: a mark in its colour along the header's edge.
         if let Some((_, colour)) = track.role.and_then(|i| data.roles.get(i)) {
             let mark = Rect::from_min_max(
-                pos2(layout.header_x + 3.0, row.top() + 4.0),
-                pos2(layout.header_x + 6.0, row.bottom() - 4.0),
+                pos2(layout.header_x + headers::NAME_LEFT - 5.0, row.top() + 4.0),
+                pos2(layout.header_x + headers::NAME_LEFT - 2.0, row.bottom() - 4.0),
             );
             header_painter.rect_filled(mark, 1.5, *colour);
         }
@@ -219,14 +234,13 @@ impl TimelineView {
         }
         self.mute_and_solo(ui, theme, track, buttons, id, events);
         let second = match knob {
-            // Left of the detailed knob, at the bottom of the header.
-            Some(KnobLook::Detailed) => {
-                let y = header.bottom() - 24.0;
-                (y >= header.top() + 26.0).then(|| {
-                    [0.0, 24.0, 50.0]
-                        .map(|x| Rect::from_min_size(pos2(header.left() + 10.0 + x, y), vec2(20.0, 16.0)))
-                })
-            }
+            // Left of the top row, over the detailed knob.
+            Some(KnobLook::Detailed) => Some([0.0, 24.0, 48.0].map(|x| {
+                Rect::from_min_size(
+                    pos2(header.left() + headers::NAME_LEFT + x, header.top() + 6.0),
+                    vec2(20.0, 16.0),
+                )
+            })),
             // Under the top row's buttons.
             // With the slider under them, only where it still has room.
             _ => (header.height()
@@ -540,8 +554,8 @@ impl TimelineView {
         events: &mut Vec<TimelineEvent>,
     ) {
         let bar = Rect::from_min_size(
-            pos2(header.left() + 12.0, header.bottom() - 12.0),
-            vec2(HEADER_WIDTH - 30.0, 5.0),
+            pos2(header.left() + headers::NAME_LEFT, header.bottom() - 12.0),
+            vec2(HEADER_WIDTH - 40.0, 5.0),
         );
         if bar.bottom() > header.bottom() || bar.top() < header.top() + 22.0 {
             return;

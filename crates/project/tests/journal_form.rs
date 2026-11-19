@@ -66,6 +66,7 @@ fn name(c: &Command) -> &'static str {
         Command::AddTrackAt { .. } => "AddTrackAt",
         Command::SetTrackLocked { .. } => "SetTrackLocked",
         Command::SetTrackColour { .. } => "SetTrackColour",
+        Command::SetTrackSync { .. } => "SetTrackSync",
         Command::DuplicateTrack { .. } => "DuplicateTrack",
         Command::MoveTrack { .. } => "MoveTrack",
         Command::PlaceClip { .. } => "PlaceClip",
@@ -203,8 +204,17 @@ fn every_command() -> Vec<Command> {
         Command::AddMedia {
             media: media_ref.clone(),
         },
-        Command::PlaceMedia { sequence, media },
-        Command::InsertMedia { sequence, media, at },
+        Command::PlaceMedia {
+            sequence,
+            media,
+            targets: Default::default(),
+        },
+        Command::InsertMedia {
+            sequence,
+            media,
+            at,
+            targets: Default::default(),
+        },
         Command::OverwriteMedia { sequence, media, at },
         Command::SetSpeed {
             sequence,
@@ -325,6 +335,7 @@ fn every_command() -> Vec<Command> {
             media,
             at,
             track: None,
+            sound: None,
         },
         Command::AddTrack {
             sequence,
@@ -351,6 +362,11 @@ fn every_command() -> Vec<Command> {
             sequence,
             track,
             colour: Some(project::LabelColor::Green),
+        },
+        Command::SetTrackSync {
+            sequence,
+            track,
+            synced: false,
         },
         Command::DuplicateTrack { sequence, track },
         Command::MoveTrack {
@@ -654,6 +670,34 @@ fn every_command() -> Vec<Command> {
         kind: TrackKind::Video,
         name: String::new(),
     }))
+    // Placed on the tracks' targets (format 34): the forms without
+    // targets above stay as they were.
+    .chain([
+        Command::PlaceMedia {
+            sequence,
+            media,
+            targets: project::tracks::Targets {
+                video: Some(TrackId(3)),
+                audio: Some(audio_track),
+            },
+        },
+        Command::InsertMedia {
+            sequence,
+            media,
+            at: Time::seconds(2),
+            targets: project::tracks::Targets {
+                video: None,
+                audio: Some(audio_track),
+            },
+        },
+        Command::LayMedia {
+            sequence,
+            media,
+            at: Time::seconds(2),
+            track: None,
+            sound: Some(audio_track),
+        },
+    ])
     .chain(std::iter::once(Command::PlaceSequence {
         sequence,
         nested: other,

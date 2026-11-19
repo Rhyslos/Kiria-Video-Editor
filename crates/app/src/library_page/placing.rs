@@ -71,8 +71,14 @@ pub fn says(media: &MediaRef, adding: &Adding) -> String {
 }
 
 /// The command that adds it to the open timeline of `project`, `edit_point`
-/// being where the edit point is.
-pub fn command(project: &Project, adding: Adding, edit_point: Time) -> diag::Result<Command> {
+/// being where the edit point is. A whole file goes on the `targets`
+/// tracks; a part, as a template, on the first ones.
+pub fn command(
+    project: &Project,
+    adding: Adding,
+    edit_point: Time,
+    targets: project::tracks::Targets,
+) -> diag::Result<Command> {
     let seq = project.active().ok_or_else(|| {
         AppError::new("There is no timeline to add to").fix("Make a timeline on the Edit page first.")
     })?;
@@ -80,11 +86,16 @@ pub fn command(project: &Project, adding: Adding, edit_point: Time) -> diag::Res
     let media = adding.media;
     if adding.part.is_none() && adding.levels.is_empty() {
         return Ok(match adding.at {
-            AddAt::End => Command::PlaceMedia { sequence, media },
+            AddAt::End => Command::PlaceMedia {
+                sequence,
+                media,
+                targets,
+            },
             AddAt::EditPoint => Command::InsertMedia {
                 sequence,
                 media,
                 at: edit_point,
+                targets,
             },
         });
     }
@@ -105,18 +116,20 @@ pub fn command(project: &Project, adding: Adding, edit_point: Time) -> diag::Res
 /// levels) one after another to the open timeline of `project`, as one undo
 /// step: each is added to a copy of the timeline at its end as it would be
 /// alone, all that was added is taken as one template, and that goes in
-/// where `at` says. One file is [`command`].
+/// where `at` says, on the first tracks. One file is [`command`], on the
+/// `targets` tracks.
 pub fn command_many(
     project: &Project,
     addings: Vec<Adding>,
     at: AddAt,
     edit_point: Time,
+    targets: project::tracks::Targets,
 ) -> diag::Result<Command> {
     let [first, rest @ ..] = addings.as_slice() else {
         return Err(AppError::new("No files were chosen").fix("Click the files to add, then add them."));
     };
     if rest.is_empty() {
-        return command(project, Adding { at, ..first.clone() }, edit_point);
+        return command(project, Adding { at, ..first.clone() }, edit_point, targets);
     }
     let seq = project.active().ok_or_else(|| {
         AppError::new("There is no timeline to add to").fix("Make a timeline on the Edit page first.")
@@ -128,7 +141,7 @@ pub fn command_many(
             at: AddAt::End,
             ..adding
         };
-        copy = command(&copy, one, edit_point)?.apply(&copy)?;
+        copy = command(&copy, one, edit_point, Default::default())?.apply(&copy)?;
     }
     let after = copy.sequence(sequence).map_or(before, |s| s.length());
     let region = Region::between(before, after).ok_or_else(|| {
@@ -186,6 +199,7 @@ pub fn part_template(project: &Project, adding: &Adding) -> diag::Result<Templat
     let placed = Command::PlaceMedia {
         sequence: seq.id,
         media: adding.media,
+        targets: Default::default(),
     }
     .apply(project)?;
     let placed_seq = placed
@@ -263,7 +277,7 @@ mod tests {
             at: AddAt::End,
         };
         assert!(matches!(
-            command(&p, adding.clone(), Time::ZERO),
+            command(&p, adding.clone(), Time::ZERO, Default::default()),
             Ok(Command::PlaceMedia { .. })
         ));
         let insert = Adding {
@@ -271,7 +285,7 @@ mod tests {
             ..adding
         };
         assert!(matches!(
-            command(&p, insert, Time::ZERO),
+            command(&p, insert, Time::ZERO, Default::default()),
             Ok(Command::InsertMedia { .. })
         ));
     }
@@ -288,7 +302,7 @@ mod tests {
             levels: vec![(game, -3_000)],
             at: AddAt::End,
         };
-        let command = command(&p, adding, Time::ZERO).unwrap();
+        let command = command(&p, adding, Time::ZERO, Default::default()).unwrap();
         assert!(matches!(command, Command::InsertTemplate { .. }));
         let after = command.apply(&p).unwrap();
         let seq = after.active().unwrap();
@@ -318,6 +332,7 @@ mod tests {
         let whole = Command::PlaceMedia {
             sequence: p.active_sequence,
             media,
+            targets: Default::default(),
         }
         .apply(&p)
         .unwrap();
@@ -378,7 +393,7 @@ mod tests {
             levels: Vec::new(),
             at: AddAt::End,
         };
-        let err = command(&p, adding, Time::ZERO).unwrap_err();
+        let err = command(&p, adding, Time::ZERO, Default::default()).unwrap_err();
         assert_eq!(err.what(), "The marked part is empty");
     }
 
@@ -405,7 +420,7 @@ mod tests {
                 ..whole(second)
             },
         ];
-        let command = command_many(&p, addings, AddAt::End, Time::ZERO).unwrap();
+        let command = command_many(&p, addings, AddAt::End, Time::ZERO, Default::default()).unwrap();
         assert!(matches!(command, Command::InsertTemplate { .. }), "one step");
         let after = command.apply(&p).unwrap();
         let seq = after.active().unwrap();
@@ -414,9 +429,9 @@ mod tests {
         assert_eq!(starts.len(), 2, "both pictures");
         assert_eq!(starts[0], Time::ZERO);
         assert!(starts[1] > Time::ZERO, "the second after the first");
-        let only = command_many(&p, vec![whole(first)], AddAt::End, Time::ZERO).unwrap();
+        let only = command_many(&p, vec![whole(first)], AddAt::End, Time::ZERO, Default::default()).unwrap();
         assert!(matches!(only, Command::PlaceMedia { .. }), "one file as before");
-        assert!(command_many(&p, Vec::new(), AddAt::End, Time::ZERO).is_err());
+        assert!(command_many(&p, Vec::new(), AddAt::End, Time::ZERO, Default::default()).is_err());
     }
 
     #[test]

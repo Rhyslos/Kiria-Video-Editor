@@ -158,6 +158,42 @@ pub(crate) fn move_to(
     Ok(())
 }
 
+/// The tracks a file placed from outside the timeline lands on (the
+/// tracks' target buttons): its picture on `video`, its sound streams on
+/// the audio tracks from `audio` down. None: the first of each, as before
+/// there were targets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct Targets {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub video: Option<TrackId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio: Option<TrackId>,
+}
+
+impl Targets {
+    /// Where among the audio tracks of `seq` the first sound stream goes:
+    /// the target's place, or the first (also for a target that is gone).
+    pub fn sound_from(&self, seq: &Sequence) -> usize {
+        self.audio
+            .and_then(|id| seq.audio_tracks.iter().position(|t| t.id == id))
+            .unwrap_or(0)
+    }
+
+    /// The video track the picture goes on: the target while it is there.
+    pub fn picture_on(&self, seq: &Sequence) -> Option<TrackId> {
+        self.video
+            .filter(|id| seq.video_tracks.iter().any(|t| t.id == *id))
+    }
+}
+
+/// Whether an edit that moves what comes after a point on other tracks
+/// moves `track`: a sync-locked track always, one whose sync lock is off
+/// only when the edit is `on` it.
+pub(crate) fn follows(track: &Track, on: &std::collections::HashSet<TrackId>) -> bool {
+    !track.unsynced || on.contains(&track.id)
+}
+
 /// Refuses a change that touches a locked track of `before`: its clips
 /// changed, or it was taken away (a timeline removed as a whole is not
 /// refused). Unlocking it first is the way.

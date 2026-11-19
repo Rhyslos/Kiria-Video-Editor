@@ -50,6 +50,7 @@ fn tracks(count: usize, clips_each: usize, clip_len: f64) -> Vec<TimelineTrack> 
             pan: 0.0,
             effects_on: false,
             meter: None,
+            unsynced: false,
         })
         .collect()
 }

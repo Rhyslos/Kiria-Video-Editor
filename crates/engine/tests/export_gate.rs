@@ -626,9 +626,13 @@ fn sound_and_picture_stay_in_sync_over_a_long_export() {
     .unwrap();
     let media = *project.media.keys().next().unwrap();
     for _ in 1..minutes.div_ceil(piece) {
-        project = Command::PlaceMedia { sequence: seq, media }
-            .apply(&project)
-            .unwrap();
+        project = Command::PlaceMedia {
+            sequence: seq,
+            media,
+            targets: Default::default(),
+        }
+        .apply(&project)
+        .unwrap();
     }
     let length = project.active().unwrap().length().as_secs_f64();
     eprintln!("the timeline is {:.0} s long", length);

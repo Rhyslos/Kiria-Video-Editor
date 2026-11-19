@@ -300,14 +300,28 @@ impl Editor {
             use crate::media_drawer::Placement;
             let at = self.edit_point();
             let placed = match placement {
-                // As a drop on the first video track does it.
-                Placement::Overwrite => self.lay_media(media, at, None),
+                // As a drop on the target video track does it, its sound
+                // from the target audio track.
+                Placement::Overwrite => {
+                    let targets = self.targets();
+                    self.lay_media(media, at, targets.video, targets.audio)
+                }
                 Placement::End | Placement::Insert => {
+                    let targets = self.targets();
                     let result = self.with_document(|d| {
                         let sequence = d.project().active_sequence;
                         d.apply(match placement {
-                            Placement::End => Command::PlaceMedia { sequence, media },
-                            _ => Command::InsertMedia { sequence, media, at },
+                            Placement::End => Command::PlaceMedia {
+                                sequence,
+                                media,
+                                targets,
+                            },
+                            _ => Command::InsertMedia {
+                                sequence,
+                                media,
+                                at,
+                                targets,
+                            },
                         })
                     });
                     if let Err(err) = &result {
@@ -322,6 +336,14 @@ impl Editor {
         }
     }
 
+    /// The target tracks the timeline's headers show, for placing files.
+    pub(super) fn targets(&self) -> project::tracks::Targets {
+        project::tracks::Targets {
+            video: self.timeline.target_video.map(project::TrackId),
+            audio: self.timeline.target_audio.map(project::TrackId),
+        }
+    }
+
     /// Lays a file of the project over the timeline at `at`, its picture on
     /// the video track `track` (the first when `None`): what a drop on a
     /// track and the drawer's "Overwrite at the edit point" both do. Its
@@ -332,6 +354,7 @@ impl Editor {
         media: project::MediaId,
         at: Time,
         track: Option<project::TrackId>,
+        sound: Option<project::TrackId>,
     ) -> bool {
         let mut says = None;
         let result = self.with_document(|d| {
@@ -343,6 +366,7 @@ impl Editor {
                 media,
                 at,
                 track,
+                sound,
             })?;
             says = d
                 .project()

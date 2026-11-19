@@ -40,7 +40,13 @@ fn project() -> Project {
     let sequence = p.active_sequence;
     let p = Command::Import { sequence, media }.apply(&p).unwrap();
     let id = *p.media.keys().next().unwrap();
-    Command::PlaceMedia { sequence, media: id }.apply(&p).unwrap()
+    Command::PlaceMedia {
+        sequence,
+        media: id,
+        targets: Default::default(),
+    }
+    .apply(&p)
+    .unwrap()
 }
 
 fn spans(track: &Track) -> Vec<(i64, i64)> {

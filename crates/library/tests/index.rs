@@ -85,6 +85,7 @@ fn sample() -> Sample {
     let p = Command::PlaceMedia {
         sequence,
         media: interview,
+        targets: Default::default(),
     }
     .apply(&p)
     .unwrap();
@@ -244,6 +245,7 @@ fn a_sync_after_one_change_rebuilds_only_that_file() {
     let placed = Command::PlaceMedia {
         sequence,
         media: s.drone_clip,
+        targets: Default::default(),
     }
     .apply(&s.project)
     .unwrap();
@@ -486,6 +488,7 @@ fn ten_thousand_files(limit: Duration) {
     let placed = Command::PlaceMedia {
         sequence,
         media: ids[9],
+        targets: Default::default(),
     }
     .apply(&one)
     .unwrap();

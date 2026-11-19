@@ -8,6 +8,10 @@ use std::collections::BTreeSet;
 
 use egui::{Align2, FontId, Pos2, Rect, Sense, Shape, Stroke, Ui, pos2, vec2};
 
+/// Where a header's name starts: right of the column of its target tab
+/// and sync lock ([`patch_rects`]) and its role's mark.
+pub(crate) const NAME_LEFT: f32 = 22.0;
+
 /// The longest name that can be typed for a track, in characters.
 pub(super) const LONGEST_NAME: usize = 40;
 
@@ -392,6 +396,101 @@ pub(super) fn eye(
     }
 }
 
+/// The column at a header's left edge: the target tab on top and the sync
+/// lock under it. A short header (compact tracks) has only the tab, as
+/// tall as the header; one too short for buttons has neither.
+pub(super) fn patch_rects(header: Rect, compact: bool) -> (Option<Rect>, Option<Rect>) {
+    let x = header.left() + 3.0;
+    if header.height() < least_for_buttons(compact) {
+        return (None, None);
+    }
+    if compact || header.height() < 44.0 {
+        let tab = Rect::from_min_max(pos2(x, header.top() + 3.0), pos2(x + 12.0, header.bottom() - 3.0));
+        return (Some(tab), None);
+    }
+    let tab = Rect::from_min_size(pos2(x, header.top() + 6.0), vec2(12.0, 16.0));
+    let sync = Rect::from_min_size(pos2(x, header.top() + 26.0), vec2(12.0, 16.0));
+    (Some(tab), Some(sync))
+}
+
+/// The target tab: lit on the track a file placed from the media drawer
+/// or the Library lands on (its picture on the video target, its first
+/// sound stream on the audio target). A click makes this track the target.
+/// True when clicked.
+pub(super) fn target_tab(ui: &mut Ui, theme: &Theme, track: &TimelineTrack, rect: Rect, on: bool) -> bool {
+    let r = ui
+        .interact(rect, ui.scope_id().with(("track target", track.id)), Sense::click())
+        .on_hover_text(if on {
+            "The target: files placed from the media drawer or the Library land on this track (insert, overwrite, add at the end)"
+        } else {
+            "Make this track the target: files placed from the media drawer or the Library land on it"
+        });
+    let p = ui.painter();
+    let fill = match on {
+        true => theme.accent,
+        false if r.hovered() => theme.line_strong,
+        false => theme.line,
+    };
+    p.rect_filled(rect, 2.0, fill);
+    // A small arrow pointing into the track.
+    let c = rect.center();
+    let colour = if on { theme.bg } else { theme.muted };
+    p.add(Shape::convex_polygon(
+        vec![c + vec2(-2.5, -3.5), c + vec2(3.0, 0.0), c + vec2(-2.5, 3.5)],
+        colour,
+        Stroke::NONE,
+    ));
+    r.clicked()
+}
+
+/// The sync lock: on (a quiet chain), a ripple edit elsewhere moves this
+/// track's clips too, to stay in step; off (a broken chain, in the
+/// warning colour), it stays where it is unless the edit is on it.
+pub(super) fn sync_button(
+    ui: &mut Ui,
+    theme: &Theme,
+    track: &TimelineTrack,
+    rect: Rect,
+    events: &mut Vec<TimelineEvent>,
+) {
+    let r = ui
+        .interact(rect, ui.scope_id().with(("track sync", track.id)), Sense::click())
+        .on_hover_text(if track.unsynced {
+            "Sync lock off: closing a gap, a ripple trim or an insert on other tracks leaves this track where it is. Click to lock it in sync again"
+        } else {
+            "Sync lock on: closing a gap, a ripple trim or an insert on other tracks moves this track's clips too, so it stays in step. Click to turn it off"
+        });
+    let p = ui.painter();
+    let (fill, colour) = match track.unsynced {
+        true => (crate::status::WARNING, theme.bg),
+        false if r.hovered() => (theme.line_strong, theme.text),
+        false => (theme.line, theme.muted),
+    };
+    p.rect_filled(rect, 2.0, fill);
+    draw_chain(p, rect.center(), colour, track.unsynced);
+    if r.clicked() {
+        events.push(TimelineEvent::SyncTrack {
+            track: track.id,
+            synced: track.unsynced,
+        });
+    }
+}
+
+/// Two links of a chain, one above the other, around `c`; pulled apart
+/// when `broken`.
+fn draw_chain(p: &egui::Painter, c: Pos2, colour: egui::Color32, broken: bool) {
+    let apart = if broken { 1.2 } else { 0.0 };
+    let stroke = Stroke::new(1.2, colour);
+    for dy in [-2.4 - apart, 2.4 + apart] {
+        let link = Rect::from_center_size(c + vec2(0.0, dy), vec2(4.5, 6.0));
+        p.rect_stroke(link, 2.2, stroke, egui::StrokeKind::Middle);
+    }
+    if broken {
+        // A small break across the middle.
+        p.line_segment([c + vec2(-4.0, -1.0), c + vec2(4.0, 1.0)], stroke);
+    }
+}
+
 /// The padlock in a track's header, at `rect`: shut and lit while the
 /// track is locked. Click to lock or unlock it.
 pub(super) fn lock_button(
@@ -492,7 +591,7 @@ fn draw_eye(p: &egui::Painter, c: Pos2, colour: egui::Color32, shut: bool) {
 /// Where a track's name is typed: over the name, left of the buttons.
 fn field_rect(header: Rect, centre_y: f32) -> Rect {
     Rect::from_min_max(
-        pos2(header.left() + 6.0, centre_y - 11.0),
+        pos2(header.left() + NAME_LEFT - 6.0, centre_y - 11.0),
         pos2(header.right() - 54.0, centre_y + 11.0),
     )
 }

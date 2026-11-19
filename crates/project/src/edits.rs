@@ -16,6 +16,21 @@ use crate::time::Rate;
 use crate::time::{Speed, Time};
 use diag::AppError;
 
+/// Every clip of `seq` with whether its track follows an edit of the
+/// clips `group` (their tracks, and every sync-locked one: see
+/// [`crate::tracks::follows`]).
+fn followers<'a>(seq: &'a Sequence, group: &[ClipId]) -> impl Iterator<Item = (&'a Clip, bool)> {
+    let on: std::collections::HashSet<TrackId> = seq
+        .tracks()
+        .filter(|t| t.clips.iter().any(|c| group.contains(&c.id)))
+        .map(|t| t.id)
+        .collect();
+    seq.tracks().flat_map(move |t| {
+        let follows = crate::tracks::follows(t, &on);
+        t.clips.iter().map(move |c| (c, follows))
+    })
+}
+
 pub(crate) fn ripple_trim(
     p: &mut Project,
     sequence: SequenceId,
@@ -37,7 +52,7 @@ pub(crate) fn ripple_trim(
     };
     let after = reference.end();
     let mut changed = Vec::new();
-    for c in seq.tracks().flat_map(|t| t.clips.iter()) {
+    for (c, follows) in followers(seq, &group) {
         let mut t = c.clone();
         if group.contains(&c.id) {
             match edge {
@@ -47,7 +62,7 @@ pub(crate) fn ripple_trim(
                 }
                 Edge::End => t.duration = c.duration + delta,
             }
-        } else if c.start >= after {
+        } else if follows && c.start >= after {
             t.start = c.start + shift;
         } else {
             continue;
@@ -70,7 +85,7 @@ pub(crate) fn set_speed(
     let shift = new_end - reference.end();
     let after = reference.end();
     let mut changed = Vec::new();
-    for c in seq.tracks().flat_map(|t| t.clips.iter()) {
+    for (c, follows) in followers(seq, &group) {
         if group.contains(&c.id) {
             // A ramp gives way to the one speed.
             changed.push(Clip {
@@ -79,7 +94,7 @@ pub(crate) fn set_speed(
                 ramp: Ramp::default(),
                 ..c.clone()
             });
-        } else if c.start >= after {
+        } else if follows && c.start >= after {
             changed.push(Clip {
                 start: c.start + shift,
                 ..c.clone()
@@ -103,12 +118,12 @@ pub(crate) fn set_ramp(p: &mut Project, sequence: SequenceId, clip: ClipId, ramp
     let shift = new_end - reference.end();
     let after = reference.end();
     let mut changed = Vec::new();
-    for c in seq.tracks().flat_map(|t| t.clips.iter()) {
+    for (c, follows) in followers(seq, &group) {
         if group.contains(&c.id) {
             // Linked clips get the same ramp at the same place on the timeline.
             let own = ramp.shifted(reference.start - c.start);
             changed.push(ramped(c, own, rate, file_end(c)));
-        } else if c.start >= after && shift != Time::ZERO {
+        } else if follows && c.start >= after && shift != Time::ZERO {
             changed.push(Clip {
                 start: c.start + shift,
                 ..c.clone()
@@ -237,10 +252,54 @@ pub(crate) fn slide(p: &mut Project, sequence: SequenceId, clip: ClipId, by: Tim
 
 /// Makes `length` of room at `at` on every track: clips under `at` are
 /// split and everything from `at` on moves later. Labels move too.
-pub(crate) fn open_space(p: &mut Project, sequence: SequenceId, at: Time, length: Time) -> diag::Result<()> {
-    split_where_crossing(p, sequence, at)?;
+///
+/// Tracks whose sync lock is off keep their place, uncut, unless they are
+/// among `landing` (the tracks what goes in lands on).
+pub(crate) fn open_space(
+    p: &mut Project,
+    sequence: SequenceId,
+    at: Time,
+    length: Time,
+    landing: &[TrackId],
+) -> diag::Result<()> {
+    let on: std::collections::HashSet<TrackId> = landing.iter().copied().collect();
+    let seq = sequence_ref(p, sequence)?;
+    let moving: Vec<TrackId> = seq
+        .tracks()
+        .filter(|t| crate::tracks::follows(t, &on))
+        .map(|t| t.id)
+        .collect();
+    if moving.len() == seq.tracks().count() {
+        // Every track: cut as every insert always has (the same cuts in the
+        // same order, so older journals give the same ids).
+        split_where_crossing(p, sequence, at)?;
+    } else {
+        // Only what moves is cut: a clip linked to one that is cut, on a
+        // track that stays, stays whole (linked to the part before).
+        let cuts: Vec<(ClipId, Option<crate::ids::LinkId>)> = sequence_ref(p, sequence)?
+            .tracks()
+            .filter(|t| moving.contains(&t.id))
+            .filter_map(|t| crossing(&t.clips, at).and_then(|i| t.clips.get(i)))
+            .map(|c| (c.id, c.link))
+            .collect();
+        let right = right_ids(p, &cuts);
+        let seq = sequence_mut(p, sequence)?;
+        for track in tracks_mut(seq) {
+            let Some(i) = crossing(&track.clips, at) else {
+                continue;
+            };
+            if let Some((_, right_id, right_link)) = right
+                .iter()
+                .find(|(l, _, _)| track.clips.get(i).is_some_and(|c| c.id == *l))
+            {
+                let (left, right) = halves(&track.clips[i], at, *right_id, *right_link);
+                track.clips[i] = left;
+                track.clips.insert(i + 1, right);
+            }
+        }
+    }
     let seq = sequence_mut(p, sequence)?;
-    for track in tracks_mut(seq) {
+    for track in tracks_mut(seq).filter(|t| moving.contains(&t.id)) {
         for c in track.clips.iter_mut().filter(|c| c.start >= at) {
             c.start = c.start + length;
         }

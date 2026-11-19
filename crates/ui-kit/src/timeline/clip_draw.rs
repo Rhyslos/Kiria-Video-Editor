@@ -376,7 +376,7 @@ impl TimelineView {
         header_painter.rect_filled(header, 0.0, theme.panel);
         header_painter.rect_filled(header, 0.0, mark.gamma_multiply(0.3));
         header_painter.text(
-            pos2(layout.header_x + 12.0, strip.center().y),
+            pos2(layout.header_x + super::headers::NAME_LEFT, strip.center().y),
             Align2::LEFT_CENTER,
             "New track",
             FontId::proportional(11.5),
