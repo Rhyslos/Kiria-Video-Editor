@@ -707,6 +707,10 @@ pub struct TimelineView {
     list_scroll: f32,
     /// What a click or a drag in the ruler moves.
     pub click_moves: ClickMoves,
+    /// Zooming (the wheel, a pinch and the zoom commands) keeps the
+    /// playhead where it is on screen, or brings it to the middle when it
+    /// is out of view, instead of zooming at the pointer.
+    pub zoom_to_playhead: bool,
     /// Which of the project's timelines it shows, by id: the page sets it,
     /// and keeps it with the layout so the project opens on it again.
     pub showing: Option<u64>,
@@ -774,6 +778,7 @@ impl Default for TimelineView {
             divider: true,
             list_scroll: 0.0,
             click_moves: ClickMoves::Playhead,
+            zoom_to_playhead: false,
             showing: None,
             playhead_lit: false,
             scrub: false,
@@ -1039,6 +1044,29 @@ impl TimelineView {
         self.scroll = (t - f64::from(anchor - left) / f64::from(self.zoom)).max(0.0);
     }
 
+    /// Zooms by `factor` from a wheel or pinch at screen x `pointer`, or
+    /// from a command (`None`). A command zooms around the playhead when it
+    /// is in view, else around the middle; the wheel at the pointer. With
+    /// [`TimelineView::zoom_to_playhead`] both keep the playhead in place,
+    /// and one out of view is brought to the middle.
+    fn zoom_step(&mut self, layout: &Layout, playhead: f64, pointer: Option<f32>, factor: f32) {
+        let (left, right) = (layout.time_left(), layout.ruler.right());
+        let middle = (left + right) / 2.0;
+        let at = self.x_of(left, playhead);
+        let in_view = (left..=right).contains(&at);
+        if !self.zoom_to_playhead {
+            let anchor = pointer.unwrap_or(if in_view { at } else { middle });
+            self.zoom_around(left, anchor, factor);
+            return;
+        }
+        if !in_view {
+            // The playhead to the middle first, then zoom there.
+            self.scroll = (playhead - f64::from(middle - left) / f64::from(self.zoom)).max(0.0);
+        }
+        let anchor = self.x_of(left, playhead);
+        self.zoom_around(left, anchor, factor);
+    }
+
     /// Asks for a step (from a command); it happens when the timeline is next drawn.
     pub fn step(&mut self, step: ViewStep) {
         self.steps.push(step);
@@ -1046,22 +1074,14 @@ impl TimelineView {
 
     /// Takes the steps commands asked for.
     fn take_steps(&mut self, layout: &Layout, data: &TimelineData) {
-        let left = layout.time_left();
         for step in std::mem::take(&mut self.steps) {
-            // Around the playhead when it is in view, else the middle.
-            let playhead = self.x_of(left, data.playhead);
-            let anchor = if (left..=layout.ruler.right()).contains(&playhead) {
-                playhead
-            } else {
-                layout.ruler.center().x
-            };
             let halves = match self.hover_half {
                 Some(half) => vec![half],
                 None => vec![Half::Video, Half::Audio],
             };
             match step {
-                ViewStep::ZoomIn => self.zoom_around(left, anchor, ZOOM_STEP),
-                ViewStep::ZoomOut => self.zoom_around(left, anchor, 1.0 / ZOOM_STEP),
+                ViewStep::ZoomIn => self.zoom_step(layout, data.playhead, None, ZOOM_STEP),
+                ViewStep::ZoomOut => self.zoom_step(layout, data.playhead, None, 1.0 / ZOOM_STEP),
                 ViewStep::TallerTracks => {
                     for half in halves {
                         self.scale_tracks(half, HEIGHT_STEP, None, layout, data);
@@ -1611,7 +1631,7 @@ impl TimelineView {
         let (zoom, scroll, alt) = ui.input(|i| (i.zoom_delta(), i.smooth_scroll_delta(), i.modifiers.alt));
         let left = layout.time_left();
         if zoom != 1.0 {
-            self.zoom_around(left, pos.x.max(left), zoom);
+            self.zoom_step(layout, data.playhead, Some(pos.x.max(left)), zoom);
         }
         if scroll.x != 0.0 {
             self.pan_time(scroll.x);
@@ -2262,6 +2282,34 @@ mod tests {
         rig.frame(Vec::new());
         assert_eq!(rig.view.zoom, 9600.0);
         assert_eq!(max_zoom(24.0), 2400.0);
+    }
+
+    #[test]
+    fn zoom_to_playhead_keeps_the_playhead_put_for_the_wheel_and_brings_it_into_view() {
+        let mut rig = Rig::new(1, 1);
+        rig.view.zoom_to_playhead = true;
+        rig.frame(Vec::new());
+        // The playhead (2 s) is at x = 260; the wheel zooms at it, not at the pointer.
+        let before = rig.view.zoom;
+        rig.wheel(pos2(700.0, 200.0), vec2(0.0, 50.0), egui::Modifiers::CTRL);
+        assert_ne!(rig.view.zoom, before, "the wheel zoomed");
+        assert!(
+            (rig.view.x_of(HEADER_WIDTH, 2.0) - 260.0).abs() < 1e-2,
+            "the playhead stays put: {}",
+            rig.view.x_of(HEADER_WIDTH, 2.0)
+        );
+        // Out of view: a zoom brings it as near the middle as the start
+        // allows (it is 2 s from the start).
+        rig.view.scroll = 30.0;
+        rig.view.step(ViewStep::ZoomIn);
+        rig.frame(Vec::new());
+        let x = rig.view.x_of(HEADER_WIDTH, 2.0);
+        assert!((HEADER_WIDTH..570.0).contains(&x), "the playhead in view: {x}");
+        // Off, the wheel zooms at the pointer again.
+        rig.view.zoom_to_playhead = false;
+        let under = rig.view.time_at(HEADER_WIDTH, 700.0);
+        rig.wheel(pos2(700.0, 200.0), vec2(0.0, 50.0), egui::Modifiers::CTRL);
+        assert!((rig.view.time_at(HEADER_WIDTH, 700.0) - under).abs() < 1e-3);
     }
 
     #[test]

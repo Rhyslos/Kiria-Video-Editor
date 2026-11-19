@@ -764,6 +764,7 @@ impl Editor {
             self.timeline.compact = self.settings.compact_tracks;
             self.timeline.divider = !self.settings.one_track_list;
             self.timeline.click_moves = self.settings.click_moves;
+            self.timeline.zoom_to_playhead = self.settings.zoom_to_playhead;
             if self.settings.rough_cut {
                 timeline_panel::fold_sound(&mut drawn);
             }

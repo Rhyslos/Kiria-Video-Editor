@@ -543,6 +543,7 @@ impl Editor {
         view.compact = self.settings.compact_tracks;
         view.divider = true;
         view.click_moves = self.settings.click_moves;
+        view.zoom_to_playhead = self.settings.zoom_to_playhead;
         view.lines = self.lines_on.then_some(self.lines);
         view.heights.keep_only(&timeline_panel::track_ids(seq));
         // The reference row keeps to one track's height.

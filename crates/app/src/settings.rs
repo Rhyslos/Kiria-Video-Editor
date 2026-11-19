@@ -40,6 +40,9 @@ pub struct Settings {
     /// What a click or drag in the timeline's ruler moves: the playhead
     /// (as always) or the edit needle, the playhead then moved by its handle.
     pub click_moves: ui_kit::ClickMoves,
+    /// Zooming the timeline keeps the playhead in place instead of zooming
+    /// at the pointer (the Display menu's Zoom to playhead).
+    pub zoom_to_playhead: bool,
     /// How the height is shared between the viewer and the timeline (the
     /// handle between them), on every page that has both.
     pub viewer_split: ui_kit::splitter::Split,
