@@ -36,6 +36,9 @@ pub struct Importer {
     next_aside: u64,
     /// The timeline imports go on is automatic (`set_automatic`).
     automatic: bool,
+    /// The batch of the file `next_read` handed over last, for
+    /// `note_settled`.
+    last_batch: Option<u64>,
 }
 
 /// The start of the command a message's "Import what's there" runs; the
@@ -100,41 +103,27 @@ pub struct Batch {
     pub refused: Vec<(PathBuf, media::Refusal)>,
     /// The refused files whose end is missing, which can be imported anyway.
     pub cut_short: Vec<PathBuf>,
+    /// What the status line said when one of its own files settled the
+    /// timeline's settings (`Importer::note_settled`), said again in its
+    /// summary line and in no other batch's.
+    settled: Option<String>,
 }
 
-/// What the status line said about the timeline's settings settling, kept
-/// from the file that settled it until its own batch finishes, so a batch's
-/// summary repeats it and a later batch's never does.
-#[derive(Debug, Default)]
-pub struct SettledNote(Option<String>);
-
-impl SettledNote {
-    /// A file of the batch under way was added; `said` is what settling
-    /// the timeline said, if adding it did.
-    pub fn keep(&mut self, said: Option<String>) {
-        if said.is_some() {
-            self.0 = said;
-        }
-    }
-
-    /// `batch` finished: the line summing it up when it had several files
-    /// (with what settling said, when one of its files settled the
-    /// timeline), `None` for a file on its own. The note is dropped either
-    /// way.
-    pub fn finished(&mut self, batch: &Batch) -> Option<String> {
-        let said = self.0.take();
-        if batch.files <= 1 {
+impl Batch {
+    /// The line summing the batch up once it is finished, when it had
+    /// several files (with what settling said, when one of its own files
+    /// settled the timeline); `None` for a file on its own.
+    pub fn line(&self) -> Option<String> {
+        if self.files <= 1 {
             return None;
         }
-        let line = format!("Imported {} of {} files", batch.imported(), batch.files);
-        Some(match said {
+        let line = format!("Imported {} of {} files", self.imported(), self.files);
+        Some(match &self.settled {
             Some(said) => format!("{line}. {said}"),
             None => line,
         })
     }
-}
 
-impl Batch {
     /// How many were added.
     pub fn imported(&self) -> usize {
         self.files - self.refused.len()
@@ -266,6 +255,7 @@ impl Importer {
             done: 0,
             refused: Vec::new(),
             cut_short: Vec::new(),
+            settled: None,
         });
         for path in paths {
             let (ctx, worker_path) = (ctx.clone(), path.clone());
@@ -350,6 +340,7 @@ impl Importer {
                 batch.waits = false;
             }
             let reading = self.reading.pop_front()?;
+            self.last_batch = Some(batch_id);
             let path = reading.path;
             let result = reading.checked?;
             let batch = &mut self.batches[at];
@@ -381,6 +372,25 @@ impl Importer {
             };
             let finished = (batch.done == batch.files).then(|| self.batches.remove(at));
             return Some((read, finished));
+        }
+    }
+
+    /// The file `next_read` handed over last was added, and `said` is what
+    /// settling the timeline said, if adding it did: kept on that file's
+    /// own batch for its summary line ([`Batch::line`]), whatever other
+    /// batches are being read meanwhile. `finished` is the batch
+    /// `next_read` handed over with the file, if it was the batch's last
+    /// (no longer kept here).
+    pub fn note_settled(&mut self, finished: Option<&mut Batch>, said: Option<String>) {
+        let (Some(said), Some(id)) = (said, self.last_batch) else {
+            return;
+        };
+        let batch = match finished {
+            Some(batch) if batch.id == id => Some(batch),
+            _ => self.batches.iter_mut().find(|b| b.id == id),
+        };
+        if let Some(batch) = batch {
+            batch.settled = Some(said);
         }
     }
 
@@ -526,8 +536,8 @@ mod tests {
 
     #[test]
     fn settling_is_said_only_in_the_summary_of_its_own_batch() {
-        let batch = |files| Batch {
-            id: 0,
+        let batch = |id, files| Batch {
+            id,
             place: true,
             files,
             done: files,
@@ -535,20 +545,41 @@ mod tests {
             cut_short: Vec::new(),
             waits: false,
             settle: None,
+            settled: None,
         };
-        let mut note = SettledNote::default();
+        let mut importer = Importer::default();
         // One file on its own settles the timeline: no summary.
-        note.keep(Some("The timeline is now 1080p".into()));
-        assert_eq!(note.finished(&batch(1)), None);
+        let mut alone = batch(0, 1);
+        importer.last_batch = Some(0);
+        importer.note_settled(Some(&mut alone), Some("The timeline is now 1080p".into()));
+        assert_eq!(alone.line(), None);
         // A later batch of three onto the settled timeline settles nothing.
-        note.keep(None);
-        assert_eq!(note.finished(&batch(3)).as_deref(), Some("Imported 3 of 3 files"));
-        // A batch whose first file settles it says so in its summary.
-        note.keep(Some("The timeline is now 4K".into()));
-        note.keep(None);
+        let mut three = batch(1, 3);
+        importer.last_batch = Some(1);
+        importer.note_settled(Some(&mut three), None);
+        assert_eq!(three.line().as_deref(), Some("Imported 3 of 3 files"));
+
+        // Two batches read at once: the first file of the earlier one
+        // settles the timeline, then the later one finishes first.
+        importer.batches = vec![batch(2, 2), batch(3, 2)];
+        importer.last_batch = Some(2);
+        importer.note_settled(None, Some("The timeline is now 4K".into()));
+        importer.last_batch = Some(3);
+        importer.note_settled(None, None);
+        let mut later = importer.batches.remove(1);
+        importer.note_settled(Some(&mut later), None);
         assert_eq!(
-            note.finished(&batch(2)).as_deref(),
-            Some("Imported 2 of 2 files. The timeline is now 4K")
+            later.line().as_deref(),
+            Some("Imported 2 of 2 files"),
+            "the later batch settled nothing"
+        );
+        let mut earlier = importer.batches.remove(0);
+        importer.last_batch = Some(2);
+        importer.note_settled(Some(&mut earlier), None);
+        assert_eq!(
+            earlier.line().as_deref(),
+            Some("Imported 2 of 2 files. The timeline is now 4K"),
+            "the note stays on the batch whose file settled it"
         );
     }
 
@@ -563,6 +594,7 @@ mod tests {
             cut_short: Vec::new(),
             waits: false,
             settle: None,
+            settled: None,
         };
         assert!(batch.summary(None).is_none(), "nothing refused, nothing to say");
         batch.refused = (0..10)
@@ -615,6 +647,7 @@ mod tests {
             cut_short: Vec::new(),
             waits: false,
             settle: None,
+            settled: None,
         };
         let summary = batch.summary(None).unwrap();
         let why = summary.why_text().unwrap();
