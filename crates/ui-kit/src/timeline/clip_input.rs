@@ -275,14 +275,16 @@ impl TimelineView {
             .menu_at
             .and_then(|(_, clip)| clip)
             .and_then(|(id, ..)| find_clip(tracks, id));
-        let selected = data
-            .video
-            .iter()
-            .chain(data.audio)
-            .flat_map(|t| &t.clips)
-            .filter(|c| c.selected)
-            .take(2)
-            .count();
+        let chosen = || {
+            data.video
+                .iter()
+                .chain(data.audio)
+                .flat_map(|t| &t.clips)
+                .filter(|c| c.selected)
+        };
+        let selected = chosen().take(2).count();
+        let first_link = chosen().next().and_then(|c| c.link);
+        let links_apart = selected > 1 && (first_link.is_none() || chosen().any(|c| c.link != first_link));
         Menu {
             at: self.menu_at,
             marks: marks.as_ref().map(|(clip, marks)| (*clip, marks.as_slice())),
@@ -294,6 +296,8 @@ impl TimelineView {
             gap: self.menu_gap,
             selection: selected > 0,
             several: selected > 1,
+            linked: menu_clip.is_some_and(|c| c.link.is_some()),
+            links_apart,
         }
     }
 

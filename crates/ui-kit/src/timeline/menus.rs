@@ -19,6 +19,8 @@ pub(super) fn clip_menu(r: &egui::Response, menu: Menu, events: &mut Vec<Timelin
         gap,
         selection,
         several,
+        linked,
+        links_apart,
     } = menu;
     r.context_menu(|ui| {
         if let Some((clip, marks)) = marks {
@@ -71,6 +73,17 @@ pub(super) fn clip_menu(r: &egui::Response, menu: Menu, events: &mut Vec<Timelin
                     }
                 }
             });
+            if linked
+                && ui
+                    .button("Unlink")
+                    .on_hover_text(
+                        "Its picture and each sound stream are clicked, moved and trimmed on their own",
+                    )
+                    .clicked()
+            {
+                events.push(TimelineEvent::Unlink { clip: id });
+                ui.close();
+            }
             if ui.button("Set the region to this clip").clicked() {
                 events.push(TimelineEvent::SetRegion(Some((start, end))));
                 ui.close();
@@ -89,6 +102,15 @@ pub(super) fn clip_menu(r: &egui::Response, menu: Menu, events: &mut Vec<Timelin
         }
         if selection && ui.button("Nest the selected clips").clicked() {
             events.push(TimelineEvent::NestSelected);
+            ui.close();
+        }
+        if links_apart
+            && ui
+                .button("Link the selected clips")
+                .on_hover_text("They are selected, moved, trimmed and split together")
+                .clicked()
+        {
+            events.push(TimelineEvent::LinkSelected);
             ui.close();
         }
         if several && ui.button("Sync by sound…").clicked() {
@@ -173,6 +195,10 @@ pub(super) struct Menu<'a> {
     pub(super) selection: bool,
     /// Two or more clips are selected.
     pub(super) several: bool,
+    /// The clip it was opened on is linked to others.
+    pub(super) linked: bool,
+    /// Two or more clips are selected and not all linked together.
+    pub(super) links_apart: bool,
 }
 
 /// The right-click menu of keyframe marks: go there, remove their

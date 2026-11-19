@@ -180,6 +180,8 @@ impl Editor {
                 }
             }
             E::SyncBySound => self.start_sync(),
+            E::Unlink { clip } => self.unlink(project::ClipId(clip)),
+            E::LinkSelected => self.link_selected(),
             E::DropTimeline { timeline, at, track } => {
                 let result = self.place_timeline(
                     project::SequenceId(timeline),

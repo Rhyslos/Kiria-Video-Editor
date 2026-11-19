@@ -23,6 +23,9 @@ pub struct Settings {
     /// Cut (the clipboard's) closes the gap the clips leave on every
     /// track, as "Delete and close the gap" does; off, it leaves the gap.
     pub cut_closes_gap: bool,
+    /// Every clip on its own: a picture and each of its sound streams are
+    /// never linked, in any project (`Document::set_always_unlinked`).
+    pub always_unlinked: bool,
     /// How sharp the viewer's picture is.
     pub preview_quality: ui_kit::PreviewQuality,
     /// The timeline in the rough cut view (sound folded into the pictures).

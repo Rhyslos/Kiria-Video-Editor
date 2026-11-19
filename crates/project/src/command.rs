@@ -427,6 +427,23 @@ pub enum Command {
         sequence: SequenceId,
         ranges: Vec<Region>,
     },
+    /// Unlinks `clips`: each of them and every clip linked to it plays on
+    /// its own afterwards (a picture and each of its sound streams apart).
+    Unlink {
+        sequence: SequenceId,
+        clips: Vec<ClipId>,
+    },
+    /// Links `clips` (two or more) so they are selected, moved, trimmed
+    /// and split together; any links they had are replaced.
+    Link {
+        sequence: SequenceId,
+        clips: Vec<ClipId>,
+    },
+    /// Unlinks every clip of every timeline (Settings' "Always unlink audio
+    /// and video", see `Document::set_always_unlinked`).
+    UnlinkAll,
+    /// Several changes as one undo step, in order: all or none.
+    Steps(Vec<Command>),
     /// Splits at `at`: only `clip` and its linked clips, or every clip under `at` when `None`.
     Split {
         sequence: SequenceId,
@@ -912,6 +929,14 @@ impl Command {
                 sequence_mut(&mut p, *sequence)?.region = None;
             }
             Command::Split { sequence, at, clip } => split(&mut p, *sequence, *at, *clip)?,
+            Command::Unlink { sequence, clips } => crate::linking::unlink(&mut p, *sequence, clips)?,
+            Command::Link { sequence, clips } => crate::linking::link(&mut p, *sequence, clips)?,
+            Command::UnlinkAll => crate::linking::unlink_all(&mut p),
+            Command::Steps(steps) => {
+                for step in steps {
+                    p = step.apply(&p)?;
+                }
+            }
             Command::AddLabel { sequence, label } => {
                 if label.at.is_negative() {
                     return Err(

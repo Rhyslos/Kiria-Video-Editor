@@ -478,6 +478,11 @@ pub enum TimelineEvent {
     AddAdjustment { at: f64, track: Option<u64> },
     /// "Nest the selected clips" from the right-click menu.
     NestSelected,
+    /// "Unlink" in a linked clip's menu: it (with the selected clips, when
+    /// it is one of them) and every clip linked to it play on their own.
+    Unlink { clip: u64 },
+    /// "Link the selected clips" from the right-click menu.
+    LinkSelected,
     /// "Sync by sound" from the right-click menu (two or more clips are
     /// selected): line them up by what they hear.
     SyncBySound,
