@@ -351,16 +351,17 @@ impl Editor {
             }
             Action::PlayPause => {
                 match self.playback.take() {
-                    // Pause: back to where playback started, to watch it again.
-                    Some(playback) => self.viewer.playhead = playback.started_at(),
+                    // Pause: the playhead stays where playing got to.
+                    Some(playback) => self.viewer.playhead = self.snapped(playback.position()),
                     None => self.start_playback(),
                 }
                 self.after_play_change();
                 Ok(())
             }
             Action::Stop => {
+                // Stop: back to where playback started, to watch it again.
                 if let Some(playback) = self.playback.take() {
-                    self.viewer.playhead = self.snapped(playback.position());
+                    self.viewer.playhead = playback.started_at();
                 }
                 self.after_play_change();
                 Ok(())

@@ -167,7 +167,7 @@ pub struct Clash {
 /// or not at all (none until someone gives it one).
 const USUAL: &[(Action, Shortcut)] = &[
     (Action::PlayPause, Shortcut::key(Key::Space)),
-    // Ctrl with play: stop and leave the playhead where it is.
+    // Ctrl with play: stop and go back to where playback started.
     (Action::Stop, Shortcut::ctrl(Key::Space)),
     (Action::Split, Shortcut::key(Key::S)),
     (Action::Delete, Shortcut::key(Key::Delete)),

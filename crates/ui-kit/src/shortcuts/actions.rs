@@ -102,7 +102,7 @@ actions! {
     Cut, Anywhere, "Cut: copy the selected clips and take them out";
     Paste, Anywhere, "Paste: copied clips at the edit point, or copied keyframes on the selected clip";
     PlayPause, Viewer, "Play / pause";
-    Stop, Viewer, "Stop playing here";
+    Stop, Viewer, "Stop: back to where playback started";
     PreviousFrame, Viewer, "Back one frame";
     NextFrame, Viewer, "Forward one frame";
     GoToStart, Viewer, "Go to the start";

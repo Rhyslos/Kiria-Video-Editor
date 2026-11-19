@@ -696,15 +696,15 @@ footer p { color: var(--muted); }
 <table>
 <thead><tr><th>To</th><th>Do this</th></tr></thead>
 <tbody>
-<tr><td>Play or pause</td><td><kbd>Space</kbd>, or the round button in the transport. Pausing goes back to where playback started, so you can watch a moment again and again.</td></tr>
-<tr><td>Stop where you are</td><td><kbd>Ctrl</kbd>+<kbd>Space</kbd>, or the square button in the transport. The playhead stays where playback stopped.</td></tr>
+<tr><td>Play or pause</td><td><kbd>Space</kbd>, or the round button in the transport. Pausing leaves the playhead where playback got to.</td></tr>
+<tr><td>Stop and go back</td><td><kbd>Ctrl</kbd>+<kbd>Space</kbd>, or the square button left of play. The playhead goes back to where playback started, so you can watch a moment again and again.</td></tr>
 <tr><td>Step one frame</td><td><kbd>←</kbd> and <kbd>→</kbd>, or the buttons beside play</td></tr>
 <tr><td>Go to the start or end</td><td><kbd>Home</kbd> and <kbd>End</kbd>, or the buttons beside the frame steps</td></tr>
 <tr><td>Jump to a moment</td><td>Click or drag in the ruler, or in the scrub bar under the picture. <kbd>Alt</kbd>+click anywhere on the timeline moves the playhead there with any tool.</td></tr>
 <tr><td>Loop</td><td><kbd>L</kbd>, or the round-arrows button at the right end of the transport (lit while on), plays the <a href="#region">region</a> over and over</td></tr>
 </tbody>
 </table>
-<p><strong>The transport</strong>, from left to right: Mark in, Mark out, Go to the start, Back one frame, <strong>Play / pause</strong> (in the middle), Forward one frame, Go to the end, Stop, Loop. Point at a button to see its keys. It is the same on every page; in the Library's player the loop button is greyed.</p>
+<p><strong>The transport</strong>, from left to right: Mark in, Go to the start, Back one frame, Stop, <strong>Play / pause</strong> (in the middle), Forward one frame, Go to the end, Loop, Mark out. Point at a button to see its keys. It is the same on every page; in the Library's player the loop button is greyed.</p>
 <p><strong>Nothing over the picture:</strong> press <kbd>H</kbd> (or Display › <strong>Nothing over the picture</strong>) to see the whole picture uncovered, for checking something the transport would hide. The transport moves to a small row of the same buttons under the picture, between the timecode and Display, and the handles and the note in the corner go away. Press <kbd>H</kbd> again to bring them back. It stays as you left it, in every project and on every page with a viewer.</p>
 <p><strong>Preview quality</strong> (under the picture): <strong>Auto</strong> lowers the picture's size while playing when frames would come late, and the viewer's corner says so; <strong>Full</strong>, <strong>1/2</strong> and <strong>1/4</strong> fix it. Export always uses full quality.</p>
 <p><strong>Zoom into the picture:</strong> <kbd>Ctrl</kbd>+wheel over the picture zooms at the pointer, and dragging with the middle button moves around. The zoom menu beside the preview quality says the scale (“Fit · 47 %”) and offers Fit (<kbd>Shift</kbd>+<kbd>Z</kbd>), 50 %, 100 % (<kbd>Ctrl</kbd>+<kbd>0</kbd>), 200 %, zoom in (<kbd>Ctrl</kbd>+<kbd>=</kbd>) and out (<kbd>Ctrl</kbd>+<kbd>-</kbd>).</p>
@@ -1460,7 +1460,7 @@ footer p { color: var(--muted); }
 <thead><tr><th>Command</th><th>Keys</th></tr></thead>
 <tbody>
 <tr><td>Play / pause</td><td><kbd>Space</kbd></td></tr>
-<tr><td>Stop playing here</td><td><kbd>Ctrl</kbd>+<kbd>Space</kbd></td></tr>
+<tr><td>Stop: back to where playback started</td><td><kbd>Ctrl</kbd>+<kbd>Space</kbd></td></tr>
 <tr><td>Back one frame</td><td><kbd>←</kbd></td></tr>
 <tr><td>Forward one frame</td><td><kbd>→</kbd></td></tr>
 <tr><td>Go to the start</td><td><kbd>Home</kbd></td></tr>

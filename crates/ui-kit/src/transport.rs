@@ -80,8 +80,8 @@ fn scale_for(width: f32) -> f32 {
 /// the loop button when on; `None` where the page has no looping (the
 /// button is shown greyed, so the bar is the same everywhere).
 ///
-/// Left of play: In, Out, go to the start, back one frame. Right: forward
-/// one frame, go to the end, stop, loop.
+/// Left of play: In, go to the start, back one frame, stop (beside play).
+/// Right: forward one frame, go to the end, loop, Out.
 pub fn transport(
     ui: &mut Ui,
     theme: &Theme,
@@ -187,32 +187,28 @@ fn buttons_ui(
         ),
         (
             -3.0,
-            Icon::MarkOut,
-            TransportClick::MarkOut,
-            tip("Mark out", shortcuts, Action::MarkOut),
-        ),
-        (
-            -2.0,
             Icon::GoToStart,
             TransportClick::GoToStart,
             tip("Go to the start", shortcuts, Action::GoToStart),
         ),
         (
-            -1.0,
+            -2.0,
             Icon::FrameBack,
             TransportClick::FrameBack,
             tip("Back one frame", shortcuts, Action::PreviousFrame),
+        ),
+        (
+            -1.0,
+            Icon::Stop,
+            TransportClick::Stop,
+            tip("Stop: back to where playback started", shortcuts, Action::Stop),
         ),
         (
             0.0,
             if playing { Icon::Pause } else { Icon::Play },
             TransportClick::PlayPause,
             tip(
-                if playing {
-                    "Pause: back to where playback started"
-                } else {
-                    "Play"
-                },
+                if playing { "Pause here" } else { "Play" },
                 shortcuts,
                 Action::PlayPause,
             ),
@@ -231,15 +227,15 @@ fn buttons_ui(
         ),
         (
             3.0,
-            Icon::Stop,
-            TransportClick::Stop,
-            tip("Stop: leave the playhead here", shortcuts, Action::Stop),
-        ),
-        (
-            4.0,
             Icon::Loop,
             TransportClick::Loop,
             tip(loop_words, shortcuts, Action::ToggleLoop),
+        ),
+        (
+            4.0,
+            Icon::MarkOut,
+            TransportClick::MarkOut,
+            tip("Mark out", shortcuts, Action::MarkOut),
         ),
     ];
     let mut clicked = None;
@@ -415,7 +411,16 @@ mod tests {
             click(pos2(300.0 - 4.0 * step, 20.0)),
             Some(TransportClick::MarkIn)
         );
-        assert_eq!(click(pos2(300.0 + 4.0 * step, 20.0)), Some(TransportClick::Loop));
+        assert_eq!(
+            click(pos2(300.0 - step, 20.0)),
+            Some(TransportClick::Stop),
+            "stop beside play"
+        );
+        assert_eq!(click(pos2(300.0 + 3.0 * step, 20.0)), Some(TransportClick::Loop));
+        assert_eq!(
+            click(pos2(300.0 + 4.0 * step, 20.0)),
+            Some(TransportClick::MarkOut)
+        );
         assert!((compact_width() - (9.0 * COMPACT_HEIGHT + 8.0 * (step - COMPACT_HEIGHT))).abs() < 0.01);
     }
 
@@ -424,8 +429,8 @@ mod tests {
         let mut table = ShortcutTable::default();
         assert_eq!(tip("Play", &table, Action::PlayPause), "Play (Space)");
         assert_eq!(
-            tip("Stop: leave the playhead here", &table, Action::Stop),
-            "Stop: leave the playhead here (Ctrl+Space)"
+            tip("Stop: back to where playback started", &table, Action::Stop),
+            "Stop: back to where playback started (Ctrl+Space)"
         );
         assert_eq!(
             tip("Mark in", &table, Action::NextKeyframe),
