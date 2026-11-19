@@ -4923,9 +4923,9 @@ dependencies = [
  "os",
  "render",
  "serde",
+ "skrifa",
  "tempfile",
  "tracing",
- "ttf-parser",
 ]
 
 [[package]]

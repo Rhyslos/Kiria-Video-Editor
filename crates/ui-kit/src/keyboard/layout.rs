@@ -872,15 +872,13 @@ mod tests {
             include_bytes!("../../assets/fonts/Inter_400Regular.ttf").as_slice(),
             include_bytes!("../../assets/fonts/DejaVuSans_Arabic.ttf").as_slice(),
         ];
-        let faces: Vec<ttf_parser::Face> = fonts
-            .iter()
-            .map(|f| ttf_parser::Face::parse(f, 0).unwrap())
-            .collect();
+        use skrifa::MetadataProvider;
+        let faces: Vec<skrifa::FontRef> = fonts.iter().map(|f| skrifa::FontRef::new(f).unwrap()).collect();
         for id in LayoutId::ALL {
             for (_, text) in id.layout().printed {
                 for c in text.chars() {
                     assert!(
-                        faces.iter().any(|f| f.glyph_index(c).is_some()),
+                        faces.iter().any(|f| f.charmap().map(c).is_some()),
                         "{id:?}: no font draws {c:?}"
                     );
                 }

@@ -23,7 +23,7 @@ tracing = "0.1"
 [dev-dependencies]
 tempfile = "3"
 # Checks every character a keyboard layout prints has a glyph in our fonts.
-ttf-parser = "0.25"
+skrifa = "0.44"
 
 [lints]
 workspace = true
