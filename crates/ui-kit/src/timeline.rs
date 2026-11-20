@@ -1582,6 +1582,13 @@ impl TimelineView {
         })
     }
 
+    /// A track's volume being turned in its header (knob or fader): the
+    /// track's id and the volume as it is now (dB), so the page can be
+    /// heard following it before the undo step comes when it is let go.
+    pub fn gain_being_set(&self) -> Option<(u64, f32)> {
+        self.fader_drag
+    }
+
     /// Fits `length` seconds in `width` pixels.
     pub fn fit(&mut self, length: f64, width: f32) {
         if length > 0.0 && width > 0.0 {

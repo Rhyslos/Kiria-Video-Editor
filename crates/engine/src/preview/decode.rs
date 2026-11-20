@@ -169,10 +169,6 @@ impl Worker {
         if dropped {
             return None;
         }
-        // The waiting request has its answer already when the decode stopped at it.
-        if waiting.newest.as_ref().is_some_and(|next| next.at == out.at) {
-            waiting.newest = None;
-        }
         // The exact frame is on screen: a key frame shown first again later is news.
         self.last_glance = None;
         Some(out)
