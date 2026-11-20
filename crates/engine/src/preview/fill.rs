@@ -1,7 +1,7 @@
 //! Filling in behind the playhead while nothing is asked for.
 
-use super::Worker;
-use super::waiting::Waiting;
+use super::waiting::{Next, Waiting};
+use super::{Request, Worker};
 use media::{Decoded, Newer, Reached, VideoDecoder};
 use project::MediaId;
 use std::time::Duration;
@@ -54,7 +54,24 @@ pub(super) fn fill_up_to(moment: f64, kept_from: f64, tick: f64) -> Option<f64> 
     (moment - kept_from < KEPT_BEHIND && last_missing > 0.0).then_some(last_missing)
 }
 
+/// How often a worker with nothing to do looks whether a proxy it has
+/// open went: a proxy being deleted can't go while it is open (on Windows),
+/// and the deleting tries again for a few seconds.
+pub(super) const RESTING_LOOK: Duration = Duration::from_millis(200);
+
 impl Worker {
+    /// Nothing to do: waits for the next request, letting go of proxies
+    /// that went meanwhile. `None` when nobody asks any more.
+    pub(super) fn rest(&mut self, waiting: &mut Waiting<'_>) -> Option<Request> {
+        loop {
+            match waiting.next_within(RESTING_LOOK) {
+                Next::Request(request) => return Some(*request),
+                Next::Closed => return None,
+                Next::Idle => self.proxies.notice_changes(),
+            }
+        }
+    }
+
     /// Nothing has been asked for a moment: lets go of proxies that went,
     /// then fills in behind the playhead ([`Worker::fill`]). Returns whether
     /// there may be more to do.

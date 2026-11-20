@@ -69,6 +69,7 @@ impl<'a> Waiting<'a> {
 
     /// The request to work on next: the newest waiting, or the next to
     /// arrive. `None` when nobody asks any more.
+    #[cfg(test)]
     pub(super) fn next(&mut self) -> Option<Request> {
         self.take_in();
         if self.newest.is_none() && !self.closed {
