@@ -140,6 +140,10 @@ pub struct Work {
     pub frames: u32,
     /// All of it, up to the frame being held.
     pub decoding: Duration,
+    /// Frames made pictures on the graphics card (to keep, and the answer),
+    /// and the time that took, waiting for the card included.
+    pub copies: u32,
+    pub copying: Duration,
 }
 
 /// How a decode that may be overtaken by a newer request ended.
@@ -1087,9 +1091,13 @@ impl VideoDecoder {
     fn held_on_card(&mut self) -> Option<diag::Result<GpuFrame>> {
         let (device, copier) = self.on_device.as_mut()?;
         let time = self.held_time.unwrap_or(0.0);
+        let started = Instant::now();
         // SAFETY: `held` holds a frame this decoder decoded on `device`,
         // and stays as it is until the next call on self.
-        Some(unsafe { device.copy_out(self.held, copier, self.rotation, time) })
+        let picture = unsafe { device.copy_out(self.held, copier, self.rotation, time) };
+        self.work.copies += 1;
+        self.work.copying += started.elapsed();
+        Some(picture)
     }
 
     /// The frame held, the way [`VideoDecoder::picture_at`] gives it.

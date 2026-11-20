@@ -65,8 +65,17 @@ pub fn describe(took: Duration, method: &str, work: Option<media::Work>) -> Stri
     let first = work
         .first_frame
         .map_or_else(String::new, |first| format!(", first frame after {}", ms(first)));
+    let copies = if work.copies > 0 {
+        format!(
+            " ({} of them made pictures on the card in {})",
+            work.copies,
+            ms(work.copying)
+        )
+    } else {
+        String::new()
+    };
     format!(
-        "{}, {method}: {how}{first}, {} frames done after {}, {} to hand over",
+        "{}, {method}: {how}{first}, {} frames done after {}{copies}, {} to hand over",
         ms(took),
         work.frames,
         ms(work.decoding),
@@ -90,6 +99,8 @@ mod tests {
             first_frame: Some(millis(180)),
             frames: 96,
             decoding: millis(300),
+            copies: 0,
+            copying: Duration::ZERO,
         };
         assert_eq!(
             describe(millis(312), "hardware (d3d11va)", Some(work)),
@@ -105,6 +116,16 @@ mod tests {
         assert_eq!(
             describe(millis(141), "software", Some(on)),
             "141 ms, software: decoded on, first frame after 2 ms, 150 frames done after 140 ms, 1 ms to hand over"
+        );
+        let copied = media::Work {
+            frames: 13,
+            copies: 13,
+            copying: millis(110),
+            ..on
+        };
+        assert_eq!(
+            describe(millis(141), "hardware (vulkan, stays on the GPU)", Some(copied)),
+            "141 ms, hardware (vulkan, stays on the GPU): decoded on, first frame after 2 ms, 13 frames done after 140 ms (13 of them made pictures on the card in 110 ms), 1 ms to hand over"
         );
     }
 

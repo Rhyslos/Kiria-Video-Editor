@@ -16,6 +16,22 @@ pub(super) const IDLE_AFTER: Duration = Duration::from_millis(80);
 /// is filled in.
 pub(super) const KEPT_BEHIND: f64 = 2.0;
 
+/// How much of what a decode passes on its way is kept while the timeline
+/// plays (seconds of video): a few frames. Keeping a frame costs a copy on
+/// the graphics card, waited for, and a decode that has fallen behind (a
+/// stretch of heavy frames, such as the whole picture changing at once)
+/// passes many frames to catch up: copying each of them made it fall
+/// further behind, until the picture stalled for as long as the stretch
+/// lasted. Played frames not kept are filled in behind the playhead once
+/// playing stops.
+pub(super) const KEPT_WHILE_PLAYING: f64 = 0.05;
+
+/// How much of what a decode passes is kept: while playing, a few frames;
+/// otherwise what is kept behind the playhead anyway.
+pub(super) fn kept_within(playing: bool) -> f64 {
+    if playing { KEPT_WHILE_PLAYING } else { KEPT_BEHIND }
+}
+
 /// A file the viewer is showing, and where in it.
 #[derive(Debug, Clone)]
 pub(super) struct Playhead {
