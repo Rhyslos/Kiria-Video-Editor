@@ -54,6 +54,7 @@
 //! the CPU. Stepping down is logged with the reason and shows no error; only
 //! the last way's failure does.
 
+mod ahead;
 mod composed;
 mod decode;
 mod fill;
@@ -347,6 +348,10 @@ impl Preview {
 fn run(inbox: &Receiver<Request>, outbox: &Sender<Picture>, mut worker: Worker, notify: &dyn Fn()) {
     let mut waiting = Waiting::new(inbox);
     loop {
+        // Playing: read ahead of the playhead until something is asked for.
+        if worker.read_ahead(&mut waiting) {
+            continue;
+        }
         let request = match waiting.next_within(IDLE_AFTER) {
             Next::Request(request) => *request,
             Next::Closed => return,
