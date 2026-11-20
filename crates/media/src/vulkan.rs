@@ -21,7 +21,7 @@
 //! with a test of their layout.
 
 use crate::ffi::error_text;
-use crate::yuv::Colour;
+use crate::yuv::{Colour, YuvFrame};
 use diag::AppError;
 use ffmpeg_sys_next as ff;
 use std::ffi::{c_char, c_int, c_void};
@@ -126,6 +126,11 @@ pub(crate) fn device_error(why: impl Into<String>) -> AppError {
         .why(why)
         .fix("It is decoded the usual way instead. If this keeps happening, turn off \"Decode video on the window's graphics device\" in Settings, under Graphics.")
 }
+
+/// Reads pictures on the window's device back into memory, one after
+/// another ([`WindowDevice::read_back`]). One per thread that reads.
+#[derive(Debug)]
+pub struct Reader(video_device::Reader);
 
 /// The window's graphics device as FFmpeg uses it. One for the whole
 /// program: every decoder on the device shares it.
@@ -267,6 +272,55 @@ impl WindowDevice {
     /// Copies the picture in `frame` out of the decoder's image into a pair
     /// of images for the viewer, and waits until the graphics card has done it.
     ///
+    /// A reader of pictures on this device, for [`WindowDevice::read_back`].
+    pub fn reader(&self) -> diag::Result<Reader> {
+        video_device::Reader::new(&self.device)
+            .map(Reader)
+            .map_err(device_error)
+    }
+
+    /// The picture of `frame` brought down into memory, as planes the
+    /// viewer uploads like a picture decoded on the processor. Takes a
+    /// millisecond or two and waits for the card. Refused while anyone else
+    /// holds the frame's images (the viewer showing it): they are only read
+    /// when nobody draws them.
+    pub fn read_back(&self, reader: &mut Reader, frame: GpuFrame) -> diag::Result<YuvFrame> {
+        if Arc::strong_count(&frame.planes) != 1 {
+            return Err(device_error("The picture is in use, so it isn't read back."));
+        }
+        if !Arc::ptr_eq(frame.planes.device(), &self.device) {
+            return Err(device_error("The picture is on another device."));
+        }
+        let (width, height) = frame.planes.size();
+        // SAFETY: the context is alive with self; FFmpeg's device context
+        // holds its queue lock functions (checked here before use).
+        let read = unsafe {
+            let hw = (*self.context).data as *mut ff::AVHWDeviceContext;
+            let context = (*hw).hwctx as *mut AVVulkanDeviceContext;
+            let (Some(lock_queue), Some(unlock_queue)) = ((*context).lock_queue, (*context).unlock_queue)
+            else {
+                return Err(device_error("FFmpeg's device has no queue lock."));
+            };
+            let helper = self.device.helper().index;
+            let lock = || lock_queue(hw, helper, 0);
+            let unlock = || unlock_queue(hw, helper, 0);
+            // SAFETY: the images are this device's (checked), were filled by
+            // a copy that was waited for before the frame was handed out, are
+            // left for sampling, and nobody else holds them (checked): this
+            // function owns the frame, so nobody can take them meanwhile.
+            reader.0.read(&frame.planes, &lock, &unlock)
+        }
+        .map_err(device_error)?;
+        Ok(YuvFrame::interleaved(
+            width,
+            height,
+            frame.colour,
+            frame.rotation,
+            frame.time,
+            read,
+        ))
+    }
+
     /// # Safety
     /// `frame` must be a decoded frame from a decoder working on this
     /// device, alive until this returns, and `copier` must be on this device too.
@@ -645,7 +699,28 @@ mod tests {
             }
             assert!((*picture).sem_value[0] > before + 1, "and it took its own turn");
 
-            drop(frame);
+            // Brought down into memory: refused while someone else holds
+            // the images, then the same bytes, as planes for the viewer.
+            let mut reader = window.reader().unwrap();
+            let shown = frame.clone();
+            assert!(window.read_back(&mut reader, frame).is_err(), "in use");
+            let in_memory = window.read_back(&mut reader, shown).unwrap();
+            assert_eq!((in_memory.width, in_memory.height), visible);
+            assert_eq!(in_memory.layout, crate::Layout::Interleaved);
+            assert_eq!((in_memory.rotation, in_memory.time), (90, 1.25));
+            assert_eq!(in_memory.colour.range, crate::Range::Full);
+            assert_eq!(
+                in_memory.luma(),
+                &top_left(&luma, coded.0, w, h, 1)[..],
+                "luma read back"
+            );
+            assert_eq!(
+                in_memory.chroma(),
+                &top_left(&chroma, coded.0 / 2, w / 2, h / 2, 2)[..],
+                "colour read back"
+            );
+            assert_eq!(in_memory.copied().luma(), in_memory.luma());
+            drop(reader);
             drop(copier);
             ff::av_frame_free(&mut back);
             ff::av_frame_free(&mut on_card);

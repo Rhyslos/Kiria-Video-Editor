@@ -58,6 +58,7 @@ mod ahead;
 mod composed;
 mod decode;
 mod fill;
+mod kept;
 mod ladder;
 mod proxies;
 mod stand_in;
@@ -68,11 +69,10 @@ pub use ladder::{below, ladder};
 pub(crate) use stand_in::PROXY_ONLY;
 
 use crate::compose::{Composed, Composer, Composing};
-use crate::frames::FrameCache;
 use crate::timeline::video_at;
 use cache::proxy::Shelf;
 use fill::{IDLE_AFTER, Playhead};
-use media::{Decoded, Decoding, GpuFrame, Level, VideoDecoder, WindowDevice, Work};
+use media::{Decoded, Decoding, Level, VideoDecoder, WindowDevice, Work};
 use project::{Fingerprint, MediaId, Project, SequenceId, Time};
 use proxies::Proxies;
 use std::collections::{HashSet, VecDeque};
@@ -119,6 +119,9 @@ pub struct OnDevice {
     /// ([`crate::frames::budget_on_card`], or the setting), followed while
     /// the worker runs.
     pub frames_kept: crate::frames::Budget,
+    /// How many bytes of frames that made room on the card may be kept in
+    /// the computer's memory (the memory for frames; 0: none).
+    pub frames_in_memory: crate::frames::Budget,
 }
 
 impl std::fmt::Debug for OnDevice {
@@ -232,7 +235,11 @@ impl Preview {
         let worker = Worker {
             ladder: ladder(decoding, convert, on_device.is_some()),
             convert,
-            frames: FrameCache::new(on_device.as_ref().map_or(0, |d| d.frames_kept.bytes())),
+            frames: kept::Kept::new(
+                on_device.as_ref().map_or(0, |d| d.frames_kept.bytes()),
+                on_device.as_ref().map_or(0, |d| d.frames_in_memory.bytes()),
+                on_device.as_ref().map(|d| Arc::clone(&d.device)),
+            ),
             on_device,
             decoders: VecDeque::new(),
             off_device: HashSet::new(),
@@ -415,8 +422,8 @@ struct Worker {
     composing: Option<Composing>,
     /// Made from it on this thread, the first time a picture is needed.
     composer: Option<Composer>,
-    /// Frames decoded on the window's device, kept there.
-    frames: FrameCache<(MediaId, u32), GpuFrame>,
+    /// Frames decoded on the window's device, kept there and in memory.
+    frames: kept::Kept,
     /// Where the playhead last was in a file whose frames are kept: what
     /// to fill in behind.
     playhead: Option<Playhead>,
@@ -517,7 +524,8 @@ impl Worker {
     /// Takes the budget for frames kept as it is set now.
     fn follow_budget(&mut self) {
         if let Some(on_device) = &self.on_device {
-            self.frames.set_budget(on_device.frames_kept.bytes());
+            self.frames
+                .set_budgets(on_device.frames_kept.bytes(), on_device.frames_in_memory.bytes());
         }
     }
 }

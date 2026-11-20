@@ -202,7 +202,7 @@ pub const CATEGORIES: &[Category] = &[
                 Setting::new(
                     RAM_CACHE,
                     "Memory for frames",
-                    "How much memory decoded frames may take.",
+                    "Memory for frames that no longer fit in the graphics card's memory for playback: going back to them, or playing on into them, needs no decoding.",
                 )
                 .keywords("ram cache memory mb")
                 .restart(),

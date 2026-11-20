@@ -19,6 +19,8 @@ The viewer never draws from the decoder's own image. That image is one of a fixe
 
 `media` reads and writes FFmpeg's frame around the copy; `graphics` wraps the pair as the renderer's textures.
 
+- `Reader` brings a filled pair back into memory (luma, then interleaved colour, without padding; `planes_bytes`): one submission on the helper queue (locked like a copy) moves both images to the layout for a copy out and back, copies them into a buffer the processor reads (cached memory where the card has it), and is waited for. The preview keeps frames that no longer fit in the card's share in memory this way. A pair someone else holds (the window drawing it) is never read: the caller checks.
+
 ## Who submits to which queue
 
 A Vulkan queue takes work from one thread at a time, and the window's renderer offers no lock around its own. The queues are therefore kept apart instead of shared:
@@ -38,7 +40,8 @@ FFmpeg guards each of its queues with its own lock; anything else that submits o
 | `src/lib.rs` | `VideoDevice`, `Parts` (what it is made from), `QueueFamily`, `Codec` |
 | `src/planes.rs` | `PlaneImages`, `chroma_size`, and the short list of spare pairs (`Spare`) |
 | `src/copier.rs` | `Copier`, `Source` and `SourceImage` (the decoder's image as its frame describes it), `visible_regions` |
-| `src/testing.rs` | For tests here and in the crates above (feature `testing`): a device without a window on whatever Vulkan the machine has, a stand-in for a decoded picture, and reading an image back |
+| `src/reader.rs` | `Reader`: a filled pair read back into memory; `planes_bytes`, the bytes that takes |
+| `src/testing.rs` | For tests here and in the crates above (feature `testing`): a device without a window on whatever Vulkan the machine has, a stand-in for a decoded picture, a pair filled with a picture of known bytes (`filled_planes`), and reading an image back |
 
 ## Tests
 

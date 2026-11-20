@@ -5,7 +5,7 @@ use super::fill::{Playhead, kept_within};
 use super::ladder::below;
 use super::stand_in::PROXY_ONLY;
 use super::waiting::Waiting;
-use super::{Convert, File, KEPT, OPEN_DECODERS, OnDevice, Picture, Role, Target, Worker, source_of};
+use super::{Convert, File, OPEN_DECODERS, OnDevice, Picture, Role, Target, Worker, source_of};
 use media::{Decoded, Level, Newer, Reached, VideoDecoder};
 use project::Time;
 
@@ -40,9 +40,9 @@ impl Worker {
             size: target.size,
         });
         // Decoded before and still kept: nothing to decode.
-        if let Some(frame) = self.frames.get(key, at) {
-            out.frame = Some(Decoded::Gpu(frame));
-            out.method = Some(KEPT.to_owned());
+        if let Some((frame, how)) = self.frames.get(key, at) {
+            out.frame = Some(frame);
+            out.method = Some(how.to_owned());
             self.last_glance = None;
             return Some(out);
         }
@@ -106,9 +106,7 @@ impl Worker {
             let frames = &mut self.frames;
             let mut keep = |picture: Decoded, until: f64| {
                 if let Decoded::Gpu(frame) = picture {
-                    let (w, h) = frame.planes.size();
-                    let bytes = u64::from(w) * u64::from(h) * 3 / 2;
-                    frames.put(key, frame.time, until, tick, bytes, frame);
+                    frames.put(key, until, tick, frame);
                 }
             };
             let decoded = decode(
@@ -191,9 +189,9 @@ impl Worker {
         waiting: &mut Waiting<'_>,
     ) -> Option<Picture> {
         let (key, at) = (target.key, target.moment);
-        if let Some(frame) = self.frames.get(key, at) {
-            out.frame = Some(Decoded::Gpu(frame));
-            out.method = Some(KEPT.to_owned());
+        if let Some((frame, how)) = self.frames.get(key, at) {
+            out.frame = Some(frame);
+            out.method = Some(how.to_owned());
             return Some(out);
         }
         if let Some(picture) = self.proxy_only(target) {

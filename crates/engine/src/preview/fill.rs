@@ -140,9 +140,7 @@ impl Worker {
         let frames = &mut self.frames;
         let mut keep = |picture: Decoded, until: f64| {
             if let Decoded::Gpu(frame) = picture {
-                let (w, h) = frame.planes.size();
-                let bytes = u64::from(w) * u64::from(h) * 3 / 2;
-                frames.put(key, frame.time, until, tick, bytes, frame);
+                frames.put(key, until, tick, frame);
             }
         };
         // Anything asked for comes first.

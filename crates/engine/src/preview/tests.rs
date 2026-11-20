@@ -334,6 +334,7 @@ fn a_file_the_device_turns_down_is_decoded_the_next_way_without_an_error() {
         device,
         watch: Arc::clone(&watch) as Arc<dyn DeviceWatch>,
         frames_kept: crate::frames::Budget::new(64 << 20),
+        frames_in_memory: crate::frames::Budget::new(0),
     };
     let project = Project::new_automatic("T");
     let seq = project.active_sequence;
@@ -372,7 +373,7 @@ fn a_file_the_device_failed_for_is_not_tried_there_again() {
         gave_up_last: false,
         composing: None,
         composer: None,
-        frames: FrameCache::new(0),
+        frames: super::kept::Kept::new(0, 0, None),
         playhead: None,
         filler: None,
         unfillable: HashSet::new(),
@@ -427,7 +428,7 @@ fn worker_and_project() -> (Worker, Project, SequenceId) {
         gave_up_last: false,
         composing: None,
         composer: None,
-        frames: FrameCache::new(0),
+        frames: super::kept::Kept::new(0, 0, None),
         playhead: None,
         filler: None,
         unfillable: HashSet::new(),
@@ -715,11 +716,12 @@ fn playing_reads_ahead_and_the_next_frames_are_kept() {
     let (mut worker, p, seq) = worker_and_project();
     worker.ladder = ladder(Decoding::Best, PLANES, true);
     worker.convert = PLANES;
-    worker.frames = FrameCache::new(1 << 30);
+    worker.frames = super::kept::Kept::new(1 << 30, 0, Some(Arc::clone(&device)));
     worker.on_device = Some(OnDevice {
         device,
         watch: Arc::new(Counting::default()),
         frames_kept: crate::frames::Budget::new(1 << 30),
+        frames_in_memory: crate::frames::Budget::new(0),
     });
     let (_requests, inbox) = channel::<Request>();
     let mut waiting = Waiting::new(&inbox);
@@ -852,10 +854,10 @@ fn a_frame_kept_on_the_card_is_shown_without_decoding() {
     let (mut worker, p, seq) = worker_and_project();
     let (_requests, inbox) = channel::<Request>();
     let mut waiting = Waiting::new(&inbox);
-    worker.frames = FrameCache::new(64 << 20);
+    worker.frames = super::kept::Kept::new(64 << 20, 0, None);
     let (key, moment) = source_of(&request(&p, seq, 500)).unwrap();
     let planes = Arc::new(video_device::PlaneImages::new(&device, (64, 36)).unwrap());
-    let frame = GpuFrame {
+    let frame = media::GpuFrame {
         planes,
         colour: media::Colour {
             matrix: media::Matrix::Bt709,
@@ -864,9 +866,7 @@ fn a_frame_kept_on_the_card_is_shown_without_decoding() {
         rotation: 0,
         time: moment,
     };
-    worker
-        .frames
-        .put(key, moment, moment + 1.0 / 60.0, 0.0005, 64 * 36 * 3 / 2, frame);
+    worker.frames.put(key, moment + 1.0 / 60.0, 0.0005, frame);
     let picture = worker
         .picture(&request(&p, seq, 500), &mut waiting, &mut |_| true)
         .unwrap();
@@ -923,4 +923,82 @@ fn a_missing_file_is_explained() {
     let p = wait(&preview);
     assert!(p.frame.is_none());
     assert!(p.error.unwrap().what().contains("can't be shown"));
+}
+
+/// Frames on the card holding a 64×36 picture of known bytes, one starting
+/// at each of `times`.
+fn filled_frames(device: &Arc<video_device::VideoDevice>, times: &[f64]) -> (Vec<media::GpuFrame>, Vec<u8>) {
+    let luma: Vec<u8> = (0..64 * 36).map(|i| (i % 253) as u8).collect();
+    let chroma: Vec<u8> = (0..32 * 18)
+        .flat_map(|i| [(i % 7) as u8, (i % 11) as u8])
+        .collect();
+    let frames = times
+        .iter()
+        .map(|&time| media::GpuFrame {
+            planes: Arc::new(video_device::testing::filled_planes(
+                device,
+                (64, 36),
+                &luma,
+                &chroma,
+            )),
+            colour: media::Colour {
+                matrix: media::Matrix::Bt709,
+                range: media::Range::Limited,
+            },
+            rotation: 0,
+            time,
+        })
+        .collect();
+    (frames, luma)
+}
+
+/// Frames that make room on the card are read back into memory, and found
+/// there; one the viewer is showing just goes. Runs where there is a
+/// Vulkan driver (a software one will do).
+#[test]
+fn frames_that_make_room_on_the_card_go_to_memory() {
+    let Some(device) = video_device::testing::device() else {
+        return;
+    };
+    let Ok(window) = WindowDevice::new(Arc::clone(&device)) else {
+        return;
+    };
+    let frame_bytes = 64 * 36 * 3 / 2;
+    // Room for two frames on the card and ten in memory.
+    let mut kept = super::kept::Kept::new(2 * frame_bytes, 10 * frame_bytes, Some(window));
+    let key = (project::MediaId(1), 0);
+    let times: Vec<f64> = (0..6).map(|n| f64::from(n) / 60.0).collect();
+    let (mut frames, luma) = filled_frames(&device, &times);
+    // The viewer is showing the first frame: it is never read back.
+    let shown = frames[0].clone();
+    // The playhead at the end: the first frames are the furthest from it.
+    kept.look_at(key, times[5], false);
+    for (n, frame) in frames.drain(..).enumerate() {
+        kept.put(key, (n as f64 + 1.0) / 60.0, 0.0005, frame);
+    }
+    assert_eq!(
+        kept.counts(),
+        (2, 3),
+        "two on the card, three of the four gone in memory"
+    );
+    assert!(!kept.has(key, times[0]), "the frame being shown just went");
+    drop(shown);
+    let (picture, how) = kept.get(key, times[1]).expect("in memory");
+    assert_eq!(how, super::kept::KEPT_IN_MEMORY);
+    let Decoded::Yuv(picture) = picture else {
+        panic!("planes in memory: {picture:?}");
+    };
+    assert_eq!(picture.luma(), &luma[..], "the same picture");
+    assert_eq!(picture.time, times[1]);
+    let (_, how) = kept.get(key, times[5]).expect("on the card");
+    assert_eq!(how, KEPT);
+    // One stretch from the second frame to the end, across both.
+    assert!((kept.stretch_start(key, times[5]).unwrap() - times[1]).abs() < 1e-6);
+    assert!((kept.stretch_end(key, times[1]).unwrap() - 6.0 / 60.0).abs() < 1e-6);
+    // Kept on the card again: no copy stays in memory.
+    let (again, _) = filled_frames(&device, &times[1..2]);
+    kept.look_at(key, times[1], false);
+    kept.put(key, 2.0 / 60.0, 0.0005, again.into_iter().next().unwrap());
+    assert_eq!(kept.counts().0, 2);
+    assert_eq!(kept.get(key, times[1]).map(|(_, how)| how), Some(KEPT));
 }
