@@ -48,10 +48,6 @@ impl TimelineView {
         let mut renaming = false;
         let header =
             Rect::from_min_max(pos2(layout.header_x, row.top()), pos2(left, row.bottom())).intersect(area);
-        // A track of its own colour: the header faintly in it.
-        if let Some(colour) = track.colour {
-            header_painter.rect_filled(header.shrink2(vec2(0.0, 1.0)), 0.0, colour.gamma_multiply(0.12));
-        }
         // The target tab and the sync lock, at the header's left edge.
         let (tab, sync) = headers::patch_rects(header, self.compact);
         let (video_target, audio_target) = self.targets(data);
@@ -91,13 +87,18 @@ impl TimelineView {
                 pos2(layout.header_x + headers::NAME_LEFT, row.center().y),
             ),
         }
-        // A track's role: a mark in its colour along the header's edge.
-        if let Some((_, colour)) = track.role.and_then(|i| data.roles.get(i)) {
+        // The bar along the header's edge: the track's own colour when it
+        // has one (its clips are in it too), else its role's.
+        let role = track
+            .role
+            .and_then(|i| data.roles.get(i))
+            .map(|(_, colour)| *colour);
+        if let Some(colour) = track.colour.or(role) {
             let mark = Rect::from_min_max(
                 pos2(layout.header_x + headers::NAME_LEFT - 5.0, row.top() + 4.0),
                 pos2(layout.header_x + headers::NAME_LEFT - 2.0, row.bottom() - 4.0),
             );
-            header_painter.rect_filled(mark, 1.5, *colour);
+            header_painter.rect_filled(mark, 1.5, colour);
         }
         // The short line about reading stops before the header's
         // buttons; pointing at it says the whole of it.
