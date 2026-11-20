@@ -680,6 +680,73 @@ fn the_stretch_behind_the_playhead_is_filled_in_when_little_is_kept() {
 }
 
 #[test]
+fn only_a_playing_decoder_on_the_device_reads_ahead() {
+    let (mut worker, p, seq) = worker_and_project();
+    let (_requests, inbox) = channel::<Request>();
+    let mut waiting = Waiting::new(&inbox);
+    assert!(!worker.read_ahead(&mut waiting), "no playhead yet");
+    // Playing, but decoded on the processor: frames aren't kept there, so
+    // reading ahead would only move the decoder past what is asked next.
+    let playing = Request {
+        playing: true,
+        ..request(&p, seq, 1000)
+    };
+    worker.picture(&playing, &mut waiting, &mut |_| true).unwrap();
+    let decoder = |w: &Worker| w.decoders.front().and_then(|(_, d)| d.position());
+    let before = decoder(&worker);
+    assert!(before.is_some());
+    assert!(!worker.read_ahead(&mut waiting));
+    assert_eq!(decoder(&worker), before, "left where it was");
+}
+
+/// Where the window's device decodes video (not on machines without a
+/// graphics card's decoder): playing reads ahead, and the next requests
+/// find their frames kept.
+#[test]
+fn playing_reads_ahead_and_the_next_frames_are_kept() {
+    let Some(device) = video_device::testing::device() else {
+        return;
+    };
+    let Ok(device) = WindowDevice::new(device) else {
+        return;
+    };
+    let (mut worker, p, seq) = worker_and_project();
+    worker.ladder = ladder(Decoding::Best, PLANES, true);
+    worker.convert = PLANES;
+    worker.frames = FrameCache::new(1 << 30);
+    worker.on_device = Some(OnDevice {
+        device,
+        watch: Arc::new(Counting::default()),
+        frames_kept: 1 << 30,
+    });
+    let (_requests, inbox) = channel::<Request>();
+    let mut waiting = Waiting::new(&inbox);
+    let playing = |millis| Request {
+        playing: true,
+        ..request(&p, seq, millis)
+    };
+    let first = worker
+        .picture(&playing(1000), &mut waiting, &mut |_| true)
+        .unwrap();
+    if !first
+        .method
+        .as_deref()
+        .is_some_and(|m| m.contains("stays on the GPU"))
+    {
+        return; // this machine's device decodes no video
+    }
+    assert!(worker.read_ahead(&mut waiting));
+    let reached = worker.decoders.front().and_then(|(_, d)| d.position()).unwrap();
+    assert!(reached > 1.0 + super::ahead::AHEAD - 0.05, "{reached}");
+    // Nothing more until the playhead moves on.
+    assert!(!worker.read_ahead(&mut waiting));
+    let next = worker
+        .picture(&playing(1300), &mut waiting, &mut |_| true)
+        .unwrap();
+    assert_eq!(next.method.as_deref(), Some(KEPT));
+}
+
+#[test]
 fn with_nothing_kept_there_is_nothing_to_fill_in() {
     let (mut worker, p, seq) = worker_and_project();
     let (_requests, inbox) = channel::<Request>();

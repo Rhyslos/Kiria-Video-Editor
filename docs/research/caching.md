@@ -488,6 +488,14 @@ What this settles:
 
 The recommendation stands, in the same order, with step 4 reduced to "show the key frame first".
 
+## Playing through heavy frames (November 2026)
+
+A report from an RX 7900 XT decoding a 3440×1440, 60 fps H.265 recording on the card: the picture stalled for a moment each time night vision switched on or off in the game. The window itself stayed smooth (144 frames a second, no gap over 10 ms). Frames where the whole picture changes are many times larger than the rest: about 10 times the average in a test encode of the same kind. The decoder takes longer on them: about 8 ms a frame normally, 20 to 40 ms on those.
+
+- **First cause, fixed:** while playing, every frame a decode passed was made a picture on the card and waited for, so that 2 s could be kept behind the playhead. Behind by a few frames, catching up copied 7 to 16 frames per picture and fell further behind. Now only the last 0.05 s passed is kept while playing (`KEPT_WHILE_PLAYING`).
+- **What was left:** with only the frames due being decoded, a stretch of heavy frames still came late (up to 300 ms), although decoding is fast enough on average. So playing now reads ahead: between requests, the decoder at the playhead decodes on to 0.5 s past it and keeps every frame (`preview::ahead`, `AHEAD`). A slow stretch uses up what was read ahead. Only on the window's device, where frames are kept, and only on from where the decoder is (never a jump for it).
+- Software decoding and proxies don't read ahead: frames decoded on the processor aren't kept.
+
 ## Sources
 
 - [A media player's manual](https://mpv.io/manual/stable/): precise seeks decode from the previous key frame; dropping frames before the seek target; backward playback by decoding forward in steps and buffering, and why that is fragile with hardware decoding.
