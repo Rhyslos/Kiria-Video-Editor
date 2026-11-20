@@ -143,6 +143,8 @@ pub struct Viewer {
     note: String,
     /// The last few pictures that took long, for Diagnostics.
     slow: crate::slow_pictures::SlowPictures,
+    /// The last exact picture that came, for the playback watch.
+    arrived: Option<crate::playback_watch::Arrived>,
     pub playhead: Time,
     /// What was last asked for, so the same request isn't sent every frame.
     requested: Option<(Project, Time, (u32, u32))>,
@@ -196,6 +198,7 @@ impl Viewer {
             timeline: (16, 9),
             note: String::new(),
             slow: crate::slow_pictures::SlowPictures::default(),
+            arrived: None,
             playhead: start_at
                 .and_then(|s| Time::from_ratio((s * 1000.0) as i64, 1000))
                 .unwrap_or(Time::ZERO),
@@ -324,11 +327,14 @@ impl Viewer {
             self.sampled = Some(sampled.clone());
         }
         if picture.frame.is_some() || picture.composed.is_some() {
-            self.slow.note(
-                picture.took,
-                picture.method.as_deref().unwrap_or_default(),
-                picture.work,
-            );
+            let method = picture.method.as_deref().unwrap_or_default();
+            self.slow.note(picture.took, method, picture.work);
+            if !picture.stand_in {
+                self.arrived = Some(crate::playback_watch::Arrived {
+                    described: crate::slow_pictures::describe(picture.took, method, picture.work),
+                    took: picture.took,
+                });
+            }
         }
         // Drop resolution before dropping frames: on Auto, an RGBA picture
         // that took longer than a frame lowers the next ones. Planes cost
@@ -480,6 +486,11 @@ impl Viewer {
     /// since this was last asked: a line for Diagnostics.
     pub fn slow_pictures(&mut self) -> Option<String> {
         self.slow.take_changed()
+    }
+
+    /// The exact picture that came since this was last asked, if one did.
+    pub fn take_arrived(&mut self) -> Option<crate::playback_watch::Arrived> {
+        self.arrived.take()
     }
 
     /// The window is closing: the worker finishes the picture it is on and

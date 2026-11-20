@@ -219,6 +219,8 @@ pub struct Editor {
     full_screen_changed: bool,
     /// Notices when the window stops drawing, and logs the step it was on.
     heartbeat: crate::heartbeat::Heartbeat,
+    /// Times frames while playing, for hitches seen on someone's computer.
+    playback_watch: crate::playback_watch::Watch,
     /// When the window was last asked to fill the screen or come back, until
     /// the first frame after it has been drawn (for the log).
     full_screen_asked: Option<Instant>,
@@ -469,6 +471,7 @@ impl Editor {
             full_screen: false,
             full_screen_changed: false,
             heartbeat: crate::heartbeat::Heartbeat::start(),
+            playback_watch: crate::playback_watch::Watch::default(),
             full_screen_asked: None,
             following: None,
             color_page: Default::default(),
@@ -816,6 +819,24 @@ impl Editor {
     }
 
     /// While playing: the playhead follows the clock, and playback stops at the end.
+    /// Times this frame for the playback watch, writing hitches and the
+    /// summary of a play that ended to the log, and the summary to
+    /// Diagnostics.
+    fn watch_playback(&mut self) {
+        let frame = crate::playback_watch::Frame {
+            playing: self.playback.is_some(),
+            at: self.viewer.playhead,
+            picture: self.viewer.take_arrived(),
+        };
+        let said = self.playback_watch.frame_ended(Instant::now(), frame);
+        for line in said.log {
+            tracing::info!("{line}");
+        }
+        if let Some(summary) = said.summary {
+            self.errors.set_fact(crate::playback_watch::FACT, summary);
+        }
+    }
+
     fn follow_playback(&mut self, ctx: &egui::Context) {
         if self.playback.as_ref().is_some_and(engine::Playback::unheard) && !self.unheard_said {
             self.unheard_said = true;
@@ -1562,6 +1583,7 @@ impl eframe::App for Editor {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         self.heartbeat.beat();
         let started = Instant::now();
+        self.playback_watch.frame_started(started);
         let ctx = ui.ctx().clone();
         let now = Instant::now();
         if ctx.input(|i| !i.events.is_empty() || i.pointer.is_moving()) {
@@ -1737,6 +1759,7 @@ impl eframe::App for Editor {
             }
         }
         self.automation(&ctx, started.elapsed());
+        self.watch_playback();
         // Keep the resource readout and autosave ticking without input.
         ctx.request_repaint_after(Duration::from_millis(500));
         // What comes until the next frame: the switch asked for (so a stop in
