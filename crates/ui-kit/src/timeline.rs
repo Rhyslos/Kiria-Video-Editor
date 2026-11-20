@@ -78,7 +78,7 @@ mod slip;
 mod speed;
 mod toolbar;
 mod track_controls;
-mod wave_look;
+pub mod wave_look;
 pub use gaps::Gap;
 pub use slip::SlipRoom;
 mod track_views;
@@ -824,6 +824,10 @@ pub struct TimelineView {
     /// How an audio track's volume is set in its header: a slider, the
     /// compact knob, or the detailed knob on every track. A setting.
     pub volume_control: VolumeControl,
+    /// How sound is drawn in clips, and whether on a scale fitted to each
+    /// file (settings).
+    pub wave_style: wave_look::WaveStyle,
+    pub wave_fitted: bool,
     /// The track of the selected clip shows the detailed knob (and grows to
     /// fit it) while the other tracks keep `volume_control`. A setting.
     pub detailed_on_selected: bool,
@@ -920,6 +924,8 @@ impl Default for TimelineView {
             click_moves: ClickMoves::Playhead,
             zoom_to_playhead: false,
             volume_control: VolumeControl::Slider,
+            wave_style: wave_look::WaveStyle::Centred,
+            wave_fitted: true,
             detailed_on_selected: false,
             opened: None,
             knob_under: None,
@@ -961,8 +967,6 @@ const FRAME_WIDTH_ZOOMED_IN: f32 = 40.0;
 const ZOOM_STEP: f32 = 1.5;
 /// How much one Taller tracks or Shorter tracks command changes heights.
 const HEIGHT_STEP: f32 = 1.25;
-/// Clips shorter than this draw their waveform behind the name instead of under it.
-const SHORT_CLIP: f32 = 40.0;
 /// A dragged clip stays on its own track until the pointer is this far
 /// past the row's edge, so a sideways drag never changes track by accident.
 const STAYS_ON_ITS_TRACK: f32 = 6.0;

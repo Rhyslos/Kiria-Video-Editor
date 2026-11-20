@@ -19,6 +19,8 @@ pub const CUT_CLOSES_GAP: &str = "cut-closes-gap";
 pub const ALWAYS_UNLINKED: &str = "always-unlinked";
 pub const DETAILED_GAIN_SELECTED: &str = "detailed-gain-selected";
 pub const CLIP_PICTURES: &str = "clip-pictures";
+pub const WAVEFORM_LOOK: &str = "waveform-look";
+pub const WAVEFORM_FITTED: &str = "waveform-fitted";
 pub const CLEAR_WAVEFORMS: &str = "clear-waveforms";
 pub const PROXIES: &str = "proxies";
 pub const JUMP_PICTURE: &str = "jump-picture";
@@ -93,6 +95,18 @@ pub const CATEGORIES: &[Category] = &[
                     "How the small pictures inside video clips are taken from long recordings.",
                 )
                 .keywords("thumbnails pictures filmstrip quick exact key frame"),
+                Setting::new(
+                    WAVEFORM_LOOK,
+                    "Waveform look",
+                    "How sound is drawn in clips on the timeline.",
+                )
+                .keywords("waveform audio sound clip look style bars outline bottom centred"),
+                Setting::new(
+                    WAVEFORM_FITTED,
+                    "Waveforms fitted to each recording",
+                    "The recording's own range, from its quiet parts to its loudest, fills the clip's height, so loud steady game sound still shows its ups and downs. Off, full scale fills it. Only the drawing changes, never the sound.",
+                )
+                .keywords("waveform scale fit normalise normalize loud flat decibel"),
                 Setting::new(
                     DETAILED_GAIN_SELECTED,
                     "Detailed gain control on the selected audio clip",
@@ -348,6 +362,22 @@ impl Editor {
                         let options: Vec<_> = ClipPictureWay::ALL.iter().map(|w| (*w, w.short())).collect();
                         ui_kit::settings::segmented(row.ui, row.theme, &mut s.clip_pictures, &options);
                         row.describe(s.clip_pictures.explained());
+                    }
+                    WAVEFORM_LOOK => {
+                        use ui_kit::timeline::wave_look::WaveStyle;
+                        ui_kit::settings::dropdown(
+                            row.ui,
+                            WAVEFORM_LOOK,
+                            &mut s.waveform_look,
+                            &WaveStyle::ALL,
+                            WaveStyle::words,
+                        );
+                        row.describe(s.waveform_look.explained());
+                    }
+                    WAVEFORM_FITTED => {
+                        let mut fitted = !s.waveform_straight;
+                        ui_kit::settings::toggle(row.ui, row.theme, &mut fitted);
+                        s.waveform_straight = !fitted;
                     }
                     CLEAR_WAVEFORMS => {
                         if ui_kit::settings::action(row.ui, "Clear").clicked() {

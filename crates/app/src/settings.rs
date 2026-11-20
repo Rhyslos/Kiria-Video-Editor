@@ -97,6 +97,11 @@ pub struct Settings {
     pub library_marks: LibraryMarks,
     /// How the pictures inside video clips are taken from long recordings.
     pub clip_pictures: ClipPictureWay,
+    /// How sound is drawn in clips on the timeline (Settings › Editing).
+    pub waveform_look: ui_kit::timeline::wave_look::WaveStyle,
+    /// Waveforms on the straight scale (full scale fills the clip) rather
+    /// than fitted to each file's own range.
+    pub waveform_straight: bool,
     /// How fast exports went on this machine (measured by the newest of
     /// each kind), for the time the Export page says one will take.
     pub export_pace: crate::export_page::Pace,
