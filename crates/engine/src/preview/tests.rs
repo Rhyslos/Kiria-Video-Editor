@@ -1,5 +1,5 @@
 use super::composed::preview_size;
-use super::fill::fill_up_to;
+use super::fill::{KEPT_BEHIND, fill_up_to, kept_within};
 use super::stand_in::{KEY_FIRST, PROXY_FIRST};
 use super::*;
 
@@ -619,6 +619,16 @@ fn waiting_for_a_request_ends_when_nothing_comes() {
     assert!(matches!(waiting.next_within(patience), Next::Idle));
     drop(requests);
     assert!(matches!(waiting.next_within(patience), Next::Closed));
+}
+
+#[test]
+fn while_playing_only_the_last_few_frames_passed_are_kept() {
+    // A decode that fell behind while playing passes many frames: making
+    // each a picture on the card held it back further. A few frames at 60
+    // frames a second, at least the one asked for at 24.
+    let playing = kept_within(true);
+    assert!((1.0 / 60.0 * 2.0..=0.1).contains(&playing), "{playing}");
+    assert_eq!(kept_within(false), KEPT_BEHIND);
 }
 
 #[test]

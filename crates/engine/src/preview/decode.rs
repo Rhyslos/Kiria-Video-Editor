@@ -1,7 +1,7 @@
 //! Decoding one file's picture at one moment, stepping down the ladder
 //! when a way fails.
 
-use super::fill::Playhead;
+use super::fill::{Playhead, kept_within};
 use super::ladder::below;
 use super::stand_in::PROXY_ONLY;
 use super::waiting::Waiting;
@@ -64,6 +64,9 @@ impl Worker {
                 }
             },
         };
+        // While playing, only the last few frames passed are made pictures
+        // to keep, so a decode that fell behind catches up at decoding speed.
+        decoder.keep_within(kept_within(self.playing));
         // What the decoder is told between frames: what the newest request
         // waiting means for this file. Moments of this file that were asked
         // for meanwhile are remembered with their place on the timeline, to
