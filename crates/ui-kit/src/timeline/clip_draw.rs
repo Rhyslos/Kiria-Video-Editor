@@ -7,7 +7,7 @@
 
 use super::{
     COMPACT_TRACK, ClipPictures, ClipShows, ClipWaveform, Half, Layout, LineOwner, NEW_TRACK_STRIP, Rows,
-    SHORT_CLIP, TimelineClip, TimelineData, TimelineTrack, TimelineView, Tool,
+    TimelineClip, TimelineData, TimelineTrack, TimelineView, Tool,
     clip_input::{ClipDrag, DragKind, Landing},
     empty_end, fades, find_clip, gaps, keyframes, level, loading, slip, speed, transitions, wave_look,
 };
@@ -201,7 +201,10 @@ impl TimelineView {
             full,
             left,
         } = look;
-        draw_clip_body(clip_painter, theme, r, colour, audio);
+        match audio {
+            true => wave_look::draw_body(clip_painter, r, colour, self.wave_style),
+            false => draw_clip_body(clip_painter, theme, r, colour, audio),
+        }
         // With both (the rough cut view), pictures fill the top
         // and the sound the bottom of the clip.
         let (pictures, waveform) = match full {
@@ -266,7 +269,13 @@ impl TimelineView {
         if let Some(until) = clip.plays_until.filter(|u| *u < start + duration) {
             empty_end::draw(clip_painter, theme, r, self.x_of(left, until));
         }
-        draw_clip_marks(clip_painter, theme, r, clip, pictures.is_some());
+        draw_clip_marks(
+            clip_painter,
+            theme,
+            r,
+            clip,
+            pictures.is_some() || waveform.is_some(),
+        );
         if let (Some(d), Some(room)) = (slipping.filter(|d| d.clip == clip.id), clip.slip_room) {
             slip::draw_room(clip_painter, theme, r, room, d.delta);
         }
@@ -473,22 +482,26 @@ impl TimelineView {
         look: WaveLook,
     ) {
         let WaveLook { colour, muted, gain } = look;
-        // Below the clip's name, down to its bottom edge; in a short clip
-        // there is no room under the name, so the whole clip is used.
-        let top = if r.height() < SHORT_CLIP { 3.0 } else { 19.0 };
-        let below_name = Rect::from_min_max(
-            pos2(r.left() + 1.0, r.top() + top),
+        // The clip's whole height (its name sits on a dark pill over the
+        // sound), clear of the edge and, in the outline look, its coloured bar.
+        let inset = if self.wave_style == wave_look::WaveStyle::Outline {
+            4.0
+        } else {
+            1.0
+        };
+        let room = Rect::from_min_max(
+            pos2(r.left() + inset, r.top() + 3.0),
             pos2(r.right() - 1.0, r.bottom() - 3.0),
         );
-        let clip_area = p.clip_rect().intersect(below_name);
-        if clip_area.width() < 1.0 || clip_area.height() < 4.0 || w.peaks.is_empty() {
+        let clip_area = p.clip_rect().intersect(room);
+        if clip_area.width() < 1.0 || clip_area.height() < 3.0 || w.peaks.is_empty() {
             return;
         }
         let left = r.left() - ((shown_start - clip.start) * f64::from(self.zoom)) as f32;
-        let colour = if muted {
-            colour.gamma_multiply(0.5)
-        } else {
-            Color32::from_white_alpha(200)
+        let colours = wave_look::WaveColours::of(colour, muted);
+        let scale = match self.wave_fitted {
+            true => fitted_scale(p.ctx(), w),
+            false => wave_look::WaveScale::straight(),
         };
         let levels = crate::waveform::levels_for(p.ctx(), w.id, &w.peaks);
         let mut columns = Vec::with_capacity(clip_area.width() as usize + 1);
@@ -510,13 +523,20 @@ impl TimelineView {
             });
             x += 1.0;
         }
-        // Drawn over the clip's whole height, so the room above full scale
-        // is the same on every clip.
+        // Laid out on the clip's whole room even where only part shows, so
+        // the scale is the same however far it is scrolled.
         let area = Rect::from_min_max(
-            pos2(clip_area.left(), below_name.top()),
-            pos2(clip_area.right(), below_name.bottom()),
+            pos2(clip_area.left(), room.top()),
+            pos2(clip_area.right(), room.bottom()),
         );
-        wave_look::draw(&p.with_clip_rect(clip_area), area, &columns, colour);
+        wave_look::draw(
+            &p.with_clip_rect(clip_area),
+            area,
+            &columns,
+            self.wave_style,
+            scale,
+            colours,
+        );
     }
 }
 
@@ -559,6 +579,28 @@ fn draw_refused(p: &egui::Painter, r: Rect) {
         Stroke::new(1.5, crate::status::ERROR),
         egui::StrokeKind::Inside,
     );
+}
+
+/// The scale fitted to a file's sound, worked out once per file and stream
+/// (and again while its peaks are still being read).
+fn fitted_scale(ctx: &egui::Context, w: &ClipWaveform) -> wave_look::WaveScale {
+    type Fits = std::collections::HashMap<egui::Id, (usize, wave_look::WaveScale)>;
+    let key = egui::Id::unique("waveform fitted scales");
+    let kept = ctx.data(|d| {
+        d.get_temp::<std::sync::Arc<Fits>>(key)
+            .and_then(|fits| fits.get(&w.id).copied())
+    });
+    match kept {
+        Some((len, scale)) if len == w.peaks.len() => scale,
+        _ => {
+            let scale = wave_look::WaveScale::fit(&w.peaks);
+            ctx.data_mut(|d| {
+                let fits = d.get_temp_mut_or_default::<std::sync::Arc<Fits>>(key);
+                std::sync::Arc::make_mut(fits).insert(w.id, (w.peaks.len(), scale));
+            });
+            scale
+        }
+    }
 }
 
 fn tiny_fill(theme: &Theme, colour: Color32, audio: bool) -> Color32 {

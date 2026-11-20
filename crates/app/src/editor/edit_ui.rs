@@ -790,6 +790,8 @@ impl Editor {
             self.timeline.click_moves = self.settings.click_moves;
             self.timeline.zoom_to_playhead = self.settings.zoom_to_playhead;
             self.timeline.volume_control = self.settings.volume_control();
+            self.timeline.wave_style = self.settings.waveform_look;
+            self.timeline.wave_fitted = !self.settings.waveform_straight;
             self.timeline.detailed_on_selected = self.settings.detailed_gain_selected;
             // Every track's meter, read once a frame (reading takes the
             // held peaks): the headers' meters and the tall columns.

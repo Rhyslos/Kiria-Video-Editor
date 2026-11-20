@@ -549,6 +549,8 @@ impl Editor {
         view.click_moves = self.settings.click_moves;
         view.zoom_to_playhead = self.settings.zoom_to_playhead;
         view.volume_control = self.settings.volume_control();
+        view.wave_style = self.settings.waveform_look;
+        view.wave_fitted = !self.settings.waveform_straight;
         view.detailed_on_selected = self.settings.detailed_gain_selected;
         view.effects_copied = self.track_effects.is_some();
         view.lines = self.lines_on.then_some(self.lines);
