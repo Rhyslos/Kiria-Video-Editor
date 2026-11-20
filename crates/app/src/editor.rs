@@ -313,6 +313,9 @@ impl Editor {
         let convert = crate::video_picture::conversion(cc.wgpu_render_state.as_ref(), automation.cpu_colour);
         let decoding =
             crate::device_decoding::WindowDecoding::new(&graphics, cc.wgpu_render_state.as_ref(), convert);
+        if let Some(decoding) = &decoding {
+            decoding.set_frames_kept(settings.resources.card_frames_mb);
+        }
         // The usual shortcuts, with the ones changed on the shortcuts page.
         let mut shortcuts = ShortcutTable::restored(&settings.shortcuts);
         let system_keyboard = crate::system_keyboard::Follower::start();

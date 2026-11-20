@@ -116,8 +116,9 @@ pub struct OnDevice {
     pub device: Arc<WindowDevice>,
     pub watch: Arc<dyn DeviceWatch>,
     /// How many bytes of decoded frames may be kept on the device
-    /// ([`crate::frames::budget_on_card`]).
-    pub frames_kept: u64,
+    /// ([`crate::frames::budget_on_card`], or the setting), followed while
+    /// the worker runs.
+    pub frames_kept: crate::frames::Budget,
 }
 
 impl std::fmt::Debug for OnDevice {
@@ -159,6 +160,10 @@ pub struct Picture {
     /// A first picture, shown until the exact one for the same request
     /// (or a newer one) comes: a proxy frame or a key frame.
     pub stand_in: bool,
+    /// How far past it the frames kept on the card go on without a gap
+    /// (seconds of the file): what was read ahead. `None` when the frames
+    /// of its file aren't kept (decoded on the processor, proxies).
+    pub kept_ahead: Option<f64>,
 }
 
 struct Request {
@@ -227,7 +232,7 @@ impl Preview {
         let worker = Worker {
             ladder: ladder(decoding, convert, on_device.is_some()),
             convert,
-            frames: FrameCache::new(on_device.as_ref().map_or(0, |d| d.frames_kept)),
+            frames: FrameCache::new(on_device.as_ref().map_or(0, |d| d.frames_kept.bytes())),
             on_device,
             decoders: VecDeque::new(),
             off_device: HashSet::new(),
@@ -239,6 +244,7 @@ impl Preview {
             unfillable: HashSet::new(),
             stuck: None,
             playing: false,
+            rested: false,
             key_frame_first: true,
             proxies: Proxies::default(),
             glancer: None,
@@ -348,8 +354,8 @@ impl Preview {
 fn run(inbox: &Receiver<Request>, outbox: &Sender<Picture>, mut worker: Worker, notify: &dyn Fn()) {
     let mut waiting = Waiting::new(inbox);
     loop {
-        // Playing: read ahead of the playhead until something is asked for.
-        if worker.read_ahead(&mut waiting) {
+        // Playing, or rested: read ahead of the playhead until something is asked for.
+        if (worker.playing || worker.rested) && worker.read_ahead(&mut waiting) {
             continue;
         }
         let request = match waiting.next_within(IDLE_AFTER) {
@@ -423,6 +429,9 @@ struct Worker {
     stuck: Option<((MediaId, u32), f64)>,
     /// The newest request was made while playing.
     playing: bool,
+    /// Nothing was asked for a while since the newest request: reading
+    /// ahead goes on until something is.
+    rested: bool,
     /// The newest request lets a key frame be shown first.
     key_frame_first: bool,
     /// Proxies: where they are and the decoders reading them.
@@ -459,6 +468,8 @@ impl Worker {
         let gave_up_last = std::mem::take(&mut self.gave_up_last);
         self.playhead = None;
         self.playing = r.playing;
+        self.rested = false;
+        self.follow_budget();
         self.key_frame_first = r.key_frame_first;
         self.proxies.take(r.proxies.as_ref());
         let Some(sequence) = r.project.sequences.iter().find(|s| s.id == r.sequence) else {
@@ -475,7 +486,8 @@ impl Worker {
             give_up |= from_proxy;
         }
         if self.composing.is_some() {
-            return self.composed(r, sequence, waiting, give_up, started);
+            let out = self.composed(r, sequence, waiting, give_up, started);
+            return out.map(|out| self.with_kept_ahead(out));
         }
         let Some(showing) = video_at(&r.project, sequence, r.at) else {
             return Some(Picture::black(r.at)); // a gap: black
@@ -490,7 +502,23 @@ impl Worker {
         };
         let mut out = self.decoded(r.at, &target, waiting, Role::ALONE.give_up(give_up))?;
         out.took = started.elapsed();
-        Some(out)
+        Some(self.with_kept_ahead(out))
+    }
+
+    /// The picture, saying how far the frames kept go on past the playhead.
+    fn with_kept_ahead(&self, mut out: Picture) -> Picture {
+        out.kept_ahead = self.playhead.as_ref().and_then(|playhead| {
+            let end = self.frames.stretch_end(playhead.key, playhead.moment)?;
+            Some((end - playhead.moment).clamp(0.0, ahead::MOST_AHEAD))
+        });
+        out
+    }
+
+    /// Takes the budget for frames kept as it is set now.
+    fn follow_budget(&mut self) {
+        if let Some(on_device) = &self.on_device {
+            self.frames.set_budget(on_device.frames_kept.bytes());
+        }
     }
 }
 
@@ -558,6 +586,7 @@ impl Picture {
             work: None,
             method: None,
             stand_in: false,
+            kept_ahead: None,
         }
     }
 }

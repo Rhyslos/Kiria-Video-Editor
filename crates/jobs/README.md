@@ -42,6 +42,6 @@ if let Some(result) = handle.try_result() { /* ... */ }
 |---|---|
 | `src/lib.rs` | `JobSystem`, `Priority`, `PoolKind`, `JobHandle`, `JobContext`, `JobProgress` |
 | `src/pool.rs` | One pool: threads and a priority queue that can hold back background work |
-| `src/budget.rs` | `Budgets`, `Limit`, `BackgroundPolicy`, `Machine`, `Resolved`; `free_space(path)`: the free space on the drive a folder is on (the innermost mount point it lies under), for packaging's check before copying |
+| `src/budget.rs` | `Budgets` (also `card_frames_mb`, graphics memory for frames kept for playback, which the editor turns into bytes for its card), `Limit`, `BackgroundPolicy`, `Machine`, `Resolved`; `free_space(path)`: the free space on the drive a folder is on (the innermost mount point it lies under), for packaging's check before copying |
 | `src/usage.rs` | `UsageMonitor` and `Usage` for the top-bar readout |
 | `tests/caught_panic.rs` | A panicking job comes back as an error and writes no crash report (the crash handler is process-wide, so a binary of its own) |

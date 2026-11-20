@@ -73,11 +73,14 @@ impl Worker {
     }
 
     /// Nothing has been asked for a moment: lets go of proxies that went,
-    /// then fills in behind the playhead ([`Worker::fill`]). Returns whether
+    /// then fills in behind the playhead ([`Worker::fill`]), then reads
+    /// ahead of it ([`Worker::read_ahead`]). Returns whether
     /// there may be more to do.
     pub(super) fn idle(&mut self, waiting: &mut Waiting<'_>) -> bool {
         self.proxies.notice_changes();
-        self.fill(waiting)
+        self.follow_budget();
+        self.rested = true;
+        self.fill(waiting) || self.read_ahead(waiting)
     }
 
     /// Fills in behind the playhead: decodes the stretch before the frames

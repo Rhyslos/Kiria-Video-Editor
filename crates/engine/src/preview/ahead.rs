@@ -1,33 +1,39 @@
-//! Reading ahead of the playhead while the timeline plays.
+//! Reading ahead of the playhead.
 //!
-//! A recording's frames don't all cost the same to decode: one where the
-//! whole picture changes at once (a flash, a cut, night vision switching
-//! on in a game) is many times larger than one that only changes a little,
-//! and takes the decoder that much longer. Decoded only as each is due, a
-//! stretch of them comes late and the picture stalls, even when decoding
-//! is fast enough on average. So while playing, between requests, the
-//! decoder at the playhead decodes on to [`AHEAD`] past it and keeps those
-//! frames: requests then find them kept, and a slow stretch uses up what
-//! was read ahead instead of holding the picture up.
+//! A recording's frames don't all cost the same to decode: where the whole
+//! picture changes at once (a flash, a cut, night vision switching on in a
+//! game) a recorder writes frames many times larger than usual for a second
+//! or two, and the decoder takes that much longer on each. Decoded only as
+//! each is due, such a stretch comes late and the picture stalls, even when
+//! decoding is fast enough on average. So the decoder at the playhead reads
+//! ahead and keeps what it decodes: as far as the memory for frames on the
+//! card has room for, up to [`MOST_AHEAD`]. While playing it does so between
+//! requests; while paused, once what is behind the playhead is filled in,
+//! so playing starts with frames in hand. A stretch of slow frames shorter
+//! than what was read ahead plays without a stall.
 
 use super::Worker;
-use super::fill::KEPT_BEHIND;
 use super::waiting::Waiting;
 use media::{Decoded, Level, Newer};
 
-/// How far past the playhead is read ahead while playing (seconds of the
-/// file): room for a stretch of slow frames, kept on the card (half a
-/// second at 60 frames a second is 30 frames).
-pub(super) const AHEAD: f64 = 0.5;
+/// The furthest past the playhead that is read ahead (seconds of the file),
+/// when the memory for frames has room: at 3440×1440 and 60 frames a second,
+/// ten seconds is 600 frames, about 4.4 GB.
+pub(super) const MOST_AHEAD: f64 = 10.0;
+
+/// How much is read at a time before looking again whether it would be
+/// kept (seconds of the file).
+const STEP: f64 = 0.25;
 
 impl Worker {
-    /// While playing and with nothing asked for: decodes on past the
-    /// playhead with the decoder that is there, keeping every frame, up to
-    /// [`AHEAD`] past it or until a request arrives. Returns whether there
-    /// may be more to read ahead (it stopped for a request, or got there).
+    /// With nothing asked for: decodes on past the playhead with the decoder
+    /// that is there, keeping every frame, a step at a time, until
+    /// [`MOST_AHEAD`] past it, until the frames kept have no more room, or
+    /// until a request arrives. Returns whether there may be more to read
+    /// (it stopped for a request, or read a step).
     pub(super) fn read_ahead(&mut self, waiting: &mut Waiting<'_>) -> bool {
         waiting.take_in();
-        if !self.playing || waiting.newest.is_some() || waiting.closed {
+        if waiting.newest.is_some() || waiting.closed {
             return false;
         }
         let (Some(playhead), Some(on_device)) = (&self.playhead, &self.on_device) else {
@@ -37,7 +43,6 @@ impl Worker {
         let Some(found) = self.decoders.iter().position(|(k, _)| *k == key) else {
             return false;
         };
-        let up_to = playhead.moment + AHEAD;
         // Only on the window's device, where frames are kept; only on from
         // where the decoder is: never back to an earlier key frame, nor on
         // from somewhere behind the playhead (a request that comes does
@@ -47,10 +52,11 @@ impl Worker {
             return false;
         }
         let tick = decoder.tick();
-        let on_from = decoder.position();
-        let worth_it = on_from.is_some_and(|at| at + tick >= playhead.moment && at + tick < up_to)
-            && self.frames.would_keep(key, up_to);
-        if !worth_it {
+        let Some(on_from) = decoder.position().filter(|at| at + tick >= playhead.moment) else {
+            return false;
+        };
+        let up_to = (on_from + STEP).min(playhead.moment + MOST_AHEAD);
+        if on_from + tick >= up_to || !self.frames.would_keep(key, up_to) {
             return false;
         }
         let Some((_, mut decoder)) = self.decoders.remove(found) else {
@@ -73,7 +79,7 @@ impl Worker {
                 Newer::Nothing
             }
         };
-        decoder.keep_within(KEPT_BEHIND);
+        decoder.keep_within(2.0 * STEP);
         on_device.watch.about_to_decode();
         let (w, h) = playhead.size;
         let read = decoder.picture_at_while(up_to, w, h, &mut newer, Some(&mut keep));
@@ -81,7 +87,7 @@ impl Worker {
             Ok(_) => {
                 on_device.watch.answered();
                 // Nothing further at the end of the file: not again until a request moves it.
-                decoder.position() != on_from
+                decoder.position() != Some(on_from)
             }
             Err(err) => {
                 on_device.watch.reported_an_error();

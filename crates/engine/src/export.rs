@@ -1301,7 +1301,7 @@ impl Picturing {
     ) -> Picturing {
         let (device, queue) = (devices.composing.device.clone(), devices.composing.queue.clone());
         let on_device = devices.on_device.map(|on_device| OnDevice {
-            frames_kept: 0,
+            frames_kept: crate::frames::Budget::new(0),
             ..on_device
         });
         let mut preview = Preview::start_composing(
