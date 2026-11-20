@@ -36,6 +36,9 @@ pub struct Arrived {
     /// (see `slow_pictures::describe`).
     pub described: String,
     pub took: Duration,
+    /// How far past it the frames kept on the card went (seconds): what
+    /// had been read ahead.
+    pub kept_ahead: Option<f64>,
 }
 
 /// What happened in one frame of the window.
@@ -72,7 +75,14 @@ struct Play {
     unwritten: u32,
     last_written: Option<Instant>,
     last_picture: Option<Arrived>,
+    /// The most read ahead, and the least once the play had been going
+    /// [`SETTLING`] (reading ahead starts from nothing).
+    most_ahead: Option<f64>,
+    least_ahead: Option<f64>,
 }
+
+/// From this far into a play, what was read ahead counts towards its least.
+const SETTLING: Duration = Duration::from_secs(2);
 
 impl Play {
     fn new(started: Instant, from: Time) -> Self {
@@ -88,6 +98,8 @@ impl Play {
             unwritten: 0,
             last_written: None,
             last_picture: None,
+            most_ahead: None,
+            least_ahead: None,
         }
     }
 }
@@ -135,6 +147,12 @@ impl Watch {
         if let Some(picture) = frame.picture {
             play.pictures += 1;
             play.longest_picture = play.longest_picture.max(picture.took);
+            if let Some(ahead) = picture.kept_ahead {
+                play.most_ahead = Some(play.most_ahead.map_or(ahead, |most| most.max(ahead)));
+                if now.saturating_duration_since(play.started) >= SETTLING {
+                    play.least_ahead = Some(play.least_ahead.map_or(ahead, |least| least.min(ahead)));
+                }
+            }
             play.last_picture = Some(picture);
         }
         // The first frame's gap is from before playing began.
@@ -180,7 +198,15 @@ impl Watch {
 fn summary(play: &Play, now: Instant, to: Time) -> String {
     let lasted = now.saturating_duration_since(play.started);
     let seconds = lasted.as_secs_f64().max(0.001);
-    format!(
+    let ahead = match (play.most_ahead, play.least_ahead) {
+        (Some(most), Some(least)) => format!(
+            ", read ahead up to {most:.1} s (at least {least:.1} s after the first {} s)",
+            SETTLING.as_secs()
+        ),
+        (Some(most), None) => format!(", read ahead up to {most:.1} s"),
+        _ => String::new(),
+    };
+    let line = format!(
         "{} to {} over {:.1} s: {} frames drawn ({:.0} a second), {} pictures shown ({:.0} a second), {} {} of {} ms or more, the longest gap {}, the longest frame's work {}, the slowest picture {}",
         at_words(play.from),
         at_words(to),
@@ -195,7 +221,8 @@ fn summary(play: &Play, now: Instant, to: Time) -> String {
         ms(play.longest_gap),
         ms(play.longest_work),
         ms(play.longest_picture),
-    )
+    );
+    line + &ahead
 }
 
 fn ms(d: Duration) -> String {
@@ -255,6 +282,7 @@ mod tests {
         Some(Arrived {
             described: format!("{took} ms, software"),
             took: ms_(took),
+            kept_ahead: None,
         })
     }
 
@@ -336,6 +364,33 @@ mod tests {
         // from before it.
         let said = clock.frame(ms_(3000), ms_(1), playing(1));
         assert!(said.log.is_empty());
+    }
+
+    #[test]
+    fn what_was_read_ahead_is_summed_up() {
+        let mut clock = Clock::new();
+        for i in 0..300 {
+            // Nothing read ahead at first, two seconds later on, one at the end.
+            let ahead = match i {
+                0..60 => 0.0,
+                60..250 => 2.0,
+                _ => 1.0,
+            };
+            let frame = Frame {
+                picture: Some(Arrived {
+                    described: String::new(),
+                    took: ms_(1),
+                    kept_ahead: Some(ahead),
+                }),
+                ..playing(1)
+            };
+            clock.frame(ms_(16), ms_(1), frame);
+        }
+        let summary = clock.frame(ms_(16), ms_(1), stopped()).summary.expect("summary");
+        assert!(
+            summary.ends_with(", read ahead up to 2.0 s (at least 1.0 s after the first 2 s)"),
+            "{summary}"
+        );
     }
 
     #[test]

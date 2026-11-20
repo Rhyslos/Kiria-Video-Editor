@@ -29,6 +29,7 @@ pub const EVERY_TRACK_COLUMN: &str = "every-track-column";
 pub const LIBRARY_MARKS: &str = "library-marks";
 pub const WORKER_THREADS: &str = "worker-threads";
 pub const RAM_CACHE: &str = "ram-cache";
+pub const CARD_FRAMES: &str = "playback-memory";
 pub const BACKGROUND: &str = "background-work";
 pub const DISK_CACHE: &str = "disk-cache";
 pub const SHORTCUTS: &str = "keyboard-shortcuts";
@@ -135,6 +136,12 @@ pub const CATEGORIES: &[Category] = &[
                     "What the viewer shows while the exact frame is decoded.",
                 )
                 .keywords("seek key frame keyframe exact preview"),
+                Setting::new(
+                    CARD_FRAMES,
+                    "Memory for playback",
+                    "Graphics memory for frames decoded ahead of the playhead and kept behind it. More plays heavy stretches without a stall and keeps more to go back to.",
+                )
+                .keywords("vram gpu graphics memory buffer read ahead stutter smooth playback cache frames"),
             ],
         }],
     },
@@ -434,6 +441,18 @@ impl Editor {
                         limit(row, &mut s.resources.ram_cache_mb, 256.max(most / 3), 256..=most, " MB");
                         row.note(format!("In use now: {} MB", in_use.ram_cache_mb));
                     }
+                    CARD_FRAMES => match self.viewer.card_memory_mb() {
+                        Some((card, auto)) => {
+                            let most = (card / 4 * 3).max(256);
+                            limit(row, &mut s.resources.card_frames_mb, auto, 256..=most, " MB");
+                            row.note(format!(
+                                "Auto keeps {} of this card's {}",
+                                gigabytes(auto),
+                                gigabytes(card)
+                            ));
+                        }
+                        None => row.disable("Video is decoded on the processor here: no frames are kept on the graphics card."),
+                    },
                     BACKGROUND => {
                         ui_kit::settings::segmented(
                             row.ui,
@@ -522,6 +541,10 @@ impl Editor {
                     );
                 }
             }
+            if self.settings.resources.card_frames_mb != before.resources.card_frames_mb {
+                self.viewer
+                    .set_frames_kept(self.settings.resources.card_frames_mb);
+            }
             if self.settings.library_marks != before.library_marks {
                 self.library_marks_moved();
             }
@@ -535,6 +558,11 @@ impl Editor {
                 .set_exact(self.settings.clip_pictures == ClipPictureWay::Exact);
         }
     }
+}
+
+/// Megabytes in gigabytes, for reading ("5.0 GB").
+fn gigabytes(mb: u64) -> String {
+    format!("{:.1} GB", mb as f64 / 1024.0)
 }
 
 /// A resource limit as one control: Auto, or a number set by hand starting

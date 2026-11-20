@@ -333,6 +333,7 @@ impl Viewer {
                 self.arrived = Some(crate::playback_watch::Arrived {
                     described: crate::slow_pictures::describe(picture.took, method, picture.work),
                     took: picture.took,
+                    kept_ahead: picture.kept_ahead,
                 });
             }
         }
@@ -486,6 +487,19 @@ impl Viewer {
     /// since this was last asked: a line for Diagnostics.
     pub fn slow_pictures(&mut self) -> Option<String> {
         self.slow.take_changed()
+    }
+
+    /// Sets the graphics memory for frames kept for playback (Settings).
+    pub fn set_frames_kept(&self, limit: jobs::Limit<u64>) {
+        if let Some(decoding) = &self.decoding {
+            decoding.set_frames_kept(limit);
+        }
+    }
+
+    /// The card's own memory and what Auto keeps of it (megabytes), when
+    /// video is decoded on the window's graphics card.
+    pub fn card_memory_mb(&self) -> Option<(u64, u64)> {
+        self.decoding.as_ref().map(WindowDecoding::card_memory_mb)
     }
 
     /// The exact picture that came since this was last asked, if one did.

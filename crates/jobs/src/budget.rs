@@ -29,6 +29,11 @@ pub struct Budgets {
     pub ram_cache_mb: Limit<u64>,
     pub disk_cache_gb: Limit<u64>,
     pub background: BackgroundPolicy,
+    /// Graphics memory for decoded frames kept for playback (megabytes):
+    /// what the viewer reads ahead into and keeps behind the playhead.
+    /// Turned into bytes for the card in use by the editor.
+    #[serde(default)]
+    pub card_frames_mb: Limit<u64>,
 }
 
 /// What this machine has.
@@ -183,6 +188,7 @@ mod tests {
             ram_cache_mb: Limit::Manual(1_000_000),
             disk_cache_gb: Limit::Manual(0),
             background: BackgroundPolicy::Always,
+            card_frames_mb: Limit::Auto,
         };
         let r = budgets.resolve(&MACHINE);
         assert_eq!(r.worker_threads, 23);

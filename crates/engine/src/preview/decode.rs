@@ -31,7 +31,7 @@ impl Worker {
         }
         // The frames around the playhead are the last to make room, and
         // what is filled in behind when nothing else is going on.
-        self.frames.look_at(key, at);
+        self.frames.look_at(key, at, self.playing);
         self.playhead = Some(Playhead {
             key,
             path: file.path.to_path_buf(),

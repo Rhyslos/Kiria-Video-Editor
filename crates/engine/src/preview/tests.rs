@@ -333,7 +333,7 @@ fn a_file_the_device_turns_down_is_decoded_the_next_way_without_an_error() {
     let on_device = OnDevice {
         device,
         watch: Arc::clone(&watch) as Arc<dyn DeviceWatch>,
-        frames_kept: 64 << 20,
+        frames_kept: crate::frames::Budget::new(64 << 20),
     };
     let project = Project::new_automatic("T");
     let seq = project.active_sequence;
@@ -378,6 +378,7 @@ fn a_file_the_device_failed_for_is_not_tried_there_again() {
         unfillable: HashSet::new(),
         stuck: None,
         playing: false,
+        rested: false,
         key_frame_first: true,
         proxies: Proxies::default(),
         glancer: None,
@@ -432,6 +433,7 @@ fn worker_and_project() -> (Worker, Project, SequenceId) {
         unfillable: HashSet::new(),
         stuck: None,
         playing: false,
+        rested: false,
         key_frame_first: true,
         proxies: Proxies::default(),
         glancer: None,
@@ -717,7 +719,7 @@ fn playing_reads_ahead_and_the_next_frames_are_kept() {
     worker.on_device = Some(OnDevice {
         device,
         watch: Arc::new(Counting::default()),
-        frames_kept: 1 << 30,
+        frames_kept: crate::frames::Budget::new(1 << 30),
     });
     let (_requests, inbox) = channel::<Request>();
     let mut waiting = Waiting::new(&inbox);
@@ -737,7 +739,7 @@ fn playing_reads_ahead_and_the_next_frames_are_kept() {
     }
     assert!(worker.read_ahead(&mut waiting));
     let reached = worker.decoders.front().and_then(|(_, d)| d.position()).unwrap();
-    assert!(reached > 1.0 + super::ahead::AHEAD - 0.05, "{reached}");
+    assert!(reached > 1.0 + 0.2, "{reached}");
     // Nothing more until the playhead moves on.
     assert!(!worker.read_ahead(&mut waiting));
     let next = worker

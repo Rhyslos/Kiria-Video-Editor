@@ -41,6 +41,9 @@ pub struct WindowDecoding {
     /// The worker keeps this part of the frames the card has room for (1
     /// for the viewer's; more when a second worker shares the card).
     share: u64,
+    /// What the frames kept on the card may take, all workers together:
+    /// the setting, followed by the workers while they run.
+    frames_kept: engine::frames::Budget,
 }
 
 impl WindowDecoding {
@@ -64,8 +67,11 @@ impl WindowDecoding {
         decoding.guard.set_up();
         match made {
             Ok(device) => Some(WindowDecoding {
-                device,
                 guard: decoding.guard.clone(),
+                frames_kept: engine::frames::Budget::new(engine::frames::budget_on_card(
+                    device.card_memory(),
+                )),
+                device,
                 renderer,
                 share: 1,
             }),
@@ -81,8 +87,25 @@ impl WindowDecoding {
         OnDevice {
             device: self.device.clone(),
             watch: Arc::new(Watch(self.guard.clone())),
-            frames_kept: engine::frames::budget_on_card(self.device.card_memory()) / self.share.max(1),
+            frames_kept: self.frames_kept.shared(self.share),
         }
+    }
+
+    /// Sets the graphics memory for frames kept for playback: chosen for
+    /// the card, or megabytes set by hand (kept within what the card has).
+    /// Every worker follows at its next picture.
+    pub fn set_frames_kept(&self, limit: jobs::Limit<u64>) {
+        let card = self.device.card_memory();
+        self.frames_kept.set(match limit {
+            jobs::Limit::Auto => engine::frames::budget_on_card(card),
+            jobs::Limit::Manual(mb) => engine::frames::budget_set_by_hand(card, mb),
+        });
+    }
+
+    /// The card's own memory in megabytes, and what Auto keeps of it.
+    pub fn card_memory_mb(&self) -> (u64, u64) {
+        let card = self.device.card_memory();
+        (card >> 20, engine::frames::budget_on_card(card) >> 20)
     }
 
     /// The same device for a second worker beside the viewer's (the split
