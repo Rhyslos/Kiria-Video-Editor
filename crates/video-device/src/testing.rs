@@ -312,6 +312,39 @@ pub fn stand_in_picture(
     }
 }
 
+/// A pair of [`crate::PlaneImages`] of `size` holding a picture made of
+/// `luma` (one byte a pixel) and `chroma` (interleaved, half size), copied
+/// in as a decoded picture is and ready for sampling.
+pub fn filled_planes(
+    device: &Arc<VideoDevice>,
+    size: (u32, u32),
+    luma: &[u8],
+    chroma: &[u8],
+) -> crate::PlaneImages {
+    let picture = stand_in_picture(device, size, luma, chroma);
+    let planes = crate::PlaneImages::new(device, size).expect("a pair of images");
+    let mut copier = crate::Copier::new(device).expect("a copier");
+    let source = crate::Source::TwoPlanes(crate::SourceImage {
+        image: picture.0,
+        layout: STAND_IN_LAYOUT,
+        access: vk::AccessFlags::TRANSFER_READ,
+        semaphore: vk::Semaphore::null(),
+        value: 0,
+    });
+    // SAFETY: the stand-in is this device's, `size`, in the layout named,
+    // idle, and destroyed only after the copy has been waited for; the
+    // target is new and only used here.
+    unsafe {
+        copier
+            .copy(&source, size, (0, 0), &planes, &|| (), &|| ())
+            .expect("the copy");
+    }
+    copier.wait().expect("the copy finished");
+    drop(copier);
+    destroy_stand_in(device, picture);
+    planes
+}
+
 /// The layout [`stand_in_picture`] leaves its image in.
 pub const STAND_IN_LAYOUT: vk::ImageLayout = vk::ImageLayout::GENERAL;
 

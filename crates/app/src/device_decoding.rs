@@ -44,6 +44,9 @@ pub struct WindowDecoding {
     /// What the frames kept on the card may take, all workers together:
     /// the setting, followed by the workers while they run.
     frames_kept: engine::frames::Budget,
+    /// What the frames that made room on the card may take in memory
+    /// (Settings › Resources › Memory for frames), all workers together.
+    frames_in_memory: engine::frames::Budget,
 }
 
 impl WindowDecoding {
@@ -71,6 +74,7 @@ impl WindowDecoding {
                 frames_kept: engine::frames::Budget::new(engine::frames::budget_on_card(
                     device.card_memory(),
                 )),
+                frames_in_memory: engine::frames::Budget::new(0),
                 device,
                 renderer,
                 share: 1,
@@ -88,7 +92,13 @@ impl WindowDecoding {
             device: self.device.clone(),
             watch: Arc::new(Watch(self.guard.clone())),
             frames_kept: self.frames_kept.shared(self.share),
+            frames_in_memory: self.frames_in_memory.shared(self.share),
         }
+    }
+
+    /// Sets the memory for frames that made room on the card (megabytes).
+    pub fn set_frames_in_memory(&self, mb: u64) {
+        self.frames_in_memory.set(mb.saturating_mul(1 << 20));
     }
 
     /// Sets the graphics memory for frames kept for playback: chosen for

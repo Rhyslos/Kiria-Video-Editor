@@ -29,6 +29,7 @@
 
 mod copier;
 mod planes;
+mod reader;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 
@@ -41,6 +42,7 @@ use std::sync::Mutex;
 pub use ash;
 pub use copier::{ACCESS_AFTER_COPY, Copier, LAYOUT_AFTER_COPY, Source, SourceImage, visible_regions};
 pub use planes::{PlaneImages, chroma_size};
+pub use reader::{Reader, planes_bytes};
 
 /// A kind of video the device's decoder takes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

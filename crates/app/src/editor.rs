@@ -315,6 +315,7 @@ impl Editor {
             crate::device_decoding::WindowDecoding::new(&graphics, cc.wgpu_render_state.as_ref(), convert);
         if let Some(decoding) = &decoding {
             decoding.set_frames_kept(settings.resources.card_frames_mb);
+            decoding.set_frames_in_memory(jobs.budgets().ram_cache_mb);
         }
         // The usual shortcuts, with the ones changed on the shortcuts page.
         let mut shortcuts = ShortcutTable::restored(&settings.shortcuts);

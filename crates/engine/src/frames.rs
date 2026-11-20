@@ -85,6 +85,59 @@ impl Budget {
 /// shown, those behind only matter for going back.
 const BEHIND_WHILE_PLAYING: i64 = 4;
 
+/// A kept frame's place: when it starts and when the next one does
+/// (microseconds; `i64::MAX` for a file's last frame), and how far its
+/// stored time may be off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Span {
+    pub starts: i64,
+    pub until: i64,
+    pub tick: i64,
+}
+
+/// A frame that made room, with what is needed to keep it elsewhere.
+#[derive(Debug)]
+pub struct Gone<K, T> {
+    pub file: K,
+    pub time: f64,
+    pub until: f64,
+    pub tick: f64,
+    pub picture: T,
+}
+
+/// Where the unbroken stretch of kept frames from the one on screen at
+/// `moment` ends (seconds), with `on_screen` finding the frame kept at a
+/// moment (microseconds), in one place or several.
+pub fn stretch_end(moment: f64, on_screen: impl Fn(i64) -> Option<Span>) -> Option<f64> {
+    let mut span = on_screen(micros(moment))?;
+    while span.until != i64::MAX {
+        match on_screen(span.until) {
+            Some(next) if next.starts > span.starts && next.until > span.until => span = next,
+            _ => break,
+        }
+    }
+    Some(if span.until == i64::MAX {
+        f64::INFINITY
+    } else {
+        span.until as f64 / 1_000_000.0
+    })
+}
+
+/// Where the unbroken stretch of kept frames up to the one on screen at
+/// `moment` begins (seconds), with `on_screen` as for [`stretch_end`] and
+/// `ending` finding the frame kept that runs up to a moment.
+pub fn stretch_start(
+    moment: f64,
+    on_screen: impl Fn(i64) -> Option<Span>,
+    ending: impl Fn(i64) -> Option<Span>,
+) -> Option<f64> {
+    let mut span = on_screen(micros(moment))?;
+    while let Some(before) = ending(span.starts).filter(|before| before.starts < span.starts) {
+        span = before;
+    }
+    Some(span.starts as f64 / 1_000_000.0)
+}
+
 fn micros(seconds: f64) -> i64 {
     (seconds * 1_000_000.0).round() as i64
 }
@@ -127,13 +180,14 @@ impl<K: Ord + Hash + Copy, T: Clone> FrameCache<K, T> {
         }
     }
 
-    /// Changes the budget; frames make room at once when it shrank.
-    pub fn set_budget(&mut self, budget: u64) {
+    /// Changes the budget; frames make room at once when it shrank (those
+    /// are returned).
+    pub fn set_budget(&mut self, budget: u64) -> Vec<Gone<K, T>> {
         if budget == self.budget {
-            return;
+            return Vec::new();
         }
         self.budget = budget;
-        self.make_room(None);
+        self.make_room(None)
     }
 
     pub fn budget(&self) -> u64 {
@@ -205,38 +259,41 @@ impl<K: Ord + Hash + Copy, T: Clone> FrameCache<K, T> {
             .any(|((of, starts), _)| *of != file || self.distance(*starts, looked_at) > far)
     }
 
+    /// The frame of `file` on screen at `t` (microseconds), if it is kept:
+    /// the last one that starts by then, give or take its tick, unless a
+    /// later frame (not kept) is on screen by then.
+    pub fn span_at(&self, file: K, t: i64) -> Option<Span> {
+        // Ticks are at most a few milliseconds: nothing kept starts later than this.
+        let reach = t.saturating_add(micros(0.004));
+        let ((_, starts), kept) = self
+            .frames
+            .range((file, i64::MIN)..=(file, reach))
+            .rev()
+            .find(|((_, starts), kept)| *starts <= t + kept.tick)?;
+        (t + kept.tick < kept.until).then_some(Span {
+            starts: *starts,
+            until: kept.until,
+            tick: kept.tick,
+        })
+    }
+
+    /// The kept frame of `file` that runs up to `t` (microseconds), give or
+    /// take its tick: the one before a frame starting at `t`.
+    pub fn span_ending(&self, file: K, t: i64) -> Option<Span> {
+        let ((_, starts), kept) = self.frames.range((file, i64::MIN)..(file, t)).next_back()?;
+        ((kept.until - t).abs() <= kept.tick.max(1)).then_some(Span {
+            starts: *starts,
+            until: kept.until,
+            tick: kept.tick,
+        })
+    }
+
     /// Where the unbroken stretch of kept frames from the one on screen at
     /// `moment` of `file` ends (seconds): when the last of them leaves the
     /// screen. `None` when the frame at `moment` isn't kept. How far ahead
     /// the playhead can go on kept frames alone.
     pub fn stretch_end(&self, file: K, moment: f64) -> Option<f64> {
-        let at = micros(moment);
-        let reach = at.saturating_add(micros(0.004));
-        let (_, first) = self
-            .frames
-            .range((file, i64::MIN)..=(file, reach))
-            .rev()
-            .find(|((_, starts), kept)| *starts <= at + kept.tick)
-            .filter(|(_, kept)| at + kept.tick < kept.until)?;
-        let mut end = first.until;
-        for ((_, starts), kept) in self
-            .frames
-            .range((file, end.saturating_sub(first.tick.max(1)))..=(file, i64::MAX))
-        {
-            // The next frame starts where this one ends, give or take a tick.
-            if (*starts - end).abs() > kept.tick.max(1) {
-                if *starts > end {
-                    break;
-                }
-                continue;
-            }
-            end = kept.until;
-        }
-        Some(if end == i64::MAX {
-            f64::INFINITY
-        } else {
-            end as f64 / 1_000_000.0
-        })
+        stretch_end(moment, |t| self.span_at(file, t))
     }
 
     /// Where the unbroken stretch of kept frames around `moment` of `file`
@@ -244,20 +301,14 @@ impl<K: Ord + Hash + Copy, T: Clone> FrameCache<K, T> {
     /// frame up to the one on screen at `moment` is kept. `None` when that
     /// frame itself isn't kept.
     pub fn stretch_start(&self, file: K, moment: f64) -> Option<f64> {
-        let at = micros(moment);
-        let reach = at.saturating_add(micros(0.004));
-        let mut behind = self.frames.range((file, i64::MIN)..=(file, reach)).rev();
-        let ((_, first), _) =
-            behind.find(|((_, starts), kept)| *starts <= at + kept.tick && at + kept.tick < kept.until)?;
-        let mut start = *first;
-        for ((_, starts), kept) in behind {
-            // The frame before runs up to this one, give or take a tick.
-            if (kept.until - start).abs() > kept.tick.max(1) {
-                break;
-            }
-            start = *starts;
+        stretch_start(moment, |t| self.span_at(file, t), |t| self.span_ending(file, t))
+    }
+
+    /// Lets the frame of `file` starting at `time` go, if it is kept.
+    pub fn remove(&mut self, file: K, time: f64) {
+        if let Some(gone) = self.frames.remove(&(file, micros(time))) {
+            self.held -= gone.bytes;
         }
-        Some(start as f64 / 1_000_000.0)
     }
 
     /// Bytes kept now.
@@ -277,8 +328,16 @@ impl<K: Ord + Hash + Copy, T: Clone> FrameCache<K, T> {
     /// `until` (seconds from the start of the file; infinite for the last
     /// frame), taking `bytes`. `tick` is how far the frame's stored time
     /// may be off (as the decoder allows when it picks a frame). Other
-    /// frames make room when the budget is passed.
-    pub fn put(&mut self, file: K, time: f64, until: f64, tick: f64, bytes: u64, picture: T) {
+    /// frames make room when the budget is passed: those are returned.
+    pub fn put(
+        &mut self,
+        file: K,
+        time: f64,
+        until: f64,
+        tick: f64,
+        bytes: u64,
+        picture: T,
+    ) -> Vec<Gone<K, T>> {
         self.clock += 1;
         let kept = Kept {
             picture,
@@ -296,17 +355,34 @@ impl<K: Ord + Hash + Copy, T: Clone> FrameCache<K, T> {
             self.held -= old.bytes;
         }
         self.held += bytes;
-        self.make_room(Some(key));
+        self.make_room(Some(key))
     }
 
-    /// Lets frames go until what is kept fits the budget, never `keep`.
-    fn make_room(&mut self, keep: Option<(K, i64)>) {
+    /// Lets frames go until what is kept fits the budget, never `keep`;
+    /// returns them.
+    fn make_room(&mut self, keep: Option<(K, i64)>) -> Vec<Gone<K, T>> {
+        let mut gone = Vec::new();
         while self.held > self.budget {
-            let Some(gone) = self.next_to_go(keep).and_then(|key| self.frames.remove(&key)) else {
+            let Some((key, kept)) = self
+                .next_to_go(keep)
+                .and_then(|key| self.frames.remove(&key).map(|kept| (key, kept)))
+            else {
                 break;
             };
-            self.held -= gone.bytes;
+            self.held -= kept.bytes;
+            gone.push(Gone {
+                file: key.0,
+                time: key.1 as f64 / 1_000_000.0,
+                until: if kept.until == i64::MAX {
+                    f64::INFINITY
+                } else {
+                    kept.until as f64 / 1_000_000.0
+                },
+                tick: kept.tick as f64 / 1_000_000.0,
+                picture: kept.picture,
+            });
         }
+        gone
     }
 
     /// The frame of `file` on screen at `moment`, if it is kept.

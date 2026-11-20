@@ -106,7 +106,7 @@ impl Worker {
         let proxies_on = self.proxies.mode() == ProxyMode::On;
         let mut slow = false;
         for target in targets {
-            let kept = self.frames.get(target.key, target.moment).is_some();
+            let kept = self.frames.has(target.key, target.moment);
             let near = self
                 .decoders
                 .iter()
@@ -121,8 +121,8 @@ impl Worker {
         let mut pictures = Vec::with_capacity(targets.len());
         let mut quick = Vec::with_capacity(targets.len());
         for target in targets {
-            if let Some(frame) = self.frames.get(target.key, target.moment) {
-                pictures.push(Decoded::Gpu(frame));
+            if let Some((frame, _)) = self.frames.get(target.key, target.moment) {
+                pictures.push(frame);
                 quick.push(Quick::Kept);
                 continue;
             }

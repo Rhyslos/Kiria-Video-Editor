@@ -47,7 +47,7 @@ pub use check::{Refusal, Refused, check, end_missing_words, salvage};
 pub use decode::{DecodeCost, Decoded, Decoding, Frame, Level, Newer, Reached, VideoDecoder, Work};
 pub use fingerprint::fingerprint;
 pub use probe::{Probe, probe};
-pub use vulkan::{GpuFrame, WindowDevice};
+pub use vulkan::{GpuFrame, Reader, WindowDevice};
 pub use yuv::{Colour, Layout, Matrix, Planes, Range, YuvFrame};
 
 use project::{MediaId, MediaRef};

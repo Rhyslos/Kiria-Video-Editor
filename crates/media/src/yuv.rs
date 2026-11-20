@@ -202,6 +202,51 @@ pub fn chroma_size(width: u32, height: u32) -> (u32, u32) {
 }
 
 impl YuvFrame {
+    /// A picture of `width` × `height` from `bytes`: luma, then interleaved
+    /// colour at half size (what a picture read back from the graphics card is).
+    pub(crate) fn interleaved(
+        width: u32,
+        height: u32,
+        colour: Colour,
+        rotation: u16,
+        time: f64,
+        bytes: Vec<u8>,
+    ) -> YuvFrame {
+        YuvFrame {
+            width,
+            height,
+            layout: Layout::Interleaved,
+            colour,
+            rotation,
+            time,
+            planes: Planes {
+                bytes,
+                home: Weak::new(),
+            },
+        }
+    }
+
+    /// A copy with planes of its own (megabytes: not for every frame).
+    pub fn copied(&self) -> YuvFrame {
+        YuvFrame {
+            width: self.width,
+            height: self.height,
+            layout: self.layout,
+            colour: self.colour,
+            rotation: self.rotation,
+            time: self.time,
+            planes: Planes {
+                bytes: self.planes.bytes.clone(),
+                home: Weak::new(),
+            },
+        }
+    }
+
+    /// The bytes it takes in memory.
+    pub fn bytes(&self) -> u64 {
+        self.planes.bytes.len() as u64
+    }
+
     /// The size of each colour plane (of the one plane when interleaved,
     /// counted in U and V pairs).
     pub fn chroma_size(&self) -> (u32, u32) {
