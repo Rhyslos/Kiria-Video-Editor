@@ -35,6 +35,7 @@ mod organise;
 mod package_window;
 mod pending;
 mod picture_handles;
+mod playback_watch;
 mod proxies;
 mod prune_window;
 mod reading;

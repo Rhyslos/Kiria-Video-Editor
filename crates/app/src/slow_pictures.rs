@@ -33,7 +33,7 @@ impl SlowPictures {
         if self.lines.len() == KEPT {
             self.lines.pop_front();
         }
-        self.lines.push_back(line(took, method, work));
+        self.lines.push_back(describe(took, method, work));
         self.changed = true;
     }
 
@@ -53,7 +53,7 @@ fn ms(d: Duration) -> String {
 /// One picture in words, for example: "312 ms, hardware (d3d11va): jumped
 /// (4 ms), first frame after 180 ms, 96 frames done after 300 ms, 12 ms to
 /// hand over".
-fn line(took: Duration, method: &str, work: Option<media::Work>) -> String {
+pub fn describe(took: Duration, method: &str, work: Option<media::Work>) -> String {
     let Some(work) = work else {
         return format!("{}, {method}", ms(took));
     };
@@ -92,7 +92,7 @@ mod tests {
             decoding: millis(300),
         };
         assert_eq!(
-            line(millis(312), "hardware (d3d11va)", Some(work)),
+            describe(millis(312), "hardware (d3d11va)", Some(work)),
             "312 ms, hardware (d3d11va): jumped (4 ms), first frame after 180 ms, 96 frames done after 300 ms, 12 ms to hand over"
         );
         let on = media::Work {
@@ -103,7 +103,7 @@ mod tests {
             ..work
         };
         assert_eq!(
-            line(millis(141), "software", Some(on)),
+            describe(millis(141), "software", Some(on)),
             "141 ms, software: decoded on, first frame after 2 ms, 150 frames done after 140 ms, 1 ms to hand over"
         );
     }
