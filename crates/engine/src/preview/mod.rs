@@ -395,6 +395,26 @@ fn run(inbox: &Receiver<Request>, outbox: &Sender<Picture>, mut worker: Worker, 
     }
 }
 
+/// The waiting request has its answer already when the picture made for
+/// `r` is the one it asks for: the same moment (a decode can stop at a
+/// moment asked for meanwhile, which `out` then names) of the same project
+/// at the same size. A request for the same moment of a changed project
+/// (a grade or a look being dragged) waits for a picture of its own: taken
+/// for answered, it was never shown, and the viewer, having asked, didn't
+/// ask again.
+fn drop_answered(r: &Request, out: &Picture, waiting: &mut Waiting<'_>) {
+    let answered = waiting.newest.as_ref().is_some_and(|next| {
+        next.at == out.at
+            && next.sequence == r.sequence
+            && (next.max_width, next.max_height) == (r.max_width, r.max_height)
+            && next.scope == r.scope
+            && next.project == r.project
+    });
+    if answered {
+        waiting.newest = None;
+    }
+}
+
 /// The file, stream and moment in the file a request shows; `None` in a gap.
 fn source_of(r: &Request) -> Option<((MediaId, u32), f64)> {
     let sequence = r.project.sequences.iter().find(|s| s.id == r.sequence)?;
@@ -493,8 +513,9 @@ impl Worker {
             give_up |= from_proxy;
         }
         if self.composing.is_some() {
-            let out = self.composed(r, sequence, waiting, give_up, started);
-            return out.map(|out| self.with_kept_ahead(out));
+            let out = self.composed(r, sequence, waiting, give_up, started)?;
+            drop_answered(r, &out, waiting);
+            return Some(self.with_kept_ahead(out));
         }
         let Some(showing) = video_at(&r.project, sequence, r.at) else {
             return Some(Picture::black(r.at)); // a gap: black
@@ -509,6 +530,7 @@ impl Worker {
         };
         let mut out = self.decoded(r.at, &target, waiting, Role::ALONE.give_up(give_up))?;
         out.took = started.elapsed();
+        drop_answered(r, &out, waiting);
         Some(self.with_kept_ahead(out))
     }
 

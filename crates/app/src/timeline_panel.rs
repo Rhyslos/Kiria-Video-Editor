@@ -4,7 +4,7 @@
 use crate::import;
 use crate::reading::Pace;
 use crate::waveforms::Look;
-use project::{ClipId, LabelColor, Project, Sequence};
+use project::{ClipId, Command, LabelColor, Project, Sequence};
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 use ui_kit::timeline::{CacheRange, CacheState, LoadKind, LoadState, Loading, cache_bar};
@@ -1128,6 +1128,26 @@ pub fn first_clip(seq: &Sequence) -> Option<ClipId> {
         .map(|clip| clip.id)
 }
 
+/// The project with the audio track `track` (its id) of the open timeline
+/// at `db`, as while its header's knob or fader is being turned; `None`
+/// when there is no such track, or nothing changes.
+pub fn with_gain_being_set(project: &Project, track: u64, db: f32) -> Option<Project> {
+    let seq = project.active()?;
+    let found = seq.audio_tracks.iter().find(|t| t.id.0 == track)?;
+    if found.gain_db == db {
+        return None;
+    }
+    Command::SetTrackMix {
+        sequence: seq.id,
+        track: found.id,
+        muted: found.muted,
+        solo: found.solo,
+        gain_db: db,
+    }
+    .apply(project)
+    .ok()
+}
+
 /// Every clip of the timeline, on every track: what Select all selects.
 pub fn all_clips(seq: &Sequence) -> Vec<ClipId> {
     seq.tracks().flat_map(|t| t.clips.iter().map(|c| c.id)).collect()
@@ -1146,6 +1166,32 @@ pub fn keep_existing(selected: &mut Vec<ClipId>, seq: &Sequence) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_volume_being_turned_in_a_header_is_heard_as_it_turns() {
+        let p = project::Project::new_automatic("T");
+        let sequence = p.active_sequence;
+        let p = project::Command::AddTrack {
+            sequence,
+            kind: project::TrackKind::Audio,
+            name: "A1".into(),
+        }
+        .apply(&p)
+        .unwrap();
+        let track = p.active().unwrap().audio_tracks[0].clone();
+        let turned = super::with_gain_being_set(&p, track.id.0, -6.0).expect("a change");
+        let now = &turned.active().unwrap().audio_tracks[0];
+        assert_eq!(now.gain_db, -6.0);
+        assert_eq!((now.muted, now.solo), (track.muted, track.solo));
+        assert!(
+            super::with_gain_being_set(&p, track.id.0, track.gain_db).is_none(),
+            "nothing changes"
+        );
+        assert!(
+            super::with_gain_being_set(&p, 9999, -6.0).is_none(),
+            "no such track"
+        );
+    }
+
     #[test]
     fn every_page_hands_the_timeline_the_same_times_and_marks() {
         let mut project = crate::inspector::tests::project_with_a_clip();

@@ -867,7 +867,12 @@ impl Editor {
             let lined = view
                 .line_being_set()
                 .and_then(|line| crate::audio_page::lines::with_line_being_set(base, line));
-            playback.follow(lined.as_ref().unwrap_or(base));
+            let lined = lined.as_ref().unwrap_or(base);
+            // A track's volume being turned in its header is heard as it turns.
+            let turned = view
+                .gain_being_set()
+                .and_then(|(track, db)| crate::timeline_panel::with_gain_being_set(lined, track, db));
+            playback.follow(turned.as_ref().unwrap_or(lined));
         }
         let seq = self.document.as_ref().and_then(|d| d.project().active());
         let (length, rate) = seq.map_or((Time::ZERO, project::Rate::FPS_60), |s| {

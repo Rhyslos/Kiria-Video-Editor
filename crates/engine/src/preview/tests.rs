@@ -884,6 +884,36 @@ fn a_frame_kept_on_the_card_is_shown_without_decoding() {
     assert_eq!(worker.decoders.len(), 1);
 }
 
+/// The same moment asked for again while its picture is made, with the
+/// project changed (a grade or a look being dragged): that request waits
+/// for a picture of its own, while one asking for exactly the same picture
+/// is answered by it.
+#[test]
+fn a_changed_project_at_the_same_moment_gets_a_picture_of_its_own() {
+    let (mut worker, p, seq) = worker_and_project();
+    let (requests, inbox) = channel::<Request>();
+    let mut waiting = Waiting::new(&inbox);
+    let mut changed = p.clone();
+    changed.name.push_str(" (graded)");
+    requests.send(request(&changed, seq, 1000)).unwrap();
+    worker
+        .picture(&request(&p, seq, 1000), &mut waiting, &mut |_| true)
+        .unwrap();
+    let waiting_for = waiting.newest.as_ref().map(|r| (r.at, r.project.name.clone()));
+    assert_eq!(
+        waiting_for,
+        Some((Time::seconds(1), changed.name.clone())),
+        "the changed project's request still waits"
+    );
+    // Exactly the same picture asked for again: answered already.
+    waiting.newest = None;
+    requests.send(request(&p, seq, 1000)).unwrap();
+    worker
+        .picture(&request(&p, seq, 1000), &mut waiting, &mut |_| true)
+        .unwrap();
+    assert!(waiting.newest.is_none());
+}
+
 #[test]
 fn a_request_reached_on_the_way_gets_the_picture() {
     let (mut worker, p, seq) = worker_and_project();
