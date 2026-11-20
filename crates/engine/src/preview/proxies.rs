@@ -54,6 +54,12 @@ impl Proxies {
         }
     }
 
+    /// How many proxies are open.
+    #[cfg(test)]
+    pub(super) fn open(&self) -> usize {
+        self.decoders.len()
+    }
+
     pub(super) fn mode(&self) -> ProxyMode {
         self.shelf.as_ref().map_or(ProxyMode::Off, |shelf| shelf.mode())
     }

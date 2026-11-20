@@ -531,6 +531,41 @@ fn a_jump_shows_the_proxy_frame_first_then_the_exact_one() {
     );
 }
 
+/// A proxy deleted while the viewer rests is let go of: on Windows an open
+/// file can't be removed, and deleting it gave up after a few seconds.
+#[test]
+fn a_resting_worker_lets_go_of_a_proxy_that_went() {
+    let (mut worker, p, seq) = worker_and_project();
+    let (shelf, _dir) = shelf_with_proxy(&p, ProxyMode::On);
+    let (requests, inbox) = channel::<Request>();
+    let mut waiting = Waiting::new(&inbox);
+    let (_, answer) = ask(
+        &mut worker,
+        &with_shelf(request(&p, seq, 500), &shelf),
+        &mut waiting,
+    );
+    assert_eq!(answer.unwrap().method.as_deref(), Some(PROXY_ONLY));
+    assert_eq!(worker.proxies.open(), 1);
+    // Resting, then the proxy is deleted, then a request comes.
+    let media = p.media.values().next().unwrap().clone();
+    let asking = std::thread::spawn({
+        let shelf = Arc::clone(&shelf);
+        let next = request(&p, seq, 600);
+        // A copy: the viewer stays open after this one is gone.
+        let requests = requests.clone();
+        move || {
+            std::thread::sleep(Duration::from_millis(100));
+            assert!(shelf.delete(&media.fingerprint, 0).unwrap());
+            std::thread::sleep(super::fill::RESTING_LOOK * 3);
+            requests.send(next).unwrap();
+        }
+    });
+    let next = worker.rest(&mut waiting);
+    assert_eq!(worker.proxies.open(), 0, "let go of before the next request");
+    assert!(next.is_some());
+    asking.join().unwrap();
+}
+
 #[test]
 fn with_proxies_on_the_original_is_never_decoded() {
     let (mut worker, p, seq) = worker_and_project();

@@ -354,7 +354,7 @@ fn run(inbox: &Receiver<Request>, outbox: &Sender<Picture>, mut worker: Worker, 
             // stretch at a time, until there is nothing to fill or
             // something is asked for. (And let go of proxies that went.)
             Next::Idle if worker.idle(&mut waiting) => continue,
-            Next::Idle => match waiting.next() {
+            Next::Idle => match worker.rest(&mut waiting) {
                 Some(request) => request,
                 None => return,
             },
