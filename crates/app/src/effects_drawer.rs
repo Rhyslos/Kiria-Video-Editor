@@ -100,6 +100,9 @@ fn about(kind: &EffectKind) -> (&'static str, &'static str) {
             "Stylise",
             "Red and blue drawn apart: an RGB split, as a cheap lens",
         ),
+        EffectKind::Glitch(_) => ("Stylise", "Bands torn sideways, colours apart: a broken signal"),
+        EffectKind::Smear(_) => ("Blur and censor", "Smeared one way, as something moving fast"),
+        EffectKind::Radial(_) => ("Blur and censor", "Smeared towards a point, as zooming in fast"),
     }
 }
 
@@ -476,7 +479,7 @@ mod tests {
             .filter(|k| matches(k, "censor"))
             .map(|k| k.name())
             .collect();
-        assert_eq!(censor, ["Blur", "Pixelate"]);
+        assert_eq!(censor, ["Blur", "Pixelate", "Directional blur", "Radial blur"]);
         let facecam: Vec<&str> = EffectKind::ALL
             .iter()
             .filter(|k| matches(k, "facecam"))

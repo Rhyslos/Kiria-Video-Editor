@@ -489,6 +489,57 @@ fn split(at: vec2<f32>) -> vec4<f32> {
     return vec4<f32>(red.r, green.g, blue.b, max(green.a, max(red.a, blue.a)));
 }
 
+// 24: smeared `length` (y, reference pixels) along `angle` (z, radians),
+// half each way: 33 samples, stored values averaged as they are.
+fn smeared(at: vec2<f32>) -> vec4<f32> {
+    let length = it.kind_numbers.y * scale();
+    let way = vec2<f32>(cos(it.kind_numbers.z), sin(it.kind_numbers.z)) * texel() * length;
+    var sum = vec4<f32>(0.0);
+    for (var i = -16; i <= 16; i++) {
+        sum += textureSampleLevel(source, smooth_sampler, at + way * (f32(i) / 32.0), 0.0);
+    }
+    return sum / 33.0;
+}
+
+// 25: smeared towards a point (zw, 0-1), `amount` (y) of the way: 33
+// samples from here towards it.
+fn radial(at: vec2<f32>) -> vec4<f32> {
+    let towards = (it.kind_numbers.zw - at) * clamp(it.kind_numbers.y, 0.0, 1.0);
+    var sum = vec4<f32>(0.0);
+    for (var i = 0; i <= 32; i++) {
+        sum += textureSampleLevel(source, smooth_sampler, at + towards * (f32(i) / 32.0), 0.0);
+    }
+    return sum / 33.0;
+}
+
+// 26: a broken signal. Some frames glitch (more the more `often`, z), and
+// in them some bands: each torn sideways by up to `amount` (y) of a fifth
+// of the width, its red and blue drawn apart. The seed picks the frame's
+// pattern, the same for the same frame every time.
+fn glitched(at: vec2<f32>) -> vec4<f32> {
+    let amount = clamp(it.kind_numbers.y, 0.0, 1.0);
+    let often = clamp(it.kind_numbers.z, 0.0, 1.0);
+    let seed = u32(it.linear_size_seed.w);
+    let plain = textureSampleLevel(source, smooth_sampler, at, 0.0);
+    if hash(seed * 2654435761u + 7u) > 0.25 + 0.75 * often {
+        return plain;
+    }
+    // Bands of two sizes, so the tears are uneven.
+    let coarse = u32(floor(at.y * 9.0));
+    let fine = u32(floor(at.y * 41.0));
+    let pick = hash(coarse * 7919u ^ seed * 83492791u) * hash(fine * 104729u ^ seed * 19349663u + 1u);
+    if pick > 0.15 + 0.35 * often {
+        return plain;
+    }
+    let tear = (hash(fine * 31u ^ seed * 73856093u + 3u) - 0.5) * 0.4 * amount;
+    let apart = 0.012 * amount;
+    let base = at + vec2<f32>(tear, 0.0);
+    let red = textureSampleLevel(source, smooth_sampler, base + vec2<f32>(apart, 0.0), 0.0);
+    let green = textureSampleLevel(source, smooth_sampler, base, 0.0);
+    let blue = textureSampleLevel(source, smooth_sampler, base - vec2<f32>(apart, 0.0), 0.0);
+    return vec4<f32>(red.r, green.g, blue.b, max(green.a, max(red.a, blue.a)));
+}
+
 @fragment
 fn effect(in: Corner) -> @location(0) vec4<f32> {
     let kind = i32(round(it.kind_numbers.x));
@@ -506,6 +557,15 @@ fn effect(in: Corner) -> @location(0) vec4<f32> {
     }
     if kind == 23 {
         return split(in.at);
+    }
+    if kind == 24 {
+        return smeared(in.at);
+    }
+    if kind == 25 {
+        return radial(in.at);
+    }
+    if kind == 26 {
+        return glitched(in.at);
     }
     if kind == 18 {
         return letterboxed(textureSampleLevel(source, smooth_sampler, in.at, 0.0), in.at);

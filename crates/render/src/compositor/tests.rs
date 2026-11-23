@@ -1330,6 +1330,115 @@ fn chromatic_aberration_moves_red_and_blue_apart() {
 }
 
 #[test]
+fn a_directional_blur_smears_one_way_only() {
+    let Some(gpu) = gpu() else { return };
+    let size = (64, 64);
+    // A light cross on dark: a column and a row through the middle.
+    let cross = |x: u32, y: u32| if x == 32 || y == 32 { 220 } else { 30 };
+    let plain = with_effects(&gpu, Working::Linear, size, cross, &[]);
+    let across = with_effects(
+        &gpu,
+        Working::Linear,
+        size,
+        cross,
+        &[crate::Effect::Smear {
+            length: 16.0 * 1080.0 / 64.0,
+            angle: 0.0,
+        }],
+    );
+    // The column spreads sideways; the row stays as sharp up and down.
+    assert!(
+        across.at(36, 10)[0] > plain.at(36, 10)[0] + 5,
+        "the column spread: {:?}",
+        across.at(36, 10)
+    );
+    assert!(across.at(32, 10)[0] < plain.at(32, 10)[0], "and dimmed");
+    assert!(
+        near(across.at(10, 36), [plain.at(10, 36)[0]; 3], 2),
+        "nothing above or below the row"
+    );
+}
+
+#[test]
+fn a_radial_blur_keeps_its_point_and_smears_towards_it() {
+    let Some(gpu) = gpu() else { return };
+    let size = (64, 64);
+    let stripes = |x: u32, _| if (x / 4).is_multiple_of(2) { 40 } else { 200 };
+    let plain = with_effects(&gpu, Working::Linear, size, stripes, &[]);
+    let zoomed = with_effects(
+        &gpu,
+        Working::Linear,
+        size,
+        stripes,
+        &[crate::Effect::Radial {
+            amount: 0.5,
+            centre: (0.5, 0.5),
+        }],
+    );
+    let spread = |shown: &Shown, xs: std::ops::Range<u32>| {
+        let row: Vec<u8> = xs.map(|x| shown.at(x, 32)[0]).collect();
+        row.iter().max().unwrap() - row.iter().min().unwrap()
+    };
+    assert!(
+        spread(&zoomed, 0..16) < spread(&plain, 0..16) / 2,
+        "smeared far from it"
+    );
+    // Beside the point (in the middle of a stripe) the smear is too short
+    // to reach the next stripe.
+    assert!(
+        near(zoomed.at(34, 32), [plain.at(34, 32)[0]; 3], 3),
+        "next to its point, as it was: {:?}",
+        zoomed.at(34, 32)
+    );
+}
+
+#[test]
+fn a_glitch_is_the_same_for_the_same_frame_and_off_at_nothing() {
+    let Some(gpu) = gpu() else { return };
+    let size = (64, 64);
+    let ramp = |x: u32, y: u32| (16 + x * 3 + y) as u8;
+    let glitch = |amount, seed| crate::Effect::Glitch {
+        amount,
+        often: 1.0,
+        seed,
+    };
+    let plain = reds(&with_effects(&gpu, Working::Linear, size, ramp, &[]));
+    let once = reds(&with_effects(
+        &gpu,
+        Working::Linear,
+        size,
+        ramp,
+        &[glitch(1.0, 5)],
+    ));
+    let again = reds(&with_effects(
+        &gpu,
+        Working::Linear,
+        size,
+        ramp,
+        &[glitch(1.0, 5)],
+    ));
+    assert_eq!(once, again, "the same frame, the same tears");
+    let torn = (0..40).any(|seed| {
+        reds(&with_effects(
+            &gpu,
+            Working::Linear,
+            size,
+            ramp,
+            &[glitch(1.0, seed)],
+        )) != plain
+    });
+    assert!(torn, "some frames are torn");
+    let none = reds(&with_effects(
+        &gpu,
+        Working::Linear,
+        size,
+        ramp,
+        &[glitch(0.0, 5)],
+    ));
+    assert_eq!(none, plain, "no amount, no glitch");
+}
+
+#[test]
 fn blend_modes_mix_with_what_is_below_as_light() {
     let Some(gpu) = gpu() else { return };
     let size = (16, 16);

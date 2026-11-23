@@ -214,6 +214,41 @@ fn effect(p: &Painter, r: Rect, kind: EffectKind) {
                 Color32::from_rgba_unmultiplied(40, 120, 255, 140),
             );
         }
+        EffectKind::Smear(_) => {
+            for i in 1..5 {
+                p.circle_filled(
+                    sun - vec2(i as f32 * 3.0, 0.0),
+                    r.height() * 0.14,
+                    Color32::from_rgba_unmultiplied(240, 196, 92, 50),
+                );
+            }
+        }
+        EffectKind::Radial(_) => {
+            let middle = r.center();
+            for i in 0..12 {
+                let a = i as f32 / 12.0 * std::f32::consts::TAU;
+                let way = vec2(a.cos(), a.sin());
+                p.line_segment(
+                    [middle + way * r.height() * 0.2, middle + way * r.height() * 0.6],
+                    Stroke::new(1.0, Color32::from_white_alpha(90)),
+                );
+            }
+        }
+        EffectKind::Glitch(_) => {
+            for (y, dx) in [(0.3, 6.0), (0.55, -5.0), (0.72, 4.0)] {
+                let band = Rect::from_min_size(at(r, 0.0, y), vec2(r.width(), r.height() * 0.08));
+                p.rect_filled(
+                    band.translate(vec2(dx, 0.0)),
+                    0.0,
+                    Color32::from_rgba_unmultiplied(255, 40, 120, 120),
+                );
+                p.rect_filled(
+                    band.translate(vec2(-dx * 0.5, 0.0)),
+                    0.0,
+                    Color32::from_rgba_unmultiplied(40, 200, 255, 90),
+                );
+            }
+        }
         EffectKind::Letterbox(_) => {
             let bar = r.height() * 0.2;
             p.rect_filled(

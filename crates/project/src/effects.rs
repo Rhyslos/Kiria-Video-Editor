@@ -175,11 +175,14 @@ pub enum EffectKind {
     Duotone(Duotone),
     Invert(Amount),
     Split(Split),
+    Smear(Smear),
+    Radial(Radial),
+    Glitch(Glitch),
 }
 
 impl EffectKind {
     /// Every kind there is, with its usual settings: what is added.
-    pub const ALL: [EffectKind; 21] = [
+    pub const ALL: [EffectKind; 24] = [
         EffectKind::Vignette(Vignette::USUAL),
         EffectKind::Grain(Grain::USUAL),
         EffectKind::Sharpen(Sharpen::USUAL),
@@ -201,6 +204,9 @@ impl EffectKind {
         EffectKind::Duotone(Duotone::USUAL),
         EffectKind::Invert(Amount::WHOLLY),
         EffectKind::Split(Split::USUAL),
+        EffectKind::Smear(Smear::USUAL),
+        EffectKind::Radial(Radial::USUAL),
+        EffectKind::Glitch(Glitch::USUAL),
     ];
 
     /// Its name, as the interface shows it.
@@ -227,6 +233,9 @@ impl EffectKind {
             EffectKind::Duotone(_) => "Duotone",
             EffectKind::Invert(_) => "Invert",
             EffectKind::Split(_) => "Chromatic aberration",
+            EffectKind::Smear(_) => "Directional blur",
+            EffectKind::Radial(_) => "Radial blur",
+            EffectKind::Glitch(_) => "Glitch",
         }
     }
 
@@ -277,6 +286,9 @@ impl EffectKind {
                 d.highlights.blue,
             ],
             EffectKind::Split(s) => vec![s.amount, s.direction],
+            EffectKind::Smear(s) => vec![s.amount, s.direction],
+            EffectKind::Radial(r) => vec![r.amount, r.x, r.y],
+            EffectKind::Glitch(g) => vec![g.amount, g.often],
         }
     }
 
@@ -373,6 +385,19 @@ impl EffectKind {
                 amount: n[0],
                 direction: n[1],
             }),
+            EffectKind::Smear(_) => EffectKind::Smear(Smear {
+                amount: n[0],
+                direction: n[1],
+            }),
+            EffectKind::Radial(_) => EffectKind::Radial(Radial {
+                amount: n[0],
+                x: n[1],
+                y: n[2],
+            }),
+            EffectKind::Glitch(_) => EffectKind::Glitch(Glitch {
+                amount: n[0],
+                often: n[1],
+            }),
         }
     }
 
@@ -409,6 +434,9 @@ impl EffectKind {
                 .and_then(|()| d.shadows.check("Duotone"))
                 .and_then(|()| d.highlights.check("Duotone")),
             EffectKind::Split(s) => shares("Chromatic aberration", &[s.amount, s.direction]),
+            EffectKind::Smear(s) => shares("Directional blur", &[s.amount, s.direction]),
+            EffectKind::Radial(r) => shares("Radial blur", &[r.amount, r.x, r.y]),
+            EffectKind::Glitch(g) => shares("Glitch", &[g.amount, g.often]),
         }
     }
 }
@@ -843,6 +871,59 @@ impl Split {
     pub const USUAL: Split = Split {
         amount: ONE / 4,
         direction: 0,
+    };
+}
+
+/// The picture smeared along one direction, as something moving fast.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Smear {
+    /// How far: 0 to [`ONE`] (a hundred and twenty pixels of 1080 lines).
+    pub amount: i32,
+    /// Which way: 0 to [`ONE`] once round clockwise from the right (a
+    /// half is the same as none: a smear goes both ways).
+    pub direction: i32,
+}
+
+impl Smear {
+    pub const USUAL: Smear = Smear {
+        amount: ONE * 3 / 10,
+        direction: 0,
+    };
+}
+
+/// The picture smeared towards a point, as when zooming in fast.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Radial {
+    /// How far: 0 to [`ONE`] (half the way to the point).
+    pub amount: i32,
+    /// The point: shares of the picture's width and height.
+    pub x: i32,
+    pub y: i32,
+}
+
+impl Radial {
+    pub const USUAL: Radial = Radial {
+        amount: ONE * 3 / 10,
+        x: ONE / 2,
+        y: ONE / 2,
+    };
+}
+
+/// Bands of the picture torn sideways with their colours apart, new every
+/// frame, as a broken signal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Glitch {
+    /// How hard: 0 to [`ONE`].
+    pub amount: i32,
+    /// How often frames and bands glitch: 0 (now and then) to [`ONE`]
+    /// (always).
+    pub often: i32,
+}
+
+impl Glitch {
+    pub const USUAL: Glitch = Glitch {
+        amount: ONE / 2,
+        often: ONE * 4 / 10,
     };
 }
 
