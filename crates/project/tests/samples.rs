@@ -354,6 +354,19 @@ fn rich_project() -> Project {
         }),
         ..clip(second_shot, 0)
     });
+    // A third whipped in across its cut (format 42).
+    let third_shot = p.allocate_id();
+    short.video_tracks[0].clips.push_back(Clip {
+        start: Time::seconds(7),
+        source_in: Time::seconds(60),
+        duration: Time::seconds(2),
+        link: None,
+        transition: Some(project::Transition {
+            kind: project::TransitionKind::WhipPan,
+            length: Time::from_ratio(1, 2).expect("half a second"),
+        }),
+        ..clip(third_shot, 0)
+    });
     let (nested_id, nested_clip, adjustment) = (short.id, p.allocate_id(), p.allocate_id());
     let lower_third = p.allocate_id();
     let (mut v2, mut v3) = (
@@ -1071,6 +1084,18 @@ fn the_current_sample_has_a_dissolve() {
     let across = project::transitions::across(track, Time::seconds(4)).expect("a transition at the cut");
     assert_eq!(across.kind, project::TransitionKind::Dissolve);
     assert_eq!(across.done, 0.5);
+    let whip = project::transitions::across(track, Time::seconds(7)).expect("a whip pan at the next cut");
+    assert_eq!(whip.kind, project::TransitionKind::WhipPan);
+}
+
+#[test]
+fn version_41_sample_has_none_of_the_new_transitions() {
+    let project = file::load(&sample_path(41)).expect("the version 41 sample opens");
+    let new = &project::TransitionKind::ALL[5..];
+    for seq in project.sequences.iter() {
+        let clips = seq.tracks().flat_map(|t| t.clips.iter());
+        assert!(clips.filter_map(|c| c.transition).all(|t| !new.contains(&t.kind)));
+    }
 }
 
 #[test]

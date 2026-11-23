@@ -31,6 +31,11 @@ fn transition_line(kind: TransitionKind) -> &'static str {
         TransitionKind::Wipe => "The next shot is uncovered from the left",
         TransitionKind::Push => "The next shot slides in and pushes the last out",
         TransitionKind::Zoom => "The last grows and fades as the next settles in",
+        TransitionKind::Slide => "The next shot slides in over the last",
+        TransitionKind::Spin => "The last spins away, the next spins in",
+        TransitionKind::WhipPan => "A fast smeared push, as a camera whipped round",
+        TransitionKind::LumaFade => "The next shot comes in brightest parts first",
+        TransitionKind::Glitch => "Both shots break up in glitches across the cut",
     }
 }
 
@@ -520,6 +525,7 @@ mod tests {
         }
         assert!(transition_matches(TransitionKind::DipToBlack, "black"));
         assert!(!transition_matches(TransitionKind::Wipe, "black"));
+        assert!(transition_matches(TransitionKind::WhipPan, "camera"));
     }
 
     #[test]

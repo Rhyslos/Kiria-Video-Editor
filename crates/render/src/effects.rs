@@ -134,6 +134,10 @@ pub enum Effect {
     /// White above `threshold` (brightness as shown, 0-1), black below;
     /// the other way round when `invert`.
     Impact { threshold: f32, invert: bool },
+    /// Only what is brighter (as shown) than `1 - done` shows, see-through
+    /// elsewhere, over an edge `softness` (0-1) of brightness wide: a
+    /// picture coming in brightest first.
+    Reveal { done: f32, softness: f32 },
 }
 
 impl Effect {
@@ -141,7 +145,7 @@ impl Effect {
     /// is below it shows.
     pub fn leaves_holes(&self) -> bool {
         match *self {
-            Effect::Corners { .. } | Effect::Key { .. } => true,
+            Effect::Corners { .. } | Effect::Key { .. } | Effect::Reveal { .. } => true,
             Effect::Lens { bend } => bend < 0.0,
             _ => false,
         }
@@ -409,6 +413,10 @@ enum Pass {
         threshold: f32,
         invert: bool,
     },
+    Reveal {
+        done: f32,
+        softness: f32,
+    },
 }
 
 impl Pass {
@@ -465,6 +473,7 @@ impl Pass {
             Pass::Flare { amount, at } => [34.0, amount, at.0, at.1],
             Pass::Speed { amount, at } => [35.0, amount, at.0, at.1],
             Pass::Impact { threshold, invert } => [36.0, threshold, if invert { 1.0 } else { 0.0 }, 0.0],
+            Pass::Reveal { done, softness } => [37.0, done, softness, 0.0],
         }
     }
 
@@ -847,6 +856,16 @@ impl Effects {
                 }
                 Effect::Impact { threshold, invert } => {
                     pass(encoder, (&now, None), size, Pass::Impact { threshold, invert }, 0)
+                }
+                Effect::Reveal {
+                    done: so_far,
+                    softness,
+                } => {
+                    let reveal = Pass::Reveal {
+                        done: so_far,
+                        softness,
+                    };
+                    pass(encoder, (&now, None), size, reveal, 0)
                 }
             };
             done.push(std::mem::replace(&mut now, next));

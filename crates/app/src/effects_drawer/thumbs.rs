@@ -452,6 +452,58 @@ fn transition(p: &Painter, r: Rect, kind: TransitionKind) {
             let inner = Rect::from_center_size(r.center(), r.size() * 0.5);
             scene(p, inner, SKY_B, GROUND_B);
         }
+        TransitionKind::Slide => {
+            scene(p, r, SKY, GROUND);
+            scene(p, half(false), SKY_B, GROUND_B);
+            arrow(p, at(r, 0.9, 0.5), at(r, 0.6, 0.5));
+        }
+        TransitionKind::Spin => {
+            scene(p, r, SKY, GROUND);
+            let middle = r.center();
+            let side = r.height() * 0.3;
+            let corners: Vec<Pos2> = (0..4)
+                .map(|i| {
+                    let a = 0.5 + i as f32 * std::f32::consts::FRAC_PI_2;
+                    middle + vec2(a.cos(), a.sin()) * side
+                })
+                .collect();
+            p.add(egui::Shape::convex_polygon(
+                corners,
+                GROUND_B,
+                Stroke::new(1.0, Color32::WHITE),
+            ));
+        }
+        TransitionKind::WhipPan => {
+            scene(p, half(true), SKY, GROUND);
+            scene(p, half(false), SKY_B, GROUND_B);
+            for i in 0..5 {
+                let y = 0.2 + 0.15 * i as f32;
+                p.line_segment(
+                    [at(r, 0.15, y), at(r, 0.85, y)],
+                    Stroke::new(1.0, Color32::from_white_alpha(110)),
+                );
+            }
+        }
+        TransitionKind::LumaFade => {
+            scene(p, r, SKY_B, GROUND_B);
+            p.circle_filled(
+                at(r, 0.7, 0.36),
+                r.height() * 0.22,
+                Color32::from_rgb(255, 236, 190),
+            );
+        }
+        TransitionKind::Glitch => {
+            scene(p, half(true), SKY, GROUND);
+            scene(p, half(false), SKY_B, GROUND_B);
+            for (y, dx) in [(0.25, 6.0), (0.6, -5.0)] {
+                let band = Rect::from_min_size(at(r, 0.2, y), vec2(r.width() * 0.6, r.height() * 0.1));
+                p.rect_filled(
+                    band.translate(vec2(dx, 0.0)),
+                    0.0,
+                    Color32::from_rgba_unmultiplied(255, 40, 120, 130),
+                );
+            }
+        }
     }
 }
 
