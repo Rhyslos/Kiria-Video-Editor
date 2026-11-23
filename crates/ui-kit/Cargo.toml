@@ -22,6 +22,7 @@ tracing = "0.1"
 
 [dev-dependencies]
 tempfile = "3"
+ron = "0.12"
 # Checks every character a keyboard layout prints has a glyph in our fonts.
 skrifa = "0.44"
 

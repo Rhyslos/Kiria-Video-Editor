@@ -550,6 +550,8 @@ impl Editor {
         view.zoom_to_playhead = self.settings.zoom_to_playhead;
         view.volume_control = self.settings.volume_control();
         view.wave_style = self.settings.waveform_look;
+        view.wave_colouring = self.settings.waveform_colours;
+        view.wave_side = self.settings.waveform_side;
         view.wave_fitted = !self.settings.waveform_straight;
         view.detailed_on_selected = self.settings.detailed_gain_selected;
         view.effects_copied = self.track_effects.is_some();

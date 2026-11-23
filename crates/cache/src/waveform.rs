@@ -1,4 +1,7 @@
-//! Waveforms: how loud a sound stream is, a hundred times a second.
+//! Waveforms: how loud a sound stream is, a hundred times a second, and
+//! how far it swings up and down in that time (the highest and the lowest
+//! sample, so a waveform can be drawn uneven above and below, as the sound
+//! is).
 //!
 //! Reading a stream once gives its peaks; the timeline draws any zoom level
 //! from them. A 20-minute stream becomes 120,000 numbers (half a megabyte),
@@ -21,11 +24,35 @@ pub const PER_SECOND: u32 = 100;
 /// Sample frames decoded between two hand-overs of new peaks.
 const STEP: usize = 48_000;
 
-/// The loudest sample (0 to 1) in each 1/100 s of a stream.
+/// The loudest sample (0 to 1) in each 1/100 s of a stream, and the
+/// highest (`up`) and the lowest (`down`, how far under zero) sample of
+/// either channel in it, each 0 to 1: `values` is the larger of the two.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Peaks {
     pub per_second: u32,
     pub values: Arc<[f32]>,
+    pub up: Arc<[f32]>,
+    pub down: Arc<[f32]>,
+}
+
+impl Peaks {
+    /// Peaks known only by their loudness: as far up as down.
+    pub fn level_only(values: Arc<[f32]>) -> Peaks {
+        Peaks {
+            per_second: PER_SECOND,
+            up: Arc::clone(&values),
+            down: Arc::clone(&values),
+            values,
+        }
+    }
+}
+
+/// New peaks of one stream as they are read: the same stretches in each.
+#[derive(Debug, Clone, Copy)]
+pub struct Run<'a> {
+    pub values: &'a [f32],
+    pub up: &'a [f32],
+    pub down: &'a [f32],
 }
 
 /// Reads stream `stream` of the file and returns its peaks.
@@ -39,7 +66,7 @@ pub fn peaks(path: &Path, stream: u32) -> diag::Result<Peaks> {
 /// still being read. `more` returns whether to go on: `false` stops the
 /// reading, which then returns an error.
 pub fn peaks_as_read(path: &Path, stream: u32, mut more: impl FnMut(&[f32]) -> bool) -> diag::Result<Peaks> {
-    let mut all = peaks_of_streams(path, &[stream], |_, values| more(values))?;
+    let mut all = peaks_of_streams(path, &[stream], |_, run| more(run.values))?;
     all.pop().ok_or_else(stopped)
 }
 
@@ -51,7 +78,7 @@ pub fn peaks_as_read(path: &Path, stream: u32, mut more: impl FnMut(&[f32]) -> b
 pub fn peaks_of_streams(
     path: &Path,
     streams: &[u32],
-    mut more: impl FnMut(usize, &[f32]) -> bool,
+    mut more: impl FnMut(usize, Run<'_>) -> bool,
 ) -> diag::Result<Vec<Peaks>> {
     let mut reader = AudioStreams::open(path, streams, OWN_RATE)?;
     let mut buckets: Vec<Buckets> = reader.rates().into_iter().map(Buckets::new).collect();
@@ -65,7 +92,12 @@ pub fn peaks_of_streams(
                 bucket.finish();
             }
             samples.clear();
-            if bucket.values.len() > told && !more(i, &bucket.values[told..]) {
+            let run = Run {
+                values: &bucket.values[told..],
+                up: &bucket.up[told..],
+                down: &bucket.down[told..],
+            };
+            if !run.values.is_empty() && !more(i, run) {
                 return Err(stopped());
             }
         }
@@ -78,6 +110,8 @@ pub fn peaks_of_streams(
         .map(|b| Peaks {
             per_second: PER_SECOND,
             values: b.values.into(),
+            up: b.up.into(),
+            down: b.down.into(),
         })
         .collect())
 }
@@ -86,8 +120,12 @@ pub fn peaks_of_streams(
 struct Buckets {
     rate: u64,
     values: Vec<f32>,
-    /// The loudest sample of the peak being filled, and whether any is in it.
-    current: f32,
+    up: Vec<f32>,
+    down: Vec<f32>,
+    /// The highest and the lowest sample of the peak being filled (the
+    /// lowest as how far under zero), and whether any is in it.
+    high: f32,
+    low: f32,
     started: bool,
     /// Samples counted so far, and where the peak being filled ends.
     sample: u64,
@@ -99,7 +137,10 @@ impl Buckets {
         let mut b = Buckets {
             rate: u64::from(rate.max(1)),
             values: Vec::new(),
-            current: 0.0,
+            up: Vec::new(),
+            down: Vec::new(),
+            high: 0.0,
+            low: 0.0,
             started: false,
             sample: 0,
             ends_at: 0,
@@ -117,23 +158,33 @@ impl Buckets {
     /// Takes interleaved stereo samples.
     fn add(&mut self, samples: &[f32]) {
         for frame in samples.chunks_exact(CHANNELS) {
-            self.current = self.current.max(frame.iter().fold(0f32, |m, s| m.max(s.abs())));
+            for s in frame {
+                self.high = self.high.max(*s);
+                self.low = self.low.max(-*s);
+            }
             self.started = true;
             self.sample += 1;
             if self.sample == self.ends_at {
-                self.values.push(self.current.min(1.0));
-                self.current = 0.0;
-                self.started = false;
+                self.push();
                 self.ends_at = self.end_of(self.values.len() as u64);
             }
         }
     }
 
+    fn push(&mut self) {
+        let (up, down) = (self.high.clamp(0.0, 1.0), self.low.clamp(0.0, 1.0));
+        self.values.push(up.max(down));
+        self.up.push(up);
+        self.down.push(down);
+        self.high = 0.0;
+        self.low = 0.0;
+        self.started = false;
+    }
+
     /// The stream has ended: a peak partly filled counts too.
     fn finish(&mut self) {
         if self.started {
-            self.values.push(self.current.min(1.0));
-            self.started = false;
+            self.push();
         }
     }
 }
@@ -141,7 +192,10 @@ impl Buckets {
 /// Peaks kept on disk, one small file per recording and sound stream,
 /// named by the recording's fingerprint (as proxies are), so a waveform
 /// read once is there the next time any project uses that recording. Each
-/// peak is kept as a 16-bit number (finer than a pixel at any height).
+/// stretch keeps how far up and how far down it swings as 16-bit numbers
+/// (finer than a pixel at any height); its loudness is the larger. A file
+/// of the first format (loudness alone) is read as missing, so the sound
+/// is read again once.
 /// Unlike proxies they are small (a three-hour stream is about 2 MB), so
 /// the folder only keeps the most recently used within its budget
 /// ([`Store::trim`]).
@@ -151,7 +205,7 @@ pub struct Store {
 }
 
 /// What a peaks file starts with: its kind and format version.
-const MAGIC: &[u8; 8] = b"PEAKS\0\0\x01";
+const MAGIC: &[u8; 8] = b"PEAKS\0\0\x02";
 
 impl Store {
     pub fn new(folder: PathBuf) -> Store {
@@ -204,12 +258,15 @@ impl Store {
 }
 
 fn encode(peaks: &Peaks) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(16 + peaks.values.len() * 2);
+    let count = peaks.up.len().min(peaks.down.len());
+    let mut bytes = Vec::with_capacity(16 + count * 4);
     bytes.extend_from_slice(MAGIC);
     bytes.extend_from_slice(&peaks.per_second.to_le_bytes());
-    bytes.extend_from_slice(&(peaks.values.len() as u32).to_le_bytes());
-    for v in peaks.values.iter() {
-        bytes.extend_from_slice(&((v.clamp(0.0, 1.0) * 65_535.0).round() as u16).to_le_bytes());
+    bytes.extend_from_slice(&(count as u32).to_le_bytes());
+    for (up, down) in peaks.up.iter().zip(peaks.down.iter()) {
+        for v in [up, down] {
+            bytes.extend_from_slice(&((v.clamp(0.0, 1.0) * 65_535.0).round() as u16).to_le_bytes());
+        }
     }
     bytes
 }
@@ -218,16 +275,19 @@ fn decode(bytes: &[u8]) -> Option<Peaks> {
     let rest = bytes.strip_prefix(MAGIC.as_slice())?;
     let number = |at: usize| Some(u32::from_le_bytes(rest.get(at..at + 4)?.try_into().ok()?));
     let (per_second, count) = (number(0)?, number(4)? as usize);
-    let values = rest.get(8..)?;
-    if per_second != PER_SECOND || values.len() != count * 2 {
+    let pairs = rest.get(8..)?;
+    if per_second != PER_SECOND || pairs.len() != count * 4 {
         return None;
     }
+    let read = |b: &[u8]| f32::from(u16::from_le_bytes([b[0], b[1]])) / 65_535.0;
+    let up: Vec<f32> = pairs.chunks_exact(4).map(|b| read(&b[..2])).collect();
+    let down: Vec<f32> = pairs.chunks_exact(4).map(|b| read(&b[2..])).collect();
+    let values: Vec<f32> = up.iter().zip(&down).map(|(u, d)| u.max(*d)).collect();
     Some(Peaks {
         per_second,
-        values: values
-            .chunks_exact(2)
-            .map(|b| f32::from(u16::from_le_bytes([b[0], b[1]])) / 65_535.0)
-            .collect(),
+        values: values.into(),
+        up: up.into(),
+        down: down.into(),
     })
 }
 
@@ -263,6 +323,15 @@ mod tests {
     }
 
     #[test]
+    fn a_stretch_keeps_how_far_up_and_how_far_down_it_swings() {
+        let mut b = Buckets::new(200);
+        // Two frames: up to 0.6 on the left, down to -0.9 on the right.
+        b.add(&[0.6, -0.2, 0.1, -0.9]);
+        b.finish();
+        assert_eq!((b.up[0], b.down[0], b.values[0]), (0.6, 0.9, 0.9));
+    }
+
+    #[test]
     fn peaks_are_handed_over_as_they_are_read() {
         let mut so_far = Vec::new();
         let mut runs = 0;
@@ -283,7 +352,11 @@ mod tests {
         let path = fixture("game-3-audio.mkv");
         let mut runs = [0, 0, 0];
         let all = peaks_of_streams(&path, &[1, 2, 3], |i, more| {
-            assert!(!more.is_empty());
+            assert!(!more.values.is_empty());
+            assert_eq!(
+                (more.up.len(), more.down.len()),
+                (more.values.len(), more.values.len())
+            );
             runs[i] += 1;
             true
         })
@@ -302,6 +375,8 @@ mod tests {
         let peaks = Peaks {
             per_second: PER_SECOND,
             values: vec![0.0, 0.25, 1.0, 0.5].into(),
+            up: vec![0.0, 0.25, 0.5, 0.5].into(),
+            down: vec![0.0, 0.1, 1.0, 0.2].into(),
         };
         assert_eq!(store.load(&print(1), 0), None, "nothing kept yet");
         store.save(&print(1), 0, &peaks);
@@ -313,6 +388,18 @@ mod tests {
                 .all(|(a, b)| (a - b).abs() < 1e-4),
             "{back:?}"
         );
+        assert!(
+            (back.down[3] - 0.2).abs() < 1e-4 && (back.up[2] - 0.5).abs() < 1e-4,
+            "up and down kept apart"
+        );
+        // A file of the first format (loudness alone) is read again.
+        let mut old = b"PEAKS\0\0\x01".to_vec();
+        old.extend_from_slice(&100u32.to_le_bytes());
+        old.extend_from_slice(&1u32.to_le_bytes());
+        old.extend_from_slice(&[0, 128]);
+        std::fs::write(store.file_for(&print(4), 0).unwrap(), old).unwrap();
+        assert_eq!(store.load(&print(4), 0), None);
+        std::fs::remove_file(store.file_for(&print(4), 0).unwrap()).unwrap();
         assert_eq!(store.load(&print(1), 1), None, "another stream");
         std::fs::write(store.file_for(&print(2), 0).unwrap(), b"not peaks").unwrap();
         assert_eq!(store.load(&print(2), 0), None, "a damaged file is read again");
@@ -325,7 +412,7 @@ mod tests {
             .set_modified(old)
             .unwrap();
         store.save(&print(3), 0, &peaks);
-        assert_eq!(store.trim(50), 1, "two of 24 bytes fit");
+        assert_eq!(store.trim(70), 1, "two of 32 bytes fit");
         assert!(store.load(&print(3), 0).is_some() && !store.file_for(&print(2), 0).unwrap().exists());
         assert_eq!(store.clear(), 2, "clearing removes them all");
         assert_eq!(store.load(&print(3), 0), None);
@@ -336,10 +423,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let folder = dir.path().join("cache/waveforms");
         let store = Store::new(folder.clone());
-        let peaks = Peaks {
-            per_second: PER_SECOND,
-            values: vec![0.5].into(),
-        };
+        let peaks = Peaks::level_only(vec![0.5].into());
         for fingerprint in crate::naming::hostile() {
             store.save(&fingerprint, 0, &peaks);
             assert_eq!(store.load(&fingerprint, 0), None, "{fingerprint:?}");

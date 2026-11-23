@@ -245,6 +245,10 @@ impl ClipPictures {
     }
 }
 
+/// How far a sound swings up and down per stretch: the highest and the
+/// lowest sample, 0 to 1.
+pub type WaveSides = (std::sync::Arc<[f32]>, std::sync::Arc<[f32]>);
+
 /// A clip's loudness: peaks of its whole file, and where in the file the clip starts.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClipWaveform {
@@ -252,6 +256,10 @@ pub struct ClipWaveform {
     /// read (`waveform::levels_for` keeps its levels by it).
     pub id: egui::Id,
     pub peaks: std::sync::Arc<[f32]>,
+    /// How far each stretch swings up and down (the highest and the lowest
+    /// sample, 0 to 1), the same length as `peaks`: `None` when only the
+    /// loudness is known, drawn as far up as down.
+    pub sides: Option<WaveSides>,
     pub per_second: f32,
     /// Seconds into the file where the clip begins.
     pub source_in: f64,
@@ -827,9 +835,11 @@ pub struct TimelineView {
     /// How an audio track's volume is set in its header: a slider, the
     /// compact knob, or the detailed knob on every track. A setting.
     pub volume_control: VolumeControl,
-    /// How sound is drawn in clips, and whether on a scale fitted to each
-    /// file (settings).
+    /// How sound is drawn in clips: its shape, colours and side, and
+    /// whether on a scale fitted to each file (settings).
     pub wave_style: wave_look::WaveStyle,
+    pub wave_colouring: wave_look::WaveColouring,
+    pub wave_side: wave_look::WaveSide,
     pub wave_fitted: bool,
     /// The track of the selected clip shows the detailed knob (and grows to
     /// fit it) while the other tracks keep `volume_control`. A setting.
@@ -927,7 +937,9 @@ impl Default for TimelineView {
             click_moves: ClickMoves::Playhead,
             zoom_to_playhead: false,
             volume_control: VolumeControl::Slider,
-            wave_style: wave_look::WaveStyle::Centred,
+            wave_style: wave_look::WaveStyle::Plain,
+            wave_colouring: wave_look::WaveColouring::Charcoal,
+            wave_side: wave_look::WaveSide::Centred,
             wave_fitted: true,
             detailed_on_selected: false,
             opened: None,
