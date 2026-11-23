@@ -57,6 +57,18 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "crate::defaults::is_default")]
         targets: crate::tracks::Targets,
     },
+    /// Adds a sound recording made in the app (a voice-over) and lays it at
+    /// `at` on the audio track `track` where that stretch is free, else on
+    /// the first free audio track below it, else on a new track with its
+    /// name (after the earlier takes' tracks of that name under it): earlier
+    /// takes over the same stretch stay, to choose from. Nothing else moves or is cut. One step, so undo takes the take
+    /// away whole.
+    PlaceRecording {
+        sequence: SequenceId,
+        media: MediaRef,
+        at: Time,
+        track: TrackId,
+    },
     /// Places a file of the project at `at` over whatever is there: the
     /// clips it covers are cut away, nothing else moves.
     OverwriteMedia {
@@ -898,6 +910,12 @@ impl Command {
                 at,
                 targets,
             } => clip_edits::insert_media(&mut p, *sequence, *media, *at, *targets)?,
+            Command::PlaceRecording {
+                sequence,
+                media,
+                at,
+                track,
+            } => clip_edits::place_recording(&mut p, *sequence, media, *at, *track)?,
             Command::OverwriteMedia { sequence, media, at } => {
                 clip_edits::overwrite_media(&mut p, *sequence, *media, *at)?
             }

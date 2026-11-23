@@ -8,6 +8,74 @@ use ui_kit::ThemeName;
 use ui_kit::keyboard::{KeyboardChoice, LayoutId};
 
 /// Reads `keyboard_layout` as older settings wrote it (a bare layout).
+/// How long a voice-over counts in before the timeline plays.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum CountIn {
+    Off,
+    One,
+    #[default]
+    Three,
+    Five,
+}
+
+impl CountIn {
+    pub const ALL: [CountIn; 4] = [CountIn::Off, CountIn::One, CountIn::Three, CountIn::Five];
+
+    pub fn seconds(self) -> u64 {
+        match self {
+            CountIn::Off => 0,
+            CountIn::One => 1,
+            CountIn::Three => 3,
+            CountIn::Five => 5,
+        }
+    }
+
+    pub fn short(self) -> &'static str {
+        match self {
+            CountIn::Off => "Off",
+            CountIn::One => "1 s",
+            CountIn::Three => "3 s",
+            CountIn::Five => "5 s",
+        }
+    }
+}
+
+/// Which of the microphone's channels a voice-over is made of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum RecordingChannel {
+    /// The first (left): a microphone on its own, or an interface's first input.
+    #[default]
+    First,
+    /// The second (right): a microphone on an interface's second input.
+    Second,
+    /// Both mixed.
+    Mixed,
+}
+
+impl RecordingChannel {
+    pub const ALL: [RecordingChannel; 3] = [
+        RecordingChannel::First,
+        RecordingChannel::Second,
+        RecordingChannel::Mixed,
+    ];
+
+    pub fn short(self) -> &'static str {
+        match self {
+            RecordingChannel::First => "Left",
+            RecordingChannel::Second => "Right",
+            RecordingChannel::Mixed => "Both",
+        }
+    }
+
+    pub fn engine(self) -> engine::record::Channel {
+        match self {
+            RecordingChannel::First => engine::record::Channel::First,
+            RecordingChannel::Second => engine::record::Channel::Second,
+            RecordingChannel::Mixed => engine::record::Channel::Mixed,
+        }
+    }
+}
+
 fn older_keyboard<'de, D: serde::Deserializer<'de>>(from: D) -> Result<Option<LayoutId>, D::Error> {
     LayoutId::deserialize(from).map(Some)
 }
@@ -57,6 +125,14 @@ pub struct Settings {
     /// not only those pinned (Settings › Audio); a track's × still takes
     /// its column off.
     pub columns_for_every_track: bool,
+    /// The microphone voice-overs are recorded with, by its name; `None`
+    /// for the system's default one (Settings › Audio).
+    pub microphone: Option<String>,
+    /// Which of its channels make a voice-over (it is recorded mono).
+    pub recording_channel: RecordingChannel,
+    /// Seconds counted in before a voice-over starts, the microphone's
+    /// level showing: 0 (straight away), 1, 3 or 5.
+    pub count_in: CountIn,
     /// How the height is shared between the viewer and the timeline (the
     /// handle between them), on every page that has both.
     pub viewer_split: ui_kit::splitter::Split,

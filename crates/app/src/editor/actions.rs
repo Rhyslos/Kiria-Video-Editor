@@ -68,6 +68,7 @@ impl Editor {
                     self.silence.open_on(d.project(), self.audio_page.track);
                 }
             }),
+            Action::RecordVoiceOver => self.record_voice_over(None),
             Action::SaveFrame => self
                 .with_document(|_| Ok(()))
                 .map(|()| self.save_frame_requested = true),

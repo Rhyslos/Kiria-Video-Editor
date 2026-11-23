@@ -343,6 +343,63 @@ pub(crate) fn picture_track(seq: &Sequence, chosen: Option<TrackId>) -> diag::Re
     }
 }
 
+/// See [`crate::Command::PlaceRecording`]: a sound recording added and
+/// laid at `at` on the audio track `track` where that stretch is free, else
+/// on the first free one below it, else on a new track under it named as
+/// it is, so earlier takes over the same stretch stay.
+pub(crate) fn place_recording(
+    p: &mut Project,
+    sequence: SequenceId,
+    media: &MediaRef,
+    at: Time,
+    track: TrackId,
+) -> diag::Result<()> {
+    let refused = || AppError::new("The recording can't be placed");
+    if at.is_negative() {
+        return Err(refused().why("That is before the timeline starts."));
+    }
+    let (video, audio) = placed_streams(media);
+    if video.is_some() || audio.len() != 1 {
+        return Err(refused().why("A recording made here is one stream of sound, and this file isn't."));
+    }
+    let length = placeable_length(media)?;
+    let seq = sequence_ref(p, sequence)?;
+    let Some(index) = seq.audio_tracks.iter().position(|t| t.id == track) else {
+        return Err(refused()
+            .why("The track it was recorded for is gone.")
+            .fix("Choose another track for recording and record again."));
+    };
+    let end = at + length;
+    let free = |t: &Track| !t.locked && t.clips.iter().all(|c| c.end() <= at || c.start >= end);
+    let found = seq
+        .audio_tracks
+        .iter()
+        .skip(index)
+        .position(free)
+        .map(|i| i + index);
+    let name = seq.audio_tracks[index].name.clone();
+    // A new track goes after the earlier takes' (those of the same name
+    // right under it), so the takes read oldest to newest.
+    let after = seq
+        .audio_tracks
+        .iter()
+        .skip(index + 1)
+        .take_while(|t| t.name == name)
+        .count();
+    let index = match found {
+        Some(free) => free,
+        None => {
+            let new = p.new_track(TrackKind::Audio, &name);
+            let seq = sequence_mut(p, sequence)?;
+            seq.audio_tracks.insert(index + 1 + after, new);
+            index + 1 + after
+        }
+    };
+    let id: MediaId = p.allocate_id();
+    p.media.insert(id, MediaRef { id, ..media.clone() });
+    place_media_from(p, sequence, id, Some(at), None, index)
+}
+
 /// Places a file of the project at `at` on the track under the pointer:
 /// pushing everything later, or over what is on the tracks it lands on.
 pub(crate) fn drop_media(

@@ -57,6 +57,7 @@ mod video_picture;
 mod view_state;
 mod viewer;
 mod viewer_window;
+mod voice_over;
 mod waveforms;
 
 use editor::{Editor, ProjectToOpen, RunReport};

@@ -217,6 +217,7 @@ const USUAL: &[(Action, Shortcut)] = &[
     (Action::MarkOut, Shortcut::key(Key::O)),
     (Action::SaveFrame, Shortcut::ctrl_shift(Key::E)),
     (Action::RemoveSilence, Shortcut::ctrl_shift(Key::R)),
+    (Action::RecordVoiceOver, Shortcut::shift(Key::R)),
     (Action::FullScreenViewer, Shortcut::key(Key::F)),
     (Action::PictureHandles, Shortcut::key(Key::Q)),
     (Action::CleanPicture, Shortcut::key(Key::H)),

@@ -26,6 +26,9 @@ pub const PROXIES: &str = "proxies";
 pub const JUMP_PICTURE: &str = "jump-picture";
 pub const LOUDNESS_TARGET: &str = "loudness-target";
 pub const EVERY_TRACK_COLUMN: &str = "every-track-column";
+pub const MICROPHONE: &str = "microphone";
+pub const RECORDING_CHANNEL: &str = "recording-channel";
+pub const COUNT_IN: &str = "count-in";
 pub const LIBRARY_MARKS: &str = "library-marks";
 pub const WORKER_THREADS: &str = "worker-threads";
 pub const RAM_CACHE: &str = "ram-cache";
@@ -168,6 +171,30 @@ pub const CATEGORIES: &[Category] = &[
                     "Every audio track gets its tall fader and meter beside the master column on the Edit page, as if pinned. The × on one takes it off.",
                 )
                 .keywords("pin pinned fader strip meter mixer column master ultrawide")],
+            },
+            Section {
+                id: "voice-over",
+                title: "Voice-over",
+                settings: &[
+                    Setting::new(
+                        MICROPHONE,
+                        "Microphone",
+                        "What voice-overs are recorded with (Record a voice-over: on the audio target track, or a Voice-over track).",
+                    )
+                    .keywords("record recording mic input voice over voiceover narration commentary"),
+                    Setting::new(
+                        RECORDING_CHANNEL,
+                        "Recording channel",
+                        "A voice-over is one channel: the microphone's left, its right (a microphone on an interface's second input), or both mixed.",
+                    )
+                    .keywords("record mic input mono left right interface"),
+                    Setting::new(
+                        COUNT_IN,
+                        "Count-in",
+                        "Seconds counted down before the timeline plays and the take starts, with the microphone's level showing, to check it and get ready.",
+                    )
+                    .keywords("record countdown pre-roll preroll wait level check"),
+                ],
             },
         ],
     },
@@ -342,6 +369,13 @@ impl Editor {
         let mut problems = Vec::new();
         let mut clear_waveforms = false;
         let in_use = *self.jobs.budgets();
+        // Asked of the system on a thread of its own, the first time
+        // Settings opens; `None` until it answers.
+        let microphones = if self.show_settings {
+            self.microphones.names(ctx).map(<[String]>::to_vec)
+        } else {
+            None
+        };
         ui_kit::settings::window(ctx, &theme, &mut open, |ui| {
             self.settings_view.show(ui, &theme, CATEGORIES, |row| {
                 let s = &mut self.settings;
@@ -358,6 +392,17 @@ impl Editor {
                     }
                     ALWAYS_UNLINKED => {
                         ui_kit::settings::toggle(row.ui, row.theme, &mut s.always_unlinked);
+                    }
+                    MICROPHONE => microphone_row(row.ui, &mut s.microphone, microphones.as_deref()),
+                    RECORDING_CHANNEL => {
+                        use crate::settings::RecordingChannel;
+                        let options: Vec<_> = RecordingChannel::ALL.iter().map(|c| (*c, c.short())).collect();
+                        ui_kit::settings::segmented(row.ui, row.theme, &mut s.recording_channel, &options);
+                    }
+                    COUNT_IN => {
+                        use crate::settings::CountIn;
+                        let options: Vec<_> = CountIn::ALL.iter().map(|c| (*c, c.short())).collect();
+                        ui_kit::settings::segmented(row.ui, row.theme, &mut s.count_in, &options);
                     }
                     EVERY_TRACK_COLUMN => {
                         ui_kit::settings::toggle(row.ui, row.theme, &mut s.columns_for_every_track);
@@ -558,6 +603,36 @@ impl Editor {
                 .set_exact(self.settings.clip_pictures == ClipPictureWay::Exact);
         }
     }
+}
+
+/// The microphone voice-overs are recorded with: the system's default, or
+/// one by name. A name no longer offered (unplugged) stays chosen, so it
+/// is used again once it is back; until then recording uses the default.
+fn microphone_row(ui: &mut egui::Ui, chosen: &mut Option<String>, offered: Option<&[String]>) {
+    const DEFAULT: &str = "The system's default";
+    let shown = chosen.clone().unwrap_or_else(|| DEFAULT.to_owned());
+    egui::ComboBox::from_id_salt("microphone")
+        .selected_text(&shown)
+        .width(260.0)
+        .show_ui(ui, |ui| {
+            ui.selectable_value(chosen, None, DEFAULT);
+            match offered {
+                None => {
+                    ui.label("Looking for microphones…");
+                }
+                Some([]) => {
+                    ui.label("No microphone found");
+                }
+                Some(names) => {
+                    for name in names {
+                        ui.selectable_value(chosen, Some(name.clone()), name);
+                    }
+                }
+            }
+            if let Some(name) = chosen.clone().filter(|n| !offered.is_some_and(|o| o.contains(n))) {
+                ui.label(format!("{name} (not plugged in)"));
+            }
+        });
 }
 
 /// Megabytes in gigabytes, for reading ("5.0 GB").

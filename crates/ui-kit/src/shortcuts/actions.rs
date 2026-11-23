@@ -137,6 +137,7 @@ actions! {
     KeepRegion, Timeline, "Keep only the region: remove everything before and after it";
     EditAtPlayhead, Timeline, "Edit at the playhead: cuts, splits and pastes at the playhead, no separate edit needle";
     RemoveSilence, Timeline, "Remove silence…";
+    RecordVoiceOver, Timeline, "Record a voice-over from the playhead (on the audio target track), and stop";
     SelectTool, Timeline, "Select tool: pick, move and trim clips";
     BladeTool, Timeline, "Blade tool: cut clips where clicked";
     RippleTool, Timeline, "Ripple tool: trims move everything after";
@@ -199,6 +200,15 @@ impl Action {
             Action::SaveFrame => &["still", "snapshot", "screenshot", "export frame"],
             Action::ToggleSnapping => &["magnet", "snap"],
             Action::RemoveSilence => &["silence", "dead air", "jump cut"],
+            Action::RecordVoiceOver => &[
+                "record",
+                "microphone",
+                "mic",
+                "narration",
+                "commentary",
+                "voiceover",
+                "arm",
+            ],
             Action::SplitView => &["source", "program", "two up"],
             Action::CleanPicture => &[
                 "hide",

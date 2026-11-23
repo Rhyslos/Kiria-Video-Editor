@@ -1410,6 +1410,7 @@ dependencies = [
  "project",
  "realfft",
  "render",
+ "rtrb",
  "tempfile",
  "tracing",
  "video-device",

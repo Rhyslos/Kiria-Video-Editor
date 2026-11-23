@@ -219,6 +219,12 @@ pub(super) fn menu(
                 item(
                     events,
                     ui,
+                    "Record a voice-over here",
+                    TimelineEvent::RecordOnTrack { track: id },
+                );
+                item(
+                    events,
+                    ui,
                     "Solo only this track",
                     TimelineEvent::SoloOnly { track: id },
                 );

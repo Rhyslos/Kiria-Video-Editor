@@ -539,6 +539,9 @@ pub enum TimelineEvent {
     SoloOnly { track: u64 },
     /// The FX button in an audio track's header: its effects on the Audio page.
     OpenTrackEffects { track: u64 },
+    /// "Record a voice-over here" from an audio track's menu: a take from
+    /// the playhead on this track.
+    RecordOnTrack { track: u64 },
     /// A track's sync lock was clicked: on (`synced`) or off.
     SyncTrack { track: u64, synced: bool },
     /// The pan knob in an audio track's header was let go (or
@@ -4136,6 +4139,7 @@ mod tests {
                     track: 101,
                     from: Some(2.0)
                 },
+                TimelineEvent::RecordOnTrack { track: 101 },
                 TimelineEvent::SoloOnly { track: 101 },
                 TimelineEvent::ResetTrackMix { track: 101 },
                 TimelineEvent::CopyTrackEffects { track: 101 },
