@@ -38,6 +38,7 @@ fn name(c: &Command) -> &'static str {
         Command::PlaceMedia { .. } => "PlaceMedia",
         Command::InsertMedia { .. } => "InsertMedia",
         Command::OverwriteMedia { .. } => "OverwriteMedia",
+        Command::PlaceRecording { .. } => "PlaceRecording",
         Command::SetSpeed { .. } => "SetSpeed",
         Command::SetRamp { .. } => "SetRamp",
         Command::SetFrameBlend { .. } => "SetFrameBlend",
@@ -703,6 +704,13 @@ fn every_command() -> Vec<Command> {
         nested: other,
         at: None,
         track: Some(TrackId(3)),
+    }))
+    // A voice-over recorded in the app.
+    .chain(std::iter::once(Command::PlaceRecording {
+        sequence,
+        media: media_ref.clone(),
+        at: Time::seconds(3),
+        track: audio_track,
     }))
     .collect()
 }

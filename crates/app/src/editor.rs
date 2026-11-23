@@ -20,6 +20,7 @@ mod timeline_labels;
 mod timelines;
 mod undo_says;
 mod unlinking;
+mod voice_over;
 mod windows;
 
 use crate::import::{self, Importer, Read};
@@ -219,6 +220,13 @@ pub struct Editor {
     full_screen_changed: bool,
     /// Notices when the window stops drawing, and logs the step it was on.
     heartbeat: crate::heartbeat::Heartbeat,
+    /// A voice-over being recorded, from opening the microphone to placing
+    /// the take (`editor::voice_over`).
+    voice_over: Option<crate::voice_over::Take>,
+    /// The banner's microphone level, falling back slowly.
+    voice_over_peak: f32,
+    /// The microphones the system offers, for Settings › Audio.
+    microphones: crate::voice_over::Microphones,
     /// Times frames while playing, for hitches seen on someone's computer.
     playback_watch: crate::playback_watch::Watch,
     /// When the window was last asked to fill the screen or come back, until
@@ -475,6 +483,9 @@ impl Editor {
             full_screen: false,
             full_screen_changed: false,
             heartbeat: crate::heartbeat::Heartbeat::start(),
+            voice_over: None,
+            voice_over_peak: 0.0,
+            microphones: Default::default(),
             playback_watch: crate::playback_watch::Watch::default(),
             full_screen_asked: None,
             following: None,
@@ -872,7 +883,13 @@ impl Editor {
             let turned = view
                 .gain_being_set()
                 .and_then(|(track, db)| crate::timeline_panel::with_gain_being_set(lined, track, db));
-            playback.follow(turned.as_ref().unwrap_or(lined));
+            let turned = turned.as_ref().unwrap_or(lined);
+            // The track a voice-over is being recorded on is muted while it plays.
+            let recording = self
+                .voice_over
+                .as_ref()
+                .and_then(|take| crate::voice_over::muted_while_recording(turned, take.sequence, take.track));
+            playback.follow(recording.as_ref().unwrap_or(turned));
         }
         let seq = self.document.as_ref().and_then(|d| d.project().active());
         let (length, rate) = seq.map_or((Time::ZERO, project::Rate::FPS_60), |s| {
@@ -880,7 +897,9 @@ impl Editor {
         });
         let at = playback.position();
         let region = seq.and_then(|s| s.region);
-        if let Some(back) = crate::looping::wrap(at, region, self.looping, length) {
+        // A voice-over plays on to the end: no looping while recording.
+        let looping = self.looping && self.voice_over.is_none();
+        if let Some(back) = crate::looping::wrap(at, region, looping, length) {
             // Back to the region's start: a jump, the sound card stays open.
             playback.jump(back);
             self.viewer.playhead = back;
@@ -1646,6 +1665,7 @@ impl eframe::App for Editor {
         self.follow_open_timeline();
         script::step(self);
         self.follow_playback(&ctx);
+        self.voice_over_poll(&ctx);
         self.viewer.looping = self.looping;
         self.waveforms.poll(&ctx, now);
         self.pictures.poll(&ctx, now);
@@ -1737,6 +1757,7 @@ impl eframe::App for Editor {
         }
 
         self.viewer_window(&ctx);
+        self.voice_over_banner(&ctx);
         self.settings_window(&ctx);
         self.timeline_settings_window(&ctx);
         self.search_window(&ctx);

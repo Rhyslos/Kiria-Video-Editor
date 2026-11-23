@@ -1268,3 +1268,123 @@ fn placing_on_targets_puts_the_picture_and_sound_there() {
             .any(|c| c.start == Time::seconds(40))
     );
 }
+
+/// A voice-over recorded on the open timeline: one stream of sound.
+fn voice_over(seconds: i64) -> MediaRef {
+    let mut media = recording(&["Voice-over"], seconds);
+    media.path = "Voice-over 1.wav".into();
+    media.kind = MediaKind::Audio;
+    media.info.container = "wav".into();
+    media.info.video = None;
+    media.info.audio[0].channels = 1;
+    media
+}
+
+#[test]
+fn a_recording_goes_where_its_stretch_is_free_and_earlier_takes_stay() {
+    // Game and Mic of a 30 s recording, then a 10 s one after it.
+    let (p, seq) = imported();
+    let [game, mic] = [0, 1].map(|i| p.active().unwrap().audio_tracks[i].id);
+    let before = p.active().unwrap().clone();
+    let spans = |t: &crate::model::Track| -> Vec<(Time, Time)> {
+        t.clips.iter().map(|c| (c.start, c.end())).collect()
+    };
+    let take = |p: &Project, at: i64, track: TrackId| {
+        Command::PlaceRecording {
+            sequence: seq,
+            media: voice_over(8),
+            at: Time::seconds(at),
+            track,
+        }
+        .apply(p)
+        .unwrap()
+    };
+    // Past the Mic's clip: on the Mic track, nothing cut or moved.
+    let one = take(&p, 30, mic);
+    let s = one.active().unwrap();
+    assert_eq!(one.media.len(), p.media.len() + 1, "the recording is added");
+    assert_eq!(
+        spans(&s.audio_tracks[1]),
+        [
+            (Time::ZERO, Time::seconds(30)),
+            (Time::seconds(30), Time::seconds(38))
+        ]
+    );
+    assert_eq!(
+        s.audio_tracks[1].clips[1].link, None,
+        "a take is linked to nothing"
+    );
+    assert_eq!(s.video_tracks, before.video_tracks);
+    assert_eq!(s.audio_tracks[0], before.audio_tracks[0]);
+    // Over the Game's sound: Game and Mic are taken there, so a track
+    // named Game is made under it, and the earlier sound stays.
+    let two = take(&p, 5, game);
+    let s = two.active().unwrap();
+    assert_eq!(s.audio_tracks.len(), 3);
+    assert_eq!(s.audio_tracks[1].name, before.audio_tracks[0].name);
+    assert_eq!(spans(&s.audio_tracks[1]), [(Time::seconds(5), Time::seconds(13))]);
+    assert_eq!(
+        s.audio_tracks[0], before.audio_tracks[0],
+        "the Game sound as it was"
+    );
+    assert_eq!(s.audio_tracks[2], before.audio_tracks[1], "the Mic as it was");
+    // A second take over the first: under it again.
+    let three = take(&two, 7, game);
+    let s = three.active().unwrap();
+    assert_eq!(s.audio_tracks.len(), 4);
+    assert_eq!(
+        spans(&s.audio_tracks[1]),
+        [(Time::seconds(5), Time::seconds(13))],
+        "the first take stays"
+    );
+    assert_eq!(spans(&s.audio_tracks[2]), [(Time::seconds(7), Time::seconds(15))]);
+}
+
+#[test]
+fn a_recording_is_refused_for_a_missing_track_or_a_file_that_is_not_one() {
+    let (p, seq) = imported();
+    let gone = Command::PlaceRecording {
+        sequence: seq,
+        media: voice_over(4),
+        at: Time::ZERO,
+        track: TrackId(999),
+    }
+    .apply(&p)
+    .unwrap_err();
+    assert!(gone.why_text().unwrap_or_default().contains("gone"), "{gone:?}");
+    let mic = p.active().unwrap().audio_tracks[1].id;
+    let not_one = Command::PlaceRecording {
+        sequence: seq,
+        media: recording(&["Game"], 4),
+        at: Time::ZERO,
+        track: mic,
+    }
+    .apply(&p);
+    assert!(not_one.is_err(), "a recording with a picture");
+    // A video track isn't one to record sound on.
+    let v1 = p.active().unwrap().video_tracks[0].id;
+    let picture = Command::PlaceRecording {
+        sequence: seq,
+        media: voice_over(4),
+        at: Time::ZERO,
+        track: v1,
+    }
+    .apply(&p);
+    assert!(picture.is_err());
+}
+
+#[test]
+fn a_recording_past_the_end_lengthens_the_timeline_and_undoes_whole() {
+    let (p, seq) = imported();
+    let game = p.active().unwrap().audio_tracks[0].id;
+    let end = p.active().unwrap().length();
+    let take = Command::PlaceRecording {
+        sequence: seq,
+        media: voice_over(6),
+        at: end,
+        track: game,
+    }
+    .apply(&p)
+    .unwrap();
+    assert_eq!(take.active().unwrap().length(), end + Time::seconds(6));
+}

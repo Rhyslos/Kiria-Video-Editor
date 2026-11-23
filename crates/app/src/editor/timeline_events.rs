@@ -225,6 +225,11 @@ impl Editor {
             }
             E::CopyTrackEffects { track } => self.copy_track_effects(project::TrackId(track)),
             E::PasteTrackEffects { track } => self.paste_track_effects(project::TrackId(track)),
+            E::RecordOnTrack { track } => {
+                if let Err(err) = self.record_voice_over(Some(project::TrackId(track))) {
+                    self.errors.push(&err);
+                }
+            }
             E::OpenTrackEffects { track } => {
                 self.audio_page.track = Some(project::TrackId(track));
                 self.page = ui_kit::Page::Audio;

@@ -505,7 +505,7 @@ A voice-over edit (screen recording, a separate mic with hiss, music) found thes
 
 **8.6 Voice-over recording**
 
-- [ ] Record a voice straight into the timeline for voice-overs: pick a microphone, a record button and shortcut, a count-in and a level meter before starting, and the timeline playing while you speak. Each take is saved as a file beside the project and lands as a clip at the playhead on a free audio track (one undo step); several takes over the same stretch are kept to choose from.
+- [x] Record a voice straight into the timeline for voice-overs: pick a microphone, a record button and shortcut, a count-in and a level meter before starting, and the timeline playing while you speak. Each take is saved as a file beside the project and lands as a clip at the playhead on a free audio track (one undo step); several takes over the same stretch are kept to choose from. (Done: Shift+R, or "Record a voice-over here" in an audio track's menu, records on that track, the audio target or a Voice-over track; a banner shows the count-in (Settings › Audio › Count-in, 3 s at first) and the microphone's level, then the track, the time and Stop while the timeline plays (the take's tracks muted). Takes are WAV files in "<project> voice-overs" beside the project; `PlaceRecording` puts one where its stretch is free on that track or under it, else on a new track of the same name. Microphone and channel in Settings › Audio. The time the sound takes to and from the sound card is not taken off: a few tens of milliseconds.)
 
 **Gate 8**
 

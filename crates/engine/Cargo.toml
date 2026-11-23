@@ -20,6 +20,9 @@ diag = { path = "../diag" }
 # Sync by sound and the clarity check measure sounds by their frequencies
 # (MIT or Apache-2.0, pure Rust; the audio engine uses the same).
 realfft = "3.5"
+# Recording from a microphone: its callback hands samples to the writer
+# through a wait-free ring (MIT or Apache-2.0; the audio crate uses it too).
+rtrb = "0.4"
 # The clarity check runs on the Analysis pool.
 jobs = { path = "../jobs" }
 image = { version = "0.25", default-features = false, features = ["png"] }
