@@ -550,6 +550,17 @@ Phase 9 fills the Effects side of the Edit page's drawer and ships background re
 - [x] Titles: lower third, centred title, end card; text tool from phase 4. (Done: titles are clips of their own (`ClipKind::Title`, format 26) with their words and look in `Clip::title`, dragged from the drawer's Titles group onto the timeline or added at the playhead; words, layout, size, colour and band in the inspector's Title section, shown as they are typed. Drawn on the processor into only the part of the frame they cover, in the interface's own font made a little heavier, and composited like any picture, so place, opacity, colour, effects and keyframes all apply. Not yet: the text tool (typing on the picture), other fonts, outlines and shadows, words that animate in.)
 - [x] Stabilise (tracking-based), and the censor box following what it covers (tracked). (Done: "Follow it from here" on a Blur or Pixelate box follows what it covers from the playhead to the clip's end (`engine::track`: normalised cross-correlation on small grey pictures, coarse then fine, stopping where it loses it) and sets the box's Left and Top keyframes. The Stabilise effect (format 27) is analysed on request (`engine::steady`: a grid of boxes followed frame to frame, the middle of their moves the camera's; the path smoothed by a bell curve as wide as its Smoothing says) and keeps the view's middle as keyframes with the zoom that hides the edges; it moves the picture only, not turning it yet. Both run on a thread of their own, Escape stops them, and the result is one undo step.)
 
+**9.5 More effects** (asked for by the owner in November 2026, a few to a pull request; the sound ones on the Audio page as a set of their own)
+
+- [x] Frame: mirror, rounded corners, outline, drop shadow. (Done: format 35. Outline and drop shadow draw past the picture's edges: the effects make room around the picture as they need it (`render::Applied::grown`) and the compositor places the larger picture so the picture itself stays where it was; sizes stay those of the picture as it came, and an outline's and a shadow's are the frame's (`engine::frame`), so a small facecam's line is as thick as a full picture's. Rounded corners keep to the picture as it came, wherever room was made, and a picture with them never hides what is below it. Colours are picked from swatches or any colour. Not yet: a shadow that keeps its direction when the picture is turned (it turns with it).)
+- [ ] Keying: chroma key with spill removal.
+- [ ] Colour and shape: letterbox; black and white, sepia, duotone, invert; chromatic aberration.
+- [ ] Glitch; motion blur; directional and radial blur.
+- [ ] Lens distortion; mosaic and kaleidoscope; posterise, halftone and scanlines.
+- [ ] Light leaks and flares; sharpen on zoom; speed lines and impact frames.
+- [ ] More transitions: slide, spin, whip pan, luma fade, glitch.
+- [ ] Sound, on the Audio page: crossfade shapes, pitch shift, reverb, echo, distortion (radio, phone), and EQ and clean-up on a clip.
+
 **9.4 Background removal** (research workflow, `ml`; later, with 9.3)
 
 - [ ] Evaluate two or three open video-matting models on your own facecam footage; check their licences fit the project.

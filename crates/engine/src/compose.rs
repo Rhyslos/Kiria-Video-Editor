@@ -548,9 +548,12 @@ impl Drawing<'_> {
                         if let (Some(layer), Some(Some(placed))) = (layers.get(*index), placed.get(*index)) {
                             if layer.effects.is_empty() {
                                 drawn.push(placed.drawn(layer));
-                            } else if let Some(picture) = with_effects.next() {
+                            } else if let Some(applied) = with_effects.next() {
                                 let whole = Part::WHOLE;
-                                let placed = made(picture, layer.area, whole, layer.opacity, Colour::NEUTRAL);
+                                let (x, y) = applied.grown;
+                                let area = layer.area.grown(x, y);
+                                let placed =
+                                    made(&applied.picture, area, whole, layer.opacity, Colour::NEUTRAL);
                                 drawn.push(Drawn {
                                     mode: layer.mode,
                                     ..placed
@@ -559,8 +562,9 @@ impl Drawing<'_> {
                         }
                     }
                     Step::Timeline(group) => {
-                        if let Some(picture) = pictures.next() {
-                            let placed = made(picture, group.area, group.part, group.opacity, group.colour);
+                        if let Some(applied) = pictures.next() {
+                            let (area, part) = grown_part(group.area, group.part, applied.grown);
+                            let placed = made(&applied.picture, area, part, group.opacity, group.colour);
                             drawn.push(Drawn {
                                 mode: group.mode,
                                 ..placed
@@ -582,8 +586,10 @@ impl Drawing<'_> {
                 }
             };
             drop(drawn);
-            self.used.extend(nested);
-            self.used.extend(changed);
+            self.used
+                .extend(nested.into_iter().map(|applied| applied.picture));
+            self.used
+                .extend(changed.into_iter().map(|applied| applied.picture));
             self.used.extend(below.take().map(|(picture, _)| picture));
             match (next, cut) {
                 (Some(next), Some(at)) => {
@@ -602,7 +608,7 @@ impl Drawing<'_> {
         encoder: &mut wgpu::CommandEncoder,
         layer: &Layer,
         placed: &Placed,
-    ) -> Frame {
+    ) -> render::Applied {
         let (w, h) = layer.area.size();
         let size = (
             (w.round() as u32).clamp(1, LARGEST_EFFECT_PICTURE),
@@ -631,9 +637,12 @@ impl Drawing<'_> {
         encoder: &mut wgpu::CommandEncoder,
         picture: Frame,
         effects: &[render::Effect],
-    ) -> Frame {
+    ) -> render::Applied {
         if effects.is_empty() {
-            return picture;
+            return render::Applied {
+                picture,
+                grown: (0.0, 0.0),
+            };
         }
         let (compositor, device) = (self.compositor, self.device);
         let spare = &mut self.spare;
@@ -664,6 +673,27 @@ impl Drawing<'_> {
 /// The largest side a picture with effects is drawn at before it is placed:
 /// a clip zoomed in far is changed at this size and enlarged after.
 const LARGEST_EFFECT_PICTURE: u32 = 8192;
+
+/// Where a nested timeline's picture goes once its effects made room around
+/// it (`grown`, shares of its width and height on each side): shown whole,
+/// the room too, when it was shown whole; else the same part of it as
+/// before, in the same place, and what is outside that part stays cut off.
+fn grown_part(area: Area, part: Part, grown: (f32, f32)) -> (Area, Part) {
+    let (x, y) = grown;
+    if (x, y) == (0.0, 0.0) {
+        return (area, part);
+    }
+    if part == Part::WHOLE {
+        return (area.grown(x, y), Part::WHOLE);
+    }
+    let inside = Part {
+        left: (part.left + x) / (1.0 + 2.0 * x),
+        top: (part.top + y) / (1.0 + 2.0 * y),
+        width: part.width / (1.0 + 2.0 * x),
+        height: part.height / (1.0 + 2.0 * y),
+    };
+    (area, inside)
+}
 
 /// A picture the compositor made, drawn again where `area` says.
 fn made<'a>(picture: &'a Frame, area: Area, part: Part, opacity: f32, colour: Colour) -> Drawn<'a> {

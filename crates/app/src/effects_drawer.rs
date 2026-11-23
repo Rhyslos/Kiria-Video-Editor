@@ -64,7 +64,7 @@ impl Item {
 pub const RECENT: usize = 5;
 
 /// The groups, in the order shown.
-const GROUPS: [&str; 3] = ["Motion", "Blur and censor", "Stylise"];
+const GROUPS: [&str; 4] = ["Motion", "Frame", "Blur and censor", "Stylise"];
 
 /// Which group an effect is in, and a line on what it does.
 fn about(kind: &EffectKind) -> (&'static str, &'static str) {
@@ -79,6 +79,10 @@ fn about(kind: &EffectKind) -> (&'static str, &'static str) {
         EffectKind::Grain(_) => ("Stylise", "Film grain that moves every frame"),
         EffectKind::Sharpen(_) => ("Stylise", "Crisper detail"),
         EffectKind::Glow(_) => ("Stylise", "Bright parts spill a soft light"),
+        EffectKind::Mirror(_) => ("Frame", "Flips the picture, left for right or upside down"),
+        EffectKind::Corners(_) => ("Frame", "Rounds the corners off, or makes a circle for a facecam"),
+        EffectKind::Outline(_) => ("Frame", "A coloured line round its edge, as a facecam border"),
+        EffectKind::Shadow(_) => ("Frame", "A soft shadow behind it, lifting it off what is below"),
     }
 }
 
@@ -456,6 +460,13 @@ mod tests {
             .map(|k| k.name())
             .collect();
         assert_eq!(censor, ["Blur", "Pixelate"]);
+        let facecam: Vec<&str> = EffectKind::ALL
+            .iter()
+            .filter(|k| matches(k, "facecam"))
+            .map(|k| k.name())
+            .collect();
+        assert_eq!(facecam, ["Rounded corners", "Outline"]);
+        assert!(matches(&EffectKind::ALL[10], "flip"));
         assert!(!matches(&EffectKind::ALL[0], "nothing like it"));
     }
 
