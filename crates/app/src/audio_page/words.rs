@@ -3,7 +3,7 @@
 
 use project::track_sound::{
     BandShape, Cleanup, Compressor, Distortion, DistortionStyle, Ducking, Echo, Eq, HighPass, Loudness,
-    Reverb,
+    Pitch, Reverb,
 };
 
 /// Decibels in thousandths as text: "3", "2.5".
@@ -200,6 +200,23 @@ pub fn echo(track: &str, e: &Echo) -> String {
         e.time_us / 1_000,
         e.feedback_milli / 10
     )
+}
+
+/// What the Pitch tool does to `track`.
+pub fn pitch(track: &str, p: &Pitch) -> String {
+    if !p.on || p.cents == 0 {
+        return format!("The pitch shift is off: {track} is at its own pitch.");
+    }
+    let way = if p.cents > 0 { "higher" } else { "lower" };
+    let cents = p.cents.unsigned_abs();
+    let amount = match (cents / 100, cents % 100) {
+        (12, 0) => "an octave".to_owned(),
+        (1, 0) => "a semitone".to_owned(),
+        (n, 0) => format!("{n} semitones"),
+        (0, c) => format!("{c} cents"),
+        (n, c) => format!("{n} semitones {c} cents"),
+    };
+    format!("{} plays {amount} {way}, at its own speed.", capital(track))
 }
 
 /// What the Reverb tool does to `track`.

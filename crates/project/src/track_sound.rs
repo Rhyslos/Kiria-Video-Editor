@@ -308,6 +308,28 @@ pub struct LinePoint {
     pub value: i32,
 }
 
+/// A pitch shift (format 45): higher or lower, the speed kept.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Pitch {
+    pub on: bool,
+    /// How far, in cents (hundredths of a semitone): -1 200 (an octave
+    /// down) to 1 200 (an octave up).
+    pub cents: i32,
+    /// How much of the shifted sound is heard, thousandths: 0 to 1 000.
+    pub mix_milli: u32,
+}
+
+impl Default for Pitch {
+    fn default() -> Pitch {
+        Pitch {
+            on: false,
+            cents: 0,
+            mix_milli: 1_000,
+        }
+    }
+}
+
 /// How an audio track sounds besides its volume, mute and solo.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -324,6 +346,7 @@ pub struct TrackSound {
     pub distortion: Distortion,
     pub echo: Echo,
     pub reverb: Reverb,
+    pub pitch: Pitch,
     /// Added to the track's volume, thousandths of a dB.
     pub volume_line: Vector<LinePoint>,
     /// While it has points, the pan (millionths).
@@ -408,6 +431,7 @@ impl TrackSound {
             || self.distortion.on
             || self.echo.on
             || self.reverb.on
+            || self.pitch.on
     }
 
     /// This sound with the effects of `from` (copied from another track):
@@ -423,6 +447,7 @@ impl TrackSound {
             distortion: from.distortion,
             echo: from.echo,
             reverb: from.reverb,
+            pitch: from.pitch,
             ..self.clone()
         }
     }
@@ -531,6 +556,12 @@ impl TrackSound {
         {
             return Err(refused(
                 "A reverb's size, damping and level each go from 0 to 100 %.",
+            ));
+        }
+        let p = &self.pitch;
+        if !((-1_200..=1_200).contains(&p.cents) && within(p.mix_milli, 0, 1_000)) {
+            return Err(refused(
+                "A pitch shift goes from an octave down to an octave up, its mix from 0 to 100 %.",
             ));
         }
         if !check_line(

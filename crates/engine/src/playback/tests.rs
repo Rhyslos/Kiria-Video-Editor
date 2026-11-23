@@ -71,6 +71,9 @@ fn effects_on(mut p: Project, seq: SequenceId) -> Project {
     s.reverb.on = true;
     s.distortion.on = true;
     s.distortion.style = project::track_sound::DistortionStyle::Radio;
+    // Format 45: a pitch shift, its heads carrying on from block to block.
+    s.pitch.on = true;
+    s.pitch.cents = 300;
     let s = &mut sounds[2];
     s.pan = -400_000;
     s.volume_line.push_back(LinePoint {

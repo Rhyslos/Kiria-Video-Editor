@@ -68,7 +68,9 @@ mod tests {
         // the track's sound out still means every effect off.
         "distortion:(on:false,style:Drive,drive_mdb:12000,mix_milli:1000),echo:(on:false,",
         "time_us:350000,feedback_milli:350,mix_milli:350,ping_pong:false),reverb:(on:fals",
-        "e,size_milli:500,damping_milli:500,mix_milli:250),volume_line:[],pan_line:[])",
+        "e,size_milli:500,damping_milli:500,mix_milli:250),",
+        // Format 45: the pitch shift, off.
+        "pitch:(on:false,cents:0,mix_milli:1000),volume_line:[],pan_line:[])",
     );
     const MASTER_SOUND: &str = concat!(
         "(compressor:(on:false,threshold_mdb:-24000,ratio_milli:3000,attack_us:5000,relea",

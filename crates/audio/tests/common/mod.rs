@@ -103,6 +103,11 @@ pub fn full(t: usize) -> TrackSettings {
             on: true,
             ..audio::dsp::space::ReverbSettings::OFF
         },
+        pitch: audio::dsp::pitch::PitchSettings {
+            on: true,
+            semitones: if t.is_multiple_of(2) { 3.0 } else { -4.0 },
+            mix: 1.0,
+        },
         volume_db: -6.0,
         pan: (t as f32 / 16.0) - 1.0,
         mute: false,
