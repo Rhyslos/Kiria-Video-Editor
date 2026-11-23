@@ -261,6 +261,35 @@ fn effect(p: &Painter, r: Rect, kind: EffectKind) {
                 p.circle_filled(middle + way * 0.6, r.height() * 0.07, SUN);
             }
         }
+        EffectKind::Posterise(_) => {
+            for (i, shade) in [60u8, 120, 190].into_iter().enumerate() {
+                let band = Rect::from_min_size(
+                    at(r, 0.0, 0.4 + 0.2 * i as f32),
+                    vec2(r.width(), r.height() * 0.2),
+                );
+                p.rect_filled(band, 0.0, Color32::from_rgb(shade, shade / 2, shade / 3));
+            }
+        }
+        EffectKind::Halftone(_) => {
+            let step = r.height() / 6.0;
+            for row in 0..6 {
+                for col in 0..((r.width() / step) as i32) {
+                    let middle = r.min + vec2((col as f32 + 0.5) * step, (row as f32 + 0.5) * step);
+                    let size = step * 0.12 * (1.0 + row as f32 * 0.5);
+                    p.circle_filled(middle, size, Color32::from_black_alpha(170));
+                }
+            }
+        }
+        EffectKind::Scanlines(_) => {
+            let mut y = r.top();
+            while y < r.bottom() {
+                p.line_segment(
+                    [pos2(r.left(), y), pos2(r.right(), y)],
+                    Stroke::new(1.0, Color32::from_black_alpha(120)),
+                );
+                y += 3.0;
+            }
+        }
         EffectKind::Glitch(_) => {
             for (y, dx) in [(0.3, 6.0), (0.55, -5.0), (0.72, 4.0)] {
                 let band = Rect::from_min_size(at(r, 0.0, y), vec2(r.width(), r.height() * 0.08));

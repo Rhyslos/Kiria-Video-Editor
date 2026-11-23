@@ -152,6 +152,9 @@ fn knobs(kind: &EffectKind) -> &'static [(&'static str, Show)] {
         EffectKind::Lens(_) => &[("Bend", Show::Signed)],
         EffectKind::Tile(_) => &[("Across", Show::Steps(1.0, 1.0, 7.0))],
         EffectKind::Kaleidoscope(_) => &[("Wedges", Show::Steps(2.0, 2.0, 7.0)), ("Turn", Degrees)],
+        EffectKind::Posterise(_) => &[("Shades", Show::Steps(2.0, 1.0, 14.0))],
+        EffectKind::Halftone(_) => &[("Dot size", Percent), ("Amount", Percent)],
+        EffectKind::Scanlines(_) => &[("Darkness", Percent), ("Spacing", Percent)],
     }
 }
 

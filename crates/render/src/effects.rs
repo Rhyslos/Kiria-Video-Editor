@@ -112,6 +112,13 @@ pub enum Effect {
     Tile { across: f32 },
     /// Mirrored round its middle in `wedges` wedges, turned `turn` radians.
     Kaleidoscope { wedges: f32, turn: f32 },
+    /// `shades` shades of each of red, green and blue, as shown.
+    Posterise { shades: f32 },
+    /// Dots of its colours on black, `size` reference pixels apart, mixed
+    /// in by `amount` 0-1.
+    Halftone { size: f32, amount: f32 },
+    /// Dark lines `size` reference pixels apart, `amount` 0-1 dark.
+    Scanlines { amount: f32, size: f32 },
 }
 
 impl Effect {
@@ -359,6 +366,17 @@ enum Pass {
         wedges: f32,
         turn: f32,
     },
+    Posterise {
+        shades: f32,
+    },
+    Halftone {
+        size: f32,
+        amount: f32,
+    },
+    Scanlines {
+        amount: f32,
+        size: f32,
+    },
 }
 
 impl Pass {
@@ -408,6 +426,9 @@ impl Pass {
             Pass::Lens { bend } => [27.0, bend, 0.0, 0.0],
             Pass::Tile { across } => [28.0, across, 0.0, 0.0],
             Pass::Kaleidoscope { wedges, turn } => [29.0, wedges, turn, 0.0],
+            Pass::Posterise { shades } => [30.0, shades, 0.0, 0.0],
+            Pass::Halftone { size, amount } => [31.0, size, amount, 0.0],
+            Pass::Scanlines { amount, size } => [32.0, amount, size, 0.0],
         }
     }
 
@@ -750,6 +771,23 @@ impl Effects {
                     (&now, None),
                     size,
                     Pass::Kaleidoscope { wedges, turn },
+                    0,
+                ),
+                Effect::Posterise { shades } => {
+                    pass(encoder, (&now, None), size, Pass::Posterise { shades }, 0)
+                }
+                Effect::Halftone { size: dots, amount } => pass(
+                    encoder,
+                    (&now, None),
+                    size,
+                    Pass::Halftone { size: dots, amount },
+                    0,
+                ),
+                Effect::Scanlines { amount, size: apart } => pass(
+                    encoder,
+                    (&now, None),
+                    size,
+                    Pass::Scanlines { amount, size: apart },
                     0,
                 ),
             };

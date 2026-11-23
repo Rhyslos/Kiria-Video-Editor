@@ -579,6 +579,39 @@ fn kaleidoscope(at: vec2<f32>) -> vec4<f32> {
     return textureSampleLevel(source, smooth_sampler, taken, 0.0);
 }
 
+// 30-32: looks on light. Posterise: `shades` (y) shades of each colour,
+// as shown. Halftone: dots `size` (y, reference pixels) apart on a grid
+// turned 45 degrees, each the colour at its middle on black, its area that
+// colour's brightness as shown, mixed in by `amount` (z). Scanlines: dark
+// lines `size` (z, reference pixels) apart, `amount` (y) dark at their
+// middle, smoothly in between.
+fn printed(p: vec4<f32>, at: vec2<f32>, kind: i32) -> vec3<f32> {
+    if kind == 30 {
+        let n = max(round(it.kind_numbers.y), 2.0) - 1.0;
+        let v = pow(clamp(p.rgb, vec3<f32>(0.0), vec3<f32>(1.0)), vec3<f32>(1.0 / 2.4));
+        return pow(round(v * n) / n, vec3<f32>(2.4));
+    }
+    if kind == 31 {
+        let size = it.linear_size_seed.yz;
+        let cell = max(it.kind_numbers.y * scale(), 2.0);
+        let px = at * size;
+        // Into the turned grid, to the dot's middle, and back.
+        let turned = vec2<f32>(px.x + px.y, px.y - px.x) * 0.70710678 / cell;
+        let middle_turned = (floor(turned) + vec2<f32>(0.5)) * cell;
+        let middle = vec2<f32>(middle_turned.x - middle_turned.y, middle_turned.x + middle_turned.y) * 0.70710678;
+        let colour = light_of(textureSampleLevel(source, smooth_sampler, middle / size, 0.0));
+        let shown = pow(clamp(luma(colour.rgb), 0.0, 1.0), 1.0 / 2.4);
+        // The dot covers about as much of its cell as the colour is bright.
+        let radius = sqrt(shown / 3.14159265) * cell;
+        let inked = clamp(radius - length(px - middle) + 0.5, 0.0, 1.0);
+        return mix(p.rgb, colour.rgb * inked, clamp(it.kind_numbers.z, 0.0, 1.0));
+    }
+    let apart = max(it.kind_numbers.z * scale(), 2.0);
+    let y = at.y * it.linear_size_seed.z;
+    let wave = 0.5 + 0.5 * cos(6.2831853 * y / apart);
+    return p.rgb * (1.0 - clamp(it.kind_numbers.y, 0.0, 1.0) * wave);
+}
+
 @fragment
 fn effect(in: Corner) -> @location(0) vec4<f32> {
     let kind = i32(round(it.kind_numbers.x));
@@ -652,6 +685,7 @@ fn effect(in: Corner) -> @location(0) vec4<f32> {
         case 10: { rgb = mix(p.rgb, graded(p.rgb), grade_where(p.rgb, in.at)); }
         case 17: { return keyed(p); }
         case 19, 20, 21, 22: { rgb = looked(p, kind); }
+        case 30, 31, 32: { rgb = printed(p, in.at, kind); }
         default: {}
     }
     return stored(rgb, p.a);
