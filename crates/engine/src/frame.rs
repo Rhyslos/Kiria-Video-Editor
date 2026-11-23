@@ -707,6 +707,25 @@ fn effect_passes(clip: &Clip, at: Time) -> Vec<render::Effect> {
                 amount: fraction(s.amount),
                 size: 2.0 + 10.0 * fraction(s.size),
             },
+            project::EffectKind::Leak(l) => render::Effect::Leak {
+                amount: fraction(l.amount),
+                colour: paint(l.colour),
+                // At full speed once across in two seconds of the clip.
+                phase: (since * f64::from(fraction(l.speed)) * 0.5).fract() as f32,
+            },
+            project::EffectKind::Flare(f) => render::Effect::Flare {
+                amount: fraction(f.amount),
+                at: (fraction(f.x), fraction(f.y)),
+            },
+            project::EffectKind::Speed(s) => render::Effect::Speed {
+                amount: fraction(s.amount),
+                at: (fraction(s.x), fraction(s.y)),
+                seed,
+            },
+            project::EffectKind::Impact(i) => render::Effect::Impact {
+                threshold: fraction(i.threshold),
+                invert: i.is_inverted(),
+            },
         })
         .collect()
 }
@@ -1083,6 +1102,18 @@ mod tests {
                 amount: 1.0,
                 size: 12.0
             }
+        );
+        let leak = project::EffectKind::Leak(project::effects::Leak {
+            speed: 1_000_000,
+            ..project::effects::Leak::USUAL
+        });
+        let phase = |at| match moved_at(leak, at) {
+            render::Effect::Leak { phase, .. } => phase,
+            other => panic!("{other:?}"),
+        };
+        assert!(
+            (phase(1.5) - phase(1.0) - 0.25).abs() < 0.01,
+            "a quarter across in half a second"
         );
         let radial = project::EffectKind::Radial(project::effects::Radial::USUAL);
         assert_eq!(

@@ -155,6 +155,20 @@ fn knobs(kind: &EffectKind) -> &'static [(&'static str, Show)] {
         EffectKind::Posterise(_) => &[("Shades", Show::Steps(2.0, 1.0, 14.0))],
         EffectKind::Halftone(_) => &[("Dot size", Percent), ("Amount", Percent)],
         EffectKind::Scanlines(_) => &[("Darkness", Percent), ("Spacing", Percent)],
+        EffectKind::Leak(_) => &[
+            ("Amount", Percent),
+            ("Drift", Percent),
+            ("Colour", Show::Colour),
+            ("", Show::ColourPart),
+            ("", Show::ColourPart),
+        ],
+        EffectKind::Flare(_) => &[("Amount", Percent), ("Across", Percent), ("Down", Percent)],
+        EffectKind::Speed(_) => &[
+            ("Amount", Percent),
+            ("Point across", Percent),
+            ("Point down", Percent),
+        ],
+        EffectKind::Impact(_) => &[("Threshold", Percent), ("Inverted", Switch)],
     }
 }
 

@@ -64,11 +64,12 @@ impl Item {
 pub const RECENT: usize = 5;
 
 /// The groups, in the order shown.
-const GROUPS: [&str; 6] = [
+const GROUPS: [&str; 7] = [
     "Motion",
     "Frame",
     "Keying",
     "Colour",
+    "Light and action",
     "Blur and censor",
     "Stylise",
 ];
@@ -107,6 +108,19 @@ fn about(kind: &EffectKind) -> (&'static str, &'static str) {
         EffectKind::Posterise(_) => ("Stylise", "Few shades in flat bands, as a printed poster"),
         EffectKind::Halftone(_) => ("Stylise", "Dots of colour on black, as printed in a comic"),
         EffectKind::Scanlines(_) => ("Stylise", "Dark lines across it, as an old CRT screen"),
+        EffectKind::Leak(_) => (
+            "Light and action",
+            "Warm light drifting in from the edges, as on film",
+        ),
+        EffectKind::Flare(_) => (
+            "Light and action",
+            "A bright light with a streak and rings: the sun in the lens",
+        ),
+        EffectKind::Speed(_) => (
+            "Light and action",
+            "White streaks rushing in, as in an anime fight",
+        ),
+        EffectKind::Impact(_) => ("Light and action", "Stark black and white for the frame of a hit"),
         EffectKind::Smear(_) => ("Blur and censor", "Smeared one way, as something moving fast"),
         EffectKind::Radial(_) => ("Blur and censor", "Smeared towards a point, as zooming in fast"),
     }

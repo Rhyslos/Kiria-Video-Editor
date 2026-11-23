@@ -119,6 +119,21 @@ pub enum Effect {
     Halftone { size: f32, amount: f32 },
     /// Dark lines `size` reference pixels apart, `amount` 0-1 dark.
     Scanlines { amount: f32, size: f32 },
+    /// Soft light of `colour` (light) added in from the edges, `amount`
+    /// 0-1, at `phase` (0-1, once across) of its drift.
+    Leak {
+        amount: f32,
+        colour: [f32; 3],
+        phase: f32,
+    },
+    /// A bright light at `at` (0-1) with a streak and rings, `amount` 0-1.
+    Flare { amount: f32, at: (f32, f32) },
+    /// White streaks rushing in towards `at` (0-1), `amount` 0-1; `seed`
+    /// picks the frame's streaks.
+    Speed { amount: f32, at: (f32, f32), seed: u32 },
+    /// White above `threshold` (brightness as shown, 0-1), black below;
+    /// the other way round when `invert`.
+    Impact { threshold: f32, invert: bool },
 }
 
 impl Effect {
@@ -377,6 +392,23 @@ enum Pass {
         amount: f32,
         size: f32,
     },
+    Leak {
+        amount: f32,
+        colour: [f32; 3],
+        phase: f32,
+    },
+    Flare {
+        amount: f32,
+        at: (f32, f32),
+    },
+    Speed {
+        amount: f32,
+        at: (f32, f32),
+    },
+    Impact {
+        threshold: f32,
+        invert: bool,
+    },
 }
 
 impl Pass {
@@ -429,6 +461,10 @@ impl Pass {
             Pass::Posterise { shades } => [30.0, shades, 0.0, 0.0],
             Pass::Halftone { size, amount } => [31.0, size, amount, 0.0],
             Pass::Scanlines { amount, size } => [32.0, amount, size, 0.0],
+            Pass::Leak { amount, phase, .. } => [33.0, amount, phase, 0.0],
+            Pass::Flare { amount, at } => [34.0, amount, at.0, at.1],
+            Pass::Speed { amount, at } => [35.0, amount, at.0, at.1],
+            Pass::Impact { threshold, invert } => [36.0, threshold, if invert { 1.0 } else { 0.0 }, 0.0],
         }
     }
 
@@ -438,7 +474,8 @@ impl Pass {
             Pass::Outline { colour, .. }
             | Pass::Silhouette { colour, .. }
             | Pass::Key { colour, .. }
-            | Pass::Duotone { shadows: colour, .. } => [colour[0], colour[1], colour[2], 1.0],
+            | Pass::Duotone { shadows: colour, .. }
+            | Pass::Leak { colour, .. } => [colour[0], colour[1], colour[2], 1.0],
             _ => [0.0; 4],
         }
     }
@@ -790,6 +827,27 @@ impl Effects {
                     Pass::Scanlines { amount, size: apart },
                     0,
                 ),
+                Effect::Leak {
+                    amount,
+                    colour,
+                    phase,
+                } => {
+                    let leak = Pass::Leak {
+                        amount,
+                        colour,
+                        phase,
+                    };
+                    pass(encoder, (&now, None), size, leak, 0)
+                }
+                Effect::Flare { amount, at } => {
+                    pass(encoder, (&now, None), size, Pass::Flare { amount, at }, 0)
+                }
+                Effect::Speed { amount, at, seed } => {
+                    pass(encoder, (&now, None), size, Pass::Speed { amount, at }, seed)
+                }
+                Effect::Impact { threshold, invert } => {
+                    pass(encoder, (&now, None), size, Pass::Impact { threshold, invert }, 0)
+                }
             };
             done.push(std::mem::replace(&mut now, next));
         }

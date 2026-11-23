@@ -612,6 +612,64 @@ fn printed(p: vec4<f32>, at: vec2<f32>, kind: i32) -> vec3<f32> {
     return p.rgb * (1.0 - clamp(it.kind_numbers.y, 0.0, 1.0) * wave);
 }
 
+// 33-36: light and action on light, in pixels so shapes keep their
+// proportions. A light leak: two soft blobs of the paint colour added in,
+// sliding along the top and the bottom as `phase` (z) goes from 0 to 1. A
+// lens flare: a bright core at its point (zw), a streak across, and rings
+// on the line from it through the middle. Speed lines: in 240 slices of
+// the turn round their point (zw), a third of them, picked by the frame's
+// seed, white from a random distance out to the edge, faint near its
+// start. An impact frame: white above `threshold` (y), black below, the
+// other way round with `invert` (z).
+fn lit(p: vec4<f32>, at: vec2<f32>, kind: i32) -> vec3<f32> {
+    let size = it.linear_size_seed.yz;
+    let px = at * size;
+    let tall = size.y;
+    let amount = clamp(it.kind_numbers.y, 0.0, 1.0);
+    if kind == 33 {
+        let phase = it.kind_numbers.z;
+        let one = vec2<f32>(fract(phase) * 1.4 - 0.2, 0.0) * size;
+        let two = vec2<f32>(1.2 - fract(phase + 0.37) * 1.4, 1.0) * size;
+        let reach = 0.55 * tall;
+        let glow = exp(-dot(px - one, px - one) / (reach * reach)) + 0.8 * exp(-dot(px - two, px - two) / (reach * reach));
+        return p.rgb + it.paint.rgb * glow * amount * 1.5;
+    }
+    if kind == 34 {
+        let light = it.kind_numbers.zw * size;
+        let d = px - light;
+        let core = exp(-dot(d, d) / pow(0.04 * tall, 2.0)) * 4.0 + exp(-length(d) / (0.12 * tall)) * 0.6;
+        let streak = exp(-abs(d.y) / (0.006 * tall)) * exp(-abs(d.x) / (0.45 * tall)) * 1.2;
+        var rings = 0.0;
+        let middle = size * 0.5;
+        for (var i = 1; i <= 3; i++) {
+            let along = light + (middle - light) * (0.6 * f32(i));
+            let r = length(px - along);
+            let ring = 0.03 * tall * f32(i);
+            rings += exp(-pow((r - ring) / (0.008 * tall), 2.0)) * 0.25 + exp(-r * r / pow(ring * 0.6, 2.0)) * 0.12;
+        }
+        let warm = vec3<f32>(1.0, 0.85, 0.6);
+        return p.rgb + (vec3<f32>(core + streak) + warm * rings) * amount;
+    }
+    if kind == 35 {
+        let centre = it.kind_numbers.zw * size;
+        let d = px - centre;
+        let slice = u32(floor((atan2(d.y, d.x) / 6.2831853 + 0.5) * 240.0));
+        let seed = u32(it.linear_size_seed.w);
+        let shown = hash(slice * 2654435761u ^ seed * 40503u + 11u) < 0.35 * (0.3 + amount);
+        let corner = length(max(centre, size - centre));
+        let start = (0.35 + 0.55 * hash(slice * 7919u ^ seed * 31337u + 5u) * (1.2 - amount)) * corner;
+        let r = length(d);
+        let streak = select(0.0, smoothstep(start, start + 0.15 * corner, r), shown && r > start);
+        return mix(p.rgb, vec3<f32>(1.0), streak * 0.9);
+    }
+    let shown = pow(clamp(luma(max(p.rgb, vec3<f32>(0.0))), 0.0, 1.0), 1.0 / 2.4);
+    var white = shown > it.kind_numbers.y;
+    if it.kind_numbers.z > 0.5 {
+        white = !white;
+    }
+    return select(vec3<f32>(0.0), vec3<f32>(1.0), white);
+}
+
 @fragment
 fn effect(in: Corner) -> @location(0) vec4<f32> {
     let kind = i32(round(it.kind_numbers.x));
@@ -686,6 +744,7 @@ fn effect(in: Corner) -> @location(0) vec4<f32> {
         case 17: { return keyed(p); }
         case 19, 20, 21, 22: { rgb = looked(p, kind); }
         case 30, 31, 32: { rgb = printed(p, in.at, kind); }
+        case 33, 34, 35, 36: { rgb = lit(p, in.at, kind); }
         default: {}
     }
     return stored(rgb, p.a);
