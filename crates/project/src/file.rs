@@ -28,7 +28,7 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 /// The format this build writes.
-pub const FORMAT_VERSION: u32 = 43;
+pub const FORMAT_VERSION: u32 = 44;
 
 /// Turns the text of a version `n` file into the text of a version `n + 1` file.
 pub type Migration = fn(&str) -> diag::Result<String>;
@@ -40,6 +40,7 @@ pub const MIGRATIONS: &[Migration] = &[
     v19_to_v20, v20_to_v21, v21_to_v22, v22_to_v23, v23_to_v24, v24_to_v25, v25_to_v26, v26_to_v27,
     v27_to_v28, v28_to_v29, v29_to_v30, v30_to_v31, v31_to_v32, v32_to_v33, v33_to_v34, v34_to_v35,
     v35_to_v36, v36_to_v37, v37_to_v38, v38_to_v39, v39_to_v40, v40_to_v41, v41_to_v42, v42_to_v43,
+    v43_to_v44,
 ];
 
 /// Format 2 adds `info` (the file's streams) to each media entry. The field
@@ -313,6 +314,12 @@ fn v41_to_v42(text: &str) -> diag::Result<String> {
 /// off when missing.
 fn v42_to_v43(text: &str) -> diag::Result<String> {
     set_format_version(text, 42, 43)
+}
+
+/// Format 44 adds the Motion blur effect and Zoom to a point's `sharpen`
+/// (none when it is missing). Older files have neither.
+fn v43_to_v44(text: &str) -> diag::Result<String> {
+    set_format_version(text, 43, 44)
 }
 
 /// Rewrites the `format_version` number at the top of the file.

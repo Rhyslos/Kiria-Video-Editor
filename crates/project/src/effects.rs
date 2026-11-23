@@ -188,11 +188,12 @@ pub enum EffectKind {
     Flare(Flare),
     Speed(Speed),
     Impact(Impact),
+    Motion(Motion),
 }
 
 impl EffectKind {
     /// Every kind there is, with its usual settings: what is added.
-    pub const ALL: [EffectKind; 34] = [
+    pub const ALL: [EffectKind; 35] = [
         EffectKind::Vignette(Vignette::USUAL),
         EffectKind::Grain(Grain::USUAL),
         EffectKind::Sharpen(Sharpen::USUAL),
@@ -227,6 +228,7 @@ impl EffectKind {
         EffectKind::Flare(Flare::USUAL),
         EffectKind::Speed(Speed::USUAL),
         EffectKind::Impact(Impact::USUAL),
+        EffectKind::Motion(Motion::USUAL),
     ];
 
     /// Its name, as the interface shows it.
@@ -266,6 +268,7 @@ impl EffectKind {
             EffectKind::Flare(_) => "Lens flare",
             EffectKind::Speed(_) => "Speed lines",
             EffectKind::Impact(_) => "Impact frame",
+            EffectKind::Motion(_) => "Motion blur",
         }
     }
 
@@ -280,7 +283,7 @@ impl EffectKind {
             EffectKind::Glow(g) => vec![g.amount, g.threshold, g.radius],
             EffectKind::Blur(b) => vec![b.radius, b.spot.left, b.spot.top, b.spot.width, b.spot.height],
             EffectKind::Pixelate(p) => vec![p.size, p.spot.left, p.spot.top, p.spot.width, p.spot.height],
-            EffectKind::Zoom(z) => vec![z.amount, z.x, z.y],
+            EffectKind::Zoom(z) => vec![z.amount, z.x, z.y, z.sharpen],
             EffectKind::Shake(s) => vec![s.amount, s.speed],
             EffectKind::Pan(p) => vec![p.zoom, p.from_x, p.from_y, p.to_x, p.to_y],
             EffectKind::Stabilise(s) => vec![s.smoothing, s.zoom, s.x, s.y],
@@ -329,6 +332,7 @@ impl EffectKind {
             EffectKind::Flare(f) => vec![f.amount, f.x, f.y],
             EffectKind::Speed(s) => vec![s.amount, s.x, s.y],
             EffectKind::Impact(i) => vec![i.threshold, i.invert],
+            EffectKind::Motion(m) => vec![m.shutter],
         }
     }
 
@@ -372,6 +376,7 @@ impl EffectKind {
                 amount: n[0],
                 x: n[1],
                 y: n[2],
+                sharpen: n[3],
             }),
             EffectKind::Shake(_) => EffectKind::Shake(Shake {
                 amount: n[0],
@@ -472,6 +477,7 @@ impl EffectKind {
                 threshold: n[0],
                 invert: n[1],
             }),
+            EffectKind::Motion(_) => EffectKind::Motion(Motion { shutter: n[0] }),
         }
     }
 
@@ -489,7 +495,7 @@ impl EffectKind {
             EffectKind::Glow(g) => shares("Glow", &[g.amount, g.threshold, g.radius]),
             EffectKind::Blur(b) => shares("Blur", &[b.radius]).and_then(|()| b.spot.check("Blur")),
             EffectKind::Pixelate(p) => shares("Pixelate", &[p.size]).and_then(|()| p.spot.check("Pixelate")),
-            EffectKind::Zoom(z) => shares("Zoom to a point", &[z.amount, z.x, z.y]),
+            EffectKind::Zoom(z) => shares("Zoom to a point", &[z.amount, z.x, z.y, z.sharpen]),
             EffectKind::Shake(s) => shares("Shake", &[s.amount, s.speed]),
             EffectKind::Pan(p) => shares("Smooth pan", &[p.from_x, p.from_y, p.to_x, p.to_y, p.zoom]),
             EffectKind::Stabilise(s) => shares("Stabilise", &[s.smoothing, s.zoom, s.x, s.y]),
@@ -523,6 +529,7 @@ impl EffectKind {
             EffectKind::Flare(f) => shares("Lens flare", &[f.amount, f.x, f.y]),
             EffectKind::Speed(s) => shares("Speed lines", &[s.amount, s.x, s.y]),
             EffectKind::Impact(i) => shares("Impact frame", &[i.threshold, i.invert]),
+            EffectKind::Motion(m) => shares("Motion blur", &[m.shutter]),
         }
     }
 }
@@ -645,6 +652,11 @@ pub struct Zoom {
     /// picture's width and height.
     pub x: i32,
     pub y: i32,
+    /// How much detail is brought back as it zooms in (format 44): 0 (none)
+    /// to [`ONE`]; it grows with how far in the picture is, so the start
+    /// of the clip is left as it is.
+    #[serde(default, skip_serializing_if = "crate::defaults::is_default")]
+    pub sharpen: i32,
 }
 
 impl Zoom {
@@ -652,6 +664,7 @@ impl Zoom {
         amount: ONE / 4,
         x: ONE / 2,
         y: ONE / 2,
+        sharpen: 0,
     };
 }
 
@@ -1209,6 +1222,25 @@ impl Impact {
 
     pub fn is_inverted(&self) -> bool {
         self.invert >= ONE / 2
+    }
+}
+
+/// The picture smeared along the way it moves while the shutter is open,
+/// as a camera films fast movement: moves of its look (keyframes of its
+/// place, size and turn) and of the motion effects before it in the list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Motion {
+    /// How long the shutter is open: 0 (sharp) to [`ONE`] (all of a frame
+    /// at 25 frames a second, a 360-degree shutter).
+    pub shutter: i32,
+}
+
+impl Motion {
+    pub const USUAL: Motion = Motion { shutter: ONE / 2 };
+
+    /// How long the shutter is open, in seconds.
+    pub fn open_seconds(&self) -> f64 {
+        f64::from(self.shutter.clamp(0, ONE)) / f64::from(ONE) / 25.0
     }
 }
 

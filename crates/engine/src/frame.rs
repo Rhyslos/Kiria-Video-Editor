@@ -8,6 +8,7 @@ use project::{
 };
 use render::{Area, Colour, Part, Placement};
 
+mod motion;
 mod transition;
 
 /// What to draw for one moment of a timeline.
@@ -313,7 +314,11 @@ fn nested(
         part: shown_part(&look),
         opacity,
         colour: colour(&look),
-        effects: in_the_frame(effects(clip, at), shown_area(&look, size, frame), frame),
+        effects: in_the_frame(
+            effects(clip, at, &|when| shown_area(&clip.look_at(when), size, frame)),
+            shown_area(&look, size, frame),
+            frame,
+        ),
         mode: mode(clip.mode),
     };
     Some((group, nodes, opaque))
@@ -364,7 +369,17 @@ fn layer_seen(
         part,
         opacity: faded(clip, at, fraction(look.opacity)),
         colour: colour(&look),
-        effects: in_the_frame(effects(clip, at), area, frame),
+        effects: in_the_frame(
+            effects(clip, at, &|when| {
+                if when == at {
+                    area
+                } else {
+                    shown_area(&clip.look_at(when), video.display_size(), frame)
+                }
+            }),
+            area,
+            frame,
+        ),
         mode: mode(clip.mode),
         blend: match clip.blend {
             FrameBlend::Blend => blend_at(source_time, video.frame_rate),
@@ -402,7 +417,14 @@ fn title_layer(clip: &Clip, frame: (u32, u32), at: Time) -> Option<Layer> {
         part: Part::WHOLE,
         opacity: faded(clip, at, fraction(look.opacity)),
         colour: colour(&look),
-        effects: in_the_frame(effects(clip, at), area, frame),
+        effects: in_the_frame(
+            effects(clip, at, &|when| {
+                let look = clip.look_at(when);
+                Area::of_part(placement(&look, frame, frame), shown_part(&look))
+            }),
+            area,
+            frame,
+        ),
         mode: mode(clip.mode),
         blend: None,
         title: Some(Box::new(crate::title::TitleLayer {
@@ -417,8 +439,16 @@ fn title_layer(clip: &Clip, frame: (u32, u32), at: Time) -> Option<Layer> {
 /// at `at` (a time of the timeline the clip is on). Sizes become reference
 /// pixels (of 1080 lines). Grain's pattern follows the moment of the file,
 /// so the same frame always has the same grain, in preview and export.
-fn effects(clip: &Clip, at: Time) -> Vec<render::Effect> {
-    // Its grade first, layer by layer, then its effects.
+/// `area_at` is where the picture is in the frame at a moment, for motion
+/// blur.
+fn effects(clip: &Clip, at: Time, area_at: &dyn Fn(Time) -> Area) -> Vec<render::Effect> {
+    let mut passes = graded_and_effects(clip, at);
+    crate::frame::motion::blur(clip, at, area_at, &mut passes, graded_and_effects);
+    passes
+}
+
+/// Its grade first, layer by layer, then its effects.
+fn graded_and_effects(clip: &Clip, at: Time) -> Vec<render::Effect> {
     let mut passes: Vec<render::Effect> = clip
         .grade
         .applied()
@@ -554,10 +584,9 @@ fn effect_passes(clip: &Clip, at: Time) -> Vec<render::Effect> {
     let eased = (through * through * (3.0 - 2.0 * through)) as f32;
     // Settings that change over the clip are read at the moment of the file.
     let source = clip.source_at(at);
-    clip.effects
-        .applied()
-        .map(|effect| effect.kind_at(source))
-        .map(|kind| match kind {
+    let mut passes = Vec::new();
+    for kind in clip.effects.applied().map(|effect| effect.kind_at(source)) {
+        let pass = match kind {
             project::EffectKind::Vignette(v) => render::Effect::Vignette {
                 amount: fraction(v.amount),
                 size: fraction(v.size),
@@ -726,8 +755,29 @@ fn effect_passes(clip: &Clip, at: Time) -> Vec<render::Effect> {
                 threshold: fraction(i.threshold),
                 invert: i.is_inverted(),
             },
-        })
-        .collect()
+            // Worked out once every pass is known (`motion::blur`).
+            project::EffectKind::Motion(_) => render::Effect::Motion {
+                back: render::Effect::STILL,
+            },
+        };
+        passes.push(pass);
+        if let (project::EffectKind::Zoom(z), render::Effect::Move { scale, .. }) = (kind, pass)
+            && z.sharpen > 0
+        {
+            passes.push(zoom_sharpened(fraction(z.sharpen), scale));
+        }
+    }
+    passes
+}
+
+/// The detail brought back into a picture enlarged `scale` times by a
+/// zoom, `sharpen` (0-1) of it: none before it zooms, all of it from twice
+/// the size on, over the size of the softening the enlarging brings.
+fn zoom_sharpened(sharpen: f32, scale: f32) -> render::Effect {
+    render::Effect::Sharpen {
+        amount: sharpen * (scale - 1.0).clamp(0.0, 1.0),
+        radius: (0.5 * scale).clamp(0.5, 3.0),
+    }
 }
 
 /// An effect's colour as light: each of red, green and blue as shown,
@@ -977,6 +1027,100 @@ mod tests {
         describe(&project, project.active().unwrap(), at).layers[0].effects[0]
     }
 
+    /// The passes of a ten-second clip with `kinds` added in order, `at`
+    /// seconds in.
+    fn passes_at(kinds: &[project::EffectKind], at: f64) -> Vec<render::Effect> {
+        let mut project = import(
+            &Project::new("T", SequenceSettings::GAME_CLIP),
+            media("a.mkv", (1920, 1080), 0),
+        );
+        let sequence = project.active_sequence;
+        let clip = project.active().unwrap().video_tracks[0].clips[0].id;
+        for kind in kinds {
+            project = Command::AddEffect {
+                sequence,
+                clip,
+                kind: *kind,
+            }
+            .apply(&project)
+            .unwrap();
+        }
+        let at = Time::from_ratio((at * 1000.0).round() as i64, 1000).unwrap();
+        describe(&project, project.active().unwrap(), at).layers[0]
+            .effects
+            .clone()
+    }
+
+    #[test]
+    fn a_zoom_brings_detail_back_as_it_goes_in() {
+        let zoom = project::EffectKind::Zoom(project::effects::Zoom {
+            amount: 1_000_000,
+            sharpen: 1_000_000,
+            ..project::effects::Zoom::USUAL
+        });
+        let sharpened = |at| match passes_at(&[zoom], at)[..] {
+            [
+                render::Effect::Move { .. },
+                render::Effect::Sharpen { amount, radius },
+            ] => (amount, radius),
+            ref other => panic!("{other:?}"),
+        };
+        assert_eq!(sharpened(0.0).0, 0.0, "nothing before it zooms");
+        let (middle, middle_radius) = sharpened(5.0);
+        assert!(
+            (middle - 1.0).abs() < 1e-4,
+            "all of it from twice the size: {middle}"
+        );
+        assert!(sharpened(2.0).0 > 0.0 && sharpened(2.0).0 < middle);
+        assert!(sharpened(9.9).1 > middle_radius, "wider as it grows");
+        // Without it, the zoom is one pass, as before.
+        assert_eq!(passes_at(&[project::EffectKind::ALL[6]], 5.0).len(), 1);
+    }
+
+    #[test]
+    fn motion_blur_follows_the_moves_before_it_and_nothing_still() {
+        let motion = project::EffectKind::Motion(project::effects::Motion::USUAL);
+        // A picture that keeps still is left alone.
+        assert_eq!(
+            passes_at(&[motion], 5.0),
+            vec![render::Effect::Motion {
+                back: render::Effect::STILL
+            }]
+        );
+        // Panning across: each place was a little to one side, not up or down.
+        let pan = project::EffectKind::Pan(project::effects::Pan {
+            from_x: 0,
+            from_y: 500_000,
+            to_x: 1_000_000,
+            to_y: 500_000,
+            zoom: 1_000_000,
+        });
+        let back = match passes_at(&[pan, motion], 5.0)[..] {
+            [render::Effect::Move { .. }, render::Effect::Motion { back }] => back,
+            ref other => panic!("{other:?}"),
+        };
+        let [a, b, c, d, e, f] = back;
+        assert!((a - 1.0).abs() < 1e-4 && b.abs() < 1e-4 && c.abs() < 1e-4 && (d - 1.0).abs() < 1e-4);
+        assert!(f.abs() < 1e-5, "not up or down: {f}");
+        // The view moves right, so the picture moves left: what was here a
+        // moment ago is now a little to the left. In the middle the view
+        // moves 0.15 of the file's width a second, the picture twice that
+        // in its own width; the shutter is open a fiftieth of a second.
+        assert!((e + 0.006).abs() < 1e-4, "{e}");
+        // Moves after it are not smeared by it.
+        match passes_at(&[motion, pan], 5.0)[..] {
+            [render::Effect::Motion { back }, render::Effect::Move { .. }] => {
+                assert_eq!(back, render::Effect::STILL)
+            }
+            ref other => panic!("{other:?}"),
+        }
+        // At the clip's first frame the shutter opened with it: still.
+        match passes_at(&[pan, motion], 0.0)[..] {
+            [_, render::Effect::Motion { back }] => assert_eq!(back, render::Effect::STILL),
+            ref other => panic!("{other:?}"),
+        }
+    }
+
     #[test]
     fn a_framed_picture_gets_its_shape_and_lets_what_is_below_show() {
         use project::effects::{Corners, Mirror, Outline, Paint, Shadow};
@@ -1175,6 +1319,7 @@ mod tests {
             amount: 1_000_000,
             x: 800_000,
             y: 200_000,
+            sharpen: 0,
         });
         let scale = |at| match moved_at(zoom, at) {
             render::Effect::Move { scale, fixed, .. } => {

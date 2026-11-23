@@ -332,6 +332,18 @@ fn effect(p: &Painter, r: Rect, kind: EffectKind) {
                 );
             }
         }
+        EffectKind::Motion(_) => {
+            // A ball moving right, its trail fading behind it.
+            let ball = at(r, 0.65, 0.5);
+            for i in (1..7).rev() {
+                p.circle_filled(
+                    ball - vec2(i as f32 * 4.0, 0.0),
+                    r.height() * 0.16,
+                    Color32::from_rgba_unmultiplied(240, 196, 92, (90 - i * 12) as u8),
+                );
+            }
+            p.circle_filled(ball, r.height() * 0.16, Color32::from_rgb(240, 196, 92));
+        }
         EffectKind::Impact(_) => {
             p.rect_filled(r, 0.0, Color32::WHITE);
             p.circle_filled(at(r, 0.5, 0.55), r.height() * 0.3, Color32::BLACK);

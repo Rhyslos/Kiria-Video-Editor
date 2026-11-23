@@ -138,14 +138,24 @@ pub enum Effect {
     /// elsewhere, over an edge `softness` (0-1) of brightness wide: a
     /// picture coming in brightest first.
     Reveal { done: f32, softness: f32 },
+    /// Smeared along a movement: `back` takes a place in the picture (0-1)
+    /// to where what is there was when the shutter opened, as
+    /// `(a x + b y + e, c x + d y + f)` from `[a, b, c, d, e, f]`; the
+    /// picture is averaged along the way from one to the other.
+    Motion { back: [f32; 6] },
 }
 
 impl Effect {
+    /// A movement that takes every place to itself: nothing to smear.
+    pub const STILL: [f32; 6] = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+
     /// Whether it may make part of an opaque picture see-through, so what
     /// is below it shows.
     pub fn leaves_holes(&self) -> bool {
         match *self {
             Effect::Corners { .. } | Effect::Key { .. } | Effect::Reveal { .. } => true,
+            // Its edges smear into what is outside it.
+            Effect::Motion { back } => back != Effect::STILL,
             Effect::Lens { bend } => bend < 0.0,
             _ => false,
         }
@@ -417,6 +427,9 @@ enum Pass {
         done: f32,
         softness: f32,
     },
+    Motion {
+        back: [f32; 6],
+    },
 }
 
 impl Pass {
@@ -474,6 +487,7 @@ impl Pass {
             Pass::Speed { amount, at } => [35.0, amount, at.0, at.1],
             Pass::Impact { threshold, invert } => [36.0, threshold, if invert { 1.0 } else { 0.0 }, 0.0],
             Pass::Reveal { done, softness } => [37.0, done, softness, 0.0],
+            Pass::Motion { back } => [38.0, back[0], back[1], back[2]],
         }
     }
 
@@ -498,6 +512,7 @@ impl Pass {
             | Pass::Room { within }
             | Pass::Letterbox { within, .. } => within.numbers(),
             Pass::Move { turn, shift, .. } => [turn, shift.0, shift.1, 0.0],
+            Pass::Motion { back } => [back[3], back[4], back[5], 0.0],
             // A duotone's second colour.
             Pass::Duotone { highlights, .. } => [highlights[0], highlights[1], highlights[2], 0.0],
             _ => Spot::WHOLE.numbers(),
@@ -867,6 +882,7 @@ impl Effects {
                     };
                     pass(encoder, (&now, None), size, reveal, 0)
                 }
+                Effect::Motion { back } => pass(encoder, (&now, None), size, Pass::Motion { back }, 0),
             };
             done.push(std::mem::replace(&mut now, next));
         }
