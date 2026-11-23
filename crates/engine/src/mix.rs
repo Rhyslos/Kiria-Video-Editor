@@ -45,7 +45,7 @@ pub struct Mixer {
     decoders: Vec<Open>,
     scratch: Vec<f32>,
     /// Files that failed to open, so the log isn't flooded.
-    failed: Vec<(MediaId, u32, u32)>,
+    failed: Vec<Key>,
     /// What ramped clips read last, to carry on from (see `Mixer::ramped`),
     /// most recent first.
     carries: Vec<Carry>,
@@ -60,7 +60,17 @@ pub struct Mixer {
     /// Samples `mix_track` gave out as 0 because they were NaN or infinite,
     /// not yet taken.
     replaced: u64,
+    /// The lane of the clip being read (see [`Key`]): it changes at every
+    /// crossfade along a track, so the clips either side of one never
+    /// share a decoder.
+    lane: u8,
 }
+
+/// A decoder's file, stream, the rate it reads at (a clip at another speed
+/// reads its file at another rate) and its lane: the two clips either side
+/// of a crossfade sound at once, so they read on decoders of their own
+/// even when they play one file.
+type Key = (MediaId, u32, u32, u8);
 
 /// A nested timeline's own mixer and where it is.
 struct Nested {
@@ -83,7 +93,7 @@ struct Nested {
 
 /// A decoder kept open, most recently used first.
 struct Open {
-    key: (MediaId, u32, u32),
+    key: Key,
     decoder: AudioDecoder,
     /// The clip it last read for, if it read for one without a ramp.
     follows: Option<Follows>,
@@ -106,7 +116,7 @@ struct Follows {
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Carry {
     clip: ClipId,
-    key: (MediaId, u32, u32),
+    key: Key,
     next: i64,
     last: [f32; CHANNELS],
 }
@@ -142,6 +152,7 @@ impl Mixer {
             made: 0,
             depth,
             replaced: 0,
+            lane: 0,
         }
     }
 
@@ -189,16 +200,40 @@ impl Mixer {
     }
 
     /// Adds a track's clips, times `gain`, to `out` from `start` seconds on.
+    /// A clip either side of a crossfade sounds past its edge while the
+    /// crossfade lasts (its file read on, or silent before its start), by
+    /// the crossfade's levels.
     fn add_track(&mut self, project: &Project, track: &Track, start: f64, gain: f32, out: &mut [f32]) {
         let frames = out.len() / CHANNELS;
         let rate = f64::from(self.rate);
         let end = start + frames as f64 / rate;
-        for clip in &track.clips {
+        let mut lane = 0u8;
+        for (i, clip) in track.clips.iter().enumerate() {
+            let head = crossfade_into(track, clip);
+            if head.is_some() {
+                lane ^= 1;
+            }
             if clip.sound.is_silent() {
                 continue;
             }
+            let tail = track
+                .clips
+                .get(i + 1)
+                .and_then(|next| crossfade_into(track, next));
             let (cs, ce) = (clip.start.as_secs_f64(), clip.end().as_secs_f64());
-            let (a, b) = (cs.max(start), ce.min(end));
+            // Read past its edges only where its file can be: not before
+            // the file's start, and not for a ramped clip (it holds).
+            let plain = clip.ramp.is_empty() && clip.nested().is_none();
+            let earliest = if plain {
+                cs - clip.source_in.as_secs_f64() / clip.speed.as_f64().max(1e-6)
+            } else {
+                cs
+            };
+            let from_edge = head
+                .filter(|_| plain)
+                .map_or(cs, |h| h.start.max(earliest).min(cs));
+            let to_edge = tail.filter(|_| plain).map_or(ce, |t| t.end.max(ce));
+            let (a, b) = (from_edge.max(start), to_edge.min(end));
             if a >= b {
                 continue;
             }
@@ -212,6 +247,7 @@ impl Mixer {
             let mut scratch = std::mem::take(&mut self.scratch);
             scratch.resize(count * CHANNELS, 0.0);
             let from = start + first as f64 / rate;
+            self.lane = lane;
             let got = if let Some(inner) = clip.nested() {
                 self.nested_sound(project, clip, inner, (a, from), &mut scratch)
             } else if let Some(media) = project.media.get(&clip.media) {
@@ -225,6 +261,9 @@ impl Mixer {
             }
             if !clip.lines.is_empty() {
                 apply_lines(clip, &mut scratch[..got * CHANNELS], from, rate);
+            }
+            if head.is_some() || tail.is_some() {
+                crossfaded(&mut scratch[..got * CHANNELS], from, rate, head, tail);
             }
             for (o, s) in out[first * CHANNELS..(first + got) * CHANNELS]
                 .iter_mut()
@@ -249,7 +288,7 @@ impl Mixer {
             let speed = clip.speed.as_f64();
             let source = clip.source_in.as_secs_f64() + (a - cs) * speed;
             let read_rate = read_rate(rate, speed);
-            let key = (media.id, clip.stream, read_rate);
+            let key = (media.id, clip.stream, read_rate, self.lane);
             let wanted = (source.max(0.0) * f64::from(read_rate)).round() as i64;
             let follows = Follows {
                 clip: clip.id,
@@ -463,7 +502,7 @@ impl Mixer {
     fn ramped(&mut self, clip: &Clip, path: &std::path::Path, from: f64, out: &mut [f32]) -> usize {
         let count = out.len() / CHANNELS;
         let rate = f64::from(self.rate);
-        let key = (clip.media, clip.stream, self.rate);
+        let key = (clip.media, clip.stream, self.rate, self.lane);
         // Where in the file (in samples) each sample written comes from.
         let place = |i: usize| clip.source_at_f64(from + i as f64 / rate).max(0.0) * rate;
         let (first, last) = (place(0), place(count.saturating_sub(1)));
@@ -532,7 +571,7 @@ impl Mixer {
         count
     }
 
-    fn open(&mut self, key: (MediaId, u32, u32), path: &std::path::Path) -> Option<&mut Open> {
+    fn open(&mut self, key: Key, path: &std::path::Path) -> Option<&mut Open> {
         if let Some(i) = self.decoders.iter().position(|o| o.key == key) {
             let entry = self.decoders.remove(i);
             self.decoders.insert(0, entry);
@@ -682,6 +721,52 @@ fn apply_lines(clip: &Clip, samples: &mut [f32], from: f64, rate: f64) {
     }
 }
 
+/// A crossfade on a track: where it plays on the timeline, in seconds, and
+/// its shape.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Crossfade {
+    start: f64,
+    end: f64,
+    kind: project::TransitionKind,
+}
+
+/// The crossfade into `clip` from the clip before it, when it has one that
+/// plays.
+fn crossfade_into(track: &Track, clip: &Clip) -> Option<Crossfade> {
+    let kind = clip.transition?.kind;
+    if !kind.is_sound() {
+        return None;
+    }
+    let (_, start, end) = project::transitions::played(track, clip)?;
+    Some(Crossfade {
+        start: start.as_secs_f64(),
+        end: end.as_secs_f64(),
+        kind,
+    })
+}
+
+/// Takes interleaved stereo `samples` (the first `from` seconds on the
+/// timeline) down by the crossfade into their clip (`head`, the level
+/// coming in) and the one out of it (`tail`, the level going out).
+fn crossfaded(samples: &mut [f32], from: f64, rate: f64, head: Option<Crossfade>, tail: Option<Crossfade>) {
+    let share = |c: &Crossfade, t: f64| ((t - c.start) / (c.end - c.start).max(1e-9)).clamp(0.0, 1.0);
+    for (i, frame) in samples.chunks_exact_mut(CHANNELS).enumerate() {
+        let t = from + i as f64 / rate;
+        let mut level = 1.0;
+        if let Some(c) = head.filter(|c| t < c.end) {
+            level *= c.kind.levels(share(&c, t)).1;
+        }
+        if let Some(c) = tail.filter(|c| t > c.start) {
+            level *= c.kind.levels(share(&c, t)).0;
+        }
+        if level != 1.0 {
+            for s in frame.iter_mut() {
+                *s *= level as f32;
+            }
+        }
+    }
+}
+
 /// What a clip's own sound does to its samples.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Shape {
@@ -736,7 +821,8 @@ impl Shape {
     fn apply(&self, samples: &mut [f32], from: f64, rate: f64) {
         let fading_from = self.length - self.fade_out;
         for (i, frame) in samples.chunks_exact_mut(CHANNELS).enumerate() {
-            let at = from + i as f64 / rate;
+            // Past its edges (in a crossfade) its fades stay as at the edge.
+            let at = (from + i as f64 / rate).clamp(0.0, self.length);
             let level = if at >= self.fade_in && at <= fading_from {
                 1.0
             } else {
@@ -778,6 +864,13 @@ pub(crate) mod tests {
         for (at, bad) in BAD {
             samples[at] = bad;
         }
+        let p = wav_project(dir, "damaged.wav", rate, &samples);
+        (samples, p)
+    }
+
+    /// A project with a stereo WAV of `samples` (32-bit floats at `rate`)
+    /// imported onto its timeline.
+    pub(crate) fn wav_project(dir: &Path, name: &str, rate: u32, samples: &[f32]) -> Project {
         let data = (samples.len() * 4) as u32;
         let mut bytes = Vec::with_capacity(44 + data as usize);
         bytes.extend_from_slice(b"RIFF");
@@ -792,18 +885,142 @@ pub(crate) mod tests {
         bytes.extend_from_slice(&32u16.to_le_bytes());
         bytes.extend_from_slice(b"data");
         bytes.extend_from_slice(&data.to_le_bytes());
-        for v in &samples {
+        for v in samples {
             bytes.extend_from_slice(&v.to_le_bytes());
         }
-        let path = dir.join("damaged.wav");
+        let path = dir.join(name);
         std::fs::write(&path, bytes).unwrap();
         let p = Project::new_automatic("T");
         let seq = p.active_sequence;
         let media = media::describe(&path).unwrap();
-        (
-            samples,
-            Command::Import { sequence: seq, media }.apply(&p).unwrap(),
-        )
+        Command::Import { sequence: seq, media }.apply(&p).unwrap()
+    }
+
+    /// Two seconds of a slow rising ramp, left and right the same, split
+    /// at one second into two clips on one track, the second with a
+    /// crossfade of `kind` and `length` seconds into it.
+    fn crossfading(dir: &Path, kind: project::TransitionKind, length: f64) -> (Vec<f32>, Project) {
+        let rate = 48_000u32;
+        let samples: Vec<f32> = (0..2 * rate as usize)
+            .flat_map(|i| {
+                let v = 0.1 + 0.4 * i as f32 / (2.0 * rate as f32);
+                [v, v]
+            })
+            .collect();
+        let p = wav_project(dir, "ramp.wav", rate, &samples);
+        let seq = p.active_sequence;
+        let p = Command::Split {
+            sequence: seq,
+            at: Time::seconds(1),
+            clip: None,
+        }
+        .apply(&p)
+        .unwrap();
+        let second = p.active().unwrap().audio_tracks[0].clips[1].id;
+        let p = Command::SetTransition {
+            sequence: seq,
+            clip: second,
+            transition: Some(project::Transition {
+                kind,
+                length: Time::from_ratio((length * 1000.0).round() as i64, 1000).unwrap(),
+            }),
+        }
+        .apply(&p)
+        .unwrap();
+        (samples, p)
+    }
+
+    #[test]
+    fn a_straight_crossfade_between_two_parts_of_one_file_is_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let (file, p) = crossfading(dir.path(), project::TransitionKind::CrossfadeStraight, 0.4);
+        let mut mixer = Mixer::new(48_000);
+        let mut buf = vec![0f32; 2 * 48_000 * CHANNELS];
+        // In pieces, as playback mixes, across the cut.
+        for (i, piece) in buf.chunks_mut(1_024 * CHANNELS).enumerate() {
+            mixer.mix(&p, p.active().unwrap(), i as f64 * 1_024.0 / 48_000.0, piece);
+        }
+        // Each clip reads past the cut where the other fades: the same
+        // samples, out and in on straight lines, add up to the file.
+        for i in (0..2 * 48_000).step_by(97) {
+            assert!(
+                (buf[i * 2] - file[i * 2]).abs() < 1e-4,
+                "{i}: {} against {}",
+                buf[i * 2],
+                file[i * 2]
+            );
+        }
+    }
+
+    #[test]
+    fn crossfades_shape_the_sound_across_the_cut() {
+        let dir = tempfile::tempdir().unwrap();
+        let level_at = |kind, t: f64| {
+            let (file, p) = crossfading(dir.path(), kind, 0.4);
+            let mut mixer = Mixer::new(48_000);
+            let mut buf = vec![0f32; 4 * CHANNELS];
+            mixer.mix(&p, p.active().unwrap(), t, &mut buf);
+            let i = (t * 48_000.0).round() as usize * 2;
+            buf[0] / file[i]
+        };
+        use project::TransitionKind as K;
+        // Silent at the cut through a dip.
+        assert!(level_at(K::DipToSilence, 1.0).abs() < 0.01);
+        // Equal power: louder than the file in the middle (two parts of
+        // the same sound add up to more than either).
+        let middle = level_at(K::Crossfade, 1.0);
+        assert!(
+            (middle - std::f64::consts::SQRT_2 as f32).abs() < 0.02,
+            "{middle}"
+        );
+        // Before and after the crossfade, the file as it is.
+        assert!((level_at(K::Crossfade, 0.5) - 1.0).abs() < 1e-3);
+        assert!((level_at(K::Crossfade, 1.5) - 1.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn a_crossfade_at_the_files_start_does_not_reach_before_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let rate = 48_000u32;
+        let samples: Vec<f32> = vec![0.5; 2 * rate as usize * 2];
+        let p = wav_project(dir.path(), "flat.wav", rate, &samples);
+        let seq = p.active_sequence;
+        // The file twice, end to end: the second starts at the file's start.
+        let first = p.active().unwrap().audio_tracks[0].clips[0].clone();
+        let second = project::Clip {
+            id: project::ClipId(9_999),
+            start: first.end(),
+            link: None,
+            ..first.clone()
+        };
+        let track = p.active().unwrap().audio_tracks[0].id;
+        let p = Command::PlaceClip {
+            sequence: seq,
+            track,
+            clip: second,
+        }
+        .apply(&p)
+        .unwrap();
+        let placed = p.active().unwrap().audio_tracks[0].clips[1].id;
+        let p = Command::SetTransition {
+            sequence: seq,
+            clip: placed,
+            transition: Some(project::Transition::new(
+                project::TransitionKind::CrossfadeStraight,
+            )),
+        }
+        .apply(&p)
+        .unwrap();
+        let mut mixer = Mixer::new(48_000);
+        let mut buf = vec![0f32; 4 * CHANNELS];
+        // A tenth of a second before the cut: the first clip fading out,
+        // the second with nothing before its file's start.
+        mixer.mix(&p, p.active().unwrap(), 1.9, &mut buf);
+        let fading = buf[0];
+        assert!(
+            fading > 0.3 && fading < 0.5,
+            "only the first, going down: {fading}"
+        );
     }
 
     #[test]

@@ -1,6 +1,7 @@
 //! The inspector's Transition in section, on a picture with a clip ending
 //! where it starts on its track: which transition plays across that cut
-//! (or none, a plain cut) and how long it lasts. Each change is one undo
+//! (or none, a plain cut) and how long it lasts. On a sound clip it is
+//! Crossfade in, offering the crossfade shapes. Each change is one undo
 //! step; a length being dragged becomes one when let go.
 
 use project::{Clip, Command, SequenceId, Time, Track, Transition, TransitionKind};
@@ -19,6 +20,20 @@ pub fn section(
     clip: &Clip,
 ) -> Option<Command> {
     let previous = project::transitions::before(track, clip).filter(|c| c.is_file() && clip.is_file())?;
+    let sound = track.kind == project::TrackKind::Audio;
+    let (title, kinds, hover): (&str, &[TransitionKind], &str) = if sound {
+        (
+            "Crossfade in",
+            &TransitionKind::SOUND,
+            "How the sound before this cut gives way to this one",
+        )
+    } else {
+        (
+            "Transition in",
+            &TransitionKind::ALL,
+            "How the picture before this cut gives way to this one",
+        )
+    };
     let longest = previous.duration.min(clip.duration).as_secs_f64();
     let now = clip.transition;
     let summary = match now {
@@ -26,7 +41,7 @@ pub fn section(
         None => "A plain cut".to_owned(),
     };
     let mut asked: Option<Option<Transition>> = None;
-    let clicks = inspector::section(ui, theme, "Transition in", &summary, now.is_some(), |ui| {
+    let clicks = inspector::section(ui, theme, title, &summary, now.is_some(), |ui| {
         ui.horizontal(|ui| {
             inspector::label_cell(ui, theme, "Kind", inspector::LABEL_WIDTH);
             let shown = now.map_or("None (a cut)", |t| t.kind.name());
@@ -36,7 +51,7 @@ pub fn section(
                     if ui.selectable_label(now.is_none(), "None (a cut)").clicked() && now.is_some() {
                         asked = Some(None);
                     }
-                    for kind in TransitionKind::ALL {
+                    for &kind in kinds {
                         let picked = now.is_some_and(|t| t.kind == kind);
                         if ui.selectable_label(picked, kind.name()).clicked() && !picked {
                             let length = now.map_or_else(|| Transition::new(kind).length, |t| t.length);
@@ -45,7 +60,7 @@ pub fn section(
                     }
                 })
                 .response
-                .on_hover_text("How the picture before this cut gives way to this one");
+                .on_hover_text(hover);
         });
         let Some(transition) = now else {
             ui.label(

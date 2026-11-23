@@ -396,6 +396,28 @@ fn rich_project() -> Project {
         }),
         ..clip(third_shot, 0)
     });
+    // Its sound: two parts of the game sound, crossfaded on a smooth
+    // curve across their cut (format 46).
+    let (sound_one, sound_two) = (p.allocate_id(), p.allocate_id());
+    let mut short_sound = p.new_track(project::TrackKind::Audio, "A1");
+    short_sound.clips.push_back(Clip {
+        start: Time::ZERO,
+        duration: Time::seconds(4),
+        link: None,
+        ..clip(sound_one, 1)
+    });
+    short_sound.clips.push_back(Clip {
+        start: Time::seconds(4),
+        source_in: Time::seconds(40),
+        duration: Time::seconds(3),
+        link: None,
+        transition: Some(project::Transition {
+            kind: project::TransitionKind::CrossfadeSmooth,
+            length: Time::seconds(1),
+        }),
+        ..clip(sound_two, 1)
+    });
+    short.audio_tracks.push_back(short_sound);
     let (nested_id, nested_clip, adjustment) = (short.id, p.allocate_id(), p.allocate_id());
     let lower_third = p.allocate_id();
     let (mut v2, mut v3) = (
@@ -1183,6 +1205,28 @@ fn the_current_sample_has_a_dissolve() {
     assert_eq!(across.done, 0.5);
     let whip = project::transitions::across(track, Time::seconds(7)).expect("a whip pan at the next cut");
     assert_eq!(whip.kind, project::TransitionKind::WhipPan);
+}
+
+#[test]
+fn the_current_sample_crossfades_its_short_cuts_sound() {
+    let project = file::load(&sample_path(FORMAT_VERSION)).expect("the sample opens");
+    let short = project
+        .sequences
+        .iter()
+        .find(|s| s.name == "Short cut")
+        .expect("the second timeline");
+    let track = short.audio_tracks.last().expect("its sound");
+    let across = project::transitions::across(track, Time::seconds(4)).expect("a crossfade at the cut");
+    assert_eq!(across.kind, project::TransitionKind::CrossfadeSmooth);
+}
+
+#[test]
+fn version_45_sample_has_no_crossfades() {
+    let project = file::load(&sample_path(45)).expect("the version 45 sample opens");
+    for seq in project.sequences.iter() {
+        let clips = seq.audio_tracks.iter().flat_map(|t| t.clips.iter());
+        assert!(clips.filter_map(|c| c.transition).all(|t| !t.kind.is_sound()));
+    }
 }
 
 #[test]

@@ -42,7 +42,8 @@ struct Over {
     /// A file, a timeline or a title: something that lands as a clip.
     file: bool,
     effect: bool,
-    /// Only over the video area.
+    /// A picture transition over the video area, or a sound crossfade
+    /// over the audio area.
     transition: bool,
 }
 
@@ -55,7 +56,9 @@ impl Over {
                 || r.dnd_hover_payload::<DraggedTimeline>().is_some()
                 || title,
             effect: r.dnd_hover_payload::<DraggedEffect>().is_some(),
-            transition: video && r.dnd_hover_payload::<DraggedTransition>().is_some(),
+            transition: r
+                .dnd_hover_payload::<DraggedTransition>()
+                .is_some_and(|d| d.1 != video),
         }
     }
 
