@@ -173,6 +173,47 @@ fn effect(p: &Painter, r: Rect, kind: EffectKind) {
                 Color32::from_rgb(70, 80, 110),
             );
         }
+        EffectKind::Mono(_) | EffectKind::Sepia(_) | EffectKind::Duotone(_) | EffectKind::Invert(_) => {
+            // The scene again in the look's colours.
+            let (sky, ground, light) = match kind {
+                EffectKind::Mono(_) => (
+                    Color32::from_gray(60),
+                    Color32::from_gray(80),
+                    Color32::from_gray(200),
+                ),
+                EffectKind::Sepia(_) => (
+                    Color32::from_rgb(96, 74, 52),
+                    Color32::from_rgb(112, 88, 60),
+                    Color32::from_rgb(230, 200, 150),
+                ),
+                EffectKind::Duotone(_) => (
+                    Color32::from_rgb(70, 30, 120),
+                    Color32::from_rgb(110, 50, 110),
+                    Color32::from_rgb(255, 170, 60),
+                ),
+                _ => (
+                    Color32::from_rgb(209, 191, 163),
+                    Color32::from_rgb(201, 159, 183),
+                    Color32::from_rgb(15, 59, 163),
+                ),
+            };
+            scene(p, r, sky, ground);
+            p.circle_filled(sun, r.height() * 0.14, light);
+        }
+        EffectKind::Split(_) => {
+            // The sun in red and blue, drawn apart.
+            let size = r.height() * 0.14;
+            p.circle_filled(
+                sun - vec2(3.0, 0.0),
+                size,
+                Color32::from_rgba_unmultiplied(255, 40, 40, 140),
+            );
+            p.circle_filled(
+                sun + vec2(3.0, 0.0),
+                size,
+                Color32::from_rgba_unmultiplied(40, 120, 255, 140),
+            );
+        }
         EffectKind::Letterbox(_) => {
             let bar = r.height() * 0.2;
             p.rect_filled(

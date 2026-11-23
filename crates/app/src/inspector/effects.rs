@@ -127,6 +127,17 @@ fn knobs(kind: &EffectKind) -> &'static [(&'static str, Show)] {
             ("", Show::ColourPart),
         ],
         EffectKind::Letterbox(_) => &[("Shape", Show::Ratio)],
+        EffectKind::Mono(_) | EffectKind::Sepia(_) | EffectKind::Invert(_) => &[("Amount", Percent)],
+        EffectKind::Duotone(_) => &[
+            ("Amount", Percent),
+            ("Shadows", Show::Colour),
+            ("", Show::ColourPart),
+            ("", Show::ColourPart),
+            ("Highlights", Show::Colour),
+            ("", Show::ColourPart),
+            ("", Show::ColourPart),
+        ],
+        EffectKind::Split(_) => &[("Amount", Percent), ("Direction", Degrees)],
     }
 }
 

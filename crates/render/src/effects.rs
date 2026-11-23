@@ -80,6 +80,22 @@ pub enum Effect {
     },
     /// Black bars leaving a shape `ratio` times as wide as tall.
     Letterbox { ratio: f32 },
+    /// Towards grey of the same brightness, by `amount` 0-1.
+    Mono { amount: f32 },
+    /// Towards a warm brown of the same brightness, by `amount` 0-1.
+    Sepia { amount: f32 },
+    /// Towards its brightness in two colours (light), `shadows` for the
+    /// dark end and `highlights` for the bright, by `amount` 0-1.
+    Duotone {
+        amount: f32,
+        shadows: [f32; 3],
+        highlights: [f32; 3],
+    },
+    /// Towards its negative (as shown), by `amount` 0-1.
+    Invert { amount: f32 },
+    /// Red moved `offset` reference pixels across and down, blue the other
+    /// way, green left where it is.
+    Split { offset: (f32, f32) },
 }
 
 impl Effect {
@@ -284,6 +300,23 @@ enum Pass {
         ratio: f32,
         within: Spot,
     },
+    Mono {
+        amount: f32,
+    },
+    Sepia {
+        amount: f32,
+    },
+    Duotone {
+        amount: f32,
+        shadows: [f32; 3],
+        highlights: [f32; 3],
+    },
+    Invert {
+        amount: f32,
+    },
+    Split {
+        offset: (f32, f32),
+    },
 }
 
 impl Pass {
@@ -322,15 +355,21 @@ impl Pass {
                 ..
             } => [17.0, tolerance, softness, spill],
             Pass::Letterbox { ratio, .. } => [18.0, ratio, 0.0, 0.0],
+            Pass::Mono { amount } => [19.0, amount, 0.0, 0.0],
+            Pass::Sepia { amount } => [20.0, amount, 0.0, 0.0],
+            Pass::Duotone { amount, .. } => [21.0, amount, 0.0, 0.0],
+            Pass::Invert { amount } => [22.0, amount, 0.0, 0.0],
+            Pass::Split { offset } => [23.0, 0.0, offset.0, offset.1],
         }
     }
 
     /// The colour it paints with, as light.
     fn paint(self) -> [f32; 4] {
         match self {
-            Pass::Outline { colour, .. } | Pass::Silhouette { colour, .. } | Pass::Key { colour, .. } => {
-                [colour[0], colour[1], colour[2], 1.0]
-            }
+            Pass::Outline { colour, .. }
+            | Pass::Silhouette { colour, .. }
+            | Pass::Key { colour, .. }
+            | Pass::Duotone { shadows: colour, .. } => [colour[0], colour[1], colour[2], 1.0],
             _ => [0.0; 4],
         }
     }
@@ -344,6 +383,8 @@ impl Pass {
             | Pass::Room { within }
             | Pass::Letterbox { within, .. } => within.numbers(),
             Pass::Move { turn, shift, .. } => [turn, shift.0, shift.1, 0.0],
+            // A duotone's second colour.
+            Pass::Duotone { highlights, .. } => [highlights[0], highlights[1], highlights[2], 0.0],
             _ => Spot::WHOLE.numbers(),
         }
     }
@@ -629,6 +670,22 @@ impl Effects {
                 Effect::Letterbox { ratio } => {
                     pass(encoder, (&now, None), size, Pass::Letterbox { ratio, within }, 0)
                 }
+                Effect::Mono { amount } => pass(encoder, (&now, None), size, Pass::Mono { amount }, 0),
+                Effect::Sepia { amount } => pass(encoder, (&now, None), size, Pass::Sepia { amount }, 0),
+                Effect::Duotone {
+                    amount,
+                    shadows,
+                    highlights,
+                } => {
+                    let two = Pass::Duotone {
+                        amount,
+                        shadows,
+                        highlights,
+                    };
+                    pass(encoder, (&now, None), size, two, 0)
+                }
+                Effect::Invert { amount } => pass(encoder, (&now, None), size, Pass::Invert { amount }, 0),
+                Effect::Split { offset } => pass(encoder, (&now, None), size, Pass::Split { offset }, 0),
             };
             done.push(std::mem::replace(&mut now, next));
         }
