@@ -553,8 +553,8 @@ Phase 9 fills the Effects side of the Edit page's drawer and ships background re
 **9.5 More effects** (asked for by the owner in November 2026, a few to a pull request; the sound ones on the Audio page as a set of their own)
 
 - [x] Frame: mirror, rounded corners, outline, drop shadow. (Done: format 35. Outline and drop shadow draw past the picture's edges: the effects make room around the picture as they need it (`render::Applied::grown`) and the compositor places the larger picture so the picture itself stays where it was; sizes stay those of the picture as it came, and an outline's and a shadow's are the frame's (`engine::frame`), so a small facecam's line is as thick as a full picture's. Rounded corners keep to the picture as it came, wherever room was made, and a picture with them never hides what is below it. Colours are picked from swatches or any colour. Not yet: a shadow that keeps its direction when the picture is turned (it turns with it).)
-- [ ] Keying: chroma key with spill removal.
-- [ ] Colour and shape: letterbox; black and white, sepia, duotone, invert; chromatic aberration.
+- [x] Keying: chroma key with spill removal. (Done: format 36, with Letterbox. Colours are compared as shown, by hue and strength against brightness, so the screen's shadows go with it; the spill is the part of what stays that leans towards the screen's colour, taken off with its brightness kept. The screen's colour is picked from Green screen, Blue screen or any colour. Not yet: picking the colour off the picture, a matte view, choke and expand.)
+- [ ] Colour and shape: letterbox (done, format 36: black bars leaving a shape from 1 : 1 to 3 : 1, 2.39 : 1 at first, above and below or at the sides); black and white, sepia, duotone, invert; chromatic aberration.
 - [ ] Glitch; motion blur; directional and radial blur.
 - [ ] Lens distortion; mosaic and kaleidoscope; posterise, halftone and scanlines.
 - [ ] Light leaks and flares; sharpen on zoom; speed lines and impact frames.

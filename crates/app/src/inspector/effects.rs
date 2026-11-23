@@ -57,6 +57,10 @@ enum Show {
     Switch,
     /// A colour: this setting is red, the next two green and blue.
     Colour,
+    /// A screen's colour to key out, as a colour.
+    Screen,
+    /// As a shape: 1 : 1 to 3 : 1.
+    Ratio,
     /// Green or blue of the colour before it: no row of its own.
     ColourPart,
 }
@@ -114,38 +118,53 @@ fn knobs(kind: &EffectKind) -> &'static [(&'static str, Show)] {
             ("", Show::ColourPart),
             ("", Show::ColourPart),
         ],
+        EffectKind::Key(_) => &[
+            ("Tolerance", Percent),
+            ("Softness", Percent),
+            ("Spill removal", Percent),
+            ("Screen", Show::Screen),
+            ("", Show::ColourPart),
+            ("", Show::ColourPart),
+        ],
+        EffectKind::Letterbox(_) => &[("Shape", Show::Ratio)],
     }
 }
+
+/// The screens a key is offered first.
+const SCREENS: [([u8; 3], &str); 2] = [([40, 180, 70], "Green screen"), ([30, 80, 200], "Blue screen")];
 
 impl Show {
     fn shown(self, millionths: i32) -> f64 {
         let share = f64::from(millionths) / f64::from(ONE);
         match self {
-            Show::Percent | Show::Switch | Show::Colour | Show::ColourPart => share * 100.0,
+            Show::Percent | Show::Switch | Show::Colour | Show::Screen | Show::ColourPart => share * 100.0,
             Show::Size(most) => 100.0 + (most - 100.0) * share,
             Show::Degrees => share * 360.0,
+            Show::Ratio => 1.0 + 2.0 * share,
         }
     }
 
     fn millionths(self, shown: f64) -> i32 {
         let share = match self {
-            Show::Percent | Show::Switch | Show::Colour | Show::ColourPart => shown / 100.0,
+            Show::Percent | Show::Switch | Show::Colour | Show::Screen | Show::ColourPart => shown / 100.0,
             Show::Size(most) => (shown - 100.0) / (most - 100.0),
             Show::Degrees => shown / 360.0,
+            Show::Ratio => (shown - 1.0) / 2.0,
         };
         (share * f64::from(ONE)).round().clamp(0.0, f64::from(ONE)) as i32
     }
 
     fn number(self, usual: i32) -> Number {
-        let (range, per_point, suffix) = match self {
-            Show::Size(most) => ((100.0, most), (most - 100.0) / 200.0, " %"),
-            Show::Degrees => ((0.0, 360.0), 1.0, "°"),
-            _ => ((0.0, 100.0), 0.5, " %"),
+        let (range, per_point, suffix, decimals) = match self {
+            Show::Size(most) => ((100.0, most), (most - 100.0) / 200.0, " %", 0),
+            Show::Degrees => ((0.0, 360.0), 1.0, "°", 0),
+            Show::Ratio => ((1.0, 3.0), 0.005, " : 1", 2),
+            _ => ((0.0, 100.0), 0.5, " %", 0),
         };
         Number {
             range,
             per_point,
-            decimals: 0,
+            decimals,
             suffix,
             usual: self.shown(usual),
         }
@@ -212,7 +231,11 @@ pub fn section(ui: &mut egui::Ui, theme: &Theme, sequence: SequenceId, at: At<'_
                 });
             });
             ui.add_enabled_ui(!effect.off, |ui| {
-                let row = settings(ui, theme, at, effect);
+                // Each effect's rows apart: two effects may both have a
+                // Softness.
+                let row = ui
+                    .push_id(("effect", effect.id.0), |ui| settings(ui, theme, at, effect))
+                    .inner;
                 match row {
                     Row::Clicked(next) => {
                         let mut all = shown.clone();
@@ -384,14 +407,18 @@ fn settings(ui: &mut egui::Ui, theme: &Theme, at: At<'_>, effect: &project::Effe
                 }
                 continue;
             }
-            Show::Colour => {
+            Show::Colour | Show::Screen => {
                 let paint = Paint {
                     red: now[index],
                     green: now.get(index + 1).copied().unwrap_or(0),
                     blue: now.get(index + 2).copied().unwrap_or(0),
                 };
                 let mut rgb = paint.rgb();
-                if super::title::colour_row(ui, theme, label, &mut rgb) {
+                let swatches: &[([u8; 3], &str)] = match show {
+                    Show::Screen => &SCREENS,
+                    _ => &super::title::SWATCHES,
+                };
+                if super::title::colour_row(ui, theme, label, swatches, &mut rgb) {
                     let chosen = Paint::from_rgb(rgb);
                     let mut numbers = next.kind.numbers();
                     for (at, value) in (index..).zip([chosen.red, chosen.green, chosen.blue]) {

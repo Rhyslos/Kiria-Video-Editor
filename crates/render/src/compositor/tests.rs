@@ -1165,6 +1165,100 @@ fn a_drop_shadow_falls_behind_the_picture() {
     assert!((150..250).contains(&half), "about half the light: {half}");
 }
 
+/// A colour as shown (8-bit red, green, blue) as BT.709 limited-range
+/// brightness and colour planes' values.
+fn yuv_of([r, g, b]: [u8; 3]) -> [u8; 3] {
+    let [r, g, b] = [r, g, b].map(|v| f32::from(v) / 255.0);
+    let y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    let u = (b - y) / 1.8556;
+    let v = (r - y) / 1.5748;
+    [
+        (16.0 + 219.0 * y).round() as u8,
+        (128.0 + 224.0 * u).round() as u8,
+        (128.0 + 224.0 * v).round() as u8,
+    ]
+}
+
+/// A flat picture of `rgb` with `effects`, shown.
+fn flat_with(gpu: &Gpu, rgb: [u8; 3], effects: &[crate::Effect]) -> Shown {
+    let size = (16, 16);
+    let planes = Planes::flat(gpu, size, yuv_of(rgb));
+    compose_with(
+        gpu,
+        Working::Linear,
+        EIGHT,
+        size,
+        &[whole(planes.two(), size)],
+        effects,
+    )
+}
+
+#[test]
+fn a_chroma_key_takes_the_screen_away_and_its_spill_off_the_rest() {
+    let Some(gpu) = gpu() else { return };
+    let screen = [40, 180, 70];
+    let key = |spill| crate::Effect::Key {
+        tolerance: 0.4,
+        softness: 0.3,
+        spill,
+        colour: screen.map(|v| f32::from(v) / 255.0),
+    };
+    // The screen, and a darker shade of it: gone.
+    for green in [screen, [25, 110, 45]] {
+        let shown = flat_with(&gpu, green, &[key(0.5)]);
+        assert!(
+            near(shown.at(8, 8), [0, 0, 0], 2),
+            "{green:?} gone: {:?}",
+            shown.at(8, 8)
+        );
+    }
+    // A face and a red shirt stay as they were.
+    for kept in [[200, 150, 120], [180, 40, 40], [128, 128, 128]] {
+        let plain = flat_with(&gpu, kept, &[]);
+        let shown = flat_with(&gpu, kept, &[key(0.5)]);
+        let was = plain.at(8, 8);
+        assert!(
+            near(shown.at(8, 8), [was[0], was[1], was[2]], 3),
+            "{kept:?} kept: {:?} against {:?}",
+            shown.at(8, 8),
+            plain.at(8, 8)
+        );
+    }
+    // A grey with green spilled on it stays, greyer with the spill taken off.
+    let spilled = [120, 150, 120];
+    let left = flat_with(&gpu, spilled, &[key(0.0)]).at(8, 8);
+    let cleaned = flat_with(&gpu, spilled, &[key(1.0)]).at(8, 8);
+    assert!(left[1] > left[0] + 15, "still green without: {left:?}");
+    assert!(cleaned[1].abs_diff(cleaned[0]) <= 4, "grey with: {cleaned:?}");
+    assert!(key(0.5).leaves_holes());
+}
+
+#[test]
+fn a_letterbox_puts_black_bars_round_its_shape() {
+    let Some(gpu) = gpu() else { return };
+    let size = (64, 64);
+    let boxed = |ratio| {
+        with_effects(
+            &gpu,
+            Working::Linear,
+            size,
+            |_, _| 200,
+            &[crate::Effect::Letterbox { ratio }],
+        )
+    };
+    let plain = with_effects(&gpu, Working::Linear, size, |_, _| 200, &[]);
+    // Twice as wide as tall: 16 lines above and below.
+    let wide = boxed(2.0);
+    assert!(near(wide.at(32, 4), [0, 0, 0], 1), "a bar above");
+    assert!(near(wide.at(32, 60), [0, 0, 0], 1), "a bar below");
+    assert_eq!(wide.at(32, 32), plain.at(32, 32));
+    assert_eq!(wide.at(2, 20), plain.at(2, 20), "nothing at the sides");
+    // Half as wide as tall: bars at the sides.
+    let tall = boxed(0.5);
+    assert!(near(tall.at(4, 32), [0, 0, 0], 1), "a bar at the left");
+    assert_eq!(tall.at(32, 2), plain.at(32, 2));
+}
+
 #[test]
 fn blend_modes_mix_with_what_is_below_as_light() {
     let Some(gpu) = gpu() else { return };

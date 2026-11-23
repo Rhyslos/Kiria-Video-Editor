@@ -168,11 +168,13 @@ pub enum EffectKind {
     Corners(Corners),
     Outline(Outline),
     Shadow(Shadow),
+    Key(Key),
+    Letterbox(Letterbox),
 }
 
 impl EffectKind {
     /// Every kind there is, with its usual settings: what is added.
-    pub const ALL: [EffectKind; 14] = [
+    pub const ALL: [EffectKind; 16] = [
         EffectKind::Vignette(Vignette::USUAL),
         EffectKind::Grain(Grain::USUAL),
         EffectKind::Sharpen(Sharpen::USUAL),
@@ -187,6 +189,8 @@ impl EffectKind {
         EffectKind::Corners(Corners::USUAL),
         EffectKind::Outline(Outline::USUAL),
         EffectKind::Shadow(Shadow::USUAL),
+        EffectKind::Key(Key::USUAL),
+        EffectKind::Letterbox(Letterbox::USUAL),
     ];
 
     /// Its name, as the interface shows it.
@@ -206,6 +210,8 @@ impl EffectKind {
             EffectKind::Corners(_) => "Rounded corners",
             EffectKind::Outline(_) => "Outline",
             EffectKind::Shadow(_) => "Drop shadow",
+            EffectKind::Key(_) => "Chroma key",
+            EffectKind::Letterbox(_) => "Letterbox",
         }
     }
 
@@ -236,6 +242,15 @@ impl EffectKind {
                 s.colour.green,
                 s.colour.blue,
             ],
+            EffectKind::Key(k) => vec![
+                k.tolerance,
+                k.softness,
+                k.spill,
+                k.colour.red,
+                k.colour.green,
+                k.colour.blue,
+            ],
+            EffectKind::Letterbox(l) => vec![l.shape],
         }
     }
 
@@ -313,6 +328,13 @@ impl EffectKind {
                 direction: n[3],
                 colour: Paint::from_numbers(&n[4..7]),
             }),
+            EffectKind::Key(_) => EffectKind::Key(Key {
+                tolerance: n[0],
+                softness: n[1],
+                spill: n[2],
+                colour: Paint::from_numbers(&n[3..6]),
+            }),
+            EffectKind::Letterbox(_) => EffectKind::Letterbox(Letterbox { shape: n[0] }),
         }
     }
 
@@ -322,6 +344,7 @@ impl EffectKind {
         match self {
             EffectKind::Outline(_) => Some(1..4),
             EffectKind::Shadow(_) => Some(4..7),
+            EffectKind::Key(_) => Some(3..6),
             _ => None,
         }
     }
@@ -349,6 +372,9 @@ impl EffectKind {
             EffectKind::Outline(o) => shares("Outline", &[o.width]).and_then(|()| o.colour.check("Outline")),
             EffectKind::Shadow(s) => shares("Drop shadow", &[s.amount, s.softness, s.distance, s.direction])
                 .and_then(|()| s.colour.check("Drop shadow")),
+            EffectKind::Key(k) => shares("Chroma key", &[k.tolerance, k.softness, k.spill])
+                .and_then(|()| k.colour.check("Chroma key")),
+            EffectKind::Letterbox(l) => shares("Letterbox", &[l.shape]),
         }
     }
 }
@@ -676,6 +702,57 @@ impl Shadow {
         direction: ONE / 8,
         colour: Paint::BLACK,
     };
+}
+
+/// A colour (a green or blue screen) made see-through, and its colour
+/// taken off what spills onto the rest. Colours are compared by hue and
+/// strength, not brightness, so the screen's shadows go too.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Key {
+    /// How far from the screen's colour still goes: 0 (only the colour
+    /// itself) to [`ONE`] (much of its side of the colour wheel).
+    pub tolerance: i32,
+    /// How gradually the edge goes from see-through to solid: 0 (hard) to
+    /// [`ONE`].
+    pub softness: i32,
+    /// How much of the screen's colour is taken off what stays (green on
+    /// hair and edges): 0 to [`ONE`] (all of it).
+    pub spill: i32,
+    /// The screen's colour.
+    pub colour: Paint,
+}
+
+impl Key {
+    pub const USUAL: Key = Key {
+        tolerance: ONE * 4 / 10,
+        softness: ONE * 3 / 10,
+        spill: ONE / 2,
+        // A lit green screen as a camera records it: 40, 180, 70.
+        colour: Paint {
+            red: 156_863,
+            green: 705_882,
+            blue: 274_510,
+        },
+    };
+}
+
+/// Black bars that give the picture another shape: above and below for a
+/// wider one, at the sides for a narrower one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Letterbox {
+    /// The shape left between the bars: 0 (square, 1 : 1) to [`ONE`]
+    /// (three times as wide as tall).
+    pub shape: i32,
+}
+
+impl Letterbox {
+    /// 2.39 : 1, the wide cinema shape.
+    pub const USUAL: Letterbox = Letterbox { shape: 695_000 };
+
+    /// How many times as wide as tall the shape is.
+    pub fn width_per_height(&self) -> f64 {
+        1.0 + 2.0 * f64::from(self.shape.clamp(0, ONE)) / f64::from(ONE)
+    }
 }
 
 /// Where in the picture an effect applies: a box, its left and top edge and

@@ -19,7 +19,8 @@ struct Pass {
     // Pixels per reference pixel (x): one of 1080 lines of the picture as
     // it came, before any room was made around it.
     reference: vec4<f32>,
-    // The colour an outline or a shadow paints with, as light (rgb).
+    // The colour an outline or a shadow paints with, as light (rgb); a
+    // key's screen colour as shown.
     paint: vec4<f32>,
     // A grade's numbers (pass 10): its wheels (shadows, midtones,
     // highlights, overall: red, green, blue, brightness), then exposure,
@@ -397,6 +398,65 @@ fn silhouette(at: vec2<f32>) -> vec4<f32> {
     return stored(it.paint.rgb, covered * clamp(it.kind_numbers.y, 0.0, 1.0));
 }
 
+// Blue-difference and red-difference of display-like values (BT.709).
+fn chroma_of(v: vec3<f32>) -> vec2<f32> {
+    let y = luma(v);
+    return vec2<f32>((v.b - y) / 1.8556, (v.r - y) / 1.5748);
+}
+
+// 17: the screen's colour (the paint, as shown) made see-through. Colour
+// is taken against brightness, so the screen's shadows count as the
+// screen. A pixel's colour is measured along the screen's from grey, less
+// twice how far it strays to the side, against the screen's own: 1 is the
+// screen, 0 grey, below 0 another colour. What reaches 1 - 0.8 tolerance
+// goes, solid again `softness` (z, up to half the scale) below; `spill`
+// (w) of the screen's colour is taken off what stays, its brightness kept.
+fn keyed(p: vec4<f32>) -> vec4<f32> {
+    let v = pow(clamp(p.rgb, vec3<f32>(0.0), vec3<f32>(1.0)), vec3<f32>(1.0 / 2.4));
+    let screen = chroma_of(it.paint.rgb) / (luma(it.paint.rgb) + 0.1);
+    let strength = max(length(screen), 0.00001);
+    let way = screen / strength;
+    let y = luma(v);
+    let c = chroma_of(v);
+    let relative = c / (y + 0.1);
+    let along = dot(relative, way);
+    let aside = length(relative - way * along);
+    let score = (along - 2.0 * aside) / strength;
+    let reach = 1.0 - 0.8 * clamp(it.kind_numbers.y, 0.0, 1.0);
+    let soft = 0.5 * clamp(it.kind_numbers.z, 0.0, 1.0);
+    let gone = smoothstep(reach - soft - 0.0001, reach, score);
+    // The spill: the part of its colour towards the screen's, taken away.
+    let kept = c - way * max(dot(c, way), 0.0) * clamp(it.kind_numbers.w, 0.0, 1.0);
+    let r = y + 1.5748 * kept.y;
+    let b = y + 1.8556 * kept.x;
+    let g = (y - 0.2126 * r - 0.0722 * b) / 0.7152;
+    let light = pow(max(vec3<f32>(r, g, b), vec3<f32>(0.0)), vec3<f32>(2.4));
+    return stored(light, p.a * (1.0 - gone));
+}
+
+// 18: black bars over the box leaving a shape `ratio` (y) times as wide
+// as tall in its middle: above and below, or at the sides; their edges
+// smoothed over a pixel.
+fn letterboxed(s: vec4<f32>, at: vec2<f32>) -> vec4<f32> {
+    let size = it.linear_size_seed.yz;
+    let low = it.spot.xy * size;
+    let high = it.spot.zw * size;
+    let span = high - low;
+    let ratio = max(it.kind_numbers.y, 0.01);
+    var opening = span;
+    if span.x / max(span.y, 1.0) < ratio {
+        opening.y = span.x / ratio;
+    } else {
+        opening.x = span.y * ratio;
+    }
+    let d = abs(at * size - (low + high) * 0.5) - opening * 0.5;
+    let outside = clamp(max(d.x, d.y) + 0.5, 0.0, 1.0);
+    // Inside the box only: what is around it (room made) stays.
+    let inbox = all(at * size >= low) && all(at * size <= high);
+    let black = select(0.0, outside, inbox);
+    return mix(s, vec4<f32>(0.0, 0.0, 0.0, 1.0), black);
+}
+
 @fragment
 fn effect(in: Corner) -> @location(0) vec4<f32> {
     let kind = i32(round(it.kind_numbers.x));
@@ -411,6 +471,9 @@ fn effect(in: Corner) -> @location(0) vec4<f32> {
     }
     if kind == 15 {
         return silhouette(in.at);
+    }
+    if kind == 18 {
+        return letterboxed(textureSampleLevel(source, smooth_sampler, in.at, 0.0), in.at);
     }
     if kind == 12 || kind == 14 || kind == 16 {
         let s = textureSampleLevel(source, smooth_sampler, in.at, 0.0);
@@ -444,6 +507,7 @@ fn effect(in: Corner) -> @location(0) vec4<f32> {
         case 3: { rgb = bright(p); }
         case 6: { rgb = add(p, in.at); }
         case 10: { rgb = mix(p.rgb, graded(p.rgb), grade_where(p.rgb, in.at)); }
+        case 17: { return keyed(p); }
         default: {}
     }
     return stored(rgb, p.a);

@@ -160,6 +160,32 @@ fn effect(p: &Painter, r: Rect, kind: EffectKind) {
             );
             p.rect_filled(card, 3.0, Color32::from_rgb(196, 204, 220));
         }
+        EffectKind::Key(_) => {
+            // Half still the screen, half keyed: the scene shows through
+            // round a figure.
+            let half = Rect::from_min_max(r.min, at(r, 0.5, 1.0));
+            p.rect_filled(half, 0.0, Color32::from_rgb(40, 180, 70));
+            let figure = Color32::from_rgb(214, 170, 140);
+            p.circle_filled(at(r, 0.5, 0.42), r.height() * 0.13, figure);
+            p.rect_filled(
+                Rect::from_min_max(at(r, 0.36, 0.6), at(r, 0.64, 1.0)),
+                6.0,
+                Color32::from_rgb(70, 80, 110),
+            );
+        }
+        EffectKind::Letterbox(_) => {
+            let bar = r.height() * 0.2;
+            p.rect_filled(
+                Rect::from_min_size(r.min, vec2(r.width(), bar)),
+                0.0,
+                Color32::BLACK,
+            );
+            p.rect_filled(
+                Rect::from_min_max(r.max - vec2(r.width(), bar), r.max),
+                0.0,
+                Color32::BLACK,
+            );
+        }
         EffectKind::Stabilise(_) => {
             let middle = r.center();
             let stroke = Stroke::new(1.3, Color32::WHITE);
