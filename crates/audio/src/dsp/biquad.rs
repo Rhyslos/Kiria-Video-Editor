@@ -55,6 +55,16 @@ impl Coefs {
         )
     }
 
+    /// Takes out what is above `freq` (12 dB an octave beyond it).
+    pub fn low_pass(rate: f32, freq: f32, q: f32) -> Coefs {
+        let (c, s) = Coefs::angle(rate, freq);
+        let alpha = s / (2.0 * f64::from(q));
+        Coefs::normalised(
+            [(1.0 - c) / 2.0, 1.0 - c, (1.0 - c) / 2.0],
+            [1.0 + alpha, -2.0 * c, 1.0 - alpha],
+        )
+    }
+
     /// Keeps a band around `freq`, 0 dB at its centre.
     pub fn band_pass(rate: f32, freq: f32, q: f32) -> Coefs {
         let (c, s) = Coefs::angle(rate, freq);

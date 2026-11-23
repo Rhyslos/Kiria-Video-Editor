@@ -10,9 +10,12 @@
 //! - [`lines`]: volume and pan lines on a fixed grid, and the fader.
 //! - [`loudness`], [`limiter`]: loudness, true peak and the true-peak limiter.
 //! - [`bands`]: the 64 bands by frequency shared by noise profiles and the analyser.
+//! - [`character`]: distortion (drive, radio, phone).
+//! - [`space`]: echo and reverb.
 
 pub mod bands;
 pub mod biquad;
+pub mod character;
 pub mod cleanup;
 pub mod duck;
 pub mod dynamics;
@@ -21,6 +24,7 @@ pub mod level;
 pub mod limiter;
 pub mod lines;
 pub mod loudness;
+pub mod space;
 
 /// 20 / ln(10): decibels from a natural logarithm.
 const DB_PER_NEPER: f32 = 8.685_889;

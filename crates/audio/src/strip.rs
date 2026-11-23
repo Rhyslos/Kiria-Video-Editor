@@ -2,19 +2,22 @@
 //! or off, run in the page's order:
 //!
 //! high pass → clean-up → EQ (the analyser listens here) → compressor →
-//! Loudness → ducking → volume, pan and lines (mute and solo) → meter.
+//! distortion → echo → reverb → Loudness → ducking → volume, pan and lines
+//! (mute and solo) → meter.
 //!
 //! Turning an effect on or off is a flag, never an allocation, so it
 //! travels as a plain command. The clean-up always runs its delay, so
 //! every track is late by the same [`crate::dsp::cleanup::LATENCY`].
 
 use crate::analyser::Tap;
+use crate::dsp::character::Distort;
 use crate::dsp::cleanup::{BinNoise, SpectralGate};
 use crate::dsp::duck::Ducker;
 use crate::dsp::dynamics::Compressor;
 use crate::dsp::filters::{Eq, HighPass};
 use crate::dsp::level::Leveller;
 use crate::dsp::lines::{Fader, Lines};
+use crate::dsp::space::{Echo, Reverb};
 use crate::meter::TrackMeter;
 use crate::readout::TrackReadout;
 use crate::settings::{TrackChange, TrackSettings};
@@ -26,6 +29,9 @@ pub struct Strip {
     cleanup: SpectralGate,
     eq: Eq,
     compressor: Compressor,
+    distort: Distort,
+    echo: Echo,
+    reverb: Reverb,
     level: Leveller,
     duck: Ducker,
     fader: Fader,
@@ -43,6 +49,9 @@ impl Strip {
             cleanup: SpectralGate::new(rate, s.cleanup, noise),
             eq: Eq::new(r, s.eq.bands),
             compressor: Compressor::new(r, s.compressor),
+            distort: Distort::new(r, s.distort),
+            echo: Echo::new(r, s.echo),
+            reverb: Reverb::new(r, s.reverb),
             level: Leveller::new(r, s.level),
             duck: Ducker::new(r, s.duck),
             fader: Fader::new(s.volume_db, s.pan, !s.mute, lines),
@@ -65,6 +74,9 @@ impl Strip {
             TrackChange::Cleanup(c) => self.cleanup.set(c),
             TrackChange::Duck(d) => self.duck.set(d),
             TrackChange::Level(l) => self.level.set(l),
+            TrackChange::Distort(d) => self.distort.set(d),
+            TrackChange::Echo(e) => self.echo.set(e),
+            TrackChange::Reverb(r) => self.reverb.set(r),
             TrackChange::Volume(v) => self.fader.volume_db = v,
             TrackChange::Pan(p) => self.fader.pan = p,
             TrackChange::Key(_) | TrackChange::EqOn(_) | TrackChange::Mute(_) | TrackChange::Solo(_) => {}
@@ -113,6 +125,9 @@ impl Strip {
             tap.send(l, r);
         }
         self.compressor.process(l, r);
+        self.distort.process(l, r);
+        self.echo.process(l, r);
+        self.reverb.process(l, r);
         self.level.process(l, r);
         if !s.key {
             self.duck.process(key_db, l, r);
@@ -140,6 +155,9 @@ impl Strip {
         self.cleanup.take_state(&old.cleanup);
         self.eq.take_state(&old.eq);
         self.compressor.take_state(&old.compressor);
+        self.distort.take_state(&old.distort);
+        self.echo.take_state(&old.echo);
+        self.reverb.take_state(&old.reverb);
         self.level.take_state(&old.level);
         self.duck.take_state(&old.duck);
         self.fader.take_state(&old.fader);
