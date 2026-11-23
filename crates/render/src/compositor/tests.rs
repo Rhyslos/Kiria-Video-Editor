@@ -1260,6 +1260,75 @@ fn a_letterbox_puts_black_bars_round_its_shape() {
 }
 
 #[test]
+fn colour_looks_change_colour_and_keep_brightness() {
+    let Some(gpu) = gpu() else { return };
+    let red = [200, 40, 40];
+    let at = |rgb, effects: &[crate::Effect]| flat_with(&gpu, rgb, effects).at(8, 8);
+    // Black and white: grey; nothing at amount 0.
+    let grey = at(red, &[crate::Effect::Mono { amount: 1.0 }]);
+    assert!(
+        grey[0].abs_diff(grey[1]) <= 2 && grey[1].abs_diff(grey[2]) <= 2,
+        "{grey:?}"
+    );
+    assert_eq!(at(red, &[crate::Effect::Mono { amount: 0.0 }]), at(red, &[]));
+    // Sepia: warm, red over green over blue.
+    let brown = at([128, 128, 128], &[crate::Effect::Sepia { amount: 1.0 }]);
+    assert!(brown[0] > brown[1] && brown[1] > brown[2], "{brown:?}");
+    // Duotone: black takes the shadows' colour, white the highlights'.
+    let two = |rgb| {
+        at(
+            rgb,
+            &[crate::Effect::Duotone {
+                amount: 1.0,
+                shadows: [0.0, 0.0, 1.0],
+                highlights: [1.0, 1.0, 0.0],
+            }],
+        )
+    };
+    assert!(near(two([0, 0, 0]), [0, 0, 255], 3), "{:?}", two([0, 0, 0]));
+    assert!(
+        near(two([255, 255, 255]), [255, 255, 0], 3),
+        "{:?}",
+        two([255, 255, 255])
+    );
+    // Invert: the negative as shown.
+    let negative = at(red, &[crate::Effect::Invert { amount: 1.0 }]);
+    let plain = at(red, &[]);
+    for i in 0..3 {
+        assert!(
+            (255 - plain[i]).abs_diff(negative[i]) <= 3,
+            "{negative:?} against {plain:?}"
+        );
+    }
+}
+
+#[test]
+fn chromatic_aberration_moves_red_and_blue_apart() {
+    let Some(gpu) = gpu() else { return };
+    let size = (64, 64);
+    // Dark left half, light right half.
+    let step = |x: u32, _| if x < 32 { 40 } else { 200 };
+    let reference = 1080.0 / 64.0;
+    let split = with_effects(
+        &gpu,
+        Working::Linear,
+        size,
+        step,
+        &[crate::Effect::Split {
+            offset: (4.0 * reference, 0.0),
+        }],
+    );
+    let plain = with_effects(&gpu, Working::Linear, size, step, &[]);
+    // Just right of the edge: red still comes from the dark half, blue
+    // from the light.
+    let edge = split.at(33, 32);
+    assert!(edge[0] + 50 < edge[2], "{edge:?}");
+    // Far from the edge: as it was.
+    assert_eq!(split.at(10, 32), plain.at(10, 32));
+    assert_eq!(split.at(54, 32), plain.at(54, 32));
+}
+
+#[test]
 fn blend_modes_mix_with_what_is_below_as_light() {
     let Some(gpu) = gpu() else { return };
     let size = (16, 16);

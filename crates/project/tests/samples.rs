@@ -199,6 +199,12 @@ fn rich_project() -> Project {
     // Keyed off a green screen, in a cinema shape (format 36).
     let (effects, _) = effects.with_added(project::EffectKind::ALL[14]);
     let (effects, _) = effects.with_added(project::EffectKind::ALL[15]);
+    // Half black and white, a duotone, its colours split (format 37).
+    let (effects, _) = effects.with_added(project::EffectKind::Mono(project::effects::Amount {
+        amount: 500_000,
+    }));
+    let (effects, _) = effects.with_added(project::EffectKind::ALL[18]);
+    let (effects, _) = effects.with_added(project::EffectKind::ALL[20]);
     // Graded on the Color page: warmer and a stop down, its shadows
     // lifted a little towards blue (format 28).
     let mut grade = project::Grade::default();
@@ -835,10 +841,47 @@ fn the_current_sample_has_a_keyed_picture_in_a_cinema_shape() {
     let clip = &project.active().expect("a timeline").video_tracks[0].clips[0];
     let kinds: Vec<project::EffectKind> = clip.effects.iter().map(|e| e.kind).collect();
     assert!(kinds.contains(&project::EffectKind::Key(project::effects::Key::USUAL)));
-    match kinds.last() {
+    match kinds
+        .iter()
+        .find(|k| matches!(k, project::EffectKind::Letterbox(_)))
+    {
         Some(project::EffectKind::Letterbox(l)) => assert!((l.width_per_height() - 2.39).abs() < 0.001),
         other => panic!("no letterbox: {other:?}"),
     }
+}
+
+#[test]
+fn version_36_sample_opens_without_the_colour_looks() {
+    let project = file::load(&sample_path(36)).expect("the version 36 sample opens");
+    let looks = [
+        "Black and white",
+        "Sepia",
+        "Duotone",
+        "Invert",
+        "Chromatic aberration",
+    ];
+    for seq in project.sequences.iter() {
+        let clips = seq.tracks().flat_map(|t| t.clips.iter());
+        assert!(
+            clips
+                .flat_map(|c| c.effects.iter())
+                .all(|e| !looks.contains(&e.kind.name()))
+        );
+    }
+}
+
+#[test]
+fn the_current_sample_has_colour_looks() {
+    let project = file::load(&sample_path(FORMAT_VERSION)).expect("the sample opens");
+    let clip = &project.active().expect("a timeline").video_tracks[0].clips[0];
+    let kinds: Vec<project::EffectKind> = clip.effects.iter().map(|e| e.kind).collect();
+    assert!(
+        kinds.contains(&project::EffectKind::Mono(project::effects::Amount {
+            amount: 500_000
+        }))
+    );
+    assert!(kinds.contains(&project::EffectKind::Duotone(project::effects::Duotone::USUAL)));
+    assert!(kinds.contains(&project::EffectKind::Split(project::effects::Split::USUAL)));
 }
 
 #[test]
@@ -938,8 +981,8 @@ fn the_current_sample_has_a_picture_mixed_as_light() {
 fn the_current_sample_has_effects_one_switched_off() {
     let project = file::load(&sample_path(FORMAT_VERSION)).expect("the sample opens");
     let clip = &project.active().expect("a timeline").video_tracks[0].clips[0];
-    assert_eq!(clip.effects.iter().count(), 16);
-    assert_eq!(clip.effects.applied().count(), 14);
+    assert_eq!(clip.effects.iter().count(), 19);
+    assert_eq!(clip.effects.applied().count(), 17);
     assert!(clip.effects.check().is_ok());
 }
 

@@ -64,7 +64,14 @@ impl Item {
 pub const RECENT: usize = 5;
 
 /// The groups, in the order shown.
-const GROUPS: [&str; 5] = ["Motion", "Frame", "Keying", "Blur and censor", "Stylise"];
+const GROUPS: [&str; 6] = [
+    "Motion",
+    "Frame",
+    "Keying",
+    "Colour",
+    "Blur and censor",
+    "Stylise",
+];
 
 /// Which group an effect is in, and a line on what it does.
 fn about(kind: &EffectKind) -> (&'static str, &'static str) {
@@ -85,6 +92,14 @@ fn about(kind: &EffectKind) -> (&'static str, &'static str) {
         EffectKind::Shadow(_) => ("Frame", "A soft shadow behind it, lifting it off what is below"),
         EffectKind::Letterbox(_) => ("Frame", "Black bars for a wider shape, as in the cinema"),
         EffectKind::Key(_) => ("Keying", "Takes a green or blue screen away, and its spill"),
+        EffectKind::Mono(_) => ("Colour", "Grey, as in a black and white film"),
+        EffectKind::Sepia(_) => ("Colour", "Warm brown, as an old photograph"),
+        EffectKind::Duotone(_) => ("Colour", "Its brightness in two colours of your choice"),
+        EffectKind::Invert(_) => ("Colour", "The negative: dark for light, colours turned round"),
+        EffectKind::Split(_) => (
+            "Stylise",
+            "Red and blue drawn apart: an RGB split, as a cheap lens",
+        ),
     }
 }
 
@@ -469,6 +484,7 @@ mod tests {
             .collect();
         assert_eq!(facecam, ["Rounded corners", "Outline"]);
         assert!(matches(&EffectKind::ALL[14], "green screen"));
+        assert!(matches(&EffectKind::ALL[20], "rgb split"));
         assert!(matches(&EffectKind::ALL[10], "flip"));
         assert!(!matches(&EffectKind::ALL[0], "nothing like it"));
     }

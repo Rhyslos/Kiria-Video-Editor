@@ -652,6 +652,27 @@ fn effect_passes(clip: &Clip, at: Time) -> Vec<render::Effect> {
             project::EffectKind::Letterbox(l) => render::Effect::Letterbox {
                 ratio: l.width_per_height() as f32,
             },
+            project::EffectKind::Mono(a) => render::Effect::Mono {
+                amount: fraction(a.amount),
+            },
+            project::EffectKind::Sepia(a) => render::Effect::Sepia {
+                amount: fraction(a.amount),
+            },
+            project::EffectKind::Invert(a) => render::Effect::Invert {
+                amount: fraction(a.amount),
+            },
+            project::EffectKind::Duotone(d) => render::Effect::Duotone {
+                amount: fraction(d.amount),
+                shadows: paint(d.shadows),
+                highlights: paint(d.highlights),
+            },
+            project::EffectKind::Split(s) => {
+                let distance = 20.0 * fraction(s.amount);
+                let (down, across) = (std::f32::consts::TAU * fraction(s.direction)).sin_cos();
+                render::Effect::Split {
+                    offset: (across * distance, down * distance),
+                }
+            }
         })
         .collect()
 }
@@ -974,6 +995,26 @@ mod tests {
             panic!("a letterbox");
         };
         assert!((ratio - 2.39).abs() < 0.001, "{ratio}");
+    }
+
+    #[test]
+    fn colour_looks_take_their_colours_as_light() {
+        use project::effects::{Duotone, Split};
+        let render::Effect::Duotone { highlights, .. } =
+            moved_at(project::EffectKind::Duotone(Duotone::USUAL), 1.0)
+        else {
+            panic!("a duotone");
+        };
+        assert_eq!(highlights[0], 1.0);
+        assert!((highlights[2] - (60.0f32 / 255.0).powf(2.4)).abs() < 0.0001);
+        let split = project::EffectKind::Split(Split {
+            amount: 1_000_000,
+            direction: 0,
+        });
+        assert_eq!(
+            moved_at(split, 1.0),
+            render::Effect::Split { offset: (20.0, 0.0) }
+        );
     }
 
     #[test]

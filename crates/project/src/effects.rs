@@ -170,11 +170,16 @@ pub enum EffectKind {
     Shadow(Shadow),
     Key(Key),
     Letterbox(Letterbox),
+    Mono(Amount),
+    Sepia(Amount),
+    Duotone(Duotone),
+    Invert(Amount),
+    Split(Split),
 }
 
 impl EffectKind {
     /// Every kind there is, with its usual settings: what is added.
-    pub const ALL: [EffectKind; 16] = [
+    pub const ALL: [EffectKind; 21] = [
         EffectKind::Vignette(Vignette::USUAL),
         EffectKind::Grain(Grain::USUAL),
         EffectKind::Sharpen(Sharpen::USUAL),
@@ -191,6 +196,11 @@ impl EffectKind {
         EffectKind::Shadow(Shadow::USUAL),
         EffectKind::Key(Key::USUAL),
         EffectKind::Letterbox(Letterbox::USUAL),
+        EffectKind::Mono(Amount::WHOLLY),
+        EffectKind::Sepia(Amount::WHOLLY),
+        EffectKind::Duotone(Duotone::USUAL),
+        EffectKind::Invert(Amount::WHOLLY),
+        EffectKind::Split(Split::USUAL),
     ];
 
     /// Its name, as the interface shows it.
@@ -212,6 +222,11 @@ impl EffectKind {
             EffectKind::Shadow(_) => "Drop shadow",
             EffectKind::Key(_) => "Chroma key",
             EffectKind::Letterbox(_) => "Letterbox",
+            EffectKind::Mono(_) => "Black and white",
+            EffectKind::Sepia(_) => "Sepia",
+            EffectKind::Duotone(_) => "Duotone",
+            EffectKind::Invert(_) => "Invert",
+            EffectKind::Split(_) => "Chromatic aberration",
         }
     }
 
@@ -251,6 +266,17 @@ impl EffectKind {
                 k.colour.blue,
             ],
             EffectKind::Letterbox(l) => vec![l.shape],
+            EffectKind::Mono(a) | EffectKind::Sepia(a) | EffectKind::Invert(a) => vec![a.amount],
+            EffectKind::Duotone(d) => vec![
+                d.amount,
+                d.shadows.red,
+                d.shadows.green,
+                d.shadows.blue,
+                d.highlights.red,
+                d.highlights.green,
+                d.highlights.blue,
+            ],
+            EffectKind::Split(s) => vec![s.amount, s.direction],
         }
     }
 
@@ -335,17 +361,18 @@ impl EffectKind {
                 colour: Paint::from_numbers(&n[3..6]),
             }),
             EffectKind::Letterbox(_) => EffectKind::Letterbox(Letterbox { shape: n[0] }),
-        }
-    }
-
-    /// Where its colour's red, green and blue are among its numbers, if it
-    /// has a colour.
-    pub fn paint_numbers(&self) -> Option<std::ops::Range<usize>> {
-        match self {
-            EffectKind::Outline(_) => Some(1..4),
-            EffectKind::Shadow(_) => Some(4..7),
-            EffectKind::Key(_) => Some(3..6),
-            _ => None,
+            EffectKind::Mono(_) => EffectKind::Mono(Amount { amount: n[0] }),
+            EffectKind::Sepia(_) => EffectKind::Sepia(Amount { amount: n[0] }),
+            EffectKind::Invert(_) => EffectKind::Invert(Amount { amount: n[0] }),
+            EffectKind::Duotone(_) => EffectKind::Duotone(Duotone {
+                amount: n[0],
+                shadows: Paint::from_numbers(&n[1..4]),
+                highlights: Paint::from_numbers(&n[4..7]),
+            }),
+            EffectKind::Split(_) => EffectKind::Split(Split {
+                amount: n[0],
+                direction: n[1],
+            }),
         }
     }
 
@@ -375,6 +402,13 @@ impl EffectKind {
             EffectKind::Key(k) => shares("Chroma key", &[k.tolerance, k.softness, k.spill])
                 .and_then(|()| k.colour.check("Chroma key")),
             EffectKind::Letterbox(l) => shares("Letterbox", &[l.shape]),
+            EffectKind::Mono(a) | EffectKind::Sepia(a) | EffectKind::Invert(a) => {
+                shares(self.name(), &[a.amount])
+            }
+            EffectKind::Duotone(d) => shares("Duotone", &[d.amount])
+                .and_then(|()| d.shadows.check("Duotone"))
+                .and_then(|()| d.highlights.check("Duotone")),
+            EffectKind::Split(s) => shares("Chromatic aberration", &[s.amount, s.direction]),
         }
     }
 }
@@ -753,6 +787,63 @@ impl Letterbox {
     pub fn width_per_height(&self) -> f64 {
         1.0 + 2.0 * f64::from(self.shape.clamp(0, ONE)) / f64::from(ONE)
     }
+}
+
+/// An effect with one setting, how much of it: black and white, sepia,
+/// invert.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Amount {
+    /// 0 (the picture as it was) to [`ONE`] (all the way).
+    pub amount: i32,
+}
+
+impl Amount {
+    pub const WHOLLY: Amount = Amount { amount: ONE };
+}
+
+/// The picture's brightness in two colours: its shadows in one, its
+/// highlights in the other, and the tones between mixed from them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Duotone {
+    /// 0 (the picture as it was) to [`ONE`] (only the two colours).
+    pub amount: i32,
+    pub shadows: Paint,
+    pub highlights: Paint,
+}
+
+impl Duotone {
+    /// Deep purple shadows, warm orange highlights.
+    pub const USUAL: Duotone = Duotone {
+        amount: ONE,
+        shadows: Paint {
+            red: 156_863,
+            green: 78_431,
+            blue: 431_373,
+        },
+        highlights: Paint {
+            red: ONE,
+            green: 666_667,
+            blue: 235_294,
+        },
+    };
+}
+
+/// Red and blue drawn apart from green, as a cheap lens does at its edges:
+/// a chromatic aberration, or an RGB split.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Split {
+    /// How far apart: 0 to [`ONE`] (twenty pixels of 1080 lines each way).
+    pub amount: i32,
+    /// Which way red goes (blue the other): 0 to [`ONE`] once round
+    /// clockwise from the right.
+    pub direction: i32,
+}
+
+impl Split {
+    pub const USUAL: Split = Split {
+        amount: ONE / 4,
+        direction: 0,
+    };
 }
 
 /// Where in the picture an effect applies: a box, its left and top edge and

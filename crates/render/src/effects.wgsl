@@ -457,6 +457,38 @@ fn letterboxed(s: vec4<f32>, at: vec2<f32>) -> vec4<f32> {
     return mix(s, vec4<f32>(0.0, 0.0, 0.0, 1.0), black);
 }
 
+// 19-22: colour looks on light, each mixed in by `amount` (y). Black and
+// white is grey of the same brightness; sepia a warm brown of it; duotone
+// the brightness as shown, from the paint colour (shadows) to the spot
+// row's (highlights); invert the negative of the values as shown.
+fn looked(p: vec4<f32>, kind: i32) -> vec3<f32> {
+    let amount = clamp(it.kind_numbers.y, 0.0, 1.0);
+    let grey = luma(max(p.rgb, vec3<f32>(0.0)));
+    var to = vec3<f32>(grey);
+    if kind == 20 {
+        let brown = vec3<f32>(1.0, 0.72, 0.42);
+        to = grey * brown / luma(brown);
+    } else if kind == 21 {
+        let t = pow(clamp(grey, 0.0, 1.0), 1.0 / 2.4);
+        to = mix(it.paint.rgb, it.spot.rgb, t);
+    } else if kind == 22 {
+        let v = pow(clamp(p.rgb, vec3<f32>(0.0), vec3<f32>(1.0)), vec3<f32>(1.0 / 2.4));
+        to = pow(vec3<f32>(1.0) - v, vec3<f32>(2.4));
+    }
+    return mix(p.rgb, to, amount);
+}
+
+// 23: red taken from `offset` (zw, reference pixels) back, blue from as
+// far the other way, green where it is: stored values moved, no light
+// needed.
+fn split(at: vec2<f32>) -> vec4<f32> {
+    let d = it.kind_numbers.zw * scale() * texel();
+    let red = textureSampleLevel(source, smooth_sampler, at - d, 0.0);
+    let green = textureSampleLevel(source, smooth_sampler, at, 0.0);
+    let blue = textureSampleLevel(source, smooth_sampler, at + d, 0.0);
+    return vec4<f32>(red.r, green.g, blue.b, max(green.a, max(red.a, blue.a)));
+}
+
 @fragment
 fn effect(in: Corner) -> @location(0) vec4<f32> {
     let kind = i32(round(it.kind_numbers.x));
@@ -471,6 +503,9 @@ fn effect(in: Corner) -> @location(0) vec4<f32> {
     }
     if kind == 15 {
         return silhouette(in.at);
+    }
+    if kind == 23 {
+        return split(in.at);
     }
     if kind == 18 {
         return letterboxed(textureSampleLevel(source, smooth_sampler, in.at, 0.0), in.at);
@@ -508,6 +543,7 @@ fn effect(in: Corner) -> @location(0) vec4<f32> {
         case 6: { rgb = add(p, in.at); }
         case 10: { rgb = mix(p.rgb, graded(p.rgb), grade_where(p.rgb, in.at)); }
         case 17: { return keyed(p); }
+        case 19, 20, 21, 22: { rgb = looked(p, kind); }
         default: {}
     }
     return stored(rgb, p.a);
