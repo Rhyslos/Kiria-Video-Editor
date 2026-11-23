@@ -165,7 +165,10 @@ impl Layer {
     /// Whether nothing below this layer can be seen in a frame of `frame` pixels.
     pub fn hides_what_is_below(&self, frame: (u32, u32)) -> bool {
         // Any mode but over lets what is below show through.
-        self.opacity >= 1.0 && self.mode == render::Mode::Normal && self.area.covers(frame)
+        self.opacity >= 1.0
+            && self.mode == render::Mode::Normal
+            && self.area.covers(frame)
+            && !self.effects.iter().any(render::Effect::leaves_holes)
     }
 }
 
@@ -237,7 +240,8 @@ fn seen(project: &Project, sequence: &Sequence, at: Time, depth: usize) -> (Vec<
                 let hides = inner_opaque
                     && group.opacity >= 1.0
                     && group.mode == render::Mode::Normal
-                    && group.area.covers(size);
+                    && group.area.covers(size)
+                    && !group.effects.iter().any(render::Effect::leaves_holes);
                 nodes.push(Node::Timeline(group, inner));
                 hides
             }
@@ -309,7 +313,7 @@ fn nested(
         part: shown_part(&look),
         opacity,
         colour: colour(&look),
-        effects: effects(clip, at),
+        effects: in_the_frame(effects(clip, at), shown_area(&look, size, frame), frame),
         mode: mode(clip.mode),
     };
     Some((group, nodes, opaque))
@@ -350,16 +354,17 @@ fn layer_seen(
 ) -> Option<Layer> {
     let video = media.info.video.as_ref()?;
     let part = shown_part(&look);
+    let area = shown_area(&look, video.display_size(), frame);
     Some(Layer {
         clip: clip.id,
         media: clip.media,
         stream: clip.stream,
         source_time,
-        area: shown_area(&look, video.display_size(), frame),
+        area,
         part,
         opacity: faded(clip, at, fraction(look.opacity)),
         colour: colour(&look),
-        effects: effects(clip, at),
+        effects: in_the_frame(effects(clip, at), area, frame),
         mode: mode(clip.mode),
         blend: match clip.blend {
             FrameBlend::Blend => blend_at(source_time, video.frame_rate),
@@ -387,16 +392,17 @@ fn title_layer(clip: &Clip, frame: (u32, u32), at: Time) -> Option<Layer> {
     let look = clip.look_at(at);
     let covered = crate::title::bounds(words, frame)?;
     let shown = crate::title::overlap(shown_part(&look), covered)?;
+    let area = Area::of_part(placement(&look, frame, frame), shown);
     Some(Layer {
         clip: clip.id,
         media: clip.media,
         stream: 0,
         source_time: Time::ZERO,
-        area: Area::of_part(placement(&look, frame, frame), shown),
+        area,
         part: Part::WHOLE,
         opacity: faded(clip, at, fraction(look.opacity)),
         colour: colour(&look),
-        effects: effects(clip, at),
+        effects: in_the_frame(effects(clip, at), area, frame),
         mode: mode(clip.mode),
         blend: None,
         title: Some(Box::new(crate::title::TitleLayer {
@@ -421,6 +427,43 @@ fn effects(clip: &Clip, at: Time) -> Vec<render::Effect> {
     passes.extend(effect_passes(clip, at));
     passes
 }
+
+/// `effects` with an outline's and a shadow's sizes made those of the
+/// frame (`frame` pixels, the picture placed at `area`) rather than of the
+/// picture: a line around a small facecam is as thick as one around the
+/// whole frame. Every other effect keeps sizes of its own picture.
+fn in_the_frame(effects: Vec<render::Effect>, area: Area, frame: (u32, u32)) -> Vec<render::Effect> {
+    let tall = area.size().1;
+    if tall <= 0.0 {
+        return effects;
+    }
+    // Pictures shown tiny would ask for room far larger than themselves.
+    let by = (frame.1 as f32 / tall).min(FRAMED_MOST);
+    effects
+        .into_iter()
+        .map(|effect| match effect {
+            render::Effect::Outline { width, colour } => render::Effect::Outline {
+                width: width * by,
+                colour,
+            },
+            render::Effect::Shadow {
+                amount,
+                softness,
+                offset,
+                colour,
+            } => render::Effect::Shadow {
+                amount,
+                softness: softness * by,
+                offset: (offset.0 * by, offset.1 * by),
+                colour,
+            },
+            other => other,
+        })
+        .collect()
+}
+
+/// The most an outline or a shadow is enlarged by for a small picture.
+const FRAMED_MOST: f32 = 20.0;
 
 /// A grade layer's curves sampled as the shader takes them, or none when
 /// they are straight.
@@ -578,8 +621,35 @@ fn effect_passes(clip: &Clip, at: Time) -> Vec<render::Effect> {
                     shift: (middle(p.from_x, p.to_x), middle(p.from_y, p.to_y)),
                 }
             }
+            project::EffectKind::Mirror(m) => render::Effect::Mirror {
+                across: m.is_across(),
+                down: m.is_down(),
+            },
+            project::EffectKind::Corners(c) => render::Effect::Corners {
+                radius: fraction(c.radius),
+            },
+            project::EffectKind::Outline(o) => render::Effect::Outline {
+                width: 1.0 + 39.0 * fraction(o.width),
+                colour: paint(o.colour),
+            },
+            project::EffectKind::Shadow(s) => {
+                let distance = 100.0 * fraction(s.distance);
+                let (down, across) = (std::f32::consts::TAU * fraction(s.direction)).sin_cos();
+                render::Effect::Shadow {
+                    amount: fraction(s.amount),
+                    softness: 60.0 * fraction(s.softness),
+                    offset: (across * distance, down * distance),
+                    colour: paint(s.colour),
+                }
+            }
         })
         .collect()
+}
+
+/// An effect's colour as light: each of red, green and blue as shown,
+/// turned into light by the reference display's curve, as the pictures are.
+fn paint(colour: project::effects::Paint) -> [f32; 3] {
+    [colour.red, colour.green, colour.blue].map(|v| fraction(v).clamp(0.0, 1.0).powf(2.4))
 }
 
 /// A blend mode as the compositor takes it.
@@ -822,6 +892,104 @@ mod tests {
         let at = Time::from_ratio((at * 1000.0).round() as i64, 1000).unwrap();
         describe(&project, project.active().unwrap(), at).layers[0].effects[0]
     }
+
+    #[test]
+    fn a_framed_picture_gets_its_shape_and_lets_what_is_below_show() {
+        use project::effects::{Corners, Mirror, Outline, Paint, Shadow};
+        let mirror = moved_at(project::EffectKind::Mirror(Mirror::USUAL), 1.0);
+        assert_eq!(
+            mirror,
+            render::Effect::Mirror {
+                across: true,
+                down: false
+            }
+        );
+        let outline = project::EffectKind::Outline(Outline {
+            width: 1_000_000,
+            colour: Paint::from_rgb([255, 0, 0]),
+        });
+        assert_eq!(
+            moved_at(outline, 1.0),
+            render::Effect::Outline {
+                width: 40.0,
+                colour: [1.0, 0.0, 0.0]
+            }
+        );
+        // A quarter of the way round falls straight down.
+        let shadow = project::EffectKind::Shadow(Shadow {
+            distance: 500_000,
+            direction: 250_000,
+            ..Shadow::USUAL
+        });
+        let render::Effect::Shadow { offset, colour, .. } = moved_at(shadow, 1.0) else {
+            panic!("a shadow");
+        };
+        assert!(
+            offset.0.abs() < 0.001 && (offset.1 - 50.0).abs() < 0.001,
+            "{offset:?}"
+        );
+        assert_eq!(colour, [0.0; 3]);
+        // A full-frame picture with rounded corners no longer hides the one below.
+        let project = import(
+            &Project::new("T", SequenceSettings::GAME_CLIP),
+            media("a.mkv", (1920, 1080), 0),
+        );
+        let sequence = project.active_sequence;
+        let clip = project.active().unwrap().video_tracks[0].clips[0].id;
+        let rounded = Command::AddEffect {
+            sequence,
+            clip,
+            kind: project::EffectKind::Corners(Corners::USUAL),
+        }
+        .apply(&project)
+        .unwrap();
+        let frame = describe(&rounded, rounded.active().unwrap(), Time::seconds(3));
+        assert!(!frame.layers[0].hides_what_is_below(frame.size));
+    }
+
+    #[test]
+    fn an_outline_and_a_shadow_are_as_thick_on_a_small_picture() {
+        let frame = (1920, 1080);
+        let quarter = Area::fitted(frame, frame).scaled(0.25, 0.25);
+        let effects = vec![
+            render::Effect::Outline {
+                width: 10.0,
+                colour: [1.0; 3],
+            },
+            render::Effect::Shadow {
+                amount: 1.0,
+                softness: 5.0,
+                offset: (2.0, 3.0),
+                colour: [0.0; 3],
+            },
+            HARD_VIGNETTE,
+        ];
+        let framed = in_the_frame(effects, quarter, frame);
+        assert_eq!(
+            framed[0],
+            render::Effect::Outline {
+                width: 40.0,
+                colour: [1.0; 3]
+            },
+            "a quarter as tall: four times its own reference pixels"
+        );
+        assert_eq!(
+            framed[1],
+            render::Effect::Shadow {
+                amount: 1.0,
+                softness: 20.0,
+                offset: (8.0, 12.0),
+                colour: [0.0; 3]
+            }
+        );
+        assert_eq!(framed[2], HARD_VIGNETTE, "others keep their picture's sizes");
+    }
+
+    const HARD_VIGNETTE: render::Effect = render::Effect::Vignette {
+        amount: 1.0,
+        size: 0.5,
+        softness: 0.0,
+    };
 
     #[test]
     fn motion_follows_the_clip_from_its_start_to_its_end() {

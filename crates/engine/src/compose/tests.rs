@@ -144,6 +144,36 @@ fn a_clips_effects_change_its_own_picture_before_it_is_placed() {
 }
 
 #[test]
+fn an_outline_is_drawn_past_the_pictures_place_in_the_frame() {
+    let Some(mut composer) = composer() else {
+        eprintln!("no graphics device here: effects aren't checked");
+        return;
+    };
+    let size = (64, 64);
+    // A white picture a quarter of the frame, in its middle, with a red
+    // line 4 pixels of its 32 lines around it.
+    let quarter = Area {
+        origin: (16.0, 16.0),
+        ..Area::fitted(size, size).scaled(0.5, 0.5)
+    };
+    let outline = render::Effect::Outline {
+        width: 4.0 * 1080.0 / 32.0,
+        colour: [1.0, 0.0, 0.0],
+    };
+    let framed = FrameDescription {
+        size,
+        layers: vec![layer(quarter, vec![outline])],
+        steps: vec![Step::Picture(0)],
+    };
+    let composed = composer.compose(&framed, vec![(0, white(size), None)]).unwrap();
+    let shown = light(&composer, &composed);
+    let at = |x: u32, y: u32| shown[(y * size.0 + x) as usize];
+    assert!(at(32, 32) > 0.99, "the picture: {}", at(32, 32));
+    assert!(at(14, 32) > 0.9, "the line beside it, in red: {}", at(14, 32));
+    assert!(at(4, 32) < 0.01, "nothing further out: {}", at(4, 32));
+}
+
+#[test]
 fn a_grade_changes_the_light_of_the_picture() {
     let Some(mut composer) = composer() else {
         eprintln!("no graphics device here: grades aren't checked");

@@ -50,6 +50,42 @@ pub enum Effect {
     },
     /// A grade's primary corrections (`GradeNumbers`), on light.
     Grade(GradeNumbers),
+    /// The picture turned over: left for right (`across`), top for bottom
+    /// (`down`).
+    Mirror { across: bool, down: bool },
+    /// The corners rounded off, see-through outside the curve: `radius`
+    /// 0-1 of half the shorter side.
+    Corners { radius: f32 },
+    /// A line `width` reference pixels thick around the picture's edge,
+    /// outside it, of `colour` (light, 0-1 each).
+    Outline { width: f32, colour: [f32; 3] },
+    /// A shadow of `colour` (light) behind the picture, `amount` 0-1 dark,
+    /// its edge blurred `softness` reference pixels wide, falling `offset`
+    /// reference pixels across and down.
+    Shadow {
+        amount: f32,
+        softness: f32,
+        offset: (f32, f32),
+        colour: [f32; 3],
+    },
+}
+
+impl Effect {
+    /// Whether it may make part of an opaque picture see-through, so what
+    /// is below it shows.
+    pub fn leaves_holes(&self) -> bool {
+        matches!(self, Effect::Corners { .. })
+    }
+
+    /// How far past the picture's edges it draws, in reference pixels: the
+    /// picture is given that much room on every side first.
+    fn reach(&self) -> f32 {
+        match *self {
+            Effect::Outline { width, .. } => width + 2.0,
+            Effect::Shadow { softness, offset, .. } => offset.0.hypot(offset.1) + 2.0 * softness + 2.0,
+            _ => 0.0,
+        }
+    }
 }
 
 /// A grade layer's numbers as the shader takes them: each wheel's red,
@@ -200,6 +236,32 @@ enum Pass {
         shift: (f32, f32),
     },
     Grade(GradeNumbers),
+    Mirror {
+        across: bool,
+        down: bool,
+        within: Spot,
+    },
+    Corners {
+        radius: f32,
+        within: Spot,
+    },
+    /// The picture copied into a larger one, into `within`.
+    Room {
+        within: Spot,
+    },
+    Outline {
+        width: f32,
+        colour: [f32; 3],
+    },
+    /// What the picture covers, filled with a colour at `amount`, moved by
+    /// `offset` (reference pixels): a shadow before it is blurred.
+    Silhouette {
+        amount: f32,
+        offset: (f32, f32),
+        colour: [f32; 3],
+    },
+    /// The picture over the second one (its shadow).
+    Over,
 }
 
 impl Pass {
@@ -220,6 +282,27 @@ impl Pass {
             Pass::Pixelate { size, .. } => [8.0, size, 0.0, 0.0],
             Pass::Move { scale, fixed, .. } => [9.0, scale, fixed.0, fixed.1],
             Pass::Grade(_) => [10.0, 0.0, 0.0, 0.0],
+            Pass::Mirror { across, down, .. } => [
+                11.0,
+                if across { 1.0 } else { 0.0 },
+                if down { 1.0 } else { 0.0 },
+                0.0,
+            ],
+            Pass::Corners { radius, .. } => [12.0, radius, 0.0, 0.0],
+            Pass::Room { .. } => [13.0, 0.0, 0.0, 0.0],
+            Pass::Outline { width, .. } => [14.0, width, 0.0, 0.0],
+            Pass::Silhouette { amount, offset, .. } => [15.0, amount, offset.0, offset.1],
+            Pass::Over => [16.0, 0.0, 0.0, 0.0],
+        }
+    }
+
+    /// The colour it paints with, as light.
+    fn paint(self) -> [f32; 4] {
+        match self {
+            Pass::Outline { colour, .. } | Pass::Silhouette { colour, .. } => {
+                [colour[0], colour[1], colour[2], 1.0]
+            }
+            _ => [0.0; 4],
         }
     }
 
@@ -227,6 +310,9 @@ impl Pass {
     fn extra(self) -> [f32; 4] {
         match self {
             Pass::Within { spot } | Pass::Pixelate { spot, .. } => spot.numbers(),
+            Pass::Mirror { within, .. } | Pass::Corners { within, .. } | Pass::Room { within } => {
+                within.numbers()
+            }
             Pass::Move { turn, shift, .. } => [turn, shift.0, shift.1, 0.0],
             _ => Spot::WHOLE.numbers(),
         }
@@ -257,7 +343,7 @@ impl Pass {
     }
 }
 
-const PASS_BYTES: u64 = 48 + 7 * 16 + CURVE_SAMPLES as u64 * 16 + 4 * 16;
+const PASS_BYTES: u64 = 80 + 7 * 16 + CURVE_SAMPLES as u64 * 16 + 4 * 16;
 
 /// The effect passes for pictures made in one working space.
 #[derive(Debug)]
@@ -267,6 +353,18 @@ pub struct Effects {
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
 }
+
+/// What a clip's effects made: the picture, and how much larger it is than
+/// the one they started from on each side, as shares of that one's width
+/// and height (0 when nothing draws past its edges).
+#[derive(Debug)]
+pub struct Applied {
+    pub picture: Frame,
+    pub grown: (f32, f32),
+}
+
+/// The largest side a picture is given when room is made around it.
+const LARGEST_PICTURE: u32 = 8192;
 
 /// Where the pictures the passes write come from, and where those no
 /// longer needed go (to be drawn into again after the queue is submitted).
@@ -316,8 +414,9 @@ impl Effects {
 
     /// Adds to `encoder` the passes of `effects`, one after another,
     /// starting from `picture` (made by a compositor in this working
-    /// space). Returns the picture holding the result; every other picture
-    /// used goes to `pictures.done`.
+    /// space). Returns the picture holding the result, which is larger
+    /// than `picture` when an effect draws past its edges; every other
+    /// picture used goes to `pictures.done`.
     pub fn apply(
         &self,
         device: &wgpu::Device,
@@ -326,72 +425,119 @@ impl Effects {
         picture: Frame,
         effects: &[Effect],
         pictures: Pictures<'_>,
-    ) -> Frame {
+    ) -> Applied {
         let Pictures { take, done } = pictures;
-        let size = picture.size();
+        let first = picture.size();
+        // Sizes stay those of the picture as it came, whatever room is
+        // made around it.
+        let reference = first.1.max(1) as f32 / 1080.0;
         let mut now = picture;
+        // Where the picture as it came is in `now`, and how much room was
+        // made on each side, in pixels.
+        let mut within = Spot::WHOLE;
+        let mut room = (0u32, 0u32);
         let mut pass = |encoder: &mut wgpu::CommandEncoder,
-                        from: &Frame,
-                        with: Option<&Frame>,
+                        (from, with): (&Frame, Option<&Frame>),
+                        size: (u32, u32),
                         pass: Pass,
                         seed: u32| {
             let mut to = take(size);
-            self.pass(
-                device,
-                queue,
-                encoder,
-                (from, with.unwrap_or(from)),
-                &mut to,
-                pass,
-                seed,
-            );
+            let inputs = (from, with.unwrap_or(from));
+            self.pass(device, queue, encoder, inputs, &mut to, (pass, seed, reference));
             to
         };
         for effect in effects {
+            let reach = effect.reach();
+            if reach > 0.0 {
+                let (w, h) = now.size();
+                let wanted = (reach * reference).ceil() as u32;
+                let most = |side: u32| (LARGEST_PICTURE.saturating_sub(side) / 2).min(wanted);
+                let more = (most(w), most(h));
+                if more != (0, 0) {
+                    let size = (w + 2 * more.0, h + 2 * more.1);
+                    let to_new = |at: f32, side: u32, more: u32, new: u32| {
+                        (at * side as f32 + more as f32) / new as f32
+                    };
+                    within = Spot {
+                        left: to_new(within.left, w, more.0, size.0),
+                        top: to_new(within.top, h, more.1, size.1),
+                        right: to_new(within.right, w, more.0, size.0),
+                        bottom: to_new(within.bottom, h, more.1, size.1),
+                    };
+                    let whole_before = Spot {
+                        left: more.0 as f32 / size.0 as f32,
+                        top: more.1 as f32 / size.1 as f32,
+                        right: (more.0 + w) as f32 / size.0 as f32,
+                        bottom: (more.1 + h) as f32 / size.1 as f32,
+                    };
+                    let roomy = pass(
+                        encoder,
+                        (&now, None),
+                        size,
+                        Pass::Room { within: whole_before },
+                        0,
+                    );
+                    done.push(std::mem::replace(&mut now, roomy));
+                    room = (room.0 + more.0, room.1 + more.1);
+                }
+            }
+            let size = now.size();
             let next = match *effect {
                 Effect::Vignette {
                     amount,
-                    size,
+                    size: reach,
                     softness,
                 } => pass(
                     encoder,
-                    &now,
-                    None,
+                    (&now, None),
+                    size,
                     Pass::Vignette {
                         amount,
-                        size,
+                        size: reach,
                         softness,
                     },
                     0,
                 ),
-                Effect::Grain { amount, size, seed } => {
-                    pass(encoder, &now, None, Pass::Grain { amount, size }, seed)
-                }
+                Effect::Grain {
+                    amount,
+                    size: cell,
+                    seed,
+                } => pass(
+                    encoder,
+                    (&now, None),
+                    size,
+                    Pass::Grain { amount, size: cell },
+                    seed,
+                ),
                 Effect::Sharpen { amount, radius } => {
-                    pass(encoder, &now, None, Pass::Sharpen { amount, radius }, 0)
+                    pass(encoder, (&now, None), size, Pass::Sharpen { amount, radius }, 0)
                 }
                 Effect::Glow {
                     amount,
                     threshold,
                     radius,
                 } => {
-                    let lit = pass(encoder, &now, None, Pass::Bright { threshold }, 0);
-                    let across = pass(encoder, &lit, None, Pass::BlurAcross { radius }, 0);
-                    let down = pass(encoder, &across, None, Pass::BlurDown { radius }, 0);
-                    let glowing = pass(encoder, &now, Some(&down), Pass::Add { amount }, 0);
+                    let lit = pass(encoder, (&now, None), size, Pass::Bright { threshold }, 0);
+                    let across = pass(encoder, (&lit, None), size, Pass::BlurAcross { radius }, 0);
+                    let down = pass(encoder, (&across, None), size, Pass::BlurDown { radius }, 0);
+                    let glowing = pass(encoder, (&now, Some(&down)), size, Pass::Add { amount }, 0);
                     done.extend([lit, across, down]);
                     glowing
                 }
                 Effect::Blur { radius, spot } => {
-                    let across = pass(encoder, &now, None, Pass::BlurAcross { radius }, 0);
-                    let down = pass(encoder, &across, None, Pass::BlurDown { radius }, 0);
-                    let blurred = pass(encoder, &now, Some(&down), Pass::Within { spot }, 0);
+                    let across = pass(encoder, (&now, None), size, Pass::BlurAcross { radius }, 0);
+                    let down = pass(encoder, (&across, None), size, Pass::BlurDown { radius }, 0);
+                    let blurred = pass(encoder, (&now, Some(&down)), size, Pass::Within { spot }, 0);
                     done.extend([across, down]);
                     blurred
                 }
-                Effect::Pixelate { size, spot } => {
-                    pass(encoder, &now, None, Pass::Pixelate { size, spot }, 0)
-                }
+                Effect::Pixelate { size: cell, spot } => pass(
+                    encoder,
+                    (&now, None),
+                    size,
+                    Pass::Pixelate { size: cell, spot },
+                    0,
+                ),
                 Effect::Move {
                     scale,
                     fixed,
@@ -404,18 +550,50 @@ impl Effects {
                         turn,
                         shift,
                     };
-                    pass(encoder, &now, None, moving, 0)
+                    pass(encoder, (&now, None), size, moving, 0)
                 }
-                Effect::Grade(numbers) => pass(encoder, &now, None, Pass::Grade(numbers), 0),
+                Effect::Grade(numbers) => pass(encoder, (&now, None), size, Pass::Grade(numbers), 0),
+                Effect::Mirror { across, down } => {
+                    let mirror = Pass::Mirror { across, down, within };
+                    pass(encoder, (&now, None), size, mirror, 0)
+                }
+                Effect::Corners { radius } => {
+                    pass(encoder, (&now, None), size, Pass::Corners { radius, within }, 0)
+                }
+                Effect::Outline { width, colour } => {
+                    pass(encoder, (&now, None), size, Pass::Outline { width, colour }, 0)
+                }
+                Effect::Shadow {
+                    amount,
+                    softness,
+                    offset,
+                    colour,
+                } => {
+                    let cast = Pass::Silhouette {
+                        amount,
+                        offset,
+                        colour,
+                    };
+                    let shape = pass(encoder, (&now, None), size, cast, 0);
+                    let radius = softness;
+                    let across = pass(encoder, (&shape, None), size, Pass::BlurAcross { radius }, 0);
+                    let down = pass(encoder, (&across, None), size, Pass::BlurDown { radius }, 0);
+                    let over = pass(encoder, (&now, Some(&down)), size, Pass::Over, 0);
+                    done.extend([shape, across, down]);
+                    over
+                }
             };
             done.push(std::mem::replace(&mut now, next));
         }
-        now
+        let grown = (
+            room.0 as f32 / first.0.max(1) as f32,
+            room.1 as f32 / first.1.max(1) as f32,
+        );
+        Applied { picture: now, grown }
     }
 
     /// One pass from `inputs` (the picture, and a second one or the same
     /// again) into `to`.
-    #[allow(clippy::too_many_arguments)]
     fn pass(
         &self,
         device: &wgpu::Device,
@@ -423,10 +601,9 @@ impl Effects {
         encoder: &mut wgpu::CommandEncoder,
         (from, with): (&Frame, &Frame),
         to: &mut Frame,
-        pass: Pass,
-        seed: u32,
+        (pass, seed, reference): (Pass, u32, f32),
     ) {
-        let (w, h) = from.size();
+        let (w, h) = to.size();
         let linear = if self.working == Working::Linear { 1.0 } else { 0.0 };
         // Each pass its own numbers: they are written when the queue is
         // submitted, after every pass has been recorded. The seed stays
@@ -436,6 +613,8 @@ impl Effects {
             pass.numbers(),
             [linear, w as f32, h as f32, (seed % (1 << 24)) as f32],
             pass.extra(),
+            [reference, 0.0, 0.0, 0.0],
+            pass.paint(),
             grade[0],
             grade[1],
             grade[2],

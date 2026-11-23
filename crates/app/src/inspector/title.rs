@@ -17,6 +17,38 @@ const SWATCHES: [([u8; 3], &str); 6] = [
     ([120, 230, 120], "Green"),
 ];
 
+/// A row with a few colours to click and a button for any other: true
+/// when `rgb` was changed (a click: one step at once).
+pub(super) fn colour_row(ui: &mut egui::Ui, theme: &Theme, label: &str, rgb: &mut [u8; 3]) -> bool {
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        inspector::label_cell(ui, theme, label, inspector::LABEL_WIDTH);
+        ui.spacing_mut().item_spacing.x = 5.0;
+        for (colour, name) in SWATCHES {
+            let fill = egui::Color32::from_rgb(colour[0], colour[1], colour[2]);
+            let (rect, response) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::click());
+            ui.painter().rect_filled(rect, 4.0, fill);
+            let ring = if *rgb == colour { theme.text } else { theme.line };
+            ui.painter()
+                .rect_stroke(rect, 4.0, egui::Stroke::new(1.5, ring), egui::StrokeKind::Outside);
+            if response.on_hover_text(name).clicked() && *rgb != colour {
+                *rgb = colour;
+                changed = true;
+            }
+        }
+        let mut any = *rgb;
+        if ui
+            .color_edit_button_srgb(&mut any)
+            .on_hover_text("Any colour")
+            .changed()
+        {
+            *rgb = any;
+            changed = true;
+        }
+    });
+    changed
+}
+
 /// What the section asked for.
 #[derive(Debug, Default)]
 pub struct Asked {
@@ -95,35 +127,11 @@ pub fn section(
             title.size = (percent * 10_000.0).round() as i32;
             busy |= slider.dragged() || slider.has_focus();
         });
-        ui.horizontal(|ui| {
-            inspector::label_cell(ui, theme, "Colour", inspector::LABEL_WIDTH);
-            ui.spacing_mut().item_spacing.x = 5.0;
-            for (colour, name) in SWATCHES {
-                let fill = egui::Color32::from_rgb(colour[0], colour[1], colour[2]);
-                let (rect, response) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::click());
-                ui.painter().rect_filled(rect, 4.0, fill);
-                let ring = if title.colour == colour {
-                    theme.text
-                } else {
-                    theme.line
-                };
-                ui.painter()
-                    .rect_stroke(rect, 4.0, egui::Stroke::new(1.5, ring), egui::StrokeKind::Outside);
-                if response.on_hover_text(name).clicked() && title.colour != colour {
-                    title.colour = colour;
-                    at_once = true;
-                }
-            }
-            let mut rgb = title.colour;
-            if ui
-                .color_edit_button_srgb(&mut rgb)
-                .on_hover_text("Any colour")
-                .changed()
-            {
-                title.colour = rgb;
-                at_once = true;
-            }
-        });
+        let mut rgb = title.colour;
+        if colour_row(ui, theme, "Colour", &mut rgb) {
+            title.colour = rgb;
+            at_once = true;
+        }
         ui.horizontal(|ui| {
             inspector::label_cell(ui, theme, "Band", inspector::LABEL_WIDTH);
             let what = match title.style {

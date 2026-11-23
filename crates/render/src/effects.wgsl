@@ -12,9 +12,15 @@ struct Pass {
     // in pixels (yz); a number that changes from frame to frame (w).
     linear_size_seed: vec4<f32>,
     // A box in the picture, its left, top, right and bottom in 0-1: where
-    // blur and pixelate apply (the whole picture is 0, 0, 1, 1). For a
-    // move: its turn in radians (x) and shift (yz).
+    // blur and pixelate apply (the whole picture is 0, 0, 1, 1); where the
+    // picture as it came is, for mirror, rounded corners and making room.
+    // For a move: its turn in radians (x) and shift (yz).
     spot: vec4<f32>,
+    // Pixels per reference pixel (x): one of 1080 lines of the picture as
+    // it came, before any room was made around it.
+    reference: vec4<f32>,
+    // The colour an outline or a shadow paints with, as light (rgb).
+    paint: vec4<f32>,
     // A grade's numbers (pass 10): its wheels (shadows, midtones,
     // highlights, overall: red, green, blue, brightness), then exposure,
     // contrast, pivot and saturation, then the white balance's gains and
@@ -54,7 +60,7 @@ fn whole(@builtin(vertex_index) index: u32) -> Corner {
 
 // Pixels per reference pixel (one of 1080 lines).
 fn scale() -> f32 {
-    return it.linear_size_seed.z / 1080.0;
+    return it.reference.x;
 }
 
 fn texel() -> vec2<f32> {
@@ -328,11 +334,95 @@ fn graded(light: vec3<f32>) -> vec3<f32> {
     return max(mix(vec3<f32>(grey), rgb, tone.w), vec3<f32>(0.0));
 }
 
+// 11: turned over inside the box: left for right (y of the numbers) and
+// top for bottom (z).
+fn mirrored(at: vec2<f32>) -> vec4<f32> {
+    var taken = at;
+    if it.kind_numbers.y > 0.5 {
+        taken.x = it.spot.x + it.spot.z - at.x;
+    }
+    if it.kind_numbers.z > 0.5 {
+        taken.y = it.spot.y + it.spot.w - at.y;
+    }
+    return textureSampleLevel(source, smooth_sampler, taken, 0.0);
+}
+
+// 12: the box's corners rounded off by `radius` (0-1 of half its shorter
+// side), see-through outside the curve, its edge smoothed over a pixel.
+fn rounded(s: vec4<f32>, at: vec2<f32>) -> vec4<f32> {
+    let size = it.linear_size_seed.yz;
+    let low = it.spot.xy * size;
+    let high = it.spot.zw * size;
+    let half = (high - low) * 0.5;
+    let r = clamp(it.kind_numbers.y, 0.0, 1.0) * min(half.x, half.y);
+    let p = abs(at * size - (low + high) * 0.5) - (half - vec2<f32>(r));
+    let d = length(max(p, vec2<f32>(0.0))) + min(max(p.x, p.y), 0.0) - r;
+    return s * clamp(0.5 - d, 0.0, 1.0);
+}
+
+// 13: the picture copied into a larger one, into the box; around it is
+// see-through.
+fn roomy(at: vec2<f32>) -> vec4<f32> {
+    let taken = (at - it.spot.xy) / max(it.spot.zw - it.spot.xy, vec2<f32>(0.00001));
+    let inside = all(taken >= vec2<f32>(0.0)) && all(taken <= vec2<f32>(1.0));
+    return select(vec4<f32>(0.0), textureSampleLevel(source, smooth_sampler, taken, 0.0), inside);
+}
+
+// 14: a line `width` reference pixels thick of the paint colour around
+// whatever the picture covers, outside it: the most it covers within that
+// distance, looked for round sixteen directions.
+fn outlined(s: vec4<f32>, at: vec2<f32>) -> vec4<f32> {
+    let width = max(it.kind_numbers.y * scale(), 0.5);
+    let steps = clamp(i32(ceil(width / 1.5)), 1, 10);
+    var most = s.a;
+    for (var i = 0; i < 16; i++) {
+        let angle = f32(i) * 0.39269908;
+        let way = vec2<f32>(cos(angle), sin(angle)) * texel();
+        for (var k = 1; k <= steps; k++) {
+            let far = width * f32(k) / f32(steps);
+            most = max(most, textureSampleLevel(source, smooth_sampler, at + way * far, 0.0).a);
+        }
+    }
+    let ring = stored(it.paint.rgb, most);
+    return s + ring * (1.0 - s.a);
+}
+
+// 15: what the picture covers, filled with the paint colour at `amount`
+// (y) and moved by the offset (zw, reference pixels): a shadow, before it
+// is blurred.
+fn silhouette(at: vec2<f32>) -> vec4<f32> {
+    let back = at - it.kind_numbers.zw * scale() * texel();
+    let inside = all(back >= vec2<f32>(0.0)) && all(back <= vec2<f32>(1.0));
+    let covered = select(0.0, textureSampleLevel(source, smooth_sampler, back, 0.0).a, inside);
+    return stored(it.paint.rgb, covered * clamp(it.kind_numbers.y, 0.0, 1.0));
+}
+
 @fragment
 fn effect(in: Corner) -> @location(0) vec4<f32> {
     let kind = i32(round(it.kind_numbers.x));
     if kind == 9 {
         return moved(in.at);
+    }
+    if kind == 11 {
+        return mirrored(in.at);
+    }
+    if kind == 13 {
+        return roomy(in.at);
+    }
+    if kind == 15 {
+        return silhouette(in.at);
+    }
+    if kind == 12 || kind == 14 || kind == 16 {
+        let s = textureSampleLevel(source, smooth_sampler, in.at, 0.0);
+        if kind == 12 {
+            return rounded(s, in.at);
+        }
+        if kind == 14 {
+            return outlined(s, in.at);
+        }
+        // 16: the picture over the second one (its shadow).
+        let under = textureSampleLevel(other, smooth_sampler, in.at, 0.0);
+        return s + under * (1.0 - s.a);
     }
     if kind == 7 || kind == 8 {
         // Mixing premultiplied values as they are: no light needed.

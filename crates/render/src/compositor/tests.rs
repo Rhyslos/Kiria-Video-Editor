@@ -171,6 +171,23 @@ fn compose_with(
     let compositor = Compositor::new(device, working);
     let shower = Shower::new(device, target);
     let mut frame = compositor.frame(device, size);
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    compositor.draw(device, queue, &mut encoder, &mut frame, layers);
+    if !effects.is_empty() {
+        let passes = crate::Effects::new(device, working);
+        let mut take = |size| compositor.frame(device, size);
+        let mut done = Vec::new();
+        let pictures = crate::Pictures {
+            take: &mut take,
+            done: &mut done,
+        };
+        frame = passes
+            .apply(device, queue, &mut encoder, frame, effects, pictures)
+            .picture;
+    }
+    // Shown at the size the effects left it: larger when they drew past
+    // its edges.
+    let size = frame.size();
     let extent = wgpu::Extent3d {
         width: size.0,
         height: size.1,
@@ -187,18 +204,6 @@ fn compose_with(
         view_formats: &[],
     });
     let window_view = window.create_view(&wgpu::TextureViewDescriptor::default());
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    compositor.draw(device, queue, &mut encoder, &mut frame, layers);
-    if !effects.is_empty() {
-        let passes = crate::Effects::new(device, working);
-        let mut take = |size| compositor.frame(device, size);
-        let mut done = Vec::new();
-        let pictures = crate::Pictures {
-            take: &mut take,
-            done: &mut done,
-        };
-        frame = passes.apply(device, queue, &mut encoder, frame, effects, pictures);
-    }
     let showing = shower.showing(device, queue, frame.view(), frame.working());
     {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1016,6 +1021,148 @@ fn a_move_enlarges_about_its_point_and_shifts_inside_the_frame() {
         near(shifted.at(56, 32), [0, 0, 0], 1),
         "see-through past its edge"
     );
+}
+
+#[test]
+fn a_mirror_turns_the_picture_over() {
+    let Some(gpu) = gpu() else { return };
+    let size = (64, 64);
+    // Dark left half, light right half, darker towards the bottom.
+    let step = |x: u32, y: u32| if x < 32 { 40 + y as u8 } else { 160 + y as u8 };
+    let mirror = |across, down| {
+        with_effects(
+            &gpu,
+            Working::Linear,
+            size,
+            step,
+            &[crate::Effect::Mirror { across, down }],
+        )
+    };
+    let plain = with_effects(&gpu, Working::Linear, size, step, &[]);
+    let across = mirror(true, false);
+    assert_eq!(across.at(8, 10), plain.at(55, 10), "left for right");
+    assert_eq!(across.at(55, 10), plain.at(8, 10));
+    let down = mirror(false, true);
+    assert_eq!(down.at(8, 2), plain.at(8, 61), "top for bottom");
+    let both = mirror(true, true);
+    assert_eq!(both.at(8, 2), plain.at(55, 61));
+    assert_eq!(reds(&mirror(false, false)), reds(&plain));
+}
+
+#[test]
+fn rounded_corners_make_the_corners_see_through() {
+    let Some(gpu) = gpu() else { return };
+    let size = (64, 64);
+    let plain = with_effects(&gpu, Working::Linear, size, |_, _| 200, &[]);
+    // Fully round: a square becomes a circle.
+    let round = with_effects(
+        &gpu,
+        Working::Linear,
+        size,
+        |_, _| 200,
+        &[crate::Effect::Corners { radius: 1.0 }],
+    );
+    for (x, y) in [(1, 1), (62, 1), (1, 62), (62, 62), (6, 6)] {
+        assert!(near(round.at(x, y), [0, 0, 0], 1), "see-through at {x},{y}");
+    }
+    for (x, y) in [(32, 32), (32, 2), (2, 32), (20, 20)] {
+        assert_eq!(round.at(x, y), plain.at(x, y), "kept at {x},{y}");
+    }
+    let square = with_effects(
+        &gpu,
+        Working::Linear,
+        size,
+        |_, _| 200,
+        &[crate::Effect::Corners { radius: 0.0 }],
+    );
+    assert_eq!(reds(&square), reds(&plain), "nothing rounded");
+    assert!(crate::Effect::Corners { radius: 0.5 }.leaves_holes());
+}
+
+#[test]
+fn an_outline_goes_round_the_picture_outside_it() {
+    let Some(gpu) = gpu() else { return };
+    let size = (64, 64);
+    let reference = 1080.0 / 64.0;
+    let plain = with_effects(&gpu, Working::Linear, size, |_, _| 120, &[]);
+    for working in BOTH {
+        let lined = with_effects(
+            &gpu,
+            working,
+            size,
+            |_, _| 120,
+            &[crate::Effect::Outline {
+                width: 4.0 * reference,
+                colour: [1.0, 0.0, 0.0],
+            }],
+        );
+        // Room for it on every side: (4 + 2 reference pixels) rounded up.
+        let room = 5;
+        assert_eq!(lined.width, 64 + 2 * room, "{working:?}: room was made");
+        assert_eq!(
+            lined.at(32 + room, 32 + room),
+            plain.at(32, 32),
+            "{working:?}: the picture is untouched"
+        );
+        assert!(
+            near(lined.at(room - 2, 32 + room), [255, 0, 0], 2),
+            "{working:?}: red beside it: {:?}",
+            lined.at(room - 2, 32 + room)
+        );
+        assert!(
+            near(lined.at(0, 0), [0, 0, 0], 1) || lined.at(0, 0)[0] < 255,
+            "{working:?}: the corner is past its reach or rounded"
+        );
+    }
+}
+
+#[test]
+fn a_drop_shadow_falls_behind_the_picture() {
+    let Some(gpu) = gpu() else { return };
+    let size = (64, 64);
+    let reference = 1080.0 / 64.0;
+    let plain = with_effects(&gpu, Working::Linear, size, |_, _| 120, &[]);
+    // A white shadow (to see it on black), eight pixels to the right.
+    let shadowed = with_effects(
+        &gpu,
+        Working::Linear,
+        size,
+        |_, _| 120,
+        &[crate::Effect::Shadow {
+            amount: 1.0,
+            softness: 0.0,
+            offset: (8.0 * reference, 0.0),
+            colour: [1.0, 1.0, 1.0],
+        }],
+    );
+    // (8 + 2 reference pixels) of room, rounded up.
+    let room = 9;
+    assert_eq!(shadowed.width, 64 + 2 * room);
+    assert_eq!(shadowed.at(32 + room, 32 + room), plain.at(32, 32), "in front");
+    assert!(
+        near(shadowed.at(64 + room + 4, 32 + room), [255, 255, 255], 2),
+        "the shadow past its right edge: {:?}",
+        shadowed.at(64 + room + 4, 32 + room)
+    );
+    assert!(
+        near(shadowed.at(room - 3, 32 + room), [0, 0, 0], 1),
+        "nothing on the other side"
+    );
+    // Half as dark: half the colour.
+    let faint = with_effects(
+        &gpu,
+        Working::Linear,
+        size,
+        |_, _| 120,
+        &[crate::Effect::Shadow {
+            amount: 0.5,
+            softness: 0.0,
+            offset: (8.0 * reference, 0.0),
+            colour: [1.0, 1.0, 1.0],
+        }],
+    );
+    let half = faint.at(64 + room + 4, 32 + room)[0];
+    assert!((150..250).contains(&half), "about half the light: {half}");
 }
 
 #[test]

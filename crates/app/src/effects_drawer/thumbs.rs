@@ -124,6 +124,42 @@ fn effect(p: &Painter, r: Rect, kind: EffectKind) {
             );
         }
         EffectKind::Pan(_) => arrow(p, at(r, 0.15, 0.5), at(r, 0.85, 0.5)),
+        EffectKind::Mirror(_) => {
+            // The sun again on the other side, and the line it turns over.
+            p.circle_filled(at(r, 0.3, 0.36), r.height() * 0.14, SUN.gamma_multiply(0.7));
+            p.line_segment(
+                [at(r, 0.5, 0.08), at(r, 0.5, 0.92)],
+                Stroke::new(1.2, Color32::from_white_alpha(200)),
+            );
+        }
+        EffectKind::Corners(_) => {
+            // The shape it leaves: round at the corners.
+            let inner = r.shrink(r.height() * 0.12);
+            p.rect_stroke(
+                inner,
+                r.height() * 0.3,
+                Stroke::new(1.5, Color32::WHITE),
+                egui::StrokeKind::Inside,
+            );
+        }
+        EffectKind::Outline(_) => {
+            let inner = r.shrink(r.height() * 0.14);
+            p.rect_stroke(
+                inner,
+                4.0,
+                Stroke::new(2.0, Color32::WHITE),
+                egui::StrokeKind::Outside,
+            );
+        }
+        EffectKind::Shadow(_) => {
+            let card = Rect::from_min_max(at(r, 0.22, 0.18), at(r, 0.66, 0.66));
+            p.rect_filled(
+                card.translate(vec2(4.0, 4.0)),
+                3.0,
+                Color32::from_black_alpha(140),
+            );
+            p.rect_filled(card, 3.0, Color32::from_rgb(196, 204, 220));
+        }
         EffectKind::Stabilise(_) => {
             let middle = r.center();
             let stroke = Stroke::new(1.3, Color32::WHITE);

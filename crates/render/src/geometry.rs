@@ -142,6 +142,20 @@ impl Area {
         }
     }
 
+    /// The same area made larger by `x` of its width on the left and on
+    /// the right and `y` of its height above and below, keeping its middle
+    /// and its turn: where a picture given room around it goes.
+    pub fn grown(self, x: f32, y: f32) -> Area {
+        Area {
+            origin: (
+                self.origin.0 - self.across.0 * x - self.down.0 * y,
+                self.origin.1 - self.across.1 * x - self.down.1 * y,
+            ),
+            across: (self.across.0 * (1.0 + 2.0 * x), self.across.1 * (1.0 + 2.0 * x)),
+            down: (self.down.0 * (1.0 + 2.0 * y), self.down.1 * (1.0 + 2.0 * y)),
+        }
+    }
+
     /// The lengths of its two edges, in frame pixels.
     pub fn size(&self) -> (f32, f32) {
         (self.across.0.hypot(self.across.1), self.down.0.hypot(self.down.1))

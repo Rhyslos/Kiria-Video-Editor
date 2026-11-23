@@ -11,7 +11,7 @@
 //! arrows go to the one before or after, a right-click on a filled diamond
 //! picks its ease. The values shown are the effect's at the playhead.
 
-use project::effects::Spot;
+use project::effects::{Paint, Spot};
 use project::keyframes::Ease;
 use project::look::ONE;
 use project::{Clip, Command, EffectKind, Effects, Rate, SequenceId, Time};
@@ -51,12 +51,20 @@ enum Show {
     Percent,
     /// As a size: 0 is 100 %, `ONE` is this many %.
     Size(f64),
+    /// As a direction: 0 to 360°.
+    Degrees,
+    /// On (from a half up) or off: a tick.
+    Switch,
+    /// A colour: this setting is red, the next two green and blue.
+    Colour,
+    /// Green or blue of the colour before it: no row of its own.
+    ColourPart,
 }
 
 /// Each setting of an effect, in [`EffectKind::numbers`] order: its label
 /// and how it is shown.
 fn knobs(kind: &EffectKind) -> &'static [(&'static str, Show)] {
-    use Show::{Percent, Size};
+    use Show::{Degrees, Percent, Size, Switch};
     const BOX: [(&str, Show); 4] = [
         ("Left", Percent),
         ("Top", Percent),
@@ -89,6 +97,23 @@ fn knobs(kind: &EffectKind) -> &'static [(&'static str, Show)] {
             ("To across", Percent),
             ("To down", Percent),
         ],
+        EffectKind::Mirror(_) => &[("Left for right", Switch), ("Top for bottom", Switch)],
+        EffectKind::Corners(_) => &[("Roundness", Percent)],
+        EffectKind::Outline(_) => &[
+            ("Width", Percent),
+            ("Colour", Show::Colour),
+            ("", Show::ColourPart),
+            ("", Show::ColourPart),
+        ],
+        EffectKind::Shadow(_) => &[
+            ("Darkness", Percent),
+            ("Softness", Percent),
+            ("Distance", Percent),
+            ("Direction", Degrees),
+            ("Colour", Show::Colour),
+            ("", Show::ColourPart),
+            ("", Show::ColourPart),
+        ],
     }
 }
 
@@ -96,29 +121,32 @@ impl Show {
     fn shown(self, millionths: i32) -> f64 {
         let share = f64::from(millionths) / f64::from(ONE);
         match self {
-            Show::Percent => share * 100.0,
+            Show::Percent | Show::Switch | Show::Colour | Show::ColourPart => share * 100.0,
             Show::Size(most) => 100.0 + (most - 100.0) * share,
+            Show::Degrees => share * 360.0,
         }
     }
 
     fn millionths(self, shown: f64) -> i32 {
         let share = match self {
-            Show::Percent => shown / 100.0,
+            Show::Percent | Show::Switch | Show::Colour | Show::ColourPart => shown / 100.0,
             Show::Size(most) => (shown - 100.0) / (most - 100.0),
+            Show::Degrees => shown / 360.0,
         };
         (share * f64::from(ONE)).round().clamp(0.0, f64::from(ONE)) as i32
     }
 
     fn number(self, usual: i32) -> Number {
-        let (range, per_point) = match self {
-            Show::Percent => ((0.0, 100.0), 0.5),
-            Show::Size(most) => ((100.0, most), (most - 100.0) / 200.0),
+        let (range, per_point, suffix) = match self {
+            Show::Size(most) => ((100.0, most), (most - 100.0) / 200.0, " %"),
+            Show::Degrees => ((0.0, 360.0), 1.0, "°"),
+            _ => ((0.0, 100.0), 0.5, " %"),
         };
         Number {
             range,
             per_point,
             decimals: 0,
-            suffix: " %",
+            suffix,
             usual: self.shown(usual),
         }
     }
@@ -341,6 +369,43 @@ fn settings(ui: &mut egui::Ui, theme: &Theme, at: At<'_>, effect: &project::Effe
         }
         if whole && spot.as_ref().is_some_and(|r| r.contains(&index)) {
             continue;
+        }
+        // A tick or a colour: changed at once, for the whole clip.
+        match show {
+            Show::ColourPart => continue,
+            Show::Switch => {
+                let mut on = now[index] >= ONE / 2;
+                if ui.checkbox(&mut on, *label).changed() {
+                    let mut numbers = next.kind.numbers();
+                    numbers[index] = if on { ONE } else { 0 };
+                    next.kind = next.kind.with_numbers(&numbers);
+                    next.keys.clear(index..index + 1);
+                    return Row::Clicked(next);
+                }
+                continue;
+            }
+            Show::Colour => {
+                let paint = Paint {
+                    red: now[index],
+                    green: now.get(index + 1).copied().unwrap_or(0),
+                    blue: now.get(index + 2).copied().unwrap_or(0),
+                };
+                let mut rgb = paint.rgb();
+                if super::title::colour_row(ui, theme, label, &mut rgb) {
+                    let chosen = Paint::from_rgb(rgb);
+                    let mut numbers = next.kind.numbers();
+                    for (at, value) in (index..).zip([chosen.red, chosen.green, chosen.blue]) {
+                        if let Some(number) = numbers.get_mut(at) {
+                            *number = value;
+                        }
+                    }
+                    next.kind = next.kind.with_numbers(&numbers);
+                    next.keys.clear(index..index + 3);
+                    return Row::Clicked(next);
+                }
+                continue;
+            }
+            _ => {}
         }
         let keys = next.keys.of(index);
         let frames: Vec<i64> = keys

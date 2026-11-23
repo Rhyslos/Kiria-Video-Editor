@@ -11,6 +11,6 @@ pub mod reader;
 
 pub use caught::caught;
 pub use compositor::{Background, Compositor, Drawn, Frame, Mode, Pixels, Shower, Showing, WHOLE, Working};
-pub use effects::{Effect, Effects, GradeNumbers, Pictures, Spot};
+pub use effects::{Applied, Effect, Effects, GradeNumbers, Pictures, Spot};
 pub use geometry::{Area, Colour, Part, Placement, Point};
 pub use reader::{ReadError, Reader, read_back};

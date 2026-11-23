@@ -183,6 +183,19 @@ fn rich_project() -> Project {
     effects.0[5]
         .keys
         .set(1, second + second, near(second + second), 500_000);
+    // Mirrored, its corners rounded, a gold outline and a drop shadow that
+    // falls further over the first second (format 35).
+    let (effects, _) = effects.with_added(project::EffectKind::ALL[10]);
+    let (effects, _) = effects.with_added(project::EffectKind::ALL[11]);
+    let (effects, _) = effects.with_added(project::EffectKind::Outline(project::effects::Outline {
+        width: 250_000,
+        colour: project::effects::Paint::from_rgb([240, 196, 92]),
+    }));
+    let (mut effects, shadow) = effects.with_added(project::EffectKind::ALL[13]);
+    if let Some(at) = effects.0.iter().position(|e| e.id == shadow) {
+        effects.0[at].keys.set(2, Time::ZERO, near(Time::ZERO), 0);
+        effects.0[at].keys.set(2, second, near(second), 300_000);
+    }
     // Graded on the Color page: warmer and a stop down, its shadows
     // lifted a little towards blue (format 28).
     let mut grade = project::Grade::default();
@@ -766,6 +779,41 @@ fn the_current_sample_has_a_steadied_shot() {
 }
 
 #[test]
+fn version_34_sample_opens_without_the_shape_effects() {
+    let project = file::load(&sample_path(34)).expect("the version 34 sample opens");
+    let shapes = ["Mirror", "Rounded corners", "Outline", "Drop shadow"];
+    for seq in project.sequences.iter() {
+        let clips = seq.tracks().flat_map(|t| t.clips.iter());
+        assert!(
+            clips
+                .flat_map(|c| c.effects.iter())
+                .all(|e| !shapes.contains(&e.kind.name()))
+        );
+    }
+}
+
+#[test]
+fn the_current_sample_has_a_framed_picture_with_a_shadow() {
+    let project = file::load(&sample_path(FORMAT_VERSION)).expect("the sample opens");
+    let effects: Vec<&project::Effect> = project
+        .sequences
+        .iter()
+        .flat_map(|s| s.tracks())
+        .flat_map(|t| t.clips.iter())
+        .flat_map(|c| c.effects.iter())
+        .collect();
+    let named = |name: &str| effects.iter().find(|e| e.kind.name() == name).copied();
+    assert!(named("Mirror").is_some());
+    assert!(named("Rounded corners").is_some());
+    match named("Outline").map(|e| e.kind) {
+        Some(project::EffectKind::Outline(o)) => assert_eq!(o.colour.rgb(), [240, 196, 92]),
+        other => panic!("no outline: {other:?}"),
+    }
+    let shadow = named("Drop shadow").expect("a drop shadow");
+    assert_eq!(shadow.keys.of(2).len(), 2, "its distance is keyed");
+}
+
+#[test]
 fn version_27_sample_opens_ungraded() {
     let project = file::load(&sample_path(27)).expect("the version 27 sample opens");
     for seq in project.sequences.iter() {
@@ -862,8 +910,8 @@ fn the_current_sample_has_a_picture_mixed_as_light() {
 fn the_current_sample_has_effects_one_switched_off() {
     let project = file::load(&sample_path(FORMAT_VERSION)).expect("the sample opens");
     let clip = &project.active().expect("a timeline").video_tracks[0].clips[0];
-    assert_eq!(clip.effects.iter().count(), 10);
-    assert_eq!(clip.effects.applied().count(), 8);
+    assert_eq!(clip.effects.iter().count(), 14);
+    assert_eq!(clip.effects.applied().count(), 12);
     assert!(clip.effects.check().is_ok());
 }
 

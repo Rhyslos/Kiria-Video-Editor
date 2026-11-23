@@ -164,11 +164,15 @@ pub enum EffectKind {
     Shake(Shake),
     Pan(Pan),
     Stabilise(Stabilise),
+    Mirror(Mirror),
+    Corners(Corners),
+    Outline(Outline),
+    Shadow(Shadow),
 }
 
 impl EffectKind {
     /// Every kind there is, with its usual settings: what is added.
-    pub const ALL: [EffectKind; 10] = [
+    pub const ALL: [EffectKind; 14] = [
         EffectKind::Vignette(Vignette::USUAL),
         EffectKind::Grain(Grain::USUAL),
         EffectKind::Sharpen(Sharpen::USUAL),
@@ -179,6 +183,10 @@ impl EffectKind {
         EffectKind::Shake(Shake::USUAL),
         EffectKind::Pan(Pan::USUAL),
         EffectKind::Stabilise(Stabilise::USUAL),
+        EffectKind::Mirror(Mirror::USUAL),
+        EffectKind::Corners(Corners::USUAL),
+        EffectKind::Outline(Outline::USUAL),
+        EffectKind::Shadow(Shadow::USUAL),
     ];
 
     /// Its name, as the interface shows it.
@@ -194,6 +202,10 @@ impl EffectKind {
             EffectKind::Shake(_) => "Shake",
             EffectKind::Pan(_) => "Smooth pan",
             EffectKind::Stabilise(_) => "Stabilise",
+            EffectKind::Mirror(_) => "Mirror",
+            EffectKind::Corners(_) => "Rounded corners",
+            EffectKind::Outline(_) => "Outline",
+            EffectKind::Shadow(_) => "Drop shadow",
         }
     }
 
@@ -212,6 +224,18 @@ impl EffectKind {
             EffectKind::Shake(s) => vec![s.amount, s.speed],
             EffectKind::Pan(p) => vec![p.zoom, p.from_x, p.from_y, p.to_x, p.to_y],
             EffectKind::Stabilise(s) => vec![s.smoothing, s.zoom, s.x, s.y],
+            EffectKind::Mirror(m) => vec![m.across, m.down],
+            EffectKind::Corners(c) => vec![c.radius],
+            EffectKind::Outline(o) => vec![o.width, o.colour.red, o.colour.green, o.colour.blue],
+            EffectKind::Shadow(s) => vec![
+                s.amount,
+                s.softness,
+                s.distance,
+                s.direction,
+                s.colour.red,
+                s.colour.green,
+                s.colour.blue,
+            ],
         }
     }
 
@@ -273,6 +297,32 @@ impl EffectKind {
                 x: n[2],
                 y: n[3],
             }),
+            EffectKind::Mirror(_) => EffectKind::Mirror(Mirror {
+                across: n[0],
+                down: n[1],
+            }),
+            EffectKind::Corners(_) => EffectKind::Corners(Corners { radius: n[0] }),
+            EffectKind::Outline(_) => EffectKind::Outline(Outline {
+                width: n[0],
+                colour: Paint::from_numbers(&n[1..4]),
+            }),
+            EffectKind::Shadow(_) => EffectKind::Shadow(Shadow {
+                amount: n[0],
+                softness: n[1],
+                distance: n[2],
+                direction: n[3],
+                colour: Paint::from_numbers(&n[4..7]),
+            }),
+        }
+    }
+
+    /// Where its colour's red, green and blue are among its numbers, if it
+    /// has a colour.
+    pub fn paint_numbers(&self) -> Option<std::ops::Range<usize>> {
+        match self {
+            EffectKind::Outline(_) => Some(1..4),
+            EffectKind::Shadow(_) => Some(4..7),
+            _ => None,
         }
     }
 
@@ -294,6 +344,11 @@ impl EffectKind {
             EffectKind::Shake(s) => shares("Shake", &[s.amount, s.speed]),
             EffectKind::Pan(p) => shares("Smooth pan", &[p.from_x, p.from_y, p.to_x, p.to_y, p.zoom]),
             EffectKind::Stabilise(s) => shares("Stabilise", &[s.smoothing, s.zoom, s.x, s.y]),
+            EffectKind::Mirror(m) => shares("Mirror", &[m.across, m.down]),
+            EffectKind::Corners(c) => shares("Rounded corners", &[c.radius]),
+            EffectKind::Outline(o) => shares("Outline", &[o.width]).and_then(|()| o.colour.check("Outline")),
+            EffectKind::Shadow(s) => shares("Drop shadow", &[s.amount, s.softness, s.distance, s.direction])
+                .and_then(|()| s.colour.check("Drop shadow")),
         }
     }
 }
@@ -493,6 +548,133 @@ impl Pan {
         to_x: ONE * 7 / 10,
         to_y: ONE / 2,
         zoom: ONE * 3 / 10,
+    };
+}
+
+/// The picture turned over, as in a mirror: left for right, top for
+/// bottom, or both. Each is on from a half up, so a keyframe flips it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Mirror {
+    /// Left and right swapped: on at [`ONE`], off at 0.
+    pub across: i32,
+    /// Top and bottom swapped.
+    pub down: i32,
+}
+
+impl Mirror {
+    pub const USUAL: Mirror = Mirror { across: ONE, down: 0 };
+
+    pub fn is_across(&self) -> bool {
+        self.across >= ONE / 2
+    }
+
+    pub fn is_down(&self) -> bool {
+        self.down >= ONE / 2
+    }
+}
+
+/// The picture's corners rounded off, see-through outside the curve: a
+/// facecam in a soft frame, or a circle when the picture is square.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Corners {
+    /// How round: 0 (square) to [`ONE`] (half the shorter side: the ends
+    /// fully round).
+    pub radius: i32,
+}
+
+impl Corners {
+    pub const USUAL: Corners = Corners { radius: ONE * 2 / 10 };
+}
+
+/// A colour an effect paints with: red, green and blue as shown on screen,
+/// each 0 to [`ONE`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Paint {
+    pub red: i32,
+    pub green: i32,
+    pub blue: i32,
+}
+
+impl Paint {
+    pub const BLACK: Paint = Paint {
+        red: 0,
+        green: 0,
+        blue: 0,
+    };
+    pub const WHITE: Paint = Paint {
+        red: ONE,
+        green: ONE,
+        blue: ONE,
+    };
+
+    /// From 8-bit red, green and blue.
+    pub fn from_rgb(rgb: [u8; 3]) -> Paint {
+        let share = |v: u8| ((i64::from(v) * i64::from(ONE) + 127) / 255) as i32;
+        Paint {
+            red: share(rgb[0]),
+            green: share(rgb[1]),
+            blue: share(rgb[2]),
+        }
+    }
+
+    /// As 8-bit red, green and blue.
+    pub fn rgb(&self) -> [u8; 3] {
+        let byte = |v: i32| ((i64::from(v.clamp(0, ONE)) * 255 + i64::from(ONE / 2)) / i64::from(ONE)) as u8;
+        [byte(self.red), byte(self.green), byte(self.blue)]
+    }
+
+    fn from_numbers(n: &[i32]) -> Paint {
+        let at = |i: usize| n.get(i).copied().unwrap_or(0);
+        Paint {
+            red: at(0),
+            green: at(1),
+            blue: at(2),
+        }
+    }
+
+    fn check(&self, effect: &str) -> diag::Result<()> {
+        shares(effect, &[self.red, self.green, self.blue])
+    }
+}
+
+/// A line of colour around the picture's edge, outside it: it follows the
+/// rounded corners and anything else see-through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Outline {
+    /// How thick: 0 (one pixel of 1080 lines) to [`ONE`] (forty).
+    pub width: i32,
+    pub colour: Paint,
+}
+
+impl Outline {
+    pub const USUAL: Outline = Outline {
+        width: ONE * 15 / 100,
+        colour: Paint::WHITE,
+    };
+}
+
+/// A soft shadow cast behind the picture, onto what is below it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Shadow {
+    /// How dark: 0 (not at all) to [`ONE`] (the colour itself).
+    pub amount: i32,
+    /// How soft its edge: 0 (sharp) to [`ONE`] (sixty pixels of 1080 lines).
+    pub softness: i32,
+    /// How far it falls from the picture: 0 to [`ONE`] (a hundred pixels).
+    pub distance: i32,
+    /// Which way it falls: 0 to [`ONE`] is once round clockwise from the
+    /// right (a quarter is straight down).
+    pub direction: i32,
+    pub colour: Paint,
+}
+
+impl Shadow {
+    pub const USUAL: Shadow = Shadow {
+        amount: ONE * 7 / 10,
+        softness: ONE / 4,
+        distance: ONE / 5,
+        direction: ONE / 8,
+        colour: Paint::BLACK,
     };
 }
 
