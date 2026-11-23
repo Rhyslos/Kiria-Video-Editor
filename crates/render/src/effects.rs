@@ -96,6 +96,14 @@ pub enum Effect {
     /// Red moved `offset` reference pixels across and down, blue the other
     /// way, green left where it is.
     Split { offset: (f32, f32) },
+    /// Smeared `length` reference pixels along `angle` (radians, clockwise
+    /// from the right), half each way.
+    Smear { length: f32, angle: f32 },
+    /// Smeared towards `centre` (0-1), `amount` (0-1) of the way there.
+    Radial { amount: f32, centre: (f32, f32) },
+    /// Bands torn sideways with their colours apart, `amount` 0-1 hard,
+    /// `often` 0-1; `seed` picks the frame's pattern.
+    Glitch { amount: f32, often: f32, seed: u32 },
 }
 
 impl Effect {
@@ -317,6 +325,18 @@ enum Pass {
     Split {
         offset: (f32, f32),
     },
+    Smear {
+        length: f32,
+        angle: f32,
+    },
+    Radial {
+        amount: f32,
+        centre: (f32, f32),
+    },
+    Glitch {
+        amount: f32,
+        often: f32,
+    },
 }
 
 impl Pass {
@@ -360,6 +380,9 @@ impl Pass {
             Pass::Duotone { amount, .. } => [21.0, amount, 0.0, 0.0],
             Pass::Invert { amount } => [22.0, amount, 0.0, 0.0],
             Pass::Split { offset } => [23.0, 0.0, offset.0, offset.1],
+            Pass::Smear { length, angle } => [24.0, length, angle, 0.0],
+            Pass::Radial { amount, centre } => [25.0, amount, centre.0, centre.1],
+            Pass::Glitch { amount, often } => [26.0, amount, often, 0.0],
         }
     }
 
@@ -686,6 +709,15 @@ impl Effects {
                 }
                 Effect::Invert { amount } => pass(encoder, (&now, None), size, Pass::Invert { amount }, 0),
                 Effect::Split { offset } => pass(encoder, (&now, None), size, Pass::Split { offset }, 0),
+                Effect::Smear { length, angle } => {
+                    pass(encoder, (&now, None), size, Pass::Smear { length, angle }, 0)
+                }
+                Effect::Radial { amount, centre } => {
+                    pass(encoder, (&now, None), size, Pass::Radial { amount, centre }, 0)
+                }
+                Effect::Glitch { amount, often, seed } => {
+                    pass(encoder, (&now, None), size, Pass::Glitch { amount, often }, seed)
+                }
             };
             done.push(std::mem::replace(&mut now, next));
         }

@@ -205,6 +205,10 @@ fn rich_project() -> Project {
     }));
     let (effects, _) = effects.with_added(project::EffectKind::ALL[18]);
     let (effects, _) = effects.with_added(project::EffectKind::ALL[20]);
+    // Smeared sideways, zoom-blurred and glitching (format 38).
+    let (effects, _) = effects.with_added(project::EffectKind::ALL[21]);
+    let (effects, _) = effects.with_added(project::EffectKind::ALL[22]);
+    let (effects, _) = effects.with_added(project::EffectKind::ALL[23]);
     // Graded on the Color page: warmer and a stop down, its shadows
     // lifted a little towards blue (format 28).
     let mut grade = project::Grade::default();
@@ -885,6 +889,30 @@ fn the_current_sample_has_colour_looks() {
 }
 
 #[test]
+fn version_37_sample_opens_without_the_motion_blurs_or_glitch() {
+    let project = file::load(&sample_path(37)).expect("the version 37 sample opens");
+    let new = ["Directional blur", "Radial blur", "Glitch"];
+    for seq in project.sequences.iter() {
+        let clips = seq.tracks().flat_map(|t| t.clips.iter());
+        assert!(
+            clips
+                .flat_map(|c| c.effects.iter())
+                .all(|e| !new.contains(&e.kind.name()))
+        );
+    }
+}
+
+#[test]
+fn the_current_sample_has_blurs_that_move_and_a_glitch() {
+    let project = file::load(&sample_path(FORMAT_VERSION)).expect("the sample opens");
+    let clip = &project.active().expect("a timeline").video_tracks[0].clips[0];
+    let names: Vec<&str> = clip.effects.iter().map(|e| e.kind.name()).collect();
+    for name in ["Directional blur", "Radial blur", "Glitch"] {
+        assert!(names.contains(&name), "{name}");
+    }
+}
+
+#[test]
 fn version_27_sample_opens_ungraded() {
     let project = file::load(&sample_path(27)).expect("the version 27 sample opens");
     for seq in project.sequences.iter() {
@@ -981,8 +1009,8 @@ fn the_current_sample_has_a_picture_mixed_as_light() {
 fn the_current_sample_has_effects_one_switched_off() {
     let project = file::load(&sample_path(FORMAT_VERSION)).expect("the sample opens");
     let clip = &project.active().expect("a timeline").video_tracks[0].clips[0];
-    assert_eq!(clip.effects.iter().count(), 19);
-    assert_eq!(clip.effects.applied().count(), 17);
+    assert_eq!(clip.effects.iter().count(), 22);
+    assert_eq!(clip.effects.applied().count(), 20);
     assert!(clip.effects.check().is_ok());
 }
 

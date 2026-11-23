@@ -137,7 +137,13 @@ fn knobs(kind: &EffectKind) -> &'static [(&'static str, Show)] {
             ("", Show::ColourPart),
             ("", Show::ColourPart),
         ],
-        EffectKind::Split(_) => &[("Amount", Percent), ("Direction", Degrees)],
+        EffectKind::Split(_) | EffectKind::Smear(_) => &[("Amount", Percent), ("Direction", Degrees)],
+        EffectKind::Radial(_) => &[
+            ("Amount", Percent),
+            ("Point across", Percent),
+            ("Point down", Percent),
+        ],
+        EffectKind::Glitch(_) => &[("Amount", Percent), ("How often", Percent)],
     }
 }
 

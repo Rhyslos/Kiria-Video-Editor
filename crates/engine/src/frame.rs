@@ -673,6 +673,19 @@ fn effect_passes(clip: &Clip, at: Time) -> Vec<render::Effect> {
                     offset: (across * distance, down * distance),
                 }
             }
+            project::EffectKind::Smear(s) => render::Effect::Smear {
+                length: 120.0 * fraction(s.amount),
+                angle: std::f32::consts::TAU * fraction(s.direction),
+            },
+            project::EffectKind::Radial(r) => render::Effect::Radial {
+                amount: 0.5 * fraction(r.amount),
+                centre: (fraction(r.x), fraction(r.y)),
+            },
+            project::EffectKind::Glitch(g) => render::Effect::Glitch {
+                amount: fraction(g.amount),
+                often: fraction(g.often),
+                seed,
+            },
         })
         .collect()
 }
@@ -1014,6 +1027,25 @@ mod tests {
         assert_eq!(
             moved_at(split, 1.0),
             render::Effect::Split { offset: (20.0, 0.0) }
+        );
+    }
+
+    #[test]
+    fn a_glitch_changes_with_the_frame_of_the_file() {
+        let glitch = project::EffectKind::Glitch(project::effects::Glitch::USUAL);
+        let seed = |at| match moved_at(glitch, at) {
+            render::Effect::Glitch { seed, .. } => seed,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(seed(1.0), seed(1.0));
+        assert_ne!(seed(1.0), seed(1.5));
+        let radial = project::EffectKind::Radial(project::effects::Radial::USUAL);
+        assert_eq!(
+            moved_at(radial, 1.0),
+            render::Effect::Radial {
+                amount: 0.15,
+                centre: (0.5, 0.5)
+            }
         );
     }
 
