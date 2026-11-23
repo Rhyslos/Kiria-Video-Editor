@@ -4,7 +4,7 @@ The project model, edit commands, undo/redo and autosave.
 
 ## Status
 
-Model, project file (format 44), commands, undo/redo, autosave journal and crash recovery done in Phases 0.3 and 0.4; the model and its commands grow with each page since (formats 2 to 44, every one with a migration and a stored sample).
+Model, project file (format 45), commands, undo/redo, autosave journal and crash recovery done in Phases 0.3 and 0.4; the model and its commands grow with each page since (formats 2 to 45, every one with a migration and a stored sample).
 
 ## Files
 
@@ -169,8 +169,9 @@ RON text with the extension from `brand::PROJECT_FILE_EXTENSION`:
 | 40 | Effects gain `Posterise` (how many shades), `Halftone` (dot size and amount) and `Scanlines` (amount and spacing) | Version number only: older files have none |
 | 41 | Effects gain `Leak` (light leak: amount, speed, colour), `Flare` (lens flare: amount and where), `Speed` (speed lines: amount and their point) and `Impact` (impact frame: threshold and invert) | Version number only: older files have none |
 | 42 | Transitions gain `Slide`, `Spin`, `WhipPan`, `LumaFade` and `Glitch` | Version number only: older files have none |
-| 43 | A track's sound gains `distortion` (`Distortion`: Drive, Radio or Phone, drive and mix), `echo` (`Echo`: time, feedback, level, ping-pong) and `reverb` (`Reverb`: size, damping, level) | Version number only: every one off when missing |
+| 43 | A track's sound gains `distortion` (`Distortion`: Drive, Radio or Phone, drive and mix), `echo` (`Echo`: time, feedback, level, ping-pong) and `reverb` (`Reverb`: size, damping, level); format 45, `pitch` (`Pitch`: cents and mix) | Version number only: every one off when missing |
 | 44 | Effects gain `Motion` (motion blur: how long the shutter is open); `Zoom` gains `sharpen` (detail brought back as it zooms in, 0 and left out when missing) | Version number only: older files have neither |
+| 45 | A track's sound gains `pitch` (`Pitch`: on, cents from -1 200 to 1 200, mix) | Version number only: off when missing |
 
 ### Changing the format
 

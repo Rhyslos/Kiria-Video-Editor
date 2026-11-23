@@ -313,6 +313,12 @@ fn rich_project() -> Project {
     seq.audio_tracks[1].sound = mic;
     seq.audio_tracks[0].sound.role = project::TrackRole::Effects;
     seq.audio_tracks[0].sound.ducking.on = true;
+    // The game sound a little lower (format 45).
+    seq.audio_tracks[0].sound.pitch = project::track_sound::Pitch {
+        on: true,
+        cents: -300,
+        mix_milli: 1_000,
+    };
     // The game sound in a room, with an echo, through a radio (format 43).
     seq.audio_tracks[0].sound.reverb = project::track_sound::Reverb {
         on: true,
@@ -1055,6 +1061,23 @@ fn the_current_sample_has_game_sound_through_a_radio_in_a_room() {
     );
     assert!(game.echo.on && game.echo.ping_pong);
     assert_eq!((game.reverb.on, game.reverb.size_milli), (true, 700));
+}
+
+#[test]
+fn version_44_sample_has_no_pitch_shift() {
+    let project = file::load(&sample_path(44)).expect("the version 44 sample opens");
+    for seq in project.sequences.iter() {
+        for t in seq.audio_tracks.iter() {
+            assert!(!t.sound.pitch.on);
+        }
+    }
+}
+
+#[test]
+fn the_current_sample_has_its_game_sound_lower() {
+    let project = file::load(&sample_path(FORMAT_VERSION)).expect("the sample opens");
+    let game = &project.active().expect("a timeline").audio_tracks[0].sound;
+    assert_eq!((game.pitch.on, game.pitch.cents), (true, -300));
 }
 
 #[test]

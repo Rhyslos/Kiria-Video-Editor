@@ -16,6 +16,7 @@ use crate::dsp::dynamics::CompressorSettings;
 use crate::dsp::filters::{BANDS, Band, FLAT, Shape};
 use crate::dsp::level::LevelSettings;
 use crate::dsp::lines::{Line, Lines};
+use crate::dsp::pitch::PitchSettings;
 use crate::dsp::space::{EchoSettings, ReverbSettings};
 use project::track_sound as p;
 
@@ -47,6 +48,7 @@ pub struct TrackSettings {
     pub distort: DistortSettings,
     pub echo: EchoSettings,
     pub reverb: ReverbSettings,
+    pub pitch: PitchSettings,
     pub volume_db: f32,
     /// -1 all left to 1 all right.
     pub pan: f32,
@@ -74,6 +76,7 @@ impl Default for TrackSettings {
             distort: DistortSettings::OFF,
             echo: EchoSettings::OFF,
             reverb: ReverbSettings::OFF,
+            pitch: PitchSettings::OFF,
             volume_db: 0.0,
             pan: 0.0,
             mute: false,
@@ -96,6 +99,7 @@ pub enum TrackChange {
     Distort(DistortSettings),
     Echo(EchoSettings),
     Reverb(ReverbSettings),
+    Pitch(PitchSettings),
     Volume(f32),
     Pan(f32),
     Mute(bool),
@@ -121,6 +125,7 @@ impl TrackSettings {
             TrackChange::Distort(v) => self.distort = v,
             TrackChange::Echo(v) => self.echo = v,
             TrackChange::Reverb(v) => self.reverb = v,
+            TrackChange::Pitch(v) => self.pitch = v,
             TrackChange::Volume(v) => self.volume_db = v,
             TrackChange::Pan(v) => self.pan = v,
             TrackChange::Mute(v) => self.mute = v,
@@ -155,6 +160,7 @@ impl TrackSettings {
         differs(self.distort == old.distort, TrackChange::Distort(self.distort));
         differs(self.echo == old.echo, TrackChange::Echo(self.echo));
         differs(self.reverb == old.reverb, TrackChange::Reverb(self.reverb));
+        differs(self.pitch == old.pitch, TrackChange::Pitch(self.pitch));
         differs(
             self.volume_db == old.volume_db,
             TrackChange::Volume(self.volume_db),
@@ -232,6 +238,11 @@ impl TrackSettings {
                 size: milli(s.reverb.size_milli as i32),
                 damping: milli(s.reverb.damping_milli as i32),
                 mix: milli(s.reverb.mix_milli as i32),
+            },
+            pitch: PitchSettings {
+                on: s.pitch.on,
+                semitones: s.pitch.cents as f32 / 100.0,
+                mix: milli(s.pitch.mix_milli as i32),
             },
             volume_db: track.gain_db,
             pan: s.pan as f32 / 1_000_000.0,
@@ -431,6 +442,8 @@ mod tests {
         sound.echo.on = true;
         sound.echo.time_us = 200_000;
         sound.reverb.on = true;
+        sound.pitch.on = true;
+        sound.pitch.cents = -500;
         sound.distortion.style = p::DistortionStyle::Phone;
         sound.volume_line.push_back(p::LinePoint {
             at: Time::from_ratio(1, 3).expect("a third"),
@@ -453,6 +466,7 @@ mod tests {
         assert_eq!(t.duck.hold_ms, 250.0);
         assert_eq!((t.echo.on, t.echo.time_ms), (true, 200.0));
         assert!(t.reverb.on && !t.distort.on);
+        assert_eq!((t.pitch.on, t.pitch.semitones), (true, -5.0));
         assert_eq!(t.distort.style, Style::Phone);
         assert_eq!(noise_from_project(&track.sound), Some(learned));
         let mut lines = lines_from_project(&track.sound, 48_000);

@@ -93,12 +93,13 @@ pub enum Tool {
     Distortion,
     Echo,
     Reverb,
+    Pitch,
     /// The full loudness overview.
     Meters,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 9] = [
+    pub const ALL: [Tool; 10] = [
         Tool::Eq,
         Tool::Compressor,
         Tool::Cleanup,
@@ -107,6 +108,7 @@ impl Tool {
         Tool::Distortion,
         Tool::Echo,
         Tool::Reverb,
+        Tool::Pitch,
         Tool::Meters,
     ];
 
@@ -120,6 +122,7 @@ impl Tool {
             Tool::Distortion => "Distortion",
             Tool::Echo => "Echo",
             Tool::Reverb => "Reverb",
+            Tool::Pitch => "Pitch",
             Tool::Meters => "Meters",
         }
     }
@@ -276,6 +279,9 @@ pub fn tags(track: &Track, levels: Option<&TrackLevels>) -> Vec<(&'static str, T
     }
     if s.reverb.on {
         out.push(("Room", Tool::Reverb, words::reverb(name, &s.reverb)));
+    }
+    if s.pitch.on {
+        out.push(("Pitch", Tool::Pitch, words::pitch(name, &s.pitch)));
     }
     out
 }
@@ -540,6 +546,12 @@ impl AudioPage {
             Tool::Reverb => {
                 let touched = space::reverb(&mut child, theme, &mut sound.reverb);
                 let said = words::reverb(name, &sound.reverb);
+                self.track_edit(seq, track, sound, touched, &mut asks);
+                said
+            }
+            Tool::Pitch => {
+                let touched = space::pitch(&mut child, theme, &mut sound.pitch);
+                let said = words::pitch(name, &sound.pitch);
                 self.track_edit(seq, track, sound, touched, &mut asks);
                 said
             }
@@ -863,6 +875,7 @@ mod tests {
         assert_eq!(Tool::from_name("clean-up"), Some(Tool::Cleanup));
         assert_eq!(Tool::from_name("Meters"), Some(Tool::Meters));
         assert_eq!(Tool::from_name("reverb"), Some(Tool::Reverb));
+        assert_eq!(Tool::from_name("pitch"), Some(Tool::Pitch));
         assert_eq!(Tool::from_name("chorus"), None);
 
         let p = Project::new("T", project::SequenceSettings::GAME_CLIP);

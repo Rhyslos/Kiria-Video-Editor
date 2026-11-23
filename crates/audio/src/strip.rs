@@ -2,7 +2,7 @@
 //! or off, run in the page's order:
 //!
 //! high pass → clean-up → EQ (the analyser listens here) → compressor →
-//! distortion → echo → reverb → Loudness → ducking → volume, pan and lines
+//! pitch shift → distortion → echo → reverb → Loudness → ducking → volume, pan and lines
 //! (mute and solo) → meter.
 //!
 //! Turning an effect on or off is a flag, never an allocation, so it
@@ -17,6 +17,7 @@ use crate::dsp::dynamics::Compressor;
 use crate::dsp::filters::{Eq, HighPass};
 use crate::dsp::level::Leveller;
 use crate::dsp::lines::{Fader, Lines};
+use crate::dsp::pitch::Pitch;
 use crate::dsp::space::{Echo, Reverb};
 use crate::meter::TrackMeter;
 use crate::readout::TrackReadout;
@@ -29,6 +30,7 @@ pub struct Strip {
     cleanup: SpectralGate,
     eq: Eq,
     compressor: Compressor,
+    pitch: Pitch,
     distort: Distort,
     echo: Echo,
     reverb: Reverb,
@@ -49,6 +51,7 @@ impl Strip {
             cleanup: SpectralGate::new(rate, s.cleanup, noise),
             eq: Eq::new(r, s.eq.bands),
             compressor: Compressor::new(r, s.compressor),
+            pitch: Pitch::new(r, s.pitch),
             distort: Distort::new(r, s.distort),
             echo: Echo::new(r, s.echo),
             reverb: Reverb::new(r, s.reverb),
@@ -74,6 +77,7 @@ impl Strip {
             TrackChange::Cleanup(c) => self.cleanup.set(c),
             TrackChange::Duck(d) => self.duck.set(d),
             TrackChange::Level(l) => self.level.set(l),
+            TrackChange::Pitch(p) => self.pitch.set(p),
             TrackChange::Distort(d) => self.distort.set(d),
             TrackChange::Echo(e) => self.echo.set(e),
             TrackChange::Reverb(r) => self.reverb.set(r),
@@ -125,6 +129,7 @@ impl Strip {
             tap.send(l, r);
         }
         self.compressor.process(l, r);
+        self.pitch.process(l, r);
         self.distort.process(l, r);
         self.echo.process(l, r);
         self.reverb.process(l, r);
@@ -155,6 +160,7 @@ impl Strip {
         self.cleanup.take_state(&old.cleanup);
         self.eq.take_state(&old.eq);
         self.compressor.take_state(&old.compressor);
+        self.pitch.take_state(&old.pitch);
         self.distort.take_state(&old.distort);
         self.echo.take_state(&old.echo);
         self.reverb.take_state(&old.reverb);

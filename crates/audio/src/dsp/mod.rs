@@ -12,6 +12,7 @@
 //! - [`bands`]: the 64 bands by frequency shared by noise profiles and the analyser.
 //! - [`character`]: distortion (drive, radio, phone).
 //! - [`space`]: echo and reverb.
+//! - [`pitch`]: pitch shift.
 
 pub mod bands;
 pub mod biquad;
@@ -24,6 +25,7 @@ pub mod level;
 pub mod limiter;
 pub mod lines;
 pub mod loudness;
+pub mod pitch;
 pub mod space;
 
 /// 20 / ln(10): decibels from a natural logarithm.
