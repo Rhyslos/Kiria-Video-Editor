@@ -670,6 +670,17 @@ fn lit(p: vec4<f32>, at: vec2<f32>, kind: i32) -> vec3<f32> {
     return select(vec3<f32>(0.0), vec3<f32>(1.0), white);
 }
 
+// 37: only what is brighter, as shown, than 1 - `done` (y) stays, over an
+// edge `softness` (z) wide: at 0 nothing shows, at 1 all of it, the
+// brightest parts first.
+fn revealed(p: vec4<f32>) -> vec4<f32> {
+    let soft = max(it.kind_numbers.z, 0.001);
+    let shown = pow(clamp(luma(max(p.rgb, vec3<f32>(0.0))), 0.0, 1.0), 1.0 / 2.4);
+    let line = (1.0 - it.kind_numbers.y) * (1.0 + soft);
+    let kept = clamp((shown + soft - line) / soft, 0.0, 1.0);
+    return stored(p.rgb, p.a * kept);
+}
+
 @fragment
 fn effect(in: Corner) -> @location(0) vec4<f32> {
     let kind = i32(round(it.kind_numbers.x));
@@ -742,6 +753,7 @@ fn effect(in: Corner) -> @location(0) vec4<f32> {
         case 6: { rgb = add(p, in.at); }
         case 10: { rgb = mix(p.rgb, graded(p.rgb), grade_where(p.rgb, in.at)); }
         case 17: { return keyed(p); }
+        case 37: { return revealed(p); }
         case 19, 20, 21, 22: { rgb = looked(p, kind); }
         case 30, 31, 32: { rgb = printed(p, in.at, kind); }
         case 33, 34, 35, 36: { rgb = lit(p, in.at, kind); }

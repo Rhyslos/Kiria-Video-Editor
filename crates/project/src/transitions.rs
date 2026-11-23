@@ -24,15 +24,33 @@ pub enum TransitionKind {
     Push,
     /// The last grows and fades as the next settles in from smaller.
     Zoom,
+    /// The next picture slides in from the right over the last, which
+    /// stays where it is.
+    Slide,
+    /// The last spins away and shrinks, the next spins in and grows.
+    Spin,
+    /// A fast push with the pictures smeared by the speed, as a camera
+    /// whipped round.
+    WhipPan,
+    /// The next picture comes in where it is brightest first, its darkest
+    /// parts last.
+    LumaFade,
+    /// Both pictures break up in glitches, the cut in the middle of them.
+    Glitch,
 }
 
 impl TransitionKind {
-    pub const ALL: [TransitionKind; 5] = [
+    pub const ALL: [TransitionKind; 10] = [
         TransitionKind::Dissolve,
         TransitionKind::DipToBlack,
         TransitionKind::Wipe,
         TransitionKind::Push,
         TransitionKind::Zoom,
+        TransitionKind::Slide,
+        TransitionKind::Spin,
+        TransitionKind::WhipPan,
+        TransitionKind::LumaFade,
+        TransitionKind::Glitch,
     ];
 
     /// Its name in the interface.
@@ -43,6 +61,11 @@ impl TransitionKind {
             TransitionKind::Wipe => "Wipe",
             TransitionKind::Push => "Push",
             TransitionKind::Zoom => "Zoom through",
+            TransitionKind::Slide => "Slide in",
+            TransitionKind::Spin => "Spin",
+            TransitionKind::WhipPan => "Whip pan",
+            TransitionKind::LumaFade => "Luma fade",
+            TransitionKind::Glitch => "Glitch",
         }
     }
 }

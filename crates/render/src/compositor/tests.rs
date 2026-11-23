@@ -1669,6 +1669,28 @@ fn an_impact_frame_is_stark_black_and_white() {
 }
 
 #[test]
+fn a_reveal_shows_the_brightest_parts_first() {
+    let Some(gpu) = gpu() else { return };
+    let size = (64, 8);
+    let ramp = |x: u32, _| (16 + x * 3) as u8;
+    let plain = with_effects(&gpu, Working::Linear, size, ramp, &[]);
+    let reveal = |done| {
+        with_effects(
+            &gpu,
+            Working::Linear,
+            size,
+            ramp,
+            &[crate::Effect::Reveal { done, softness: 0.1 }],
+        )
+    };
+    let half = reveal(0.5);
+    assert_eq!(half.at(62, 4), plain.at(62, 4), "the bright end is in");
+    assert!(near(half.at(2, 4), [0, 0, 0], 1), "the dark end not yet");
+    assert!(near(reveal(0.0).at(62, 4), [0, 0, 0], 1), "nothing at the start");
+    assert_eq!(reds(&reveal(1.0)), reds(&plain), "all of it at the end");
+}
+
+#[test]
 fn blend_modes_mix_with_what_is_below_as_light() {
     let Some(gpu) = gpu() else { return };
     let size = (16, 16);
