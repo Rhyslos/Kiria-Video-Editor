@@ -90,6 +90,19 @@ pub fn full(t: usize) -> TrackSettings {
             on: true,
             ..LevelSettings::OFF
         },
+        distort: audio::dsp::character::DistortSettings {
+            on: true,
+            ..audio::dsp::character::DistortSettings::OFF
+        },
+        echo: audio::dsp::space::EchoSettings {
+            on: true,
+            ping_pong: t.is_multiple_of(2),
+            ..audio::dsp::space::EchoSettings::OFF
+        },
+        reverb: audio::dsp::space::ReverbSettings {
+            on: true,
+            ..audio::dsp::space::ReverbSettings::OFF
+        },
         volume_db: -6.0,
         pan: (t as f32 / 16.0) - 1.0,
         mute: false,

@@ -63,7 +63,12 @@ mod tests {
         "on:false,threshold_mdb:6000,reduction_mdb:-18000,release_us:120000,profile:None)",
         ",ducking:(on:false,threshold_mdb:-40000,hold_us:300000,down_us:40000,up_us:40000",
         "0,depth_mdb:-12000),loudness:(on:false,target_mlufs:-18000,max_boost_mdb:12000,m",
-        "ax_cut_mdb:12000),volume_line:[],pan_line:[])",
+        "ax_cut_mdb:12000),",
+        // Format 43: distortion, echo and reverb, off, so a file that left
+        // the track's sound out still means every effect off.
+        "distortion:(on:false,style:Drive,drive_mdb:12000,mix_milli:1000),echo:(on:false,",
+        "time_us:350000,feedback_milli:350,mix_milli:350,ping_pong:false),reverb:(on:fals",
+        "e,size_milli:500,damping_milli:500,mix_milli:250),volume_line:[],pan_line:[])",
     );
     const MASTER_SOUND: &str = concat!(
         "(compressor:(on:false,threshold_mdb:-24000,ratio_milli:3000,attack_us:5000,relea",

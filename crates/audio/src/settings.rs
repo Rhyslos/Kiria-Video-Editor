@@ -9,12 +9,14 @@
 //! differ, so after an edit or an undo only those are sent.
 
 use crate::dsp::bands;
+use crate::dsp::character::{DistortSettings, Style};
 use crate::dsp::cleanup::{CleanupSettings, NoiseProfile};
 use crate::dsp::duck::DuckSettings;
 use crate::dsp::dynamics::CompressorSettings;
 use crate::dsp::filters::{BANDS, Band, FLAT, Shape};
 use crate::dsp::level::LevelSettings;
 use crate::dsp::lines::{Line, Lines};
+use crate::dsp::space::{EchoSettings, ReverbSettings};
 use project::track_sound as p;
 
 /// The high pass's settings.
@@ -42,6 +44,9 @@ pub struct TrackSettings {
     pub cleanup: CleanupSettings,
     pub duck: DuckSettings,
     pub level: LevelSettings,
+    pub distort: DistortSettings,
+    pub echo: EchoSettings,
+    pub reverb: ReverbSettings,
     pub volume_db: f32,
     /// -1 all left to 1 all right.
     pub pan: f32,
@@ -66,6 +71,9 @@ impl Default for TrackSettings {
             cleanup: CleanupSettings::OFF,
             duck: DuckSettings::OFF,
             level: LevelSettings::OFF,
+            distort: DistortSettings::OFF,
+            echo: EchoSettings::OFF,
+            reverb: ReverbSettings::OFF,
             volume_db: 0.0,
             pan: 0.0,
             mute: false,
@@ -85,6 +93,9 @@ pub enum TrackChange {
     Cleanup(CleanupSettings),
     Duck(DuckSettings),
     Level(LevelSettings),
+    Distort(DistortSettings),
+    Echo(EchoSettings),
+    Reverb(ReverbSettings),
     Volume(f32),
     Pan(f32),
     Mute(bool),
@@ -107,6 +118,9 @@ impl TrackSettings {
             TrackChange::Cleanup(v) => self.cleanup = v,
             TrackChange::Duck(v) => self.duck = v,
             TrackChange::Level(v) => self.level = v,
+            TrackChange::Distort(v) => self.distort = v,
+            TrackChange::Echo(v) => self.echo = v,
+            TrackChange::Reverb(v) => self.reverb = v,
             TrackChange::Volume(v) => self.volume_db = v,
             TrackChange::Pan(v) => self.pan = v,
             TrackChange::Mute(v) => self.mute = v,
@@ -138,6 +152,9 @@ impl TrackSettings {
         differs(self.cleanup == old.cleanup, TrackChange::Cleanup(self.cleanup));
         differs(self.duck == old.duck, TrackChange::Duck(self.duck));
         differs(self.level == old.level, TrackChange::Level(self.level));
+        differs(self.distort == old.distort, TrackChange::Distort(self.distort));
+        differs(self.echo == old.echo, TrackChange::Echo(self.echo));
+        differs(self.reverb == old.reverb, TrackChange::Reverb(self.reverb));
         differs(
             self.volume_db == old.volume_db,
             TrackChange::Volume(self.volume_db),
@@ -192,6 +209,29 @@ impl TrackSettings {
                 target_lufs: milli(s.loudness.target_mlufs),
                 max_boost_db: milli(s.loudness.max_boost_mdb as i32),
                 max_cut_db: milli(s.loudness.max_cut_mdb as i32),
+            },
+            distort: DistortSettings {
+                on: s.distortion.on,
+                style: match s.distortion.style {
+                    p::DistortionStyle::Drive => Style::Drive,
+                    p::DistortionStyle::Radio => Style::Radio,
+                    p::DistortionStyle::Phone => Style::Phone,
+                },
+                drive_db: milli(s.distortion.drive_mdb as i32),
+                mix: milli(s.distortion.mix_milli as i32),
+            },
+            echo: EchoSettings {
+                on: s.echo.on,
+                time_ms: micro_to_ms(s.echo.time_us),
+                feedback: milli(s.echo.feedback_milli as i32),
+                mix: milli(s.echo.mix_milli as i32),
+                ping_pong: s.echo.ping_pong,
+            },
+            reverb: ReverbSettings {
+                on: s.reverb.on,
+                size: milli(s.reverb.size_milli as i32),
+                damping: milli(s.reverb.damping_milli as i32),
+                mix: milli(s.reverb.mix_milli as i32),
             },
             volume_db: track.gain_db,
             pan: s.pan as f32 / 1_000_000.0,
@@ -388,6 +428,10 @@ mod tests {
         sound.eq.bands[2].q_milli = 2_500;
         sound.compressor.on = true;
         sound.ducking.hold_us = 250_000;
+        sound.echo.on = true;
+        sound.echo.time_us = 200_000;
+        sound.reverb.on = true;
+        sound.distortion.style = p::DistortionStyle::Phone;
         sound.volume_line.push_back(p::LinePoint {
             at: Time::from_ratio(1, 3).expect("a third"),
             value: -6_000,
@@ -407,6 +451,9 @@ mod tests {
         assert_eq!(t.pan, -0.5);
         assert_eq!((t.eq.bands[2].gain_db, t.eq.bands[2].q), (-4.5, 2.5));
         assert_eq!(t.duck.hold_ms, 250.0);
+        assert_eq!((t.echo.on, t.echo.time_ms), (true, 200.0));
+        assert!(t.reverb.on && !t.distort.on);
+        assert_eq!(t.distort.style, Style::Phone);
         assert_eq!(noise_from_project(&track.sound), Some(learned));
         let mut lines = lines_from_project(&track.sound, 48_000);
         assert_eq!(

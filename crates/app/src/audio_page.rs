@@ -27,6 +27,7 @@ mod leveller;
 pub mod lines;
 mod overview;
 pub mod roles;
+mod space;
 pub mod start;
 mod words;
 
@@ -89,17 +90,23 @@ pub enum Tool {
     Cleanup,
     Ducking,
     Loudness,
+    Distortion,
+    Echo,
+    Reverb,
     /// The full loudness overview.
     Meters,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 6] = [
+    pub const ALL: [Tool; 9] = [
         Tool::Eq,
         Tool::Compressor,
         Tool::Cleanup,
         Tool::Ducking,
         Tool::Loudness,
+        Tool::Distortion,
+        Tool::Echo,
+        Tool::Reverb,
         Tool::Meters,
     ];
 
@@ -110,6 +117,9 @@ impl Tool {
             Tool::Cleanup => "Clean-up",
             Tool::Ducking => "Ducking",
             Tool::Loudness => "Loudness",
+            Tool::Distortion => "Distortion",
+            Tool::Echo => "Echo",
+            Tool::Reverb => "Reverb",
             Tool::Meters => "Meters",
         }
     }
@@ -258,6 +268,15 @@ pub fn tags(track: &Track, levels: Option<&TrackLevels>) -> Vec<(&'static str, T
         let g = levels.map(|l| l.level_db);
         out.push(("Level", Tool::Loudness, words::leveller(name, &s.loudness, g)));
     }
+    if s.distortion.on {
+        out.push(("Dist", Tool::Distortion, words::distortion(name, &s.distortion)));
+    }
+    if s.echo.on {
+        out.push(("Echo", Tool::Echo, words::echo(name, &s.echo)));
+    }
+    if s.reverb.on {
+        out.push(("Room", Tool::Reverb, words::reverb(name, &s.reverb)));
+    }
     out
 }
 
@@ -389,7 +408,8 @@ impl AudioPage {
     /// The header of the tools: the track dropdown and the switcher.
     pub fn header(&mut self, ui: &mut Ui, theme: &Theme, seq: &Sequence) {
         let current = chosen(seq, self.track);
-        ui.horizontal(|ui| {
+        // On a second line what doesn't fit, never wider than the panel.
+        ui.horizontal_wrapped(|ui| {
             let text = current.map_or("No audio track".to_owned(), |t| listed_name(seq, t));
             let colour = current.map_or(theme.muted, |t| roles::colour(t.sound.role));
             ui.label(egui::RichText::new("●").color(colour));
@@ -502,6 +522,24 @@ impl AudioPage {
                 let st = levels.map(|l| l.short_term);
                 let touched = leveller::ui(&mut child, theme, &mut sound.loudness, g, st);
                 let said = words::leveller(name, &sound.loudness, g);
+                self.track_edit(seq, track, sound, touched, &mut asks);
+                said
+            }
+            Tool::Distortion => {
+                let touched = space::distortion(&mut child, theme, &mut sound.distortion);
+                let said = words::distortion(name, &sound.distortion);
+                self.track_edit(seq, track, sound, touched, &mut asks);
+                said
+            }
+            Tool::Echo => {
+                let touched = space::echo(&mut child, theme, &mut sound.echo);
+                let said = words::echo(name, &sound.echo);
+                self.track_edit(seq, track, sound, touched, &mut asks);
+                said
+            }
+            Tool::Reverb => {
+                let touched = space::reverb(&mut child, theme, &mut sound.reverb);
+                let said = words::reverb(name, &sound.reverb);
                 self.track_edit(seq, track, sound, touched, &mut asks);
                 said
             }
@@ -824,7 +862,8 @@ mod tests {
         assert_eq!(Tool::from_name("eq"), Some(Tool::Eq));
         assert_eq!(Tool::from_name("clean-up"), Some(Tool::Cleanup));
         assert_eq!(Tool::from_name("Meters"), Some(Tool::Meters));
-        assert_eq!(Tool::from_name("reverb"), None);
+        assert_eq!(Tool::from_name("reverb"), Some(Tool::Reverb));
+        assert_eq!(Tool::from_name("chorus"), None);
 
         let p = Project::new("T", project::SequenceSettings::GAME_CLIP);
         let seq = p.active().unwrap().clone();

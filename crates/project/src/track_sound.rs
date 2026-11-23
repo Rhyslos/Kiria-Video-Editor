@@ -214,6 +214,92 @@ impl Default for Loudness {
     }
 }
 
+/// Which kind of distortion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum DistortionStyle {
+    /// The whole sound, soft-clipped.
+    #[default]
+    Drive,
+    /// Kept to a small radio's band, then clipped.
+    Radio,
+    /// Kept to a phone line's band, in mono, clipped harder.
+    Phone,
+}
+
+/// Distortion (format 43).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Distortion {
+    pub on: bool,
+    pub style: DistortionStyle,
+    /// Gain into the clip, thousandths of a dB: 0 to 30 dB.
+    pub drive_mdb: u32,
+    /// Thousandths: 0 the sound as it came, 1 000 only the distorted.
+    pub mix_milli: u32,
+}
+
+impl Default for Distortion {
+    fn default() -> Distortion {
+        Distortion {
+            on: false,
+            style: DistortionStyle::Drive,
+            drive_mdb: 12_000,
+            mix_milli: 1_000,
+        }
+    }
+}
+
+/// An echo (format 43): repeats of the sound, fading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Echo {
+    pub on: bool,
+    /// Time between repeats: 20 ms to 1.5 s.
+    pub time_us: u32,
+    /// Thousandths of each repeat that come back: 0 to 900.
+    pub feedback_milli: u32,
+    /// The repeats' level, thousandths: 0 to 1 000.
+    pub mix_milli: u32,
+    /// Repeats going left and right in turn.
+    pub ping_pong: bool,
+}
+
+impl Default for Echo {
+    fn default() -> Echo {
+        Echo {
+            on: false,
+            time_us: 350_000,
+            feedback_milli: 350,
+            mix_milli: 350,
+            ping_pong: false,
+        }
+    }
+}
+
+/// A reverb (format 43): the sound in a room.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Reverb {
+    pub on: bool,
+    /// Thousandths: 0 a small room, 1 000 a hall.
+    pub size_milli: u32,
+    /// Thousandths: 0 bright, 1 000 dull.
+    pub damping_milli: u32,
+    /// The room's level, thousandths: 0 to 1 000.
+    pub mix_milli: u32,
+}
+
+impl Default for Reverb {
+    fn default() -> Reverb {
+        Reverb {
+            on: false,
+            size_milli: 500,
+            damping_milli: 500,
+            mix_milli: 250,
+        }
+    }
+}
+
 /// A point of a volume or pan line: a moment on the timeline and a value
 /// (thousandths of a dB for volume, millionths for pan).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -235,6 +321,9 @@ pub struct TrackSound {
     pub cleanup: Cleanup,
     pub ducking: Ducking,
     pub loudness: Loudness,
+    pub distortion: Distortion,
+    pub echo: Echo,
+    pub reverb: Reverb,
     /// Added to the track's volume, thousandths of a dB.
     pub volume_line: Vector<LinePoint>,
     /// While it has points, the pan (millionths).
@@ -308,7 +397,7 @@ pub(crate) fn check_line(line: &Vector<LinePoint>, low: i32, high: i32) -> bool 
 
 impl TrackSound {
     /// Whether any of its effects is on (the high-pass, EQ, compressor,
-    /// clean-up, ducking or loudness).
+    /// clean-up, ducking, loudness, distortion, echo or reverb).
     pub fn effects_on(&self) -> bool {
         self.high_pass.on
             || self.eq.on
@@ -316,6 +405,9 @@ impl TrackSound {
             || self.cleanup.on
             || self.ducking.on
             || self.loudness.on
+            || self.distortion.on
+            || self.echo.on
+            || self.reverb.on
     }
 
     /// This sound with the effects of `from` (copied from another track):
@@ -328,6 +420,9 @@ impl TrackSound {
             cleanup: from.cleanup.clone(),
             ducking: from.ducking,
             loudness: from.loudness,
+            distortion: from.distortion,
+            echo: from.echo,
+            reverb: from.reverb,
             ..self.clone()
         }
     }
@@ -412,6 +507,30 @@ impl TrackSound {
         {
             return Err(refused(
                 "The loudness aimed for goes from -40 to -5 LUFS, and it moves the track up or down by at most 24 dB.",
+            ));
+        }
+        let d = &self.distortion;
+        if !(within(d.drive_mdb, 0, 30_000) && within(d.mix_milli, 0, 1_000)) {
+            return Err(refused(
+                "Distortion's drive goes from 0 to 30 dB and its mix from 0 to 100 %.",
+            ));
+        }
+        let e = &self.echo;
+        if !(within(e.time_us, 20_000, 1_500_000)
+            && within(e.feedback_milli, 0, 900)
+            && within(e.mix_milli, 0, 1_000))
+        {
+            return Err(refused(
+                "An echo's time goes from 20 ms to 1.5 s, its feedback up to 90 % and its level up to 100 %.",
+            ));
+        }
+        let r = &self.reverb;
+        if !(within(r.size_milli, 0, 1_000)
+            && within(r.damping_milli, 0, 1_000)
+            && within(r.mix_milli, 0, 1_000))
+        {
+            return Err(refused(
+                "A reverb's size, damping and level each go from 0 to 100 %.",
             ));
         }
         if !check_line(

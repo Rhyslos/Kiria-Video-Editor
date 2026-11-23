@@ -306,6 +306,22 @@ fn rich_project() -> Project {
     seq.audio_tracks[1].sound = mic;
     seq.audio_tracks[0].sound.role = project::TrackRole::Effects;
     seq.audio_tracks[0].sound.ducking.on = true;
+    // The game sound in a room, with an echo, through a radio (format 43).
+    seq.audio_tracks[0].sound.reverb = project::track_sound::Reverb {
+        on: true,
+        size_milli: 700,
+        ..Default::default()
+    };
+    seq.audio_tracks[0].sound.echo = project::track_sound::Echo {
+        on: true,
+        ping_pong: true,
+        ..Default::default()
+    };
+    seq.audio_tracks[0].sound.distortion = project::track_sound::Distortion {
+        on: true,
+        style: project::track_sound::DistortionStyle::Radio,
+        ..Default::default()
+    };
     seq.master_sound.limiter.on = true;
     seq.labels.push_back(TimelineLabel {
         id: label,
@@ -1010,6 +1026,28 @@ fn the_current_sample_has_light_and_action_effects() {
     for name in ["Light leak", "Lens flare", "Speed lines", "Impact frame"] {
         assert!(names.contains(&name), "{name}");
     }
+}
+
+#[test]
+fn version_42_sample_has_no_distortion_echo_or_reverb() {
+    let project = file::load(&sample_path(42)).expect("the version 42 sample opens");
+    for seq in project.sequences.iter() {
+        for t in seq.audio_tracks.iter() {
+            assert!(!t.sound.distortion.on && !t.sound.echo.on && !t.sound.reverb.on);
+        }
+    }
+}
+
+#[test]
+fn the_current_sample_has_game_sound_through_a_radio_in_a_room() {
+    let project = file::load(&sample_path(FORMAT_VERSION)).expect("the sample opens");
+    let game = &project.active().expect("a timeline").audio_tracks[0].sound;
+    assert_eq!(
+        game.distortion.style,
+        project::track_sound::DistortionStyle::Radio
+    );
+    assert!(game.echo.on && game.echo.ping_pong);
+    assert_eq!((game.reverb.on, game.reverb.size_milli), (true, 700));
 }
 
 #[test]

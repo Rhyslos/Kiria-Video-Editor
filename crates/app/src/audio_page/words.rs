@@ -1,7 +1,10 @@
 //! What each tool is doing now, in one plain sentence: from its settings,
 //! and while playing from what the mixer measures.
 
-use project::track_sound::{BandShape, Cleanup, Compressor, Ducking, Eq, HighPass, Loudness};
+use project::track_sound::{
+    BandShape, Cleanup, Compressor, Distortion, DistortionStyle, Ducking, Echo, Eq, HighPass, Loudness,
+    Reverb,
+};
 
 /// Decibels in thousandths as text: "3", "2.5".
 fn db(mdb: i32) -> String {
@@ -160,6 +163,60 @@ pub fn leveller(track: &str, l: &Loudness, gain_db: Option<f32>) -> String {
             db(l.max_cut_mdb as i32)
         ),
     }
+}
+
+/// What the Distortion tool does to `track`.
+pub fn distortion(track: &str, d: &Distortion) -> String {
+    if !d.on {
+        return format!("Distortion is off: {track} is clean.");
+    }
+    let drive = db(d.drive_mdb as i32);
+    let mix = d.mix_milli / 10;
+    match d.style {
+        DistortionStyle::Drive => {
+            format!("Driving {track} {drive} dB into a soft clip, {mix} % of it heard.")
+        }
+        DistortionStyle::Radio => format!("{} as through a small radio, driven {drive} dB.", capital(track)),
+        DistortionStyle::Phone => format!(
+            "{} as down a phone line, in mono, driven {drive} dB.",
+            capital(track)
+        ),
+    }
+}
+
+/// What the Echo tool does to `track`.
+pub fn echo(track: &str, e: &Echo) -> String {
+    if !e.on {
+        return format!("The echo is off: {track} plays once.");
+    }
+    let side = if e.ping_pong {
+        ", left and right in turn"
+    } else {
+        ""
+    };
+    format!(
+        "{} repeats every {} ms, each {} % of the last{side}.",
+        capital(track),
+        e.time_us / 1_000,
+        e.feedback_milli / 10
+    )
+}
+
+/// What the Reverb tool does to `track`.
+pub fn reverb(track: &str, r: &Reverb) -> String {
+    if !r.on {
+        return format!("The reverb is off: {track} is dry.");
+    }
+    let room = match r.size_milli {
+        0..=300 => "a small room",
+        301..=700 => "a room",
+        _ => "a hall",
+    };
+    format!(
+        "{} sounds as in {room}, its echoes at {} %.",
+        capital(track),
+        r.mix_milli / 10
+    )
 }
 
 fn capital(s: &str) -> String {

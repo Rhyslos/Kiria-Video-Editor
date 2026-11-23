@@ -64,6 +64,13 @@ fn effects_on(mut p: Project, seq: SequenceId) -> Project {
     s.ducking.on = true;
     s.ducking.threshold_mdb = -60_000;
     s.loudness.on = true;
+    // Format 43: an echo, a room and a radio, which run on from block to
+    // block as playback and export must alike.
+    s.echo.on = true;
+    s.echo.time_us = 120_000;
+    s.reverb.on = true;
+    s.distortion.on = true;
+    s.distortion.style = project::track_sound::DistortionStyle::Radio;
     let s = &mut sounds[2];
     s.pan = -400_000;
     s.volume_line.push_back(LinePoint {
