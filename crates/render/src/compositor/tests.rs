@@ -1582,6 +1582,93 @@ fn scanlines_darken_lines_and_leave_the_ones_between() {
 }
 
 #[test]
+fn light_leaks_and_flares_add_light_where_they_are() {
+    let Some(gpu) = gpu() else { return };
+    let size = (64, 36);
+    let plain = with_effects(&gpu, Working::Linear, size, |_, _| 60, &[]);
+    let leak = with_effects(
+        &gpu,
+        Working::Linear,
+        size,
+        |_, _| 60,
+        &[crate::Effect::Leak {
+            amount: 1.0,
+            colour: [1.0, 0.3, 0.05],
+            phase: 0.5,
+        }],
+    );
+    let top = leak.at(32, 1);
+    assert!(top[0] > plain.at(32, 1)[0] + 40, "warm light at the top: {top:?}");
+    assert!(top[0] > top[2] + 30, "in its colour: {top:?}");
+    let flare = with_effects(
+        &gpu,
+        Working::Linear,
+        size,
+        |_, _| 60,
+        &[crate::Effect::Flare {
+            amount: 1.0,
+            at: (0.25, 0.25),
+        }],
+    );
+    assert!(
+        flare.at(16, 9)[0] > 240,
+        "bright at its point: {:?}",
+        flare.at(16, 9)
+    );
+    assert!(flare.at(60, 33)[0] < flare.at(16, 9)[0], "less far from it");
+}
+
+#[test]
+fn speed_lines_streak_in_from_the_edges_and_leave_the_middle() {
+    let Some(gpu) = gpu() else { return };
+    let size = (64, 64);
+    let plain = with_effects(&gpu, Working::Linear, size, |_, _| 60, &[]);
+    let lines = |seed| {
+        with_effects(
+            &gpu,
+            Working::Linear,
+            size,
+            |_, _| 60,
+            &[crate::Effect::Speed {
+                amount: 1.0,
+                at: (0.5, 0.5),
+                seed,
+            }],
+        )
+    };
+    let once = lines(3);
+    assert_eq!(once.at(32, 32), plain.at(32, 32), "the middle stays");
+    let edge: Vec<u8> = (0..64).map(|x| once.at(x, 0)[0]).collect();
+    assert!(edge.iter().any(|&v| v > 200), "white at the edge: {edge:?}");
+    assert!(edge.iter().any(|&v| v < 100), "not everywhere: {edge:?}");
+    assert_ne!(reds(&once), reds(&lines(4)), "new every frame");
+    assert_eq!(reds(&once), reds(&lines(3)), "the same for the same frame");
+}
+
+#[test]
+fn an_impact_frame_is_stark_black_and_white() {
+    let Some(gpu) = gpu() else { return };
+    let size = (64, 8);
+    let ramp = |x: u32, _| (16 + x * 3) as u8;
+    let impact = |invert| {
+        with_effects(
+            &gpu,
+            Working::Linear,
+            size,
+            ramp,
+            &[crate::Effect::Impact {
+                threshold: 0.5,
+                invert,
+            }],
+        )
+    };
+    let straight = impact(false);
+    assert!(near(straight.at(2, 4), [0, 0, 0], 1) && near(straight.at(61, 4), [255, 255, 255], 1));
+    let swapped = impact(true);
+    assert!(near(swapped.at(2, 4), [255, 255, 255], 1) && near(swapped.at(61, 4), [0, 0, 0], 1));
+}
+
+#[test]
 fn blend_modes_mix_with_what_is_below_as_light() {
     let Some(gpu) = gpu() else { return };
     let size = (16, 16);

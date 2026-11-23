@@ -290,6 +290,52 @@ fn effect(p: &Painter, r: Rect, kind: EffectKind) {
                 y += 3.0;
             }
         }
+        EffectKind::Leak(_) => {
+            p.circle_filled(
+                at(r, 0.1, 0.1),
+                r.height() * 0.5,
+                Color32::from_rgba_unmultiplied(255, 140, 60, 70),
+            );
+            p.circle_filled(
+                at(r, 0.1, 0.1),
+                r.height() * 0.3,
+                Color32::from_rgba_unmultiplied(255, 170, 90, 90),
+            );
+        }
+        EffectKind::Flare(_) => {
+            let light = at(r, 0.3, 0.3);
+            p.line_segment(
+                [
+                    light - vec2(r.width() * 0.3, 0.0),
+                    light + vec2(r.width() * 0.3, 0.0),
+                ],
+                Stroke::new(1.0, Color32::from_white_alpha(200)),
+            );
+            p.circle_filled(light, r.height() * 0.08, Color32::WHITE);
+            for i in 1..4 {
+                let along = light + (r.center() - light) * (0.6 * i as f32);
+                p.circle_stroke(
+                    along,
+                    r.height() * 0.05 * i as f32,
+                    Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 220, 160, 120)),
+                );
+            }
+        }
+        EffectKind::Speed(_) => {
+            let middle = r.center();
+            for i in 0..16 {
+                let a = i as f32 / 16.0 * std::f32::consts::TAU + 0.2;
+                let way = vec2(a.cos(), a.sin());
+                p.line_segment(
+                    [middle + way * r.height() * 0.35, middle + way * r.width()],
+                    Stroke::new(1.5, Color32::WHITE),
+                );
+            }
+        }
+        EffectKind::Impact(_) => {
+            p.rect_filled(r, 0.0, Color32::WHITE);
+            p.circle_filled(at(r, 0.5, 0.55), r.height() * 0.3, Color32::BLACK);
+        }
         EffectKind::Glitch(_) => {
             for (y, dx) in [(0.3, 6.0), (0.55, -5.0), (0.72, 4.0)] {
                 let band = Rect::from_min_size(at(r, 0.0, y), vec2(r.width(), r.height() * 0.08));

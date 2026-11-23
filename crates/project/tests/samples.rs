@@ -217,6 +217,11 @@ fn rich_project() -> Project {
     let (effects, _) = effects.with_added(project::EffectKind::ALL[27]);
     let (effects, _) = effects.with_added(project::EffectKind::ALL[28]);
     let (effects, _) = effects.with_added(project::EffectKind::ALL[29]);
+    // Light leaking in, a flare, speed lines and an impact frame (format 41).
+    let (effects, _) = effects.with_added(project::EffectKind::ALL[30]);
+    let (effects, _) = effects.with_added(project::EffectKind::ALL[31]);
+    let (effects, _) = effects.with_added(project::EffectKind::ALL[32]);
+    let (effects, _) = effects.with_added(project::EffectKind::ALL[33]);
     // Graded on the Color page: warmer and a stop down, its shadows
     // lifted a little towards blue (format 28).
     let mut grade = project::Grade::default();
@@ -971,6 +976,30 @@ fn the_current_sample_is_posterised_in_dots_on_an_old_screen() {
 }
 
 #[test]
+fn version_40_sample_opens_without_the_light_and_action_effects() {
+    let project = file::load(&sample_path(40)).expect("the version 40 sample opens");
+    let new = ["Light leak", "Lens flare", "Speed lines", "Impact frame"];
+    for seq in project.sequences.iter() {
+        let clips = seq.tracks().flat_map(|t| t.clips.iter());
+        assert!(
+            clips
+                .flat_map(|c| c.effects.iter())
+                .all(|e| !new.contains(&e.kind.name()))
+        );
+    }
+}
+
+#[test]
+fn the_current_sample_has_light_and_action_effects() {
+    let project = file::load(&sample_path(FORMAT_VERSION)).expect("the sample opens");
+    let clip = &project.active().expect("a timeline").video_tracks[0].clips[0];
+    let names: Vec<&str> = clip.effects.iter().map(|e| e.kind.name()).collect();
+    for name in ["Light leak", "Lens flare", "Speed lines", "Impact frame"] {
+        assert!(names.contains(&name), "{name}");
+    }
+}
+
+#[test]
 fn version_27_sample_opens_ungraded() {
     let project = file::load(&sample_path(27)).expect("the version 27 sample opens");
     for seq in project.sequences.iter() {
@@ -1067,8 +1096,8 @@ fn the_current_sample_has_a_picture_mixed_as_light() {
 fn the_current_sample_has_effects_one_switched_off() {
     let project = file::load(&sample_path(FORMAT_VERSION)).expect("the sample opens");
     let clip = &project.active().expect("a timeline").video_tracks[0].clips[0];
-    assert_eq!(clip.effects.iter().count(), 28);
-    assert_eq!(clip.effects.applied().count(), 26);
+    assert_eq!(clip.effects.iter().count(), 32);
+    assert_eq!(clip.effects.applied().count(), 30);
     assert!(clip.effects.check().is_ok());
 }
 

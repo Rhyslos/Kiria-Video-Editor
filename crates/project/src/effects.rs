@@ -184,11 +184,15 @@ pub enum EffectKind {
     Posterise(Posterise),
     Halftone(Halftone),
     Scanlines(Scanlines),
+    Leak(Leak),
+    Flare(Flare),
+    Speed(Speed),
+    Impact(Impact),
 }
 
 impl EffectKind {
     /// Every kind there is, with its usual settings: what is added.
-    pub const ALL: [EffectKind; 30] = [
+    pub const ALL: [EffectKind; 34] = [
         EffectKind::Vignette(Vignette::USUAL),
         EffectKind::Grain(Grain::USUAL),
         EffectKind::Sharpen(Sharpen::USUAL),
@@ -219,6 +223,10 @@ impl EffectKind {
         EffectKind::Posterise(Posterise::USUAL),
         EffectKind::Halftone(Halftone::USUAL),
         EffectKind::Scanlines(Scanlines::USUAL),
+        EffectKind::Leak(Leak::USUAL),
+        EffectKind::Flare(Flare::USUAL),
+        EffectKind::Speed(Speed::USUAL),
+        EffectKind::Impact(Impact::USUAL),
     ];
 
     /// Its name, as the interface shows it.
@@ -254,6 +262,10 @@ impl EffectKind {
             EffectKind::Posterise(_) => "Posterise",
             EffectKind::Halftone(_) => "Halftone",
             EffectKind::Scanlines(_) => "Scanlines",
+            EffectKind::Leak(_) => "Light leak",
+            EffectKind::Flare(_) => "Lens flare",
+            EffectKind::Speed(_) => "Speed lines",
+            EffectKind::Impact(_) => "Impact frame",
         }
     }
 
@@ -313,6 +325,10 @@ impl EffectKind {
             EffectKind::Posterise(p) => vec![p.levels],
             EffectKind::Halftone(h) => vec![h.size, h.amount],
             EffectKind::Scanlines(s) => vec![s.amount, s.size],
+            EffectKind::Leak(l) => vec![l.amount, l.speed, l.colour.red, l.colour.green, l.colour.blue],
+            EffectKind::Flare(f) => vec![f.amount, f.x, f.y],
+            EffectKind::Speed(s) => vec![s.amount, s.x, s.y],
+            EffectKind::Impact(i) => vec![i.threshold, i.invert],
         }
     }
 
@@ -437,6 +453,25 @@ impl EffectKind {
                 amount: n[0],
                 size: n[1],
             }),
+            EffectKind::Leak(_) => EffectKind::Leak(Leak {
+                amount: n[0],
+                speed: n[1],
+                colour: Paint::from_numbers(&n[2..5]),
+            }),
+            EffectKind::Flare(_) => EffectKind::Flare(Flare {
+                amount: n[0],
+                x: n[1],
+                y: n[2],
+            }),
+            EffectKind::Speed(_) => EffectKind::Speed(Speed {
+                amount: n[0],
+                x: n[1],
+                y: n[2],
+            }),
+            EffectKind::Impact(_) => EffectKind::Impact(Impact {
+                threshold: n[0],
+                invert: n[1],
+            }),
         }
     }
 
@@ -482,6 +517,12 @@ impl EffectKind {
             EffectKind::Posterise(p) => shares("Posterise", &[p.levels]),
             EffectKind::Halftone(h) => shares("Halftone", &[h.size, h.amount]),
             EffectKind::Scanlines(s) => shares("Scanlines", &[s.amount, s.size]),
+            EffectKind::Leak(l) => {
+                shares("Light leak", &[l.amount, l.speed]).and_then(|()| l.colour.check("Light leak"))
+            }
+            EffectKind::Flare(f) => shares("Lens flare", &[f.amount, f.x, f.y]),
+            EffectKind::Speed(s) => shares("Speed lines", &[s.amount, s.x, s.y]),
+            EffectKind::Impact(i) => shares("Impact frame", &[i.threshold, i.invert]),
         }
     }
 }
@@ -1084,6 +1125,91 @@ impl Scanlines {
         amount: ONE * 4 / 10,
         size: ONE / 5,
     };
+}
+
+/// Soft warm light spilling in from the picture's edges and drifting
+/// across it, as light leaking into a film camera.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Leak {
+    /// How bright: 0 to [`ONE`].
+    pub amount: i32,
+    /// How fast it drifts: 0 (still) to [`ONE`] (once across in about two
+    /// seconds).
+    pub speed: i32,
+    pub colour: Paint,
+}
+
+impl Leak {
+    pub const USUAL: Leak = Leak {
+        amount: ONE / 2,
+        speed: ONE / 5,
+        // A warm orange: 255, 140, 60.
+        colour: Paint {
+            red: ONE,
+            green: 549_020,
+            blue: 235_294,
+        },
+    };
+}
+
+/// A bright light in the picture with a streak and a line of rings through
+/// the middle, as a camera lens catches the sun.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Flare {
+    /// How bright: 0 to [`ONE`].
+    pub amount: i32,
+    /// Where the light is: shares of the picture's width and height.
+    pub x: i32,
+    pub y: i32,
+}
+
+impl Flare {
+    pub const USUAL: Flare = Flare {
+        amount: ONE * 6 / 10,
+        x: ONE * 3 / 10,
+        y: ONE / 4,
+    };
+}
+
+/// White streaks rushing in from the edges towards a point, new every
+/// frame, as in an animated action scene.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Speed {
+    /// How many and how far in: 0 to [`ONE`].
+    pub amount: i32,
+    /// The point they rush towards: shares of the picture's width and
+    /// height.
+    pub x: i32,
+    pub y: i32,
+}
+
+impl Speed {
+    pub const USUAL: Speed = Speed {
+        amount: ONE / 2,
+        x: ONE / 2,
+        y: ONE / 2,
+    };
+}
+
+/// The picture in stark black and white for a frame or two, as the instant
+/// of a hit in an animated fight.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Impact {
+    /// The brightness, as shown, above which it is white: 0 to [`ONE`].
+    pub threshold: i32,
+    /// Black and white swapped: on at [`ONE`], off at 0.
+    pub invert: i32,
+}
+
+impl Impact {
+    pub const USUAL: Impact = Impact {
+        threshold: ONE / 2,
+        invert: ONE,
+    };
+
+    pub fn is_inverted(&self) -> bool {
+        self.invert >= ONE / 2
+    }
 }
 
 /// Where in the picture an effect applies: a box, its left and top edge and
