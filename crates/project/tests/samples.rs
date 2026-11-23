@@ -196,6 +196,9 @@ fn rich_project() -> Project {
         effects.0[at].keys.set(2, Time::ZERO, near(Time::ZERO), 0);
         effects.0[at].keys.set(2, second, near(second), 300_000);
     }
+    // Keyed off a green screen, in a cinema shape (format 36).
+    let (effects, _) = effects.with_added(project::EffectKind::ALL[14]);
+    let (effects, _) = effects.with_added(project::EffectKind::ALL[15]);
     // Graded on the Color page: warmer and a stop down, its shadows
     // lifted a little towards blue (format 28).
     let mut grade = project::Grade::default();
@@ -814,6 +817,31 @@ fn the_current_sample_has_a_framed_picture_with_a_shadow() {
 }
 
 #[test]
+fn version_35_sample_opens_without_a_key_or_letterbox() {
+    let project = file::load(&sample_path(35)).expect("the version 35 sample opens");
+    for seq in project.sequences.iter() {
+        let clips = seq.tracks().flat_map(|t| t.clips.iter());
+        assert!(
+            clips
+                .flat_map(|c| c.effects.iter())
+                .all(|e| !["Chroma key", "Letterbox"].contains(&e.kind.name()))
+        );
+    }
+}
+
+#[test]
+fn the_current_sample_has_a_keyed_picture_in_a_cinema_shape() {
+    let project = file::load(&sample_path(FORMAT_VERSION)).expect("the sample opens");
+    let clip = &project.active().expect("a timeline").video_tracks[0].clips[0];
+    let kinds: Vec<project::EffectKind> = clip.effects.iter().map(|e| e.kind).collect();
+    assert!(kinds.contains(&project::EffectKind::Key(project::effects::Key::USUAL)));
+    match kinds.last() {
+        Some(project::EffectKind::Letterbox(l)) => assert!((l.width_per_height() - 2.39).abs() < 0.001),
+        other => panic!("no letterbox: {other:?}"),
+    }
+}
+
+#[test]
 fn version_27_sample_opens_ungraded() {
     let project = file::load(&sample_path(27)).expect("the version 27 sample opens");
     for seq in project.sequences.iter() {
@@ -910,8 +938,8 @@ fn the_current_sample_has_a_picture_mixed_as_light() {
 fn the_current_sample_has_effects_one_switched_off() {
     let project = file::load(&sample_path(FORMAT_VERSION)).expect("the sample opens");
     let clip = &project.active().expect("a timeline").video_tracks[0].clips[0];
-    assert_eq!(clip.effects.iter().count(), 14);
-    assert_eq!(clip.effects.applied().count(), 12);
+    assert_eq!(clip.effects.iter().count(), 16);
+    assert_eq!(clip.effects.applied().count(), 14);
     assert!(clip.effects.check().is_ok());
 }
 

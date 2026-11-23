@@ -8,7 +8,7 @@ use project::{ClipId, Command, SequenceId, Title, TitleStyle};
 use ui_kit::{Theme, inspector};
 
 /// Colours offered with one click, red, green and blue.
-const SWATCHES: [([u8; 3], &str); 6] = [
+pub(super) const SWATCHES: [([u8; 3], &str); 6] = [
     ([255, 255, 255], "White"),
     ([20, 20, 22], "Black"),
     ([255, 214, 10], "Yellow"),
@@ -19,12 +19,18 @@ const SWATCHES: [([u8; 3], &str); 6] = [
 
 /// A row with a few colours to click and a button for any other: true
 /// when `rgb` was changed (a click: one step at once).
-pub(super) fn colour_row(ui: &mut egui::Ui, theme: &Theme, label: &str, rgb: &mut [u8; 3]) -> bool {
+pub(super) fn colour_row(
+    ui: &mut egui::Ui,
+    theme: &Theme,
+    label: &str,
+    swatches: &[([u8; 3], &str)],
+    rgb: &mut [u8; 3],
+) -> bool {
     let mut changed = false;
     ui.horizontal(|ui| {
         inspector::label_cell(ui, theme, label, inspector::LABEL_WIDTH);
         ui.spacing_mut().item_spacing.x = 5.0;
-        for (colour, name) in SWATCHES {
+        for &(colour, name) in swatches {
             let fill = egui::Color32::from_rgb(colour[0], colour[1], colour[2]);
             let (rect, response) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::click());
             ui.painter().rect_filled(rect, 4.0, fill);
@@ -128,7 +134,7 @@ pub fn section(
             busy |= slider.dragged() || slider.has_focus();
         });
         let mut rgb = title.colour;
-        if colour_row(ui, theme, "Colour", &mut rgb) {
+        if colour_row(ui, theme, "Colour", &SWATCHES, &mut rgb) {
             title.colour = rgb;
             at_once = true;
         }

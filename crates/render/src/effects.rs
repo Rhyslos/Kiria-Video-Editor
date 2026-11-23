@@ -68,13 +68,25 @@ pub enum Effect {
         offset: (f32, f32),
         colour: [f32; 3],
     },
+    /// A screen's colour made see-through: `colour` as shown (0-1 each,
+    /// not light), what is within `tolerance` (0-1) of it by hue and
+    /// strength gone, solid again `softness` (0-1) further, and `spill`
+    /// (0-1) of its colour taken off what stays.
+    Key {
+        tolerance: f32,
+        softness: f32,
+        spill: f32,
+        colour: [f32; 3],
+    },
+    /// Black bars leaving a shape `ratio` times as wide as tall.
+    Letterbox { ratio: f32 },
 }
 
 impl Effect {
     /// Whether it may make part of an opaque picture see-through, so what
     /// is below it shows.
     pub fn leaves_holes(&self) -> bool {
-        matches!(self, Effect::Corners { .. })
+        matches!(self, Effect::Corners { .. } | Effect::Key { .. })
     }
 
     /// How far past the picture's edges it draws, in reference pixels: the
@@ -262,6 +274,16 @@ enum Pass {
     },
     /// The picture over the second one (its shadow).
     Over,
+    Key {
+        tolerance: f32,
+        softness: f32,
+        spill: f32,
+        colour: [f32; 3],
+    },
+    Letterbox {
+        ratio: f32,
+        within: Spot,
+    },
 }
 
 impl Pass {
@@ -293,13 +315,20 @@ impl Pass {
             Pass::Outline { width, .. } => [14.0, width, 0.0, 0.0],
             Pass::Silhouette { amount, offset, .. } => [15.0, amount, offset.0, offset.1],
             Pass::Over => [16.0, 0.0, 0.0, 0.0],
+            Pass::Key {
+                tolerance,
+                softness,
+                spill,
+                ..
+            } => [17.0, tolerance, softness, spill],
+            Pass::Letterbox { ratio, .. } => [18.0, ratio, 0.0, 0.0],
         }
     }
 
     /// The colour it paints with, as light.
     fn paint(self) -> [f32; 4] {
         match self {
-            Pass::Outline { colour, .. } | Pass::Silhouette { colour, .. } => {
+            Pass::Outline { colour, .. } | Pass::Silhouette { colour, .. } | Pass::Key { colour, .. } => {
                 [colour[0], colour[1], colour[2], 1.0]
             }
             _ => [0.0; 4],
@@ -310,9 +339,10 @@ impl Pass {
     fn extra(self) -> [f32; 4] {
         match self {
             Pass::Within { spot } | Pass::Pixelate { spot, .. } => spot.numbers(),
-            Pass::Mirror { within, .. } | Pass::Corners { within, .. } | Pass::Room { within } => {
-                within.numbers()
-            }
+            Pass::Mirror { within, .. }
+            | Pass::Corners { within, .. }
+            | Pass::Room { within }
+            | Pass::Letterbox { within, .. } => within.numbers(),
             Pass::Move { turn, shift, .. } => [turn, shift.0, shift.1, 0.0],
             _ => Spot::WHOLE.numbers(),
         }
@@ -581,6 +611,23 @@ impl Effects {
                     let over = pass(encoder, (&now, Some(&down)), size, Pass::Over, 0);
                     done.extend([shape, across, down]);
                     over
+                }
+                Effect::Key {
+                    tolerance,
+                    softness,
+                    spill,
+                    colour,
+                } => {
+                    let key = Pass::Key {
+                        tolerance,
+                        softness,
+                        spill,
+                        colour,
+                    };
+                    pass(encoder, (&now, None), size, key, 0)
+                }
+                Effect::Letterbox { ratio } => {
+                    pass(encoder, (&now, None), size, Pass::Letterbox { ratio, within }, 0)
                 }
             };
             done.push(std::mem::replace(&mut now, next));

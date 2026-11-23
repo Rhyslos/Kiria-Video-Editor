@@ -642,6 +642,16 @@ fn effect_passes(clip: &Clip, at: Time) -> Vec<render::Effect> {
                     colour: paint(s.colour),
                 }
             }
+            project::EffectKind::Key(k) => render::Effect::Key {
+                tolerance: fraction(k.tolerance),
+                softness: fraction(k.softness),
+                spill: fraction(k.spill),
+                // Compared as shown, not as light.
+                colour: [k.colour.red, k.colour.green, k.colour.blue].map(fraction),
+            },
+            project::EffectKind::Letterbox(l) => render::Effect::Letterbox {
+                ratio: l.width_per_height() as f32,
+            },
         })
         .collect()
 }
@@ -945,6 +955,25 @@ mod tests {
         .unwrap();
         let frame = describe(&rounded, rounded.active().unwrap(), Time::seconds(3));
         assert!(!frame.layers[0].hides_what_is_below(frame.size));
+    }
+
+    #[test]
+    fn a_key_compares_colours_as_shown_and_a_letterbox_keeps_its_shape() {
+        use project::effects::{Key, Letterbox};
+        let render::Effect::Key { colour, .. } = moved_at(project::EffectKind::Key(Key::USUAL), 1.0) else {
+            panic!("a key");
+        };
+        let want = [40.0, 180.0, 70.0].map(|v: f32| v / 255.0);
+        assert!(
+            colour.iter().zip(want).all(|(a, b)| (a - b).abs() < 0.0001),
+            "{colour:?}"
+        );
+        let render::Effect::Letterbox { ratio } =
+            moved_at(project::EffectKind::Letterbox(Letterbox::USUAL), 1.0)
+        else {
+            panic!("a letterbox");
+        };
+        assert!((ratio - 2.39).abs() < 0.001, "{ratio}");
     }
 
     #[test]
