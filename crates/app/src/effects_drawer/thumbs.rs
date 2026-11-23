@@ -234,6 +234,33 @@ fn effect(p: &Painter, r: Rect, kind: EffectKind) {
                 );
             }
         }
+        EffectKind::Lens(_) => {
+            let stroke = Stroke::new(1.0, Color32::from_white_alpha(130));
+            for i in 1..4 {
+                p.circle_stroke(r.center(), r.height() * 0.15 * i as f32, stroke);
+            }
+        }
+        EffectKind::Tile(_) => {
+            let stroke = Stroke::new(1.0, Color32::from_black_alpha(160));
+            for i in 1..3 {
+                let x = r.left() + r.width() * i as f32 / 3.0;
+                let y = r.top() + r.height() * i as f32 / 3.0;
+                p.line_segment([pos2(x, r.top()), pos2(x, r.bottom())], stroke);
+                p.line_segment([pos2(r.left(), y), pos2(r.right(), y)], stroke);
+            }
+        }
+        EffectKind::Kaleidoscope(_) => {
+            let middle = r.center();
+            for i in 0..6 {
+                let a = i as f32 / 6.0 * std::f32::consts::TAU;
+                let way = vec2(a.cos(), a.sin()) * r.height() * 0.45;
+                p.line_segment(
+                    [middle, middle + way],
+                    Stroke::new(1.0, Color32::from_white_alpha(150)),
+                );
+                p.circle_filled(middle + way * 0.6, r.height() * 0.07, SUN);
+            }
+        }
         EffectKind::Glitch(_) => {
             for (y, dx) in [(0.3, 6.0), (0.55, -5.0), (0.72, 4.0)] {
                 let band = Rect::from_min_size(at(r, 0.0, y), vec2(r.width(), r.height() * 0.08));

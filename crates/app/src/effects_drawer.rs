@@ -101,6 +101,9 @@ fn about(kind: &EffectKind) -> (&'static str, &'static str) {
             "Red and blue drawn apart: an RGB split, as a cheap lens",
         ),
         EffectKind::Glitch(_) => ("Stylise", "Bands torn sideways, colours apart: a broken signal"),
+        EffectKind::Lens(_) => ("Stylise", "Bent as through a lens: a fisheye, or pinched in"),
+        EffectKind::Tile(_) => ("Stylise", "The picture repeated in a grid"),
+        EffectKind::Kaleidoscope(_) => ("Stylise", "Mirrored round its middle in wedges"),
         EffectKind::Smear(_) => ("Blur and censor", "Smeared one way, as something moving fast"),
         EffectKind::Radial(_) => ("Blur and censor", "Smeared towards a point, as zooming in fast"),
     }

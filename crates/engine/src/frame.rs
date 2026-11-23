@@ -686,6 +686,16 @@ fn effect_passes(clip: &Clip, at: Time) -> Vec<render::Effect> {
                 often: fraction(g.often),
                 seed,
             },
+            project::EffectKind::Lens(l) => render::Effect::Lens {
+                bend: l.signed() as f32,
+            },
+            project::EffectKind::Tile(t) => render::Effect::Tile {
+                across: t.across() as f32,
+            },
+            project::EffectKind::Kaleidoscope(k) => render::Effect::Kaleidoscope {
+                wedges: k.wedges() as f32,
+                turn: std::f32::consts::TAU * fraction(k.turn),
+            },
         })
         .collect()
 }
@@ -1039,6 +1049,14 @@ mod tests {
         };
         assert_eq!(seed(1.0), seed(1.0));
         assert_ne!(seed(1.0), seed(1.5));
+        let kaleidoscope = project::EffectKind::Kaleidoscope(project::effects::Kaleidoscope::USUAL);
+        assert_eq!(
+            moved_at(kaleidoscope, 1.0),
+            render::Effect::Kaleidoscope {
+                wedges: 6.0,
+                turn: 0.0
+            }
+        );
         let radial = project::EffectKind::Radial(project::effects::Radial::USUAL);
         assert_eq!(
             moved_at(radial, 1.0),

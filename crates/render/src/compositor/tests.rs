@@ -1439,6 +1439,87 @@ fn a_glitch_is_the_same_for_the_same_frame_and_off_at_nothing() {
 }
 
 #[test]
+fn a_lens_bulges_or_pinches_and_keeps_its_corners() {
+    let Some(gpu) = gpu() else { return };
+    let size = (64, 64);
+    let ramp = |x: u32, y: u32| (16 + x * 3 + y / 4) as u8;
+    let plain = with_effects(&gpu, Working::Linear, size, ramp, &[]);
+    let lens = |bend| with_effects(&gpu, Working::Linear, size, ramp, &[crate::Effect::Lens { bend }]);
+    let bulge = lens(1.0);
+    // The middle magnified: a pixel right of it shows what was nearer it.
+    assert!(
+        bulge.at(44, 32)[0] < plain.at(44, 32)[0],
+        "{:?}",
+        bulge.at(44, 32)
+    );
+    assert!(
+        near(bulge.at(0, 0), [plain.at(0, 0)[0]; 3], 4),
+        "the corner stays: {:?} {:?}",
+        bulge.at(0, 0),
+        plain.at(0, 0)
+    );
+    let pinch = lens(-1.0);
+    assert!(
+        pinch.at(44, 32)[0] > plain.at(44, 32)[0],
+        "{:?}",
+        pinch.at(44, 32)
+    );
+    assert!(near(pinch.at(63, 32), [0, 0, 0], 1), "see-through past its edge");
+    assert_eq!(reds(&lens(0.0)), reds(&plain), "straight");
+    assert!(crate::Effect::Lens { bend: -0.5 }.leaves_holes());
+    assert!(!crate::Effect::Lens { bend: 0.5 }.leaves_holes());
+}
+
+#[test]
+fn a_mosaic_repeats_the_picture_smaller() {
+    let Some(gpu) = gpu() else { return };
+    let size = (64, 64);
+    let ramp = |x: u32, _| (16 + x * 3) as u8;
+    let plain = with_effects(&gpu, Working::Linear, size, ramp, &[]);
+    let tiled = with_effects(
+        &gpu,
+        Working::Linear,
+        size,
+        ramp,
+        &[crate::Effect::Tile { across: 2.0 }],
+    );
+    // Each half is the whole picture at half the size.
+    assert!(
+        near(tiled.at(8, 10), [plain.at(17, 10)[0]; 3], 3),
+        "{:?}",
+        tiled.at(8, 10)
+    );
+    assert_eq!(tiled.at(8, 10), tiled.at(40, 42), "the same in each tile");
+}
+
+#[test]
+fn a_kaleidoscope_mirrors_round_the_middle() {
+    let Some(gpu) = gpu() else { return };
+    let size = (64, 64);
+    let ramp = |x: u32, y: u32| (16 + x * 2 + y) as u8;
+    let folded = with_effects(
+        &gpu,
+        Working::Linear,
+        size,
+        ramp,
+        &[crate::Effect::Kaleidoscope {
+            wedges: 4.0,
+            turn: 0.0,
+        }],
+    );
+    // Four wedges: the quarters mirror each other across both middles.
+    for (x, y) in [(40, 36), (50, 45), (36, 52)] {
+        let a = folded.at(x, y);
+        let b = folded.at(63 - x, y);
+        let c = folded.at(x, 63 - y);
+        assert!(
+            near(a, [b[0]; 3], 3) && near(a, [c[0]; 3], 3),
+            "{a:?} {b:?} {c:?} at {x},{y}"
+        );
+    }
+}
+
+#[test]
 fn blend_modes_mix_with_what_is_below_as_light() {
     let Some(gpu) = gpu() else { return };
     let size = (16, 16);
