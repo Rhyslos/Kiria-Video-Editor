@@ -173,6 +173,7 @@ fn rich_project() -> Project {
         amount: 500_000,
         x: 800_000,
         y: 200_000,
+        sharpen: 0,
     }));
     let (effects, _) = effects.with_added(project::EffectKind::ALL[7]);
     let (mut effects, _) = effects.with_added(project::EffectKind::ALL[8]);
@@ -222,6 +223,12 @@ fn rich_project() -> Project {
     let (effects, _) = effects.with_added(project::EffectKind::ALL[31]);
     let (effects, _) = effects.with_added(project::EffectKind::ALL[32]);
     let (effects, _) = effects.with_added(project::EffectKind::ALL[33]);
+    // Motion blur, and a zoom that keeps it sharp (format 44).
+    let (effects, _) = effects.with_added(project::EffectKind::ALL[34]);
+    let (effects, _) = effects.with_added(project::EffectKind::Zoom(project::effects::Zoom {
+        sharpen: 600_000,
+        ..project::effects::Zoom::USUAL
+    }));
     // Graded on the Color page: warmer and a stop down, its shadows
     // lifted a little towards blue (format 28).
     let mut grade = project::Grade::default();
@@ -1051,6 +1058,35 @@ fn the_current_sample_has_game_sound_through_a_radio_in_a_room() {
 }
 
 #[test]
+fn version_43_sample_opens_without_motion_blur_and_zooms_without_sharpening() {
+    let project = file::load(&sample_path(43)).expect("the version 43 sample opens");
+    for seq in project.sequences.iter() {
+        for effect in seq
+            .tracks()
+            .flat_map(|t| t.clips.iter())
+            .flat_map(|c| c.effects.iter())
+        {
+            assert_ne!(effect.kind.name(), "Motion blur");
+            if let project::EffectKind::Zoom(z) = effect.kind {
+                assert_eq!(z.sharpen, 0);
+            }
+        }
+    }
+}
+
+#[test]
+fn the_current_sample_has_motion_blur_and_a_sharpened_zoom() {
+    let project = file::load(&sample_path(FORMAT_VERSION)).expect("the sample opens");
+    let clip = &project.active().expect("a timeline").video_tracks[0].clips[0];
+    assert!(clip.effects.iter().any(|e| e.kind.name() == "Motion blur"));
+    assert!(
+        clip.effects
+            .iter()
+            .any(|e| matches!(e.kind, project::EffectKind::Zoom(z) if z.sharpen == 600_000))
+    );
+}
+
+#[test]
 fn version_27_sample_opens_ungraded() {
     let project = file::load(&sample_path(27)).expect("the version 27 sample opens");
     for seq in project.sequences.iter() {
@@ -1159,8 +1195,8 @@ fn the_current_sample_has_a_picture_mixed_as_light() {
 fn the_current_sample_has_effects_one_switched_off() {
     let project = file::load(&sample_path(FORMAT_VERSION)).expect("the sample opens");
     let clip = &project.active().expect("a timeline").video_tracks[0].clips[0];
-    assert_eq!(clip.effects.iter().count(), 32);
-    assert_eq!(clip.effects.applied().count(), 30);
+    assert_eq!(clip.effects.iter().count(), 34);
+    assert_eq!(clip.effects.applied().count(), 32);
     assert!(clip.effects.check().is_ok());
 }
 

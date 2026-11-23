@@ -91,6 +91,7 @@ fn knobs(kind: &EffectKind) -> &'static [(&'static str, Show)] {
             ("Zoom at end", Size(300.0)),
             ("Point across", Percent),
             ("Point down", Percent),
+            ("Keep it sharp", Percent),
         ],
         EffectKind::Shake(_) => &[("Amount", Percent), ("Speed", Percent)],
         EffectKind::Stabilise(_) => &[
@@ -169,6 +170,7 @@ fn knobs(kind: &EffectKind) -> &'static [(&'static str, Show)] {
             ("Point down", Percent),
         ],
         EffectKind::Impact(_) => &[("Threshold", Percent), ("Inverted", Switch)],
+        EffectKind::Motion(_) => &[("Shutter", Degrees)],
     }
 }
 

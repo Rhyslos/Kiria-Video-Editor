@@ -681,11 +681,31 @@ fn revealed(p: vec4<f32>) -> vec4<f32> {
     return stored(p.rgb, p.a * kept);
 }
 
+// 38: smeared along a movement (motion blur). `back` (kind_numbers.yzw,
+// spot.xyz: a, b, c, d, e, f) takes this place to where what is here was
+// when the shutter opened; 24 samples along the way, none from outside
+// the picture.
+fn motion(at: vec2<f32>) -> vec4<f32> {
+    let a = it.kind_numbers.yzw;
+    let b = it.spot.xyz;
+    let was = vec2<f32>(a.x * at.x + a.y * at.y + b.y, a.z * at.x + b.x * at.y + b.z);
+    var sum = vec4<f32>(0.0);
+    for (var i = 0; i < 24; i++) {
+        let taken = mix(at, was, f32(i) / 23.0);
+        let inside = all(taken >= vec2<f32>(0.0)) && all(taken <= vec2<f32>(1.0));
+        sum += select(vec4<f32>(0.0), textureSampleLevel(source, smooth_sampler, taken, 0.0), inside);
+    }
+    return sum / 24.0;
+}
+
 @fragment
 fn effect(in: Corner) -> @location(0) vec4<f32> {
     let kind = i32(round(it.kind_numbers.x));
     if kind == 9 {
         return moved(in.at);
+    }
+    if kind == 38 {
+        return motion(in.at);
     }
     if kind == 11 {
         return mirrored(in.at);

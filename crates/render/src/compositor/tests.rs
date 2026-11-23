@@ -1360,6 +1360,62 @@ fn a_directional_blur_smears_one_way_only() {
 }
 
 #[test]
+fn motion_blur_smears_along_the_movement_only() {
+    let Some(gpu) = gpu() else { return };
+    let size = (64, 64);
+    let cross = |x: u32, y: u32| if x == 32 || y == 32 { 220 } else { 30 };
+    let plain = with_effects(&gpu, Working::Linear, size, cross, &[]);
+    // Still: nothing changes.
+    let still = with_effects(
+        &gpu,
+        Working::Linear,
+        size,
+        cross,
+        &[crate::Effect::Motion {
+            back: crate::Effect::STILL,
+        }],
+    );
+    assert!(near(still.at(32, 10), [plain.at(32, 10)[0]; 3], 2));
+    assert!(near(still.at(10, 10), [plain.at(10, 10)[0]; 3], 2));
+    // Moved a quarter of the width to the right while the shutter was
+    // open: what is here was a quarter to the left, so the column spreads
+    // to its right, not its left, and the row keeps sharp up and down.
+    let moved = with_effects(
+        &gpu,
+        Working::Linear,
+        size,
+        cross,
+        &[crate::Effect::Motion {
+            back: [1.0, 0.0, 0.0, 1.0, -0.25, 0.0],
+        }],
+    );
+    assert!(
+        moved.at(40, 10)[0] > plain.at(40, 10)[0] + 5,
+        "{:?}",
+        moved.at(40, 10)
+    );
+    assert!(
+        near(moved.at(24, 10), [plain.at(24, 10)[0]; 3], 2),
+        "nothing to its left"
+    );
+    assert!(
+        near(moved.at(56, 36), [plain.at(56, 36)[0]; 3], 2),
+        "nothing above or below the row"
+    );
+    assert!(
+        near(moved.at(56, 32), [plain.at(56, 32)[0]; 3], 2),
+        "and the row as it was"
+    );
+    // Its left edge smears into what is outside the picture: see-through
+    // a little there, so the black below shows.
+    assert!(
+        moved.at(1, 10)[0] + 5 < plain.at(1, 10)[0],
+        "{:?}",
+        moved.at(1, 10)
+    );
+}
+
+#[test]
 fn a_radial_blur_keeps_its_point_and_smears_towards_it() {
     let Some(gpu) = gpu() else { return };
     let size = (64, 64);
