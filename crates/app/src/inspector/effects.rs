@@ -61,6 +61,11 @@ enum Show {
     Screen,
     /// As a shape: 1 : 1 to 3 : 1.
     Ratio,
+    /// -100 % to 100 %, the middle 0.
+    Signed,
+    /// A count from the first number in steps of the second, as many steps
+    /// as the third: whole counts only.
+    Steps(f64, f64, f64),
     /// Green or blue of the colour before it: no row of its own.
     ColourPart,
 }
@@ -144,6 +149,9 @@ fn knobs(kind: &EffectKind) -> &'static [(&'static str, Show)] {
             ("Point down", Percent),
         ],
         EffectKind::Glitch(_) => &[("Amount", Percent), ("How often", Percent)],
+        EffectKind::Lens(_) => &[("Bend", Show::Signed)],
+        EffectKind::Tile(_) => &[("Across", Show::Steps(1.0, 1.0, 7.0))],
+        EffectKind::Kaleidoscope(_) => &[("Wedges", Show::Steps(2.0, 2.0, 7.0)), ("Turn", Degrees)],
     }
 }
 
@@ -158,6 +166,8 @@ impl Show {
             Show::Size(most) => 100.0 + (most - 100.0) * share,
             Show::Degrees => share * 360.0,
             Show::Ratio => 1.0 + 2.0 * share,
+            Show::Signed => share * 200.0 - 100.0,
+            Show::Steps(from, step, steps) => from + step * (share * steps).round(),
         }
     }
 
@@ -167,6 +177,8 @@ impl Show {
             Show::Size(most) => (shown - 100.0) / (most - 100.0),
             Show::Degrees => shown / 360.0,
             Show::Ratio => (shown - 1.0) / 2.0,
+            Show::Signed => (shown + 100.0) / 200.0,
+            Show::Steps(from, step, steps) => ((shown - from) / step).round() / steps,
         };
         (share * f64::from(ONE)).round().clamp(0.0, f64::from(ONE)) as i32
     }
@@ -176,6 +188,8 @@ impl Show {
             Show::Size(most) => ((100.0, most), (most - 100.0) / 200.0, " %", 0),
             Show::Degrees => ((0.0, 360.0), 1.0, "°", 0),
             Show::Ratio => ((1.0, 3.0), 0.005, " : 1", 2),
+            Show::Signed => ((-100.0, 100.0), 0.5, " %", 0),
+            Show::Steps(from, step, steps) => ((from, from + step * steps), step / 20.0, "", 0),
             _ => ((0.0, 100.0), 0.5, " %", 0),
         };
         Number {
@@ -542,6 +556,9 @@ mod tests {
         }
         assert_eq!(Show::Size(300.0).shown(ONE), 300.0);
         assert_eq!(Show::Percent.millionths(150.0), ONE, "kept in range");
+        assert_eq!(Show::Signed.shown(ONE / 2), 0.0);
+        let wedges = Show::Steps(2.0, 2.0, 7.0);
+        assert_eq!(wedges.shown(wedges.millionths(7.3)), 8.0, "whole steps only");
     }
 
     #[test]

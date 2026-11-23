@@ -104,13 +104,25 @@ pub enum Effect {
     /// Bands torn sideways with their colours apart, `amount` 0-1 hard,
     /// `often` 0-1; `seed` picks the frame's pattern.
     Glitch { amount: f32, often: f32, seed: u32 },
+    /// Bent as through a lens: `bend` from -1 (pinched in) to 1 (bulging
+    /// out), 0 straight. Pinched, what would come from outside the
+    /// picture is see-through.
+    Lens { bend: f32 },
+    /// Repeated `across` times across and down.
+    Tile { across: f32 },
+    /// Mirrored round its middle in `wedges` wedges, turned `turn` radians.
+    Kaleidoscope { wedges: f32, turn: f32 },
 }
 
 impl Effect {
     /// Whether it may make part of an opaque picture see-through, so what
     /// is below it shows.
     pub fn leaves_holes(&self) -> bool {
-        matches!(self, Effect::Corners { .. } | Effect::Key { .. })
+        match *self {
+            Effect::Corners { .. } | Effect::Key { .. } => true,
+            Effect::Lens { bend } => bend < 0.0,
+            _ => false,
+        }
     }
 
     /// How far past the picture's edges it draws, in reference pixels: the
@@ -337,6 +349,16 @@ enum Pass {
         amount: f32,
         often: f32,
     },
+    Lens {
+        bend: f32,
+    },
+    Tile {
+        across: f32,
+    },
+    Kaleidoscope {
+        wedges: f32,
+        turn: f32,
+    },
 }
 
 impl Pass {
@@ -383,6 +405,9 @@ impl Pass {
             Pass::Smear { length, angle } => [24.0, length, angle, 0.0],
             Pass::Radial { amount, centre } => [25.0, amount, centre.0, centre.1],
             Pass::Glitch { amount, often } => [26.0, amount, often, 0.0],
+            Pass::Lens { bend } => [27.0, bend, 0.0, 0.0],
+            Pass::Tile { across } => [28.0, across, 0.0, 0.0],
+            Pass::Kaleidoscope { wedges, turn } => [29.0, wedges, turn, 0.0],
         }
     }
 
@@ -718,6 +743,15 @@ impl Effects {
                 Effect::Glitch { amount, often, seed } => {
                     pass(encoder, (&now, None), size, Pass::Glitch { amount, often }, seed)
                 }
+                Effect::Lens { bend } => pass(encoder, (&now, None), size, Pass::Lens { bend }, 0),
+                Effect::Tile { across } => pass(encoder, (&now, None), size, Pass::Tile { across }, 0),
+                Effect::Kaleidoscope { wedges, turn } => pass(
+                    encoder,
+                    (&now, None),
+                    size,
+                    Pass::Kaleidoscope { wedges, turn },
+                    0,
+                ),
             };
             done.push(std::mem::replace(&mut now, next));
         }

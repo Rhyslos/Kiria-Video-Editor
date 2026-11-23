@@ -178,11 +178,14 @@ pub enum EffectKind {
     Smear(Smear),
     Radial(Radial),
     Glitch(Glitch),
+    Lens(Lens),
+    Tile(Tile),
+    Kaleidoscope(Kaleidoscope),
 }
 
 impl EffectKind {
     /// Every kind there is, with its usual settings: what is added.
-    pub const ALL: [EffectKind; 24] = [
+    pub const ALL: [EffectKind; 27] = [
         EffectKind::Vignette(Vignette::USUAL),
         EffectKind::Grain(Grain::USUAL),
         EffectKind::Sharpen(Sharpen::USUAL),
@@ -207,6 +210,9 @@ impl EffectKind {
         EffectKind::Smear(Smear::USUAL),
         EffectKind::Radial(Radial::USUAL),
         EffectKind::Glitch(Glitch::USUAL),
+        EffectKind::Lens(Lens::USUAL),
+        EffectKind::Tile(Tile::USUAL),
+        EffectKind::Kaleidoscope(Kaleidoscope::USUAL),
     ];
 
     /// Its name, as the interface shows it.
@@ -236,6 +242,9 @@ impl EffectKind {
             EffectKind::Smear(_) => "Directional blur",
             EffectKind::Radial(_) => "Radial blur",
             EffectKind::Glitch(_) => "Glitch",
+            EffectKind::Lens(_) => "Lens distortion",
+            EffectKind::Tile(_) => "Mosaic",
+            EffectKind::Kaleidoscope(_) => "Kaleidoscope",
         }
     }
 
@@ -289,6 +298,9 @@ impl EffectKind {
             EffectKind::Smear(s) => vec![s.amount, s.direction],
             EffectKind::Radial(r) => vec![r.amount, r.x, r.y],
             EffectKind::Glitch(g) => vec![g.amount, g.often],
+            EffectKind::Lens(l) => vec![l.bend],
+            EffectKind::Tile(t) => vec![t.count],
+            EffectKind::Kaleidoscope(k) => vec![k.segments, k.turn],
         }
     }
 
@@ -398,6 +410,12 @@ impl EffectKind {
                 amount: n[0],
                 often: n[1],
             }),
+            EffectKind::Lens(_) => EffectKind::Lens(Lens { bend: n[0] }),
+            EffectKind::Tile(_) => EffectKind::Tile(Tile { count: n[0] }),
+            EffectKind::Kaleidoscope(_) => EffectKind::Kaleidoscope(Kaleidoscope {
+                segments: n[0],
+                turn: n[1],
+            }),
         }
     }
 
@@ -437,6 +455,9 @@ impl EffectKind {
             EffectKind::Smear(s) => shares("Directional blur", &[s.amount, s.direction]),
             EffectKind::Radial(r) => shares("Radial blur", &[r.amount, r.x, r.y]),
             EffectKind::Glitch(g) => shares("Glitch", &[g.amount, g.often]),
+            EffectKind::Lens(l) => shares("Lens distortion", &[l.bend]),
+            EffectKind::Tile(t) => shares("Mosaic", &[t.count]),
+            EffectKind::Kaleidoscope(k) => shares("Kaleidoscope", &[k.segments, k.turn]),
         }
     }
 }
@@ -927,6 +948,66 @@ impl Glitch {
     };
 }
 
+/// The picture bent as through a lens: bulging out from the middle (a
+/// fisheye) or pinched in towards it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Lens {
+    /// How it bends: 0 (pinched in all the way) to [`ONE`] (bulging all the
+    /// way); a half is straight.
+    pub bend: i32,
+}
+
+impl Lens {
+    /// Bulging halfway: a fisheye.
+    pub const USUAL: Lens = Lens { bend: ONE * 3 / 4 };
+
+    /// The bend from -1 (pinched) to 1 (bulging), 0 straight.
+    pub fn signed(&self) -> f64 {
+        f64::from(self.bend.clamp(0, ONE)) / f64::from(ONE) * 2.0 - 1.0
+    }
+}
+
+/// The picture repeated in a grid, smaller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Tile {
+    /// How many across and down: 0 (one) to [`ONE`] (eight), in whole steps.
+    pub count: i32,
+}
+
+impl Tile {
+    /// Three by three.
+    pub const USUAL: Tile = Tile { count: ONE * 2 / 7 };
+
+    /// How many across and down, 1 to 8.
+    pub fn across(&self) -> u32 {
+        let share = f64::from(self.count.clamp(0, ONE)) / f64::from(ONE);
+        (1.0 + (share * 7.0).round()) as u32
+    }
+}
+
+/// The picture mirrored round its middle in wedges, as in a kaleidoscope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Kaleidoscope {
+    /// How many wedges: 0 (two) to [`ONE`] (sixteen), in even numbers.
+    pub segments: i32,
+    /// How far the pattern is turned: 0 to [`ONE`] once round.
+    pub turn: i32,
+}
+
+impl Kaleidoscope {
+    /// Six wedges.
+    pub const USUAL: Kaleidoscope = Kaleidoscope {
+        segments: ONE * 2 / 7,
+        turn: 0,
+    };
+
+    /// How many wedges, an even number from 2 to 16.
+    pub fn wedges(&self) -> u32 {
+        let share = f64::from(self.segments.clamp(0, ONE)) / f64::from(ONE);
+        2 * (1 + (share * 7.0).round() as u32)
+    }
+}
+
 /// Where in the picture an effect applies: a box, its left and top edge and
 /// its size, each a share of the picture's width or height in millionths.
 /// The whole picture is (0, 0, [`ONE`], [`ONE`]).
@@ -1178,6 +1259,25 @@ mod tests {
         effects.0[0].keys = EffectKeys::default();
         effects.0[0].keys.set(0, Time::ZERO, frame, ONE + 1);
         assert!(effects.check().is_err());
+    }
+
+    #[test]
+    fn counts_come_in_whole_steps() {
+        assert_eq!(Tile::USUAL.across(), 3);
+        assert_eq!(Tile { count: 0 }.across(), 1);
+        assert_eq!(Tile { count: ONE }.across(), 8);
+        assert_eq!(Kaleidoscope::USUAL.wedges(), 6);
+        assert_eq!(Kaleidoscope { segments: 0, turn: 0 }.wedges(), 2);
+        assert_eq!(
+            Kaleidoscope {
+                segments: ONE,
+                turn: 0
+            }
+            .wedges(),
+            16
+        );
+        assert_eq!(Lens { bend: ONE / 2 }.signed(), 0.0);
+        assert_eq!(Lens::USUAL.signed(), 0.5);
     }
 
     #[test]

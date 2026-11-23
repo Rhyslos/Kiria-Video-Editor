@@ -209,6 +209,10 @@ fn rich_project() -> Project {
     let (effects, _) = effects.with_added(project::EffectKind::ALL[21]);
     let (effects, _) = effects.with_added(project::EffectKind::ALL[22]);
     let (effects, _) = effects.with_added(project::EffectKind::ALL[23]);
+    // Through a fisheye, tiled and folded into a kaleidoscope (format 39).
+    let (effects, _) = effects.with_added(project::EffectKind::ALL[24]);
+    let (effects, _) = effects.with_added(project::EffectKind::ALL[25]);
+    let (effects, _) = effects.with_added(project::EffectKind::ALL[26]);
     // Graded on the Color page: warmer and a stop down, its shadows
     // lifted a little towards blue (format 28).
     let mut grade = project::Grade::default();
@@ -913,6 +917,32 @@ fn the_current_sample_has_blurs_that_move_and_a_glitch() {
 }
 
 #[test]
+fn version_38_sample_opens_without_lens_mosaic_or_kaleidoscope() {
+    let project = file::load(&sample_path(38)).expect("the version 38 sample opens");
+    let new = ["Lens distortion", "Mosaic", "Kaleidoscope"];
+    for seq in project.sequences.iter() {
+        let clips = seq.tracks().flat_map(|t| t.clips.iter());
+        assert!(
+            clips
+                .flat_map(|c| c.effects.iter())
+                .all(|e| !new.contains(&e.kind.name()))
+        );
+    }
+}
+
+#[test]
+fn the_current_sample_has_a_fisheye_a_mosaic_and_a_kaleidoscope() {
+    let project = file::load(&sample_path(FORMAT_VERSION)).expect("the sample opens");
+    let clip = &project.active().expect("a timeline").video_tracks[0].clips[0];
+    let kinds: Vec<project::EffectKind> = clip.effects.iter().map(|e| e.kind).collect();
+    assert!(kinds.contains(&project::EffectKind::Lens(project::effects::Lens::USUAL)));
+    assert!(kinds.contains(&project::EffectKind::Tile(project::effects::Tile::USUAL)));
+    assert!(kinds.contains(&project::EffectKind::Kaleidoscope(
+        project::effects::Kaleidoscope::USUAL
+    )));
+}
+
+#[test]
 fn version_27_sample_opens_ungraded() {
     let project = file::load(&sample_path(27)).expect("the version 27 sample opens");
     for seq in project.sequences.iter() {
@@ -1009,8 +1039,8 @@ fn the_current_sample_has_a_picture_mixed_as_light() {
 fn the_current_sample_has_effects_one_switched_off() {
     let project = file::load(&sample_path(FORMAT_VERSION)).expect("the sample opens");
     let clip = &project.active().expect("a timeline").video_tracks[0].clips[0];
-    assert_eq!(clip.effects.iter().count(), 22);
-    assert_eq!(clip.effects.applied().count(), 20);
+    assert_eq!(clip.effects.iter().count(), 25);
+    assert_eq!(clip.effects.applied().count(), 23);
     assert!(clip.effects.check().is_ok());
 }
 

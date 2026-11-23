@@ -540,6 +540,45 @@ fn glitched(at: vec2<f32>) -> vec4<f32> {
     return vec4<f32>(red.r, green.g, blue.b, max(green.a, max(red.a, blue.a)));
 }
 
+// 27: bent as through a lens by `bend` (y, -1 to 1). Measured in pixels
+// from the middle, a corner 1 away: the corners stay put and the middle is
+// taken from up to 0.4 nearer (bulging) or further (pinched). What would
+// come from outside the picture is see-through.
+fn lensed(at: vec2<f32>) -> vec4<f32> {
+    let size = it.linear_size_seed.yz;
+    let d = (at - vec2<f32>(0.5)) * size;
+    let corner = length(size * 0.5);
+    let r2 = dot(d, d) / (corner * corner);
+    let factor = 1.0 - 0.4 * clamp(it.kind_numbers.y, -1.0, 1.0) * (1.0 - r2);
+    let taken = vec2<f32>(0.5) + d * factor / size;
+    let inside = all(taken >= vec2<f32>(0.0)) && all(taken <= vec2<f32>(1.0));
+    return select(vec4<f32>(0.0), textureSampleLevel(source, smooth_sampler, taken, 0.0), inside);
+}
+
+// 28: repeated `across` (y) times across and down.
+fn tiled(at: vec2<f32>) -> vec4<f32> {
+    let n = max(round(it.kind_numbers.y), 1.0);
+    return textureSampleLevel(source, smooth_sampler, fract(at * n), 0.0);
+}
+
+// 29: mirrored round the middle in `wedges` (y) wedges turned `turn` (z,
+// radians): each wedge is the first, every other one mirrored, so the
+// edges meet. In pixels, so the wedges keep their angles.
+fn kaleidoscope(at: vec2<f32>) -> vec4<f32> {
+    let size = it.linear_size_seed.yz;
+    let d = (at - vec2<f32>(0.5)) * size;
+    let wedge = 6.2831853 / max(round(it.kind_numbers.y), 2.0);
+    let turn = it.kind_numbers.z;
+    var a = atan2(d.y, d.x) - turn;
+    a = a - wedge * floor(a / wedge);
+    if a > wedge * 0.5 {
+        a = wedge - a;
+    }
+    a = a + turn;
+    let taken = vec2<f32>(0.5) + vec2<f32>(cos(a), sin(a)) * length(d) / size;
+    return textureSampleLevel(source, smooth_sampler, taken, 0.0);
+}
+
 @fragment
 fn effect(in: Corner) -> @location(0) vec4<f32> {
     let kind = i32(round(it.kind_numbers.x));
@@ -566,6 +605,15 @@ fn effect(in: Corner) -> @location(0) vec4<f32> {
     }
     if kind == 26 {
         return glitched(in.at);
+    }
+    if kind == 27 {
+        return lensed(in.at);
+    }
+    if kind == 28 {
+        return tiled(in.at);
+    }
+    if kind == 29 {
+        return kaleidoscope(in.at);
     }
     if kind == 18 {
         return letterboxed(textureSampleLevel(source, smooth_sampler, in.at, 0.0), in.at);
