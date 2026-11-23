@@ -30,9 +30,25 @@ const REDRAW_EVERY: Duration = Duration::from_millis(100);
 /// The disk kept waveforms may take; the ones used longest ago go first.
 const STORE_BUDGET: u64 = 512 * 1024 * 1024;
 
+/// The peaks read so far, with how far up and down each stretch swings.
+#[derive(Debug, Default)]
+struct SoFar {
+    values: Vec<f32>,
+    up: Vec<f32>,
+    down: Vec<f32>,
+}
+
+impl SoFar {
+    fn extend(&mut self, values: &[f32], up: &[f32], down: &[f32]) {
+        self.values.extend_from_slice(values);
+        self.up.extend_from_slice(up);
+        self.down.extend_from_slice(down);
+    }
+}
+
 struct Reading {
     /// The peaks read so far; the worker adds a second of sound or so at a time.
-    so_far: Arc<Mutex<Vec<f32>>>,
+    so_far: Arc<Mutex<SoFar>>,
     /// A copy of them for drawing.
     copy: Option<Peaks>,
     copied_at: Option<Instant>,
@@ -175,7 +191,7 @@ impl Waveforms {
         if streams.is_empty() {
             return;
         }
-        let shared: Vec<Arc<Mutex<Vec<f32>>>> = streams.iter().map(|_| Arc::default()).collect();
+        let shared: Vec<Arc<Mutex<SoFar>>> = streams.iter().map(|_| Arc::default()).collect();
         for (s, so_far) in streams.iter().zip(&shared) {
             self.streams.insert(
                 (media.id, *s),
@@ -199,7 +215,7 @@ impl Waveforms {
                 .collect();
             for (peaks, so_far) in found.iter().zip(&shared) {
                 if let (Some(peaks), Ok(mut all)) = (peaks, so_far.lock()) {
-                    all.extend_from_slice(&peaks.values);
+                    all.extend(&peaks.values, &peaks.up, &peaks.down);
                 }
             }
             let left: Vec<usize> = (0..which.len()).filter(|i| found[*i].is_none()).collect();
@@ -207,9 +223,9 @@ impl Waveforms {
                 let wanted: Vec<u32> = left.iter().map(|i| which[*i]).collect();
                 let mut read = vec![0usize; wanted.len()];
                 let result = cache::waveform::peaks_of_streams(&path, &wanted, |i, more| {
-                    read[i] += more.len();
+                    read[i] += more.values.len();
                     if let Ok(mut all) = shared[left[i]].lock() {
-                        all.extend_from_slice(more);
+                        all.extend(more.values, more.up, more.down);
                     }
                     let done = read.iter().map(|r| share_read(*r, length)).fold(1.0f32, f32::min);
                     job.set_progress(done);
@@ -308,10 +324,12 @@ impl Waveforms {
             // at a time, and the next frame will do as well.
             if due && let Ok(all) = reading.so_far.try_lock() {
                 let copied = reading.copy.as_ref().map_or(0, |p| p.values.len());
-                if all.len() > copied {
+                if all.values.len() > copied {
                     reading.copy = Some(Peaks {
                         per_second: cache::waveform::PER_SECOND,
-                        values: all.as_slice().into(),
+                        values: all.values.as_slice().into(),
+                        up: all.up.as_slice().into(),
+                        down: all.down.as_slice().into(),
                     });
                     reading.copied_at = Some(now);
                 }

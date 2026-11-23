@@ -246,6 +246,7 @@ fn long_waveform_frame_cost() {
             c.waveform = Some(ui_kit::ClipWaveform {
                 id: egui::Id::unique("a two-hour recording"),
                 peaks: std::sync::Arc::clone(&peaks),
+                sides: Some((std::sync::Arc::clone(&peaks), std::sync::Arc::clone(&peaks))),
                 per_second: 100.0,
                 source_in: 0.0,
                 speed: 1.0,

@@ -417,6 +417,7 @@ pub fn drawn(
                     link: c.link.map(|l| l.0),
                     waveform: peaks.map(|p| ui_kit::ClipWaveform {
                         id: drawn_as,
+                        sides: Some((p.up, p.down)),
                         peaks: p.values,
                         per_second: p.per_second as f32,
                         source_in,
@@ -1398,6 +1399,7 @@ mod tests {
             waveform: peaks.map(|p| ui_kit::ClipWaveform {
                 id: egui::Id::unique(id),
                 peaks: vec![p].into(),
+                sides: None,
                 per_second: 1.0,
                 source_in: 0.0,
                 speed: 1.0,

@@ -20,6 +20,8 @@ pub const ALWAYS_UNLINKED: &str = "always-unlinked";
 pub const DETAILED_GAIN_SELECTED: &str = "detailed-gain-selected";
 pub const CLIP_PICTURES: &str = "clip-pictures";
 pub const WAVEFORM_LOOK: &str = "waveform-look";
+pub const WAVEFORM_COLOURS: &str = "waveform-colours";
+pub const WAVEFORM_SIDE: &str = "waveform-side";
 pub const WAVEFORM_FITTED: &str = "waveform-fitted";
 pub const CLEAR_WAVEFORMS: &str = "clear-waveforms";
 pub const PROXIES: &str = "proxies";
@@ -101,14 +103,26 @@ pub const CATEGORIES: &[Category] = &[
                 .keywords("thumbnails pictures filmstrip quick exact key frame"),
                 Setting::new(
                     WAVEFORM_LOOK,
-                    "Waveform look",
+                    "Waveform shape",
                     "How sound is drawn in clips on the timeline.",
                 )
-                .keywords("waveform audio sound clip look style bars outline bottom centred"),
+                .keywords("waveform audio sound clip look style shape plain smooth bars blocks"),
+                Setting::new(
+                    WAVEFORM_COLOURS,
+                    "Waveform colours",
+                    "The colours of clips with sound.",
+                )
+                .keywords("waveform colour color charcoal grey gray loudness map heatmap heat"),
+                Setting::new(
+                    WAVEFORM_SIDE,
+                    "Waveform side",
+                    "Centred on a middle line, or only the upper side standing on the clip's floor, with twice the room.",
+                )
+                .keywords("waveform centred centered half bottom one side mirrored"),
                 Setting::new(
                     WAVEFORM_FITTED,
                     "Waveforms fitted to each recording",
-                    "The recording's own range, from its quiet parts to its loudest, fills the clip's height, so loud steady game sound still shows its ups and downs. Off, full scale fills it. Only the drawing changes, never the sound.",
+                    "The recording's loudest moment reaches the clip's edge, so a quiet recording is still easy to see. Off, full scale does, so tracks can be compared by eye. Only the drawing changes, never the sound.",
                 )
                 .keywords("waveform scale fit normalise normalize loud flat decibel"),
                 Setting::new(
@@ -425,6 +439,21 @@ impl Editor {
                             WaveStyle::words,
                         );
                         row.describe(s.waveform_look.explained());
+                    }
+                    WAVEFORM_COLOURS => {
+                        use ui_kit::timeline::wave_look::WaveColouring;
+                        let options: Vec<_> = WaveColouring::ALL.iter().map(|c| (*c, c.words())).collect();
+                        ui_kit::settings::segmented(row.ui, row.theme, &mut s.waveform_colours, &options);
+                        row.describe(s.waveform_colours.explained());
+                    }
+                    WAVEFORM_SIDE => {
+                        use ui_kit::timeline::wave_look::WaveSide;
+                        ui_kit::settings::segmented(
+                            row.ui,
+                            row.theme,
+                            &mut s.waveform_side,
+                            &[(WaveSide::Centred, "Centred"), (WaveSide::Half, "One side")],
+                        );
                     }
                     WAVEFORM_FITTED => {
                         let mut fitted = !s.waveform_straight;

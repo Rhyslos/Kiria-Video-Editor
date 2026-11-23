@@ -63,6 +63,17 @@ pub(super) struct TrackRow<'d> {
 }
 
 impl TimelineView {
+    /// How sound is drawn in a clip of a track of `colour`, as the settings say.
+    fn wave_look(&self, colour: Color32, muted: bool) -> wave_look::WaveLook {
+        wave_look::WaveLook {
+            style: self.wave_style,
+            colouring: self.wave_colouring,
+            side: self.wave_side,
+            colour,
+            muted,
+        }
+    }
+
     /// The clips of one track in its row, and what lies over them: the
     /// transitions, a selected gap, the track's own line, dimming when it
     /// is hidden. `elsewhere`: a clip being dragged to another track.
@@ -202,7 +213,7 @@ impl TimelineView {
             left,
         } = look;
         match audio {
-            true => wave_look::draw_body(clip_painter, r, colour, self.wave_style),
+            true => wave_look::draw_body(clip_painter, r, self.wave_look(colour, muted)),
             false => draw_clip_body(clip_painter, theme, r, colour, audio),
         }
         // With both (the rough cut view), pictures fill the top
@@ -483,8 +494,8 @@ impl TimelineView {
     ) {
         let WaveLook { colour, muted, gain } = look;
         // The clip's whole height (its name sits on a dark pill over the
-        // sound), clear of the edge and, in the outline look, its coloured bar.
-        let inset = if self.wave_style == wave_look::WaveStyle::Outline {
+        // sound), clear of the edge and, with the loudness map, its coloured edge.
+        let inset = if self.wave_colouring == wave_look::WaveColouring::Loudness {
             4.0
         } else {
             1.0
@@ -498,12 +509,22 @@ impl TimelineView {
             return;
         }
         let left = r.left() - ((shown_start - clip.start) * f64::from(self.zoom)) as f32;
-        let colours = wave_look::WaveColours::of(colour, muted);
+        let drawn = self.wave_look(colour, muted);
         let scale = match self.wave_fitted {
             true => fitted_scale(p.ctx(), w),
             false => wave_look::WaveScale::straight(),
         };
         let levels = crate::waveform::levels_for(p.ctx(), w.id, &w.peaks);
+        let sides = w
+            .sides
+            .as_ref()
+            .filter(|(up, down)| up.len() == w.peaks.len() && down.len() == w.peaks.len());
+        let side_levels = sides.map(|(up, down)| {
+            (
+                crate::waveform::levels_for(p.ctx(), w.id.with("up"), up),
+                crate::waveform::levels_for(p.ctx(), w.id.with("down"), down),
+            )
+        });
         let mut columns = Vec::with_capacity(clip_area.width() as usize + 1);
         let mut x = clip_area.left().floor();
         while x < clip_area.right() {
@@ -516,10 +537,20 @@ impl TimelineView {
             if a >= w.peaks.len() {
                 break;
             }
+            let peak = crate::waveform::loudest(&w.peaks, levels.as_deref(), a, b) * gain;
+            let (up, down) = match (sides, &side_levels) {
+                (Some((up, down)), Some((up_levels, down_levels))) => (
+                    crate::waveform::loudest(up, up_levels.as_deref(), a, b) * gain,
+                    crate::waveform::loudest(down, down_levels.as_deref(), a, b) * gain,
+                ),
+                _ => (peak, peak),
+            };
             columns.push(wave_look::Column {
                 x,
-                peak: crate::waveform::loudest(&w.peaks, levels.as_deref(), a, b) * gain,
+                peak,
                 body: wave_look::body(&w.peaks, a, b) * gain,
+                up,
+                down,
             });
             x += 1.0;
         }
@@ -529,14 +560,7 @@ impl TimelineView {
             pos2(clip_area.left(), room.top()),
             pos2(clip_area.right(), room.bottom()),
         );
-        wave_look::draw(
-            &p.with_clip_rect(clip_area),
-            area,
-            &columns,
-            self.wave_style,
-            scale,
-            colours,
-        );
+        wave_look::draw(&p.with_clip_rect(clip_area), area, &columns, drawn, scale);
     }
 }
 
