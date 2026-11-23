@@ -181,11 +181,14 @@ pub enum EffectKind {
     Lens(Lens),
     Tile(Tile),
     Kaleidoscope(Kaleidoscope),
+    Posterise(Posterise),
+    Halftone(Halftone),
+    Scanlines(Scanlines),
 }
 
 impl EffectKind {
     /// Every kind there is, with its usual settings: what is added.
-    pub const ALL: [EffectKind; 27] = [
+    pub const ALL: [EffectKind; 30] = [
         EffectKind::Vignette(Vignette::USUAL),
         EffectKind::Grain(Grain::USUAL),
         EffectKind::Sharpen(Sharpen::USUAL),
@@ -213,6 +216,9 @@ impl EffectKind {
         EffectKind::Lens(Lens::USUAL),
         EffectKind::Tile(Tile::USUAL),
         EffectKind::Kaleidoscope(Kaleidoscope::USUAL),
+        EffectKind::Posterise(Posterise::USUAL),
+        EffectKind::Halftone(Halftone::USUAL),
+        EffectKind::Scanlines(Scanlines::USUAL),
     ];
 
     /// Its name, as the interface shows it.
@@ -245,6 +251,9 @@ impl EffectKind {
             EffectKind::Lens(_) => "Lens distortion",
             EffectKind::Tile(_) => "Mosaic",
             EffectKind::Kaleidoscope(_) => "Kaleidoscope",
+            EffectKind::Posterise(_) => "Posterise",
+            EffectKind::Halftone(_) => "Halftone",
+            EffectKind::Scanlines(_) => "Scanlines",
         }
     }
 
@@ -301,6 +310,9 @@ impl EffectKind {
             EffectKind::Lens(l) => vec![l.bend],
             EffectKind::Tile(t) => vec![t.count],
             EffectKind::Kaleidoscope(k) => vec![k.segments, k.turn],
+            EffectKind::Posterise(p) => vec![p.levels],
+            EffectKind::Halftone(h) => vec![h.size, h.amount],
+            EffectKind::Scanlines(s) => vec![s.amount, s.size],
         }
     }
 
@@ -416,6 +428,15 @@ impl EffectKind {
                 segments: n[0],
                 turn: n[1],
             }),
+            EffectKind::Posterise(_) => EffectKind::Posterise(Posterise { levels: n[0] }),
+            EffectKind::Halftone(_) => EffectKind::Halftone(Halftone {
+                size: n[0],
+                amount: n[1],
+            }),
+            EffectKind::Scanlines(_) => EffectKind::Scanlines(Scanlines {
+                amount: n[0],
+                size: n[1],
+            }),
         }
     }
 
@@ -458,6 +479,9 @@ impl EffectKind {
             EffectKind::Lens(l) => shares("Lens distortion", &[l.bend]),
             EffectKind::Tile(t) => shares("Mosaic", &[t.count]),
             EffectKind::Kaleidoscope(k) => shares("Kaleidoscope", &[k.segments, k.turn]),
+            EffectKind::Posterise(p) => shares("Posterise", &[p.levels]),
+            EffectKind::Halftone(h) => shares("Halftone", &[h.size, h.amount]),
+            EffectKind::Scanlines(s) => shares("Scanlines", &[s.amount, s.size]),
         }
     }
 }
@@ -1008,6 +1032,60 @@ impl Kaleidoscope {
     }
 }
 
+/// Few shades of each colour, in flat bands, as a poster printed in few
+/// inks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Posterise {
+    /// How many shades of each of red, green and blue: 0 (two) to [`ONE`]
+    /// (sixteen), in whole steps.
+    pub levels: i32,
+}
+
+impl Posterise {
+    /// Four shades.
+    pub const USUAL: Posterise = Posterise { levels: ONE / 7 };
+
+    /// How many shades, 2 to 16.
+    pub fn shades(&self) -> u32 {
+        let share = f64::from(self.levels.clamp(0, ONE)) / f64::from(ONE);
+        2 + (share * 14.0).round() as u32
+    }
+}
+
+/// The picture as dots of its own colours on black, larger where it is
+/// brighter, as printed in a comic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Halftone {
+    /// How far apart the dots are: 0 (four pixels of 1080 lines) to
+    /// [`ONE`] (forty).
+    pub size: i32,
+    /// 0 (the picture as it was) to [`ONE`] (only the dots).
+    pub amount: i32,
+}
+
+impl Halftone {
+    pub const USUAL: Halftone = Halftone {
+        size: ONE / 4,
+        amount: ONE,
+    };
+}
+
+/// Dark lines across the picture, as on an old tube screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Scanlines {
+    /// How dark the lines: 0 to [`ONE`] (black).
+    pub amount: i32,
+    /// How far apart: 0 (two pixels of 1080 lines) to [`ONE`] (twelve).
+    pub size: i32,
+}
+
+impl Scanlines {
+    pub const USUAL: Scanlines = Scanlines {
+        amount: ONE * 4 / 10,
+        size: ONE / 5,
+    };
+}
+
 /// Where in the picture an effect applies: a box, its left and top edge and
 /// its size, each a share of the picture's width or height in millionths.
 /// The whole picture is (0, 0, [`ONE`], [`ONE`]).
@@ -1278,6 +1356,8 @@ mod tests {
         );
         assert_eq!(Lens { bend: ONE / 2 }.signed(), 0.0);
         assert_eq!(Lens::USUAL.signed(), 0.5);
+        assert_eq!(Posterise::USUAL.shades(), 4);
+        assert_eq!(Posterise { levels: ONE }.shades(), 16);
     }
 
     #[test]

@@ -1520,6 +1520,68 @@ fn a_kaleidoscope_mirrors_round_the_middle() {
 }
 
 #[test]
+fn posterise_leaves_few_shades() {
+    let Some(gpu) = gpu() else { return };
+    let size = (64, 8);
+    let ramp = |x: u32, _| (16 + x * 3) as u8;
+    let flat = with_effects(
+        &gpu,
+        Working::Linear,
+        size,
+        ramp,
+        &[crate::Effect::Posterise { shades: 4.0 }],
+    );
+    let mut seen: Vec<u8> = (0..64).map(|x| flat.at(x, 4)[0]).collect();
+    seen.dedup();
+    assert!(seen.len() <= 4, "four shades at most: {seen:?}");
+    assert!(seen.len() >= 3, "but more than one: {seen:?}");
+}
+
+#[test]
+fn halftone_makes_bigger_dots_where_it_is_brighter() {
+    let Some(gpu) = gpu() else { return };
+    let size = (64, 64);
+    let dots = |luma| {
+        let shown = with_effects(
+            &gpu,
+            Working::Linear,
+            size,
+            |_, _| luma,
+            &[crate::Effect::Halftone {
+                size: 8.0 * 1080.0 / 64.0,
+                amount: 1.0,
+            }],
+        );
+        shown.bytes.chunks(4).filter(|p| p[0] > 30).count()
+    };
+    let (bright, dark) = (dots(130), dots(60));
+    assert!(bright > dark, "brighter, more covered: {bright} against {dark}");
+    assert!(bright < 64 * 64 * 9 / 10, "black between the dots: {bright}");
+}
+
+#[test]
+fn scanlines_darken_lines_and_leave_the_ones_between() {
+    let Some(gpu) = gpu() else { return };
+    let size = (16, 64);
+    let plain = with_effects(&gpu, Working::Linear, size, |_, _| 200, &[]);
+    let lined = with_effects(
+        &gpu,
+        Working::Linear,
+        size,
+        |_, _| 200,
+        &[crate::Effect::Scanlines {
+            amount: 1.0,
+            size: 8.0 * 1080.0 / 64.0,
+        }],
+    );
+    let column: Vec<u8> = (0..64).map(|y| lined.at(8, y)[0]).collect();
+    let darkest = *column.iter().min().unwrap();
+    let lightest = *column.iter().max().unwrap();
+    assert!(darkest < 70, "dark lines: {column:?}");
+    assert!(lightest + 3 >= plain.at(8, 4)[0], "light between: {column:?}");
+}
+
+#[test]
 fn blend_modes_mix_with_what_is_below_as_light() {
     let Some(gpu) = gpu() else { return };
     let size = (16, 16);

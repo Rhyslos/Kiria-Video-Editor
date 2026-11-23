@@ -28,7 +28,7 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 /// The format this build writes.
-pub const FORMAT_VERSION: u32 = 39;
+pub const FORMAT_VERSION: u32 = 40;
 
 /// Turns the text of a version `n` file into the text of a version `n + 1` file.
 pub type Migration = fn(&str) -> diag::Result<String>;
@@ -39,7 +39,7 @@ pub const MIGRATIONS: &[Migration] = &[
     v11_to_v12, v12_to_v13, v13_to_v14, v14_to_v15, v15_to_v16, v16_to_v17, v17_to_v18, v18_to_v19,
     v19_to_v20, v20_to_v21, v21_to_v22, v22_to_v23, v23_to_v24, v24_to_v25, v25_to_v26, v26_to_v27,
     v27_to_v28, v28_to_v29, v29_to_v30, v30_to_v31, v31_to_v32, v32_to_v33, v33_to_v34, v34_to_v35,
-    v35_to_v36, v36_to_v37, v37_to_v38, v38_to_v39,
+    v35_to_v36, v36_to_v37, v37_to_v38, v38_to_v39, v39_to_v40,
 ];
 
 /// Format 2 adds `info` (the file's streams) to each media entry. The field
@@ -289,6 +289,12 @@ fn v37_to_v38(text: &str) -> diag::Result<String> {
 /// Older files have none.
 fn v38_to_v39(text: &str) -> diag::Result<String> {
     set_format_version(text, 38, 39)
+}
+
+/// Format 40 adds the Posterise, Halftone and Scanlines effects. Older
+/// files have none.
+fn v39_to_v40(text: &str) -> diag::Result<String> {
+    set_format_version(text, 39, 40)
 }
 
 /// Rewrites the `format_version` number at the top of the file.

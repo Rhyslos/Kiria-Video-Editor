@@ -696,6 +696,17 @@ fn effect_passes(clip: &Clip, at: Time) -> Vec<render::Effect> {
                 wedges: k.wedges() as f32,
                 turn: std::f32::consts::TAU * fraction(k.turn),
             },
+            project::EffectKind::Posterise(p) => render::Effect::Posterise {
+                shades: p.shades() as f32,
+            },
+            project::EffectKind::Halftone(h) => render::Effect::Halftone {
+                size: 4.0 + 36.0 * fraction(h.size),
+                amount: fraction(h.amount),
+            },
+            project::EffectKind::Scanlines(s) => render::Effect::Scanlines {
+                amount: fraction(s.amount),
+                size: 2.0 + 10.0 * fraction(s.size),
+            },
         })
         .collect()
 }
@@ -1055,6 +1066,22 @@ mod tests {
             render::Effect::Kaleidoscope {
                 wedges: 6.0,
                 turn: 0.0
+            }
+        );
+        let posterise = project::EffectKind::Posterise(project::effects::Posterise::USUAL);
+        assert_eq!(
+            moved_at(posterise, 1.0),
+            render::Effect::Posterise { shades: 4.0 }
+        );
+        let lines = project::EffectKind::Scanlines(project::effects::Scanlines {
+            amount: 1_000_000,
+            size: 1_000_000,
+        });
+        assert_eq!(
+            moved_at(lines, 1.0),
+            render::Effect::Scanlines {
+                amount: 1.0,
+                size: 12.0
             }
         );
         let radial = project::EffectKind::Radial(project::effects::Radial::USUAL);

@@ -213,6 +213,10 @@ fn rich_project() -> Project {
     let (effects, _) = effects.with_added(project::EffectKind::ALL[24]);
     let (effects, _) = effects.with_added(project::EffectKind::ALL[25]);
     let (effects, _) = effects.with_added(project::EffectKind::ALL[26]);
+    // Posterised, in halftone dots, on an old screen (format 40).
+    let (effects, _) = effects.with_added(project::EffectKind::ALL[27]);
+    let (effects, _) = effects.with_added(project::EffectKind::ALL[28]);
+    let (effects, _) = effects.with_added(project::EffectKind::ALL[29]);
     // Graded on the Color page: warmer and a stop down, its shadows
     // lifted a little towards blue (format 28).
     let mut grade = project::Grade::default();
@@ -943,6 +947,30 @@ fn the_current_sample_has_a_fisheye_a_mosaic_and_a_kaleidoscope() {
 }
 
 #[test]
+fn version_39_sample_opens_without_the_print_looks() {
+    let project = file::load(&sample_path(39)).expect("the version 39 sample opens");
+    let new = ["Posterise", "Halftone", "Scanlines"];
+    for seq in project.sequences.iter() {
+        let clips = seq.tracks().flat_map(|t| t.clips.iter());
+        assert!(
+            clips
+                .flat_map(|c| c.effects.iter())
+                .all(|e| !new.contains(&e.kind.name()))
+        );
+    }
+}
+
+#[test]
+fn the_current_sample_is_posterised_in_dots_on_an_old_screen() {
+    let project = file::load(&sample_path(FORMAT_VERSION)).expect("the sample opens");
+    let clip = &project.active().expect("a timeline").video_tracks[0].clips[0];
+    let names: Vec<&str> = clip.effects.iter().map(|e| e.kind.name()).collect();
+    for name in ["Posterise", "Halftone", "Scanlines"] {
+        assert!(names.contains(&name), "{name}");
+    }
+}
+
+#[test]
 fn version_27_sample_opens_ungraded() {
     let project = file::load(&sample_path(27)).expect("the version 27 sample opens");
     for seq in project.sequences.iter() {
@@ -1039,8 +1067,8 @@ fn the_current_sample_has_a_picture_mixed_as_light() {
 fn the_current_sample_has_effects_one_switched_off() {
     let project = file::load(&sample_path(FORMAT_VERSION)).expect("the sample opens");
     let clip = &project.active().expect("a timeline").video_tracks[0].clips[0];
-    assert_eq!(clip.effects.iter().count(), 25);
-    assert_eq!(clip.effects.applied().count(), 23);
+    assert_eq!(clip.effects.iter().count(), 28);
+    assert_eq!(clip.effects.applied().count(), 26);
     assert!(clip.effects.check().is_ok());
 }
 

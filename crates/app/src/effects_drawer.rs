@@ -104,6 +104,9 @@ fn about(kind: &EffectKind) -> (&'static str, &'static str) {
         EffectKind::Lens(_) => ("Stylise", "Bent as through a lens: a fisheye, or pinched in"),
         EffectKind::Tile(_) => ("Stylise", "The picture repeated in a grid"),
         EffectKind::Kaleidoscope(_) => ("Stylise", "Mirrored round its middle in wedges"),
+        EffectKind::Posterise(_) => ("Stylise", "Few shades in flat bands, as a printed poster"),
+        EffectKind::Halftone(_) => ("Stylise", "Dots of colour on black, as printed in a comic"),
+        EffectKind::Scanlines(_) => ("Stylise", "Dark lines across it, as an old CRT screen"),
         EffectKind::Smear(_) => ("Blur and censor", "Smeared one way, as something moving fast"),
         EffectKind::Radial(_) => ("Blur and censor", "Smeared towards a point, as zooming in fast"),
     }
