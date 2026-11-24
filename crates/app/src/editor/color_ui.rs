@@ -47,6 +47,7 @@ impl Editor {
             color_page::Tool::Wheels if self.color_page.advanced => 290.0,
             color_page::Tool::Curves => 300.0,
             color_page::Tool::Range | color_page::Tool::Mask => 210.0,
+            color_page::Tool::Looks => 220.0,
             _ => 230.0,
         };
         let timeline_h = (page.height() * 0.26).clamp(150.0, 320.0);
@@ -174,6 +175,18 @@ impl Editor {
             },
         );
 
+        if let Some(err) = self.color_page.look_dialog(ui.ctx(), &self.theme) {
+            self.errors.push(&err);
+        }
+        if let Some(looks) = self.color_page.looks_to_save() {
+            let data_dir = self.data_dir.clone();
+            drop(self.jobs.submit_write(
+                jobs::PoolKind::Analysis,
+                jobs::Priority::Interactive,
+                "save looks",
+                move |_| looks.save(&data_dir),
+            ));
+        }
         if let Some(moved) = wipe_moved {
             self.color_page.wipe = Some(moved);
         }

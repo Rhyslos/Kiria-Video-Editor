@@ -48,6 +48,7 @@ pub mod library;
 mod line_up;
 pub mod linking;
 pub mod look;
+pub mod looks;
 pub mod model;
 pub mod package;
 pub mod prune;
