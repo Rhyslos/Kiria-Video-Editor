@@ -502,6 +502,12 @@ impl Inspector {
             if edit.asks.find_bars {
                 self.find_bars = Some(clip.id);
             }
+            if let Some(share) = edit.asks.seek {
+                let (first, end) = (at.rate.frame_at(clip.start), at.rate.frame_at(clip.end()));
+                let last = (end - 1).max(first);
+                let frame = first + ((last - first) as f64 * f64::from(share)).round() as i64;
+                self.seek = Some(at.rate.frame_start(frame));
+            }
             if let Some(size) = edit.asks.timeline_to
                 && let Some(seq) = at.project.sequence(at.sequence)
             {
@@ -1346,6 +1352,30 @@ pub(crate) mod tests {
             .unwrap();
         }
         (project, clip)
+    }
+
+    #[test]
+    fn a_number_that_changes_over_time_has_its_course_drawn() {
+        let (project, _) = fading();
+        let clip = &project.active().unwrap().video_tracks[0].clips[0];
+        let table = KeyTable::at(clip, Time::seconds(4), Rate::FPS_60, true);
+        assert!(
+            table.curve(LookField::Scale).is_none(),
+            "a number that stays has none"
+        );
+        let course = table.curve(LookField::Opacity).unwrap();
+        // 0 until 2 s, rising to full at 6 s, full after: over the 10 s clip.
+        let at = |share: f64| course.values[(share * (course.values.len() - 1) as f64).round() as usize];
+        assert_eq!(at(0.0), 0.0);
+        assert!(
+            (at(0.4) - f64::from(ONE) / 2.0).abs() < f64::from(ONE) * 0.03,
+            "{}",
+            at(0.4)
+        );
+        assert_eq!(at(1.0), f64::from(ONE));
+        assert_eq!(course.keys.len(), 2);
+        assert!((course.keys[0] - 0.2).abs() < 0.01 && (course.keys[1] - 0.6).abs() < 0.01);
+        assert!((course.playhead.unwrap() - 0.4).abs() < 0.01);
     }
 
     #[test]

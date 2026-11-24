@@ -56,6 +56,20 @@ pub(super) struct Asks {
     pub(super) find_bars: bool,
     /// The timeline made this size, the picture fitted to it again.
     pub(super) timeline_to: Option<(u32, u32)>,
+    /// A number's curve was clicked: the playhead there (0-1 of the clip).
+    pub(super) seek: Option<f32>,
+}
+
+/// Under a row: the course over the clip of each of `fields` that changes
+/// over time; a click on one moves the playhead there.
+fn curves(ui: &mut egui::Ui, theme: &Theme, keys: &KeyTable, fields: &[LookField], asks: &mut Asks) {
+    for field in fields {
+        if let Some(course) = keys.curve(*field)
+            && let Some(at) = inspector::curve(ui, theme, course)
+        {
+            asks.seek = Some(at);
+        }
+    }
 }
 
 impl Asks {
@@ -113,6 +127,7 @@ pub(super) fn picture_sections(
                     &k(LookField::Opacity),
                 );
                 asks.row(touched, LookField::Opacity, keyed);
+                curves(ui, theme, keys, &[LookField::Opacity], &mut asks);
             },
         );
         if clicks.reset {
@@ -142,12 +157,15 @@ pub(super) fn picture_sections(
                 &k(LookField::X),
             );
             asks.row(touched, LookField::X, keyed);
+            curves(ui, theme, keys, &[LookField::X, LookField::Y], &mut asks);
             let keyed =
                 inspector::keyed_number(ui, theme, "Size", &mut values.scale, SIZE, &k(LookField::Scale));
             asks.row(touched, LookField::Scale, keyed);
+            curves(ui, theme, keys, &[LookField::Scale], &mut asks);
             let keyed =
                 inspector::keyed_number(ui, theme, "Turn", &mut values.turn, TURN, &k(LookField::Turn));
             asks.row(touched, LookField::Turn, keyed);
+            curves(ui, theme, keys, &[LookField::Turn], &mut asks);
             let keyed = inspector::keyed_slider(
                 ui,
                 theme,
@@ -157,6 +175,7 @@ pub(super) fn picture_sections(
                 &k(LookField::Opacity),
             );
             asks.row(touched, LookField::Opacity, keyed);
+            curves(ui, theme, keys, &[LookField::Opacity], &mut asks);
             asks.mode = blend_row(ui, theme, mode);
             ui.horizontal_wrapped(|ui| {
                 ui.add_space(90.0);
@@ -240,6 +259,7 @@ pub(super) fn picture_sections(
             {
                 let keyed = inspector::keyed_slider(ui, theme, label, value, CROP, &k(field));
                 asks.row(touched, field, keyed);
+                curves(ui, theme, keys, &[field], &mut asks);
             }
             // One click: the black bars cut away, or a shape, the part left
             // as large as fits the frame.
@@ -361,6 +381,7 @@ fn colour_section(
                 &k(LookField::Exposure),
             );
             asks.row(touched, LookField::Exposure, keyed);
+            curves(ui, theme, keys, &[LookField::Exposure], asks);
             for (label, value, field) in [
                 ("Contrast", &mut values.contrast, LookField::Contrast),
                 ("Saturation", &mut values.saturation, LookField::Saturation),
@@ -369,6 +390,7 @@ fn colour_section(
             ] {
                 let keyed = inspector::keyed_slider(ui, theme, label, value, EITHER_WAY, &k(field));
                 asks.row(touched, field, keyed);
+                curves(ui, theme, keys, &[field], asks);
             }
         },
     );
