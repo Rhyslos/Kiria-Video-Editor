@@ -163,6 +163,9 @@ pub struct KnobOut {
     /// Turned and let go (or the wheel came to rest, or a double-click):
     /// one change.
     pub done: Option<f32>,
+    /// Whether it is being turned now (dragged, or the wheel not yet at
+    /// rest): what it shows is not yet the volume set.
+    pub turning: bool,
     /// Whether the wheel over it turns it now (Ctrl held, or clicked).
     pub takes_wheel: bool,
 }
@@ -305,6 +308,7 @@ pub fn volume_knob(ui: &mut Ui, theme: &Theme, knob: Knob) -> KnobOut {
     KnobOut {
         shown_db,
         done,
+        turning: kept.drag.is_some() || kept.wheeled.is_some(),
         takes_wheel,
     }
 }
@@ -580,6 +584,7 @@ mod tests {
         out.unwrap_or(KnobOut {
             shown_db: f32::NAN,
             done: None,
+            turning: false,
             takes_wheel: false,
         })
     }
@@ -619,6 +624,12 @@ mod tests {
         }
         let shown = last.map(|o| o.shown_db).unwrap_or(f32::NAN);
         assert!((shown + 8.1).abs() < 0.6, "{shown}");
+        assert!(last.is_some_and(|o| o.turning), "turning while held");
+        // The track following it while it turns (every view shows the
+        // volume being set) leaves it turning: no flicker back.
+        let followed = frame(&ctx, look, shown, vec![], none, t);
+        assert!(followed.turning && (followed.shown_db - shown).abs() < 0.01);
+        t += 0.05;
         let out = frame(
             &ctx,
             look,
@@ -629,6 +640,7 @@ mod tests {
         );
         let done = out.done.unwrap_or(f32::NAN);
         assert!((done + 8.1).abs() < 0.6, "one change when let go: {done}");
+        assert!(!out.turning, "let go");
     }
 
     #[test]

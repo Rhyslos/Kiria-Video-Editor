@@ -73,6 +73,8 @@ pub use global_labels::{GlobalLabel, GlobalLabels};
 pub use grade::{ColorRange, Curve, Curves, Grade, GradeLayer, Mask, MaskShape, Primary, Wheel};
 pub use history::History;
 pub use ids::{ClipId, LabelId, LinkId, MediaId, MediaLabelId, MediaListId, SequenceId, TrackId};
+/// The shared list a project's tracks and clips are kept in.
+pub use imbl::Vector;
 pub use keyframes::{Ease, Keyframe, Keyframes, LookField};
 pub use library::{Library, MediaLabel, MediaList, MediaUse};
 pub use look::Look;

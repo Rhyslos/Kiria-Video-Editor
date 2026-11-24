@@ -38,6 +38,8 @@ pub struct PanOut {
     pub shown: f32,
     /// Let go (or double-clicked) at a new pan: one change.
     pub done: Option<f32>,
+    /// Whether it is being dragged now.
+    pub turning: bool,
 }
 
 /// Where a drag that has moved `by` (right and up positive) from `from`
@@ -109,7 +111,11 @@ pub fn pan_knob(ui: &mut Ui, theme: &Theme, knob: PanKnob) -> PanOut {
     }
     let shown = drag.map(settle).or(done).unwrap_or(pan);
     draw(ui.painter(), theme, centre, radius, shown, colour, r.hovered());
-    PanOut { shown, done }
+    PanOut {
+        shown,
+        done,
+        turning: drag.is_some(),
+    }
 }
 
 /// The point `r` from `c` at `degrees` clockwise from 12 o'clock.

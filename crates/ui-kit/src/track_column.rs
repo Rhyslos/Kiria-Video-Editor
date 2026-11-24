@@ -61,6 +61,12 @@ impl Default for TrackColumn {
 }
 
 impl TrackColumn {
+    /// Its fader being dragged: the track's id and the volume now (dB), so
+    /// every other view shows it and playback hears it as it moves.
+    pub fn gain_being_set(&self) -> Option<(u64, f32)> {
+        self.drag
+    }
+
     /// Draws the column for `strip` in `rect`.
     pub fn show(&mut self, ui: &mut Ui, theme: &Theme, rect: Rect, strip: TrackStrip) -> TrackColumnResponse {
         let mut response = TrackColumnResponse::default();

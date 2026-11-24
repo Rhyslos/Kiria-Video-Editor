@@ -132,8 +132,9 @@ impl Editor {
         };
         let p = &p;
         let Some(seq) = p.active() else { return };
-        // The project as it would be with what is being dragged.
-        let shown = self.audio_page.shown(p);
+        // The project as it would be with whatever is being dragged,
+        // anywhere in the window.
+        let shown = self.live_project(p);
         let shown_p = shown.as_ref().unwrap_or(p);
         let Some(shown_seq) = shown_p.active() else { return };
         // The parts' heights, with a handle in each gap between them; where
@@ -167,7 +168,7 @@ impl Editor {
         let viewer_command = self.viewer.ui(
             &mut left,
             &self.theme,
-            p,
+            shown_p,
             &mut self.settings.preview_quality,
             needle,
             top_h,

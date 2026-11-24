@@ -83,6 +83,8 @@ pub struct Inspector {
     pending_effects: Pending<ClipId, project::Effects>,
     /// A title's words being typed or size dragged, not yet an undo step.
     pending_title: Pending<ClipId, project::Title>,
+    /// A transition's length being dragged: the change as it is now.
+    transition_dragged: Option<Command>,
     /// A title just added: its words' field takes the keys the next time
     /// its Title section is drawn, its words chosen to type over.
     focus_words: Option<ClipId>,
@@ -168,6 +170,10 @@ impl Inspector {
             .or(looked),
             None => looked,
         };
+        let looked = match &self.transition_dragged {
+            Some(command) => command.apply(looked.as_ref().unwrap_or(project)).ok().or(looked),
+            None => looked,
+        };
         if self.pending_sound.get().is_none() {
             return looked;
         }
@@ -185,22 +191,6 @@ impl Inspector {
         self.pending_sound.get().map_or_else(Vec::new, |(clips, sounds)| {
             clips.iter().copied().zip(sounds.iter().copied()).collect()
         })
-    }
-
-    /// `project` with the sound being set in the Audio section (a volume or
-    /// pan being dragged, not yet an undo step), for playback to follow so
-    /// it is heard as it moves; `None` when nothing is being set.
-    pub fn with_sounds_being_set(&self, project: &Project) -> Option<Project> {
-        let sounds = self.sounds_being_set();
-        if sounds.is_empty() {
-            return None;
-        }
-        Command::SetSound {
-            sequence: project.active_sequence,
-            sounds,
-        }
-        .apply(project)
-        .ok()
     }
 
     /// The clip the panel is about (see [`shown_clip`]) with its look as it
@@ -289,6 +279,8 @@ impl Inspector {
         playhead: Time,
     ) -> Vec<Command> {
         let target = shown_clip(project, selected);
+        // Set again below while a length is being dragged.
+        self.transition_dragged = None;
         let mut commands = self.finish_left_behind(project, target);
         // Nothing selected: the page shows the timeline here instead.
         let Some((seq, track, clip)) = target else {
@@ -301,7 +293,9 @@ impl Inspector {
         commands.extend(blend);
         commands.extend(self.effects_step(ui, theme, &at));
         // A picture's transition, or a sound clip's crossfade.
-        commands.extend(transition::section(ui, theme, at.sequence, track, clip));
+        let asked = transition::section(ui, theme, at.sequence, track, clip);
+        commands.extend(asked.command);
+        self.transition_dragged = asked.dragging;
         commands.extend(self.speed_step(ui, theme, &at));
         commands.extend(self.audio_section(ui, theme, seq, clip));
         commands.extend(self.finish_look(&at, look));
@@ -1126,16 +1120,13 @@ pub(crate) mod tests {
         let project = project_with_sound();
         let clip = sound_ids(&project)[0];
         let mut inspector = Inspector::default();
-        assert!(
-            inspector.with_sounds_being_set(&project).is_none(),
-            "nothing being set"
-        );
+        assert!(inspector.shown(&project).is_none(), "nothing being set");
         let quiet = Sound {
             gain_mdb: -12_000,
             ..Sound::PLAIN
         };
         inspector.pending_sound.set(vec![clip], vec![quiet]);
-        let heard = inspector.with_sounds_being_set(&project).unwrap();
+        let heard = inspector.shown(&project).unwrap();
         let sound_of = |p: &Project| {
             p.active()
                 .unwrap()
