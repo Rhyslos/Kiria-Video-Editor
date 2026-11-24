@@ -245,6 +245,73 @@ pub enum CodecSupport {
 }
 
 /// One stream of an open input. Borrowing the input keeps it alive.
+/// Pixels to cut off each edge of a stream's stored pictures, as its
+/// container says (Matroska's PixelCrop elements, which FFmpeg hands on as
+/// `AV_PKT_DATA_FRAME_CROPPING`). Encoders that only make sizes in steps
+/// (a hardware AV1 encoder making 1082 lines for 1080) pad the picture, and
+/// the recorder writes how much; the decoding libraries don't cut it off
+/// themselves.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Crop {
+    pub top: u32,
+    pub bottom: u32,
+    pub left: u32,
+    pub right: u32,
+}
+
+impl Crop {
+    pub const NONE: Crop = Crop {
+        top: 0,
+        bottom: 0,
+        left: 0,
+        right: 0,
+    };
+
+    /// The crop `par`'s coded side data holds, if any.
+    pub(crate) fn of(par: &ff::AVCodecParameters) -> Crop {
+        // SAFETY: `coded_side_data` holds `nb_coded_side_data` entries; the
+        // cropping entry is four u32 little-endian numbers (top, bottom,
+        // left, right), read only when it is at least 16 bytes long.
+        let bytes = unsafe {
+            let sd = ff::av_packet_side_data_get(
+                par.coded_side_data,
+                par.nb_coded_side_data,
+                ff::AVPacketSideDataType::AV_PKT_DATA_FRAME_CROPPING,
+            );
+            if sd.is_null() || (*sd).size < 16 || (*sd).data.is_null() {
+                return Crop::NONE;
+            }
+            ptr::read_unaligned((*sd).data as *const [u8; 16])
+        };
+        let at = |i: usize| u32::from_le_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
+        let crop = Crop {
+            top: at(0),
+            bottom: at(4),
+            left: at(8),
+            right: at(12),
+        };
+        let (w, h) = (par.width.max(0) as u64, par.height.max(0) as u64);
+        // A crop that would leave nothing is a damaged file: shown whole.
+        if u64::from(crop.left) + u64::from(crop.right) >= w
+            || u64::from(crop.top) + u64::from(crop.bottom) >= h
+        {
+            return Crop::NONE;
+        }
+        crop
+    }
+
+    /// The size left of a stored `(width, height)`.
+    pub fn shown(self, (width, height): (u32, u32)) -> (u32, u32) {
+        let w = width.saturating_sub(self.left.saturating_add(self.right));
+        let h = height.saturating_sub(self.top.saturating_add(self.bottom));
+        if w == 0 || h == 0 { (width, height) } else { (w, h) }
+    }
+
+    pub fn is_none(self) -> bool {
+        self == Crop::NONE
+    }
+}
+
 pub struct Stream<'a> {
     s: &'a ff::AVStream,
 }
@@ -298,9 +365,12 @@ impl Stream<'_> {
         }
     }
 
+    /// The picture's size as shown: its stored size less the container's
+    /// crop ([`Crop`]).
     pub fn size(&self) -> (u32, u32) {
-        self.par()
-            .map_or((0, 0), |p| (p.width.max(0) as u32, p.height.max(0) as u32))
+        self.par().map_or((0, 0), |p| {
+            Crop::of(p).shown((p.width.max(0) as u32, p.height.max(0) as u32))
+        })
     }
 
     /// Average frame rate, else the base rate, as a fraction.

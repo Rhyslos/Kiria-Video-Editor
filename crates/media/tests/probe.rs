@@ -88,3 +88,15 @@ fn variable_frame_rate_is_detected_and_shown_at_the_nearest_rate() {
     assert!(!steady.variable_frame_rate);
     assert_eq!(steady.frame_rate, Rate::FPS_60);
 }
+
+#[test]
+fn a_containers_crop_is_taken_off_the_size() {
+    // Hardware AV1 encoders pad to steps (1920×1082, 3456×1440) and the
+    // recorder writes how much to cut off; these are the same, small.
+    for (name, size) in [("padded-bottom.mkv", (64, 34)), ("padded-right.mkv", (64, 32))] {
+        let v = probe(&fixture(name)).unwrap().info.video.unwrap();
+        assert_eq!((v.width, v.height), size, "{name}");
+    }
+    let right = probe(&fixture("padded-right.mkv")).unwrap().info.video.unwrap();
+    assert_eq!(right.frame_rate, Rate::new(144, 1).unwrap());
+}

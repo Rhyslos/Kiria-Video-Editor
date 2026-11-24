@@ -241,6 +241,27 @@ mod tests {
     }
 
     #[test]
+    fn a_recordings_padding_is_not_in_its_pictures() {
+        // Stored 64×36 with two red lines the container says to cut off.
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../media/tests/fixtures/padded-bottom.mkv");
+        let p = Project::new_automatic("T");
+        let seq = p.active_sequence;
+        let media = media::describe(&fixture).unwrap();
+        let p = Command::Import { sequence: seq, media }.apply(&p).unwrap();
+        let s = &p.sequence(seq).unwrap().settings;
+        assert_eq!((s.width, s.height), (64, 34), "the timeline takes the shown size");
+        let dir = std::env::temp_dir().join(format!("thumb-crop-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let full = dir.join("frame.png");
+        save_frame(&p, seq, Time::ZERO, &full).unwrap();
+        let img = image::open(&full).unwrap().to_rgba8();
+        assert_eq!(img.dimensions(), (64, 34));
+        let red = img.pixels().any(|p| p[0] > 150 && p[1] < 110 && p[2] < 110);
+        assert!(!red, "the padding shows");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn writes_a_picture_of_the_timeline() {
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../media/tests/fixtures/game-3-audio.mkv");
         let p = Project::new_automatic("T");
