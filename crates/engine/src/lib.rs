@@ -25,6 +25,7 @@
 //! can never freeze a window.
 
 pub mod clarity;
+mod clip_fx;
 pub mod compose;
 pub mod export;
 pub mod feeder;

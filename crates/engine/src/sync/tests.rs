@@ -290,6 +290,7 @@ fn clip(start: f64, source_in: f64, duration: f64) -> Clip {
         title: None,
         grade: Default::default(),
         fades: project::fades::PictureFades::NONE,
+        fx: Default::default(),
     }
 }
 

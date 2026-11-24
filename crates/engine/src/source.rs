@@ -169,6 +169,7 @@ pub fn file_alone(media: &MediaRef) -> Option<Project> {
         ramp: Default::default(),
         blend: Default::default(),
         kind: Default::default(),
+        fx: Default::default(),
     };
     let sequence = project.sequences.iter_mut().next()?;
     let track = sequence

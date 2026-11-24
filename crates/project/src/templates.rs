@@ -788,6 +788,7 @@ mod tests {
             ramp: Default::default(),
             blend: Default::default(),
             kind: Default::default(),
+            fx: Default::default(),
         };
         for (track, clip) in [
             (v1, clip(video, 0, 0, 0, 10, Some(title_link), Speed::NORMAL)),

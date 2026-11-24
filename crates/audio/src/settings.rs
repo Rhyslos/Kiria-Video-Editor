@@ -173,7 +173,16 @@ impl TrackSettings {
 
     /// A project track's settings.
     pub fn from_project(track: &project::Track) -> TrackSettings {
-        let s = &track.sound;
+        TrackSettings {
+            volume_db: track.gain_db,
+            mute: track.muted,
+            solo: track.solo,
+            ..TrackSettings::from_sound(&track.sound)
+        }
+    }
+
+    /// The settings of a track's sound, at 0 dB, heard.
+    pub fn from_sound(s: &p::TrackSound) -> TrackSettings {
         let eq_on = s.eq.on;
         TrackSettings {
             key: s.role == p::TrackRole::Dialogue,
@@ -244,10 +253,10 @@ impl TrackSettings {
                 semitones: s.pitch.cents as f32 / 100.0,
                 mix: milli(s.pitch.mix_milli as i32),
             },
-            volume_db: track.gain_db,
+            volume_db: 0.0,
             pan: s.pan as f32 / 1_000_000.0,
-            mute: track.muted,
-            solo: track.solo,
+            mute: false,
+            solo: false,
         }
     }
 }

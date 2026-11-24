@@ -104,6 +104,7 @@ fn rich_project() -> Project {
         ramp: Default::default(),
         blend: Default::default(),
         kind: Default::default(),
+        fx: Default::default(),
     };
     // The picture in a corner, cut a little, slightly see-through and warmer.
     let look = project::Look {
@@ -417,6 +418,11 @@ fn rich_project() -> Project {
         }),
         ..clip(sound_two, 1)
     });
+    // The second part's own EQ: a little less low end (format 47).
+    if let Some(second) = short_sound.clips.back_mut() {
+        second.fx.eq.on = true;
+        second.fx.eq.bands[0].gain_mdb = -4_000;
+    }
     short.audio_tracks.push_back(short_sound);
     let (nested_id, nested_clip, adjustment) = (short.id, p.allocate_id(), p.allocate_id());
     let lower_third = p.allocate_id();
@@ -1218,6 +1224,36 @@ fn the_current_sample_crossfades_its_short_cuts_sound() {
     let track = short.audio_tracks.last().expect("its sound");
     let across = project::transitions::across(track, Time::seconds(4)).expect("a crossfade at the cut");
     assert_eq!(across.kind, project::TransitionKind::CrossfadeSmooth);
+}
+
+#[test]
+fn the_current_sample_has_a_clip_with_its_own_eq() {
+    let project = file::load(&sample_path(FORMAT_VERSION)).expect("the sample opens");
+    let short = project
+        .sequences
+        .iter()
+        .find(|s| s.name == "Short cut")
+        .expect("the second timeline");
+    let clip = short
+        .audio_tracks
+        .last()
+        .and_then(|t| t.clips.last())
+        .expect("its sound");
+    assert!(clip.fx.eq.on && clip.fx.is_on());
+    assert_eq!(clip.fx.eq.bands[0].gain_mdb, -4_000);
+}
+
+#[test]
+fn version_46_sample_has_no_clip_effects() {
+    let project = file::load(&sample_path(46)).expect("the version 46 sample opens");
+    for seq in project.sequences.iter() {
+        assert!(
+            seq.audio_tracks
+                .iter()
+                .flat_map(|t| t.clips.iter())
+                .all(|c| !c.fx.is_on())
+        );
+    }
 }
 
 #[test]
