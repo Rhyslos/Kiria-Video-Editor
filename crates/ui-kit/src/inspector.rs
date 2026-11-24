@@ -416,6 +416,78 @@ pub fn label_cell(ui: &mut Ui, theme: &Theme, label: &str, width: f32) {
     );
 }
 
+/// A number's course over a clip, for drawing under its row.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Curve {
+    /// Its value at even steps from the clip's first frame to its last.
+    pub values: Vec<f64>,
+    /// Where its keyframes are, 0 (the start) to 1 (the end).
+    pub keys: Vec<f32>,
+    /// Where the playhead is, when it is on the clip.
+    pub playhead: Option<f32>,
+}
+
+/// How tall a curve is drawn.
+pub const CURVE_HEIGHT: f32 = 26.0;
+
+/// Draws `curve` under a number's row, lined up with its controls: the
+/// line of its values, a dot at each keyframe and the playhead. A click or
+/// drag along it gives where (0-1), to move the playhead there.
+pub fn curve(ui: &mut Ui, theme: &Theme, curve: &Curve) -> Option<f32> {
+    ui.horizontal(|ui| {
+        ui.add_space(LABEL_WIDTH);
+        let width = (ui.available_width() - 24.0).max(40.0);
+        let (rect, response) =
+            ui.allocate_exact_size(egui::vec2(width, CURVE_HEIGHT), Sense::click_and_drag());
+        let painter = ui.painter_at(rect);
+        painter.rect_filled(rect, 3.0, theme.raised);
+        let (low, high) = curve
+            .values
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| {
+                (lo.min(*v), hi.max(*v))
+            });
+        let inner = rect.shrink2(egui::vec2(3.0, 4.0));
+        let y_of = |v: f64| {
+            if high - low < 1e-12 {
+                inner.center().y
+            } else {
+                inner.bottom() - ((v - low) / (high - low)) as f32 * inner.height()
+            }
+        };
+        let steps = curve.values.len().saturating_sub(1).max(1) as f32;
+        let points: Vec<egui::Pos2> = curve
+            .values
+            .iter()
+            .enumerate()
+            .map(|(i, v)| egui::pos2(inner.left() + inner.width() * i as f32 / steps, y_of(*v)))
+            .collect();
+        painter.add(egui::Shape::line(
+            points,
+            egui::Stroke::new(1.5, theme.text_secondary),
+        ));
+        for key in &curve.keys {
+            let x = inner.left() + inner.width() * key.clamp(0.0, 1.0);
+            let i =
+                ((key.clamp(0.0, 1.0) * steps).round() as usize).min(curve.values.len().saturating_sub(1));
+            let y = curve.values.get(i).map_or(inner.center().y, |v| y_of(*v));
+            painter.circle_filled(egui::pos2(x, y), 2.5, theme.text);
+        }
+        if let Some(at) = curve.playhead {
+            let x = inner.left() + inner.width() * at.clamp(0.0, 1.0);
+            painter.line_segment(
+                [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
+                egui::Stroke::new(1.0, theme.accent),
+            );
+        }
+        let pointer = response
+            .interact_pointer_pos()
+            .filter(|_| response.clicked() || response.dragged())?;
+        Some(((pointer.x - inner.left()) / inner.width()).clamp(0.0, 1.0))
+    })
+    .inner
+}
+
 /// A line of quiet text: what a panel says when it has nothing to show.
 pub fn note(ui: &mut Ui, theme: &Theme, text: &str) {
     ui.add_space(8.0);

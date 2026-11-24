@@ -5,7 +5,38 @@
 //! the "Over time: …" start of a section's summary.
 
 use project::{Ease, LookField, Rate, Time};
+use ui_kit::inspector::Curve;
 use ui_kit::keyframe::{KeyState, Keys};
+
+/// How many values a curve is drawn through.
+const CURVE_STEPS: usize = 96;
+
+/// `field`'s value along `clip`, its keyframes and the playhead, as shares
+/// of the clip from its first frame to its last.
+fn curve_of(clip: &project::Clip, field: LookField, playhead: Time, rate: Rate) -> Curve {
+    let (first, end) = (rate.frame_at(clip.start), rate.frame_at(clip.end()));
+    let last = (end - 1).max(first);
+    let span = (last - first).max(1) as f64;
+    let values = (0..CURVE_STEPS)
+        .map(|i| {
+            let frame = first + ((last - first) as f64 * i as f64 / (CURVE_STEPS - 1) as f64).round() as i64;
+            let at = rate.frame_start(frame);
+            f64::from(field.of(&clip.look_at(clip.moment(at, rate))))
+        })
+        .collect();
+    let share = |frame: i64| ((frame - first) as f64 / span) as f32;
+    let keys = clip
+        .keyframe_frames(&[field], rate)
+        .into_iter()
+        .map(share)
+        .collect();
+    let on = clip.start <= playhead && playhead < clip.end();
+    Curve {
+        values,
+        keys,
+        playhead: on.then(|| share(rate.frame_at(playhead))),
+    }
+}
 
 /// Where one group of numbers' keyframes ([`LookField::GROUPS`]) stand at
 /// the playhead.
@@ -24,6 +55,8 @@ pub(super) struct GroupKeys {
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct KeyTable {
     groups: [GroupKeys; LookField::GROUPS.len()],
+    /// The course of each number that changes over time.
+    curves: Vec<(LookField, Curve)>,
     /// The playhead is on the clip, so keyframes can be added and removed.
     can: bool,
 }
@@ -50,7 +83,17 @@ impl KeyTable {
                 ease,
             }
         });
-        KeyTable { groups, can }
+        let curves = LookField::ALL
+            .into_iter()
+            .filter(|field| clip.keyframes.animates(*field))
+            .map(|field| (field, curve_of(clip, field, playhead, rate)))
+            .collect();
+        KeyTable { groups, curves, can }
+    }
+
+    /// The course of `field` over the clip, when it changes over time.
+    pub(super) fn curve(&self, field: LookField) -> Option<&Curve> {
+        self.curves.iter().find(|(f, _)| *f == field).map(|(_, c)| c)
     }
 
     /// The group `fields` is (or starts with).
