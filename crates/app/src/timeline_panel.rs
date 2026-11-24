@@ -79,6 +79,83 @@ fn unready(start: f64, length: f64, ready: f64, state: Option<LoadState>) -> Opt
     })
 }
 
+/// What is ready to play on `seq`, for the cache bar: each picture's proxy
+/// (`proxy` says how its file's is: ready, being built, waiting to be),
+/// and the frames kept around the last picture shown (`kept`), on the clip
+/// on top there. Where frames are kept, that clip is ready whatever its
+/// proxy is doing.
+pub fn playback_ready(
+    seq: &Sequence,
+    kept: Option<crate::viewer::Kept>,
+    mut proxy: impl FnMut(project::MediaId) -> Option<CacheState>,
+) -> Vec<CacheRange> {
+    let at = kept.map(|k| k.at);
+    let top = at.and_then(|at| {
+        seq.video_tracks
+            .iter()
+            .rev()
+            .filter(|t| !t.hidden)
+            .find_map(|t| t.clips.iter().find(|c| c.start <= at && at < c.end()))
+    });
+    // The stretch kept, on the timeline: only through a file played at one
+    // speed, where seconds of the file map straight onto it.
+    let held = match (kept, top) {
+        (Some(k), Some(c)) if c.is_file() && c.ramp.is_empty() => {
+            let speed = c.speed.as_f64();
+            let at = k.at.as_secs_f64();
+            let (start, end) = (c.start.as_secs_f64(), c.end().as_secs_f64());
+            let from = (at - k.behind / speed).max(start);
+            let to = (at + k.ahead / speed).min(end);
+            (to > from).then_some((c.id, from, to))
+        }
+        _ => None,
+    };
+    let mut ranges = Vec::new();
+    for c in seq
+        .video_tracks
+        .iter()
+        .flat_map(|t| t.clips.iter())
+        .filter(|c| c.is_file())
+    {
+        let (start, end) = (c.start.as_secs_f64(), c.end().as_secs_f64());
+        let state = proxy(c.media);
+        match (state, held.filter(|h| h.0 == c.id)) {
+            (Some(state), Some((_, from, to))) if state != CacheState::Ready => {
+                ranges.push(CacheRange {
+                    start,
+                    end: from,
+                    state,
+                });
+                ranges.push(CacheRange {
+                    start: to,
+                    end,
+                    state,
+                });
+            }
+            (Some(state), _) => ranges.push(CacheRange { start, end, state }),
+            (None, _) => {}
+        }
+    }
+    if let Some((_, start, end)) = held {
+        ranges.push(CacheRange {
+            start,
+            end,
+            state: CacheState::Ready,
+        });
+    }
+    ranges
+}
+
+/// Adds `ranges` to what the cache bar shows.
+pub fn add_to_cache_bar(drawn: &mut Drawn, ranges: &[CacheRange]) {
+    if ranges.is_empty() {
+        return;
+    }
+    let mut all = std::mem::take(&mut drawn.cache);
+    all.extend_from_slice(ranges);
+    drawn.cache = cache_bar::flatten(&all);
+}
+
 /// Adds up how much of a track's clips is ready to draw, by clip length,
 /// for the line by the track's name.
 #[derive(Debug, Default, Clone, Copy)]
@@ -1476,6 +1553,60 @@ mod tests {
             None,
             "a failed reading is not on its way"
         );
+    }
+
+    #[test]
+    fn the_cache_bar_shows_proxies_and_the_frames_kept() {
+        // Two recordings, one after the other.
+        let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../media/tests/fixtures");
+        let mut p = Project::new("T", project::SequenceSettings::GAME_CLIP);
+        let sequence = p.active_sequence;
+        for name in ["game-3-audio.mkv", "vfr-60.mkv"] {
+            let media = media::describe(&fixtures.join(name)).unwrap();
+            p = Command::Import { sequence, media }.apply(&p).unwrap();
+        }
+        let seq = p.active().unwrap();
+        let clips: Vec<project::Clip> = seq.video_tracks[0].clips.iter().cloned().collect();
+        let first = &clips[0];
+        let span = |c: &project::Clip| (c.start.as_secs_f64(), c.end().as_secs_f64());
+        let proxies = |m: project::MediaId| (m == first.media).then_some(CacheState::Preparing);
+
+        // No frames kept: the first file's proxy being built.
+        let ranges = playback_ready(seq, None, proxies);
+        assert_eq!(ranges.len(), 1);
+        assert_eq!((ranges[0].start, ranges[0].end), span(first));
+        assert_eq!(ranges[0].state, CacheState::Preparing);
+
+        // Frames kept half a second back and on from 1 s into the first
+        // clip (2 s long): ready there, the proxy's building on either side.
+        let at = first.start + project::Time::seconds(1);
+        let kept = crate::viewer::Kept {
+            at,
+            behind: 0.5,
+            ahead: 0.5,
+        };
+        let bar = cache_bar::flatten(&playback_ready(seq, Some(kept), proxies));
+        let at = at.as_secs_f64();
+        let states: Vec<_> = bar.iter().map(|r| (r.start - at, r.end - at, r.state)).collect();
+        let (start, end) = (span(first).0 - at, span(first).1 - at);
+        assert_eq!(
+            states,
+            [
+                (start, -0.5, CacheState::Preparing),
+                (-0.5, 0.5, CacheState::Ready),
+                (0.5, end, CacheState::Preparing),
+            ]
+        );
+
+        // Kept past a clip's end: only to its end.
+        let near_end = crate::viewer::Kept {
+            at: first.end() - project::Time::from_ratio(1, 2).unwrap(),
+            behind: 0.0,
+            ahead: 5.0,
+        };
+        let ranges = playback_ready(seq, Some(near_end), |_| None);
+        assert_eq!(ranges.len(), 1);
+        assert_eq!(ranges[0].end, span(first).1);
     }
 
     #[test]

@@ -121,6 +121,18 @@ pub struct Stage<'a> {
 /// Room between the two halves of a split viewer.
 const SPLIT_GAP: f32 = 8.0;
 
+/// The frames kept around the moment a picture was shown, without a gap:
+/// what plays or steps from memory at once.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Kept {
+    /// The timeline time the picture is of.
+    pub at: Time,
+    /// How far they go back before it and on after it (seconds of the
+    /// top clip's file).
+    pub behind: f64,
+    pub ahead: f64,
+}
+
 pub struct Viewer {
     preview: Preview,
     /// Pictures come with a small copy for the scopes (the Color page).
@@ -145,6 +157,9 @@ pub struct Viewer {
     slow: crate::slow_pictures::SlowPictures,
     /// The last exact picture that came, for the playback watch.
     arrived: Option<crate::playback_watch::Arrived>,
+    /// Where the frames kept around the last exact picture go, for the
+    /// cache bar.
+    kept: Option<Kept>,
     pub playhead: Time,
     /// What was last asked for, so the same request isn't sent every frame.
     requested: Option<(Project, Time, (u32, u32))>,
@@ -199,6 +214,7 @@ impl Viewer {
             note: String::new(),
             slow: crate::slow_pictures::SlowPictures::default(),
             arrived: None,
+            kept: None,
             playhead: start_at
                 .and_then(|s| Time::from_ratio((s * 1000.0) as i64, 1000))
                 .unwrap_or(Time::ZERO),
@@ -325,6 +341,16 @@ impl Viewer {
         }
         if let Some(sampled) = &picture.sampled {
             self.sampled = Some(sampled.clone());
+        }
+        if !picture.stand_in {
+            self.kept = match (picture.kept_behind, picture.kept_ahead) {
+                (Some(behind), Some(ahead)) => Some(Kept {
+                    at: picture.at,
+                    behind,
+                    ahead,
+                }),
+                _ => None,
+            };
         }
         if picture.frame.is_some() || picture.composed.is_some() {
             let method = picture.method.as_deref().unwrap_or_default();
@@ -500,6 +526,11 @@ impl Viewer {
     /// video is decoded on the window's graphics card.
     pub fn card_memory_mb(&self) -> Option<(u64, u64)> {
         self.decoding.as_ref().map(WindowDecoding::card_memory_mb)
+    }
+
+    /// Where the frames kept around the last exact picture go.
+    pub fn kept(&self) -> Option<Kept> {
+        self.kept
     }
 
     /// The exact picture that came since this was last asked, if one did.

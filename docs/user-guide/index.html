@@ -720,6 +720,7 @@ footer p { color: var(--muted); }
 <section id="playhead-needle">
 <h3>The playhead and the red edit needle<a class="anchor" href="#playhead-needle" aria-label="Link to this section">#</a></h3>
 <p>The timeline has two markers. The white <strong>playhead</strong> is what you see and hear. The red <strong>edit needle</strong> is where edits happen: splits, pastes, labels and media dropped “at the edit point”. Keeping them apart lets you watch ahead without losing your place. Drag the needle by its red handle in the ruler; its timecode is shown in red beside the playhead's.</p>
+<p>The thin strip just under the ruler, the <strong>cache bar</strong>, shows what is ready. Green stretches play at once: the frames kept in memory around the playhead (they grow ahead of it while you play or wait), and clips whose proxy is built. Amber is being prepared: a proxy being built, or waveforms and clip pictures being read. Grey is waiting its turn. With proxies off, only the frames kept show.</p>
 <ul>
 <li><strong>Edit at the playhead</strong> (Display menu, or <a href="#settings-tabs">Settings › Editing</a>) merges the two: edits happen at the playhead and there is no separate needle.</li>
 <li><strong>Clicking the timeline moves</strong> the playhead (the usual) or the edit needle. Set to the needle, a click in the ruler puts the needle there, and the playhead is moved by dragging its handle at the top of the ruler.</li>

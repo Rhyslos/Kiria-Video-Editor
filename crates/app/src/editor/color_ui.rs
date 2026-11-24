@@ -191,6 +191,8 @@ impl Editor {
             |m, stream| waveforms.get(jobs, &ctx, m, stream),
             |m, stream| pictures.get(jobs, &ctx, m, stream),
         );
+        let ready = self.playback_ready(seq);
+        timeline_panel::add_to_cache_bar(&mut drawn, &ready);
         timeline_panel::fold_sound(&mut drawn);
         timeline_panel::show_chosen_label(&mut drawn, self.selected_label);
         let length = seq.length().as_secs_f64();

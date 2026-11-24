@@ -219,6 +219,21 @@ impl ProxyBuilds {
         }
     }
 
+    /// How `media`'s proxy stands for the timeline's cache bar: ready, being
+    /// built, or waiting to be; nothing with proxies Off, or none to come.
+    pub fn cache_state(&self, media: MediaId) -> Option<ui_kit::timeline::CacheState> {
+        use ui_kit::timeline::CacheState;
+        if self.shelf.mode() == ProxyMode::Off {
+            return None;
+        }
+        match self.status(media) {
+            Status::Ready => Some(CacheState::Ready),
+            Status::Building(_) => Some(CacheState::Preparing),
+            Status::Needed => Some(CacheState::Waiting),
+            _ => None,
+        }
+    }
+
     /// Builds `media`'s proxy next, whatever the mode and the judgement.
     pub fn build_now(&mut self, media: MediaId) {
         if let Some(file) = self.files.get_mut(&media)

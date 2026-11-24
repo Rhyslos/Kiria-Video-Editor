@@ -576,6 +576,12 @@ impl Editor {
         })
     }
 
+    /// What is ready to play on `seq`, for the cache bar: proxies, and the
+    /// frames kept around the picture on show.
+    fn playback_ready(&self, seq: &project::Sequence) -> Vec<ui_kit::timeline::CacheRange> {
+        timeline_panel::playback_ready(seq, self.viewer.kept(), |m| self.proxies.cache_state(m))
+    }
+
     /// The playhead, on the open timeline's frame grid.
     fn playhead_on_frame(&self) -> Time {
         let seq = self.document.as_ref().and_then(|d| d.project().active());
