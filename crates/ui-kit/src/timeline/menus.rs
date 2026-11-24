@@ -73,6 +73,16 @@ pub(super) fn clip_menu(r: &egui::Response, menu: Menu, events: &mut Vec<Timelin
                     }
                 }
             });
+            if video_track.is_some()
+                && !on_nested
+                && ui
+                    .button("Crop away black bars")
+                    .on_hover_text("Finds the black along the picture's edges (a game drawn narrower than the screen it was recorded on) and cuts it away")
+                    .clicked()
+            {
+                events.push(TimelineEvent::CropBars { clip: id });
+                ui.close();
+            }
             if linked
                 && ui
                     .button("Unlink")

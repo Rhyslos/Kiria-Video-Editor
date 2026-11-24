@@ -33,6 +33,7 @@ impl Editor {
                 }
             }
             E::PrerenderRegion => self.prerender_region(),
+            E::CropBars { clip } => self.find_bars(project::ClipId(clip)),
             E::ClearSelection => self.selected.clear(),
             E::RegionCut(cut) => {
                 if let Err(err) = self.cut_region(cut) {

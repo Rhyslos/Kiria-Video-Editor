@@ -231,6 +231,59 @@ pub(super) fn in_half(look: &Look, picture: (u32, u32), frame: (u32, u32), botto
     .within_limits()
 }
 
+/// `look` with `crop` (shares of the picture's width and height cut off
+/// the left, top, right and bottom) and the part left as large as fits
+/// the frame, centred, upright: the bars of a recording cut away, or its
+/// shape changed. Its opacity and quick colour stay.
+pub fn cropped_to_fit(look: &Look, picture: (u32, u32), crop: [f64; 4], frame: (u32, u32)) -> Look {
+    let (fw, fh) = (f64::from(frame.0.max(1)), f64::from(frame.1.max(1)));
+    let (w, h) = fitted_size(picture, frame);
+    let [left, top, right, bottom] = crop.map(|c| c.clamp(0.0, 0.49));
+    let (kept_w, kept_h) = (w * (1.0 - left - right), h * (1.0 - top - bottom));
+    let scale = (fw / kept_w).min(fh / kept_h);
+    // The part's middle on the frame's: the picture moves by how far the
+    // part's middle is from its own.
+    let x = (right - left) / 2.0 * w * scale / fw;
+    let y = (bottom - top) / 2.0 * h * scale / fh;
+    Look {
+        x: millionths(x),
+        y: millionths(y),
+        scale: millionths(scale),
+        turn: 0,
+        crop_left: millionths(left),
+        crop_top: millionths(top),
+        crop_right: millionths(right),
+        crop_bottom: millionths(bottom),
+        ..*look
+    }
+    .within_limits()
+}
+
+/// The crop that gives a picture of `picture`'s size the shape `wide` to
+/// `high`, cutting the same off both sides of the long way.
+pub(crate) fn crop_to_shape(picture: (u32, u32), (wide, high): (u32, u32)) -> [f64; 4] {
+    let (w, h) = (f64::from(picture.0.max(1)), f64::from(picture.1.max(1)));
+    let shape = f64::from(wide.max(1)) / f64::from(high.max(1));
+    if w / h > shape {
+        let cut = (1.0 - shape * h / w) / 2.0;
+        [cut, 0.0, cut, 0.0]
+    } else {
+        let cut = (1.0 - w / shape / h) / 2.0;
+        [0.0, cut, 0.0, cut]
+    }
+}
+
+/// The size in pixels of what `look`'s crop leaves of a picture of
+/// `picture`'s size, both sides even.
+pub(crate) fn cropped_size(look: &Look, picture: (u32, u32)) -> (u32, u32) {
+    let share = |a: i32, b: i32| 1.0 - f64::from(a + b) / ONE_F;
+    let even = |side: u32, kept: f64| (((f64::from(side) * kept).round() as u32).max(2) + 1) & !1;
+    (
+        even(picture.0, share(look.crop_left, look.crop_right)),
+        even(picture.1, share(look.crop_top, look.crop_bottom)),
+    )
+}
+
 /// A number without a trailing ".0".
 pub(super) fn short(value: f64, decimals: usize) -> String {
     let text = format!("{value:.decimals$}");
@@ -313,6 +366,46 @@ pub(super) fn colour_summary(look: &Look) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_game_cropped_out_of_a_wide_recording_fills_its_own_timeline() {
+        // 2560 in the middle of 3440, on a 3440×1440 timeline.
+        let picture = (3440, 1440);
+        let crop = [440.0 / 3440.0, 0.0, 440.0 / 3440.0, 0.0];
+        let look = cropped_to_fit(&Look::PLAIN, picture, crop, (3440, 1440));
+        assert_eq!(cropped_size(&look, picture), (2560, 1440));
+        // As large as fits: as high as the frame, so the scale is the full
+        // height's (the whole picture already fitted that), centred.
+        assert_eq!((look.x, look.y), (0, 0));
+        assert_eq!(look.scale, ONE);
+        // On a 2560×1440 timeline it fills the frame: the whole picture is
+        // 3440/2560 of its fitted size.
+        let filled = cropped_to_fit(&Look::PLAIN, picture, crop, (2560, 1440));
+        assert!((f64::from(filled.scale) / ONE_F - 3440.0 / 2560.0).abs() < 1e-5);
+        assert_eq!((filled.x, filled.y), (0, 0));
+    }
+
+    #[test]
+    fn bars_on_one_side_move_the_picture_so_what_is_left_is_centred() {
+        // Black only on the left 20 %, on a frame of the part's shape.
+        let picture = (1000, 500);
+        let look = cropped_to_fit(&Look::PLAIN, picture, [0.2, 0.0, 0.0, 0.0], (800, 500));
+        // The part fills the frame; the picture moves left by half the bar.
+        assert!((f64::from(look.scale) / ONE_F - 1.25).abs() < 1e-5);
+        let x = f64::from(look.x) / ONE_F * 800.0;
+        assert!((x - -100.0).abs() < 0.5, "{x}");
+    }
+
+    #[test]
+    fn a_shape_is_cut_from_the_long_way() {
+        let wide = crop_to_shape((3440, 1440), (16, 9));
+        assert!((wide[0] - 440.0 / 3440.0).abs() < 1e-9 && wide[1] == 0.0);
+        let tall = crop_to_shape((1920, 1080), (9, 16));
+        assert!((1920.0 * (1.0 - 2.0 * tall[0]) - 607.5).abs() < 0.01);
+        let high = crop_to_shape((1080, 1920), (1, 1));
+        assert_eq!((high[0], high[2]), (0.0, 0.0));
+        assert!((1920.0 * (1.0 - 2.0 * high[1]) - 1080.0).abs() < 0.01);
+    }
 
     const FRAME: (u32, u32) = (1920, 1080);
 

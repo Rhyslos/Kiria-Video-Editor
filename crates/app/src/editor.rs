@@ -5,6 +5,7 @@ mod audio_ui;
 mod clip_clipboard;
 mod clip_job;
 mod color_ui;
+mod crop_bars;
 mod edit_ui;
 mod follow;
 mod keyframe_clipboard;
@@ -82,6 +83,8 @@ pub struct Start {
 pub struct Editor {
     /// A box being followed through its clip ("Follow it from here").
     following: Option<follow::FollowJob>,
+    /// Black bars being looked for (Crop › Black bars).
+    finding_bars: Option<crop_bars::FindingBars>,
     /// The Color page's own state.
     color_page: crate::color_page::ColorPage,
     /// A clip being analysed for its Stabilise effect.
@@ -501,6 +504,7 @@ impl Editor {
             playback_watch: crate::playback_watch::Watch::default(),
             full_screen_asked: None,
             following: None,
+            finding_bars: None,
             color_page: Default::default(),
             steadying: None,
             save_frame_requested: false,
@@ -1722,6 +1726,7 @@ impl eframe::App for Editor {
         }
         self.imports(&ctx);
         self.follow_news(&ctx);
+        self.bars_news(&ctx);
         self.steady_news(&ctx);
         self.follow_open_timeline();
         script::step(self);

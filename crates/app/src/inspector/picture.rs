@@ -13,8 +13,9 @@ use ui_kit::keyframe::KeyClicks;
 
 use super::keyframes::{KeyTable, over_time};
 use super::look::{
-    CROP, EITHER_WAY, EXPOSURE, PERCENT_FULL, SIZE, TURN, Values, colour_summary, crop_summary, fill_percent,
-    fitted, in_corner, in_half, pixels, short, transform_summary,
+    CROP, EITHER_WAY, EXPOSURE, PERCENT_FULL, SIZE, TURN, Values, colour_summary, crop_summary,
+    crop_to_shape, cropped_size, cropped_to_fit, fill_percent, fitted, in_corner, in_half, pixels, short,
+    transform_summary,
 };
 
 /// The numbers each picture section holds: what its Reset puts back, and
@@ -51,6 +52,10 @@ pub(super) struct Asks {
     pub(super) keys: Vec<(&'static [LookField], KeyClicks)>,
     /// Another blend mode was picked.
     pub(super) mode: Option<project::BlendMode>,
+    /// "Black bars" in Crop: find them and crop them away.
+    pub(super) find_bars: bool,
+    /// The timeline made this size, the picture fitted to it again.
+    pub(super) timeline_to: Option<(u32, u32)>,
 }
 
 impl Asks {
@@ -236,6 +241,57 @@ pub(super) fn picture_sections(
                 let keyed = inspector::keyed_slider(ui, theme, label, value, CROP, &k(field));
                 asks.row(touched, field, keyed);
             }
+            // One click: the black bars cut away, or a shape, the part left
+            // as large as fits the frame.
+            let now = values.look(frame, &before);
+            let mut placed = None;
+            ui.horizontal_wrapped(|ui| {
+                inspector::label_cell(ui, theme, "Crop to", 86.0);
+                ui.spacing_mut().item_spacing.x = 4.0;
+                if ui
+                    .button("Black bars")
+                    .on_hover_text("Finds the black along the picture's edges (a game drawn narrower than the screen it was recorded on) and cuts it away")
+                    .clicked()
+                {
+                    asks.find_bars = true;
+                }
+                for (label, shape) in SHAPES {
+                    if ui
+                        .button(label)
+                        .on_hover_text(format!("Cuts the picture to {label}, the same off both sides"))
+                        .clicked()
+                    {
+                        placed = Some(cropped_to_fit(&now, picture, crop_to_shape(picture, shape), frame));
+                    }
+                }
+            });
+            if let Some(look) = placed {
+                *values = Values::of(&look, frame);
+                touched.changed = true;
+            }
+            // The timeline the shape of what is left, when it isn't.
+            if before.is_cropped() {
+                let left = cropped_size(&before, picture);
+                let shapes_differ = (f64::from(left.0) / f64::from(left.1.max(1))
+                    - f64::from(frame.0) / f64::from(frame.1.max(1)))
+                .abs()
+                    > 0.01;
+                if shapes_differ {
+                    ui.horizontal_wrapped(|ui| {
+                        inspector::label_cell(ui, theme, "Timeline", 86.0);
+                        if ui
+                            .button(format!("Make it {}×{}", left.0, left.1))
+                            .on_hover_text(format!(
+                                "The timeline is {}×{}: make it the size of what is left of this picture, so there are no bars in the export",
+                                frame.0, frame.1
+                            ))
+                            .clicked()
+                        {
+                            asks.timeline_to = Some(left);
+                        }
+                    });
+                }
+            }
         },
     );
     if clicks.reset {
@@ -245,6 +301,15 @@ pub(super) fn picture_sections(
     colour_section(ui, theme, &before, keys, values, touched, &mut asks);
     asks
 }
+
+/// The shapes Crop offers, by name.
+const SHAPES: [(&str, (u32, u32)); 5] = [
+    ("16:9", (16, 9)),
+    ("21:9", (64, 27)),
+    ("4:3", (4, 3)),
+    ("1:1", (1, 1)),
+    ("9:16", (9, 16)),
+];
 
 /// The Blend row: how the picture mixes with what is below it. The mode
 /// picked, if another one was.
