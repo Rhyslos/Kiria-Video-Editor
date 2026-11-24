@@ -23,7 +23,7 @@ impl Inspector {
         seq: &project::Sequence,
         clip: &project::Clip,
     ) -> Option<Command> {
-        let targets = sound_clips(seq, clip);
+        let targets = sound_targets(seq, clip, &self.others_all);
         let first = targets.first()?;
         let rate = seq.settings.frame_rate;
         let pending = self.pending_sound.get();
@@ -95,15 +95,17 @@ impl Inspector {
                     fade_number(fade_out_room),
                     fade_words,
                 ));
+                let own = sound_clips(seq, clip).len();
                 if targets.len() > 1 {
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "Sets all {} sound streams of this clip together.",
+                    let words = if targets.len() > own {
+                        format!(
+                            "Sets the sound of every selected clip together ({} sound clips); each keeps what isn't changed.",
                             targets.len()
-                        ))
-                        .color(theme.muted)
-                        .size(12.0),
-                    );
+                        )
+                    } else {
+                        format!("Sets all {} sound streams of this clip together.", targets.len())
+                    };
+                    ui.label(egui::RichText::new(words).color(theme.muted).size(12.0));
                 }
             },
         );
@@ -168,6 +170,28 @@ pub(super) fn sound_clips<'a>(seq: &'a project::Sequence, clip: &project::Clip) 
             .filter(|c| on_audio(c))
             .collect(),
     }
+}
+
+/// The sound clips the Audio section sets with `clip` shown and `others`
+/// selected too: theirs as [`sound_clips`] finds them, `clip`'s first,
+/// each once.
+pub(super) fn sound_targets<'a>(
+    seq: &'a project::Sequence,
+    clip: &project::Clip,
+    others: &[ClipId],
+) -> Vec<&'a project::Clip> {
+    let mut targets = sound_clips(seq, clip);
+    for id in others {
+        let Some(other) = seq.tracks().flat_map(|t| t.clips.iter()).find(|c| c.id == *id) else {
+            continue;
+        };
+        for found in sound_clips(seq, other) {
+            if !targets.iter().any(|t| t.id == found.id) {
+                targets.push(found);
+            }
+        }
+    }
+    targets
 }
 
 /// A clip's sound as the inspector shows it.
@@ -415,6 +439,31 @@ mod tests {
                 ..set
             }),
             "Silent"
+        );
+    }
+
+    #[test]
+    fn every_selected_clip_is_heard_with_the_one_shown() {
+        let fixture =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../media/tests/fixtures/game-3-audio.mkv");
+        let mut p = Project::new("T", project::SequenceSettings::GAME_CLIP);
+        let sequence = p.active_sequence;
+        for _ in 0..2 {
+            let media = media::describe(&fixture).unwrap();
+            p = Command::Import { sequence, media }.apply(&p).unwrap();
+        }
+        let seq = p.active().unwrap();
+        let pictures: Vec<&project::Clip> = seq.video_tracks[0].clips.iter().collect();
+        // A picture alone: its three sound streams.
+        assert_eq!(sound_targets(seq, pictures[0], &[]).len(), 3);
+        // With the other picture selected: its three too, once each.
+        let both = sound_targets(seq, pictures[0], &[pictures[1].id, pictures[0].id]);
+        assert_eq!(both.len(), 6);
+        // A sound clip of the first selected as well adds nothing new.
+        let one_stream = sound_clips(seq, pictures[0])[1].id;
+        assert_eq!(
+            sound_targets(seq, pictures[0], &[pictures[1].id, one_stream]).len(),
+            6
         );
     }
 }
