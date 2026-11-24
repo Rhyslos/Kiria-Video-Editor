@@ -39,7 +39,9 @@ impl Editor {
         let graded_id = self
             .color_page
             .graded(seq, &self.selected, self.viewer.playhead, held);
-        let shown = self.color_page.shown(p, graded_id);
+        // Whatever is being dragged, the grade on this page among it
+        // (`live_project`), as every page draws it.
+        let shown = self.live_project(p);
         let shown_p = shown.as_ref().unwrap_or(p);
         let tools_h = match self.color_page.tool {
             color_page::Tool::Wheels if self.color_page.advanced => 290.0,
