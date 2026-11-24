@@ -206,6 +206,29 @@ pub fn body(peaks: &[f32], from: usize, to: usize) -> f32 {
     sum / taken as f32
 }
 
+/// The scale fitted to a whole file's `peaks`, kept per file and stream
+/// (`id`, as [`crate::waveform::levels_for`] keeps levels) while they stay
+/// the same length: worked out once, not every frame.
+pub fn fitted_scale(ctx: &egui::Context, id: egui::Id, peaks: &[f32]) -> WaveScale {
+    type Fits = std::collections::HashMap<egui::Id, (usize, WaveScale)>;
+    let key = egui::Id::unique("waveform fitted scales");
+    let kept = ctx.data(|d| {
+        d.get_temp::<std::sync::Arc<Fits>>(key)
+            .and_then(|fits| fits.get(&id).copied())
+    });
+    match kept {
+        Some((len, scale)) if len == peaks.len() => scale,
+        _ => {
+            let scale = WaveScale::fit(peaks);
+            ctx.data_mut(|d| {
+                let fits = d.get_temp_mut_or_default::<std::sync::Arc<Fits>>(key);
+                std::sync::Arc::make_mut(fits).insert(id, (peaks.len(), scale));
+            });
+            scale
+        }
+    }
+}
+
 /// One pixel column, every level already times the volume: its loudest
 /// peak, its usual level, and how far its sound swings up and down (the
 /// same as the peak when only the loudness is known).
@@ -216,6 +239,29 @@ pub struct Column {
     pub body: f32,
     pub up: f32,
     pub down: f32,
+}
+
+/// The waveform settings, as every page draws sound by them.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct WaveSettings {
+    pub style: WaveStyle,
+    pub colouring: WaveColouring,
+    pub side: WaveSide,
+    /// On the file's own scale, else full scale at the edge.
+    pub fitted: bool,
+}
+
+impl WaveSettings {
+    /// How sound of `colour` is drawn by these settings.
+    pub fn look(&self, colour: Color32) -> WaveLook {
+        WaveLook {
+            style: self.style,
+            colouring: self.colouring,
+            side: self.side,
+            colour,
+            muted: false,
+        }
+    }
 }
 
 /// How a clip's sound is drawn: the three settings, and its track's colour

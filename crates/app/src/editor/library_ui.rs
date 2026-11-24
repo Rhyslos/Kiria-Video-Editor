@@ -38,6 +38,7 @@ impl Editor {
                 files: &new_files,
                 checking: &checking,
             },
+            waves: self.settings.wave_settings(),
         };
         let (jobs, waveforms, pictures, ctx) = (
             &self.jobs,

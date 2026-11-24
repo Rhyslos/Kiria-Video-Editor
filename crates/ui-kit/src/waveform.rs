@@ -1,14 +1,15 @@
-//! A whole file's waveform in a rectangle: the Library's audio rows and
-//! the large waveform in its detail panel. One bar per pixel column, as
-//! loud as the loudest peak under it, the same curve the timeline uses (the
-//! square root of the peak, so quiet sound still shows).
+//! A whole file's waveform in a rectangle: the Library's audio rows, cards
+//! and the large waveform in its detail panel. Drawn as the timeline draws
+//! sound (`paint_file`, `crate::timeline::wave_look`: the same shapes,
+//! colours, side and scale, which are settings), so a recording looks the
+//! same on every page.
 //!
 //! Also `Levels`, which every waveform drawn (here and on the timeline)
 //! takes its columns' loudest peaks from: a column over many peaks costs a
 //! few steps, not one per peak, so zoomed out over hours of sound a frame
 //! costs what its width does, not what the recording's length does.
 
-use egui::{Color32, Context, Id, Painter, Rect, Shape, pos2};
+use egui::{Context, Id, Painter, Rect};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -253,38 +254,76 @@ pub fn loudest(peaks: &[f32], levels: Option<&Levels>, from: usize, to: usize) -
     }
 }
 
-/// Draws `peaks` (`per_second` of them per second, 0 to 1) of a file
-/// `length` seconds long across `rect`, centred on its middle line; `id`
-/// says which stream of which file it is (see `levels_for`). Peaks
-/// still being read leave the rest of the rectangle empty.
-pub fn paint(
+/// Draws a whole file's sound across `rect` as the timeline draws a clip's
+/// (`look`: its shape, colours and side; `fitted`: on the file's own
+/// scale, else full scale at the edge), its body first: `peaks` (the
+/// loudest per stretch) with `sides` (the highest and lowest sample per
+/// stretch) when known, `per_second` of them per second of a file `length`
+/// seconds long; `id` says which stream of which file it is. Peaks still
+/// being read leave the rest empty.
+#[allow(clippy::too_many_arguments)]
+pub fn paint_file(
     painter: &Painter,
     rect: Rect,
     id: Id,
     peaks: &Arc<[f32]>,
+    sides: Option<[&Arc<[f32]>; 2]>,
     per_second: f32,
     length: f64,
-    colour: Color32,
+    look: crate::timeline::wave_look::WaveLook,
+    fitted: bool,
 ) {
-    if rect.width() < 1.0 || rect.height() < 2.0 || peaks.is_empty() || length <= 0.0 || per_second <= 0.0 {
+    use crate::timeline::wave_look;
+    wave_look::draw_body(painter, rect, look);
+    if rect.width() < 1.0 || rect.height() < 4.0 || peaks.is_empty() || length <= 0.0 || per_second <= 0.0 {
         return;
     }
+    let inner = rect.shrink2(egui::vec2(1.0, 3.0));
     let levels = levels_for(painter.ctx(), id, peaks);
-    let mut mesh = egui::Mesh::default();
-    let (mid, half) = (rect.center().y, rect.height() / 2.0);
-    let columns = rect.width().floor().max(1.0) as usize;
-    for column in 0..columns {
-        let Some(peak) = column_peak(peaks, levels.as_deref(), (per_second, length), column, columns) else {
+    let sides = sides.filter(|[up, down]| up.len() == peaks.len() && down.len() == peaks.len());
+    let side_levels = sides.map(|[up, down]| {
+        (
+            levels_for(painter.ctx(), id.with("up"), up),
+            levels_for(painter.ctx(), id.with("down"), down),
+        )
+    });
+    let count = inner.width().floor().max(1.0) as usize;
+    let mut columns = Vec::with_capacity(count);
+    for column in 0..count {
+        let span = (column as f64 / count as f64 * length * f64::from(per_second)).floor() as usize;
+        let end = (((column + 1) as f64 / count as f64 * length * f64::from(per_second)).ceil() as usize)
+            .max(span + 1)
+            .min(peaks.len());
+        if span >= peaks.len() {
             break;
+        }
+        let peak = loudest(peaks, levels.as_deref(), span, end);
+        let (up, down) = match (sides, &side_levels) {
+            (Some([up, down]), Some((up_levels, down_levels))) => (
+                loudest(up, up_levels.as_deref(), span, end),
+                loudest(down, down_levels.as_deref(), span, end),
+            ),
+            _ => (peak, peak),
         };
-        let x = rect.left() + column as f32;
-        let h = (peak.sqrt() * half).max(0.5);
-        mesh.add_colored_rect(
-            Rect::from_min_max(pos2(x, mid - h), pos2(x + 1.0, mid + h)),
-            colour,
-        );
+        columns.push(wave_look::Column {
+            x: inner.left().floor() + column as f32,
+            peak,
+            body: wave_look::body(peaks, span, end),
+            up,
+            down,
+        });
     }
-    painter.add(Shape::mesh(mesh));
+    let scale = match fitted {
+        true => wave_look::fitted_scale(painter.ctx(), id, peaks),
+        false => wave_look::WaveScale::straight(),
+    };
+    wave_look::draw(
+        &painter.with_clip_rect(inner.intersect(painter.clip_rect())),
+        inner,
+        &columns,
+        look,
+        scale,
+    );
 }
 
 /// The loudest peak under column `column` of `columns` spread over the

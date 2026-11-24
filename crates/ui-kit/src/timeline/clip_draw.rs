@@ -511,7 +511,7 @@ impl TimelineView {
         let left = r.left() - ((shown_start - clip.start) * f64::from(self.zoom)) as f32;
         let drawn = self.wave_look(colour, muted);
         let scale = match self.wave_fitted {
-            true => fitted_scale(p.ctx(), w),
+            true => wave_look::fitted_scale(p.ctx(), w.id, &w.peaks),
             false => wave_look::WaveScale::straight(),
         };
         let levels = crate::waveform::levels_for(p.ctx(), w.id, &w.peaks);
@@ -607,26 +607,6 @@ fn draw_refused(p: &egui::Painter, r: Rect) {
 
 /// The scale fitted to a file's sound, worked out once per file and stream
 /// (and again while its peaks are still being read).
-fn fitted_scale(ctx: &egui::Context, w: &ClipWaveform) -> wave_look::WaveScale {
-    type Fits = std::collections::HashMap<egui::Id, (usize, wave_look::WaveScale)>;
-    let key = egui::Id::unique("waveform fitted scales");
-    let kept = ctx.data(|d| {
-        d.get_temp::<std::sync::Arc<Fits>>(key)
-            .and_then(|fits| fits.get(&w.id).copied())
-    });
-    match kept {
-        Some((len, scale)) if len == w.peaks.len() => scale,
-        _ => {
-            let scale = wave_look::WaveScale::fit(&w.peaks);
-            ctx.data_mut(|d| {
-                let fits = d.get_temp_mut_or_default::<std::sync::Arc<Fits>>(key);
-                std::sync::Arc::make_mut(fits).insert(w.id, (w.peaks.len(), scale));
-            });
-            scale
-        }
-    }
-}
-
 fn tiny_fill(theme: &Theme, colour: Color32, audio: bool) -> Color32 {
     if audio {
         colour.gamma_multiply(0.55)

@@ -146,6 +146,7 @@ fn draw_shown(
     shown: &Shown,
     colour: egui::Color32,
     length: f64,
+    waves: ui_kit::timeline::wave_look::WaveSettings,
 ) {
     painter.rect_filled(rect, 5.0, theme.viewport);
     match shown {
@@ -157,14 +158,16 @@ fn draw_shown(
         Shown::Sound(look, id) => {
             if let Some(peaks) = &look.peaks {
                 let inner = rect.shrink2(egui::vec2(6.0, rect.height() * 0.2));
-                ui_kit::waveform::paint(
+                ui_kit::waveform::paint_file(
                     painter,
                     inner,
                     *id,
                     &peaks.values,
+                    Some([&peaks.up, &peaks.down]),
                     peaks.per_second as f32,
                     length,
-                    colour,
+                    waves.look(colour),
+                    waves.fitted,
                 );
             }
         }
@@ -241,6 +244,7 @@ fn file_card(
         &shown,
         colour,
         media.duration.as_secs_f64(),
+        about.waves,
     );
     label_edge(&painter, project, media.id, picture);
     if missing {
@@ -372,6 +376,7 @@ fn file_row(
         &shown,
         colour,
         media.duration.as_secs_f64(),
+        about.waves,
     );
     label_edge(&painter, project, media.id, picture);
     let x = picture.right() + 10.0;
