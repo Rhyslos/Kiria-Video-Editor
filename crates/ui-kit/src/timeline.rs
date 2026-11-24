@@ -661,9 +661,10 @@ pub struct DraggedTimeline(pub u64);
 pub struct DraggedEffect(pub u32);
 
 /// A transition being dragged from the media drawer onto a cut: its place
-/// in the page's list of transitions.
+/// in the page's list of transitions, and whether it is a sound crossfade
+/// (it lands on a cut between sound clips) rather than a picture one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DraggedTransition(pub u32);
+pub struct DraggedTransition(pub u32, pub bool);
 
 /// A title being dragged from the media drawer onto the timeline: its
 /// place in the page's list of titles.
@@ -3701,7 +3702,7 @@ mod tests {
         let drop = |rig: &mut Rig, at: Pos2| {
             rig.move_to(drawer);
             rig.button(drawer, primary, true);
-            egui::DragAndDrop::set_payload(&rig.ctx, DraggedTransition(2));
+            egui::DragAndDrop::set_payload(&rig.ctx, DraggedTransition(2, false));
             rig.move_to(at);
             rig.move_to(at);
             let lit = rig.view.transition_over.is_some();

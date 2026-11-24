@@ -398,6 +398,34 @@ fn effect(p: &Painter, r: Rect, kind: EffectKind) {
     }
 }
 
+/// A sound crossfade: the level of the sound going out and of the one
+/// coming in across the picture, drawn by its own shape.
+fn crossfade(p: &Painter, r: Rect, kind: TransitionKind) {
+    p.rect_filled(r, 0.0, Color32::from_rgb(38, 40, 44));
+    let inner = r.shrink2(vec2(4.0, 5.0));
+    let line = |which: usize| -> Vec<Pos2> {
+        (0..=32)
+            .map(|i| {
+                let x = i as f32 / 32.0;
+                let (out, inn) = kind.levels(f64::from(x));
+                let level = if which == 0 { out } else { inn } as f32;
+                pos2(
+                    inner.left() + x * inner.width(),
+                    inner.bottom() - level * inner.height(),
+                )
+            })
+            .collect()
+    };
+    p.add(egui::Shape::line(
+        line(0),
+        Stroke::new(1.6, Color32::from_rgb(110, 190, 170)),
+    ));
+    p.add(egui::Shape::line(
+        line(1),
+        Stroke::new(1.6, Color32::from_rgb(240, 196, 92)),
+    ));
+}
+
 /// A box drawn soft, as blurred.
 fn soft_box(p: &Painter, b: Rect) {
     for i in 0..4 {
@@ -425,6 +453,10 @@ fn transition(p: &Painter, r: Rect, kind: TransitionKind) {
         false => Rect::from_min_max(at(r, 0.5, 0.0), r.max),
     };
     match kind {
+        TransitionKind::Crossfade
+        | TransitionKind::CrossfadeStraight
+        | TransitionKind::CrossfadeSmooth
+        | TransitionKind::DipToSilence => crossfade(p, r, kind),
         TransitionKind::Dissolve => {
             scene(p, r, SKY, GROUND);
             // The second shot over it, stronger to the right.
@@ -556,7 +588,7 @@ mod tests {
         let items: Vec<Item> = EffectKind::ALL
             .into_iter()
             .map(Item::Effect)
-            .chain(TransitionKind::ALL.into_iter().map(Item::Transition))
+            .chain(TransitionKind::every().map(Item::Transition))
             .chain(TitleStyle::ALL.into_iter().map(Item::Title))
             .collect();
         let output = ctx.run_ui(egui::RawInput::default(), |ui| {

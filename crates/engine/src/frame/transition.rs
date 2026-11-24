@@ -119,7 +119,13 @@ impl Change {
 fn looks(kind: TransitionKind, done: f64) -> (Option<Change>, Option<Change>) {
     let some = |change: Change| Some(change);
     match kind {
-        TransitionKind::Dissolve => (
+        // A crossfade is never on a picture (`project::transitions::set`);
+        // were one there, it would dissolve.
+        TransitionKind::Dissolve
+        | TransitionKind::Crossfade
+        | TransitionKind::CrossfadeStraight
+        | TransitionKind::CrossfadeSmooth
+        | TransitionKind::DipToSilence => (
             some(Change::NONE),
             some(Change {
                 opacity: done,

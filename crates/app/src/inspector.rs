@@ -300,9 +300,8 @@ impl Inspector {
         let (look, blend) = self.look_step(ui, theme, &at);
         commands.extend(blend);
         commands.extend(self.effects_step(ui, theme, &at));
-        if track.kind == TrackKind::Video {
-            commands.extend(transition::section(ui, theme, at.sequence, track, clip));
-        }
+        // A picture's transition, or a sound clip's crossfade.
+        commands.extend(transition::section(ui, theme, at.sequence, track, clip));
         commands.extend(self.speed_step(ui, theme, &at));
         commands.extend(self.audio_section(ui, theme, seq, clip));
         commands.extend(self.finish_look(&at, look));
@@ -786,6 +785,41 @@ pub fn timeline_rows(seq: &project::Sequence) -> Vec<(&'static str, String)> {
 pub fn effects_target(project: &Project, selected: &[ClipId]) -> Option<ClipId> {
     let (_, track, clip) = shown_clip(project, selected)?;
     (track.kind == TrackKind::Video && !clip.is_adjustment()).then_some(clip.id)
+}
+
+/// The clip the inspector is about, picture or sound.
+pub fn shown_clip_id(project: &Project, selected: &[ClipId]) -> Option<ClipId> {
+    shown_clip(project, selected).map(|(_, _, clip)| clip.id)
+}
+
+/// The clips a transition of `kind` asked for on `clip` goes into: the
+/// clip itself for a picture transition; for a crossfade, the sound
+/// clip and the other sound streams of its link (or a picture's sound
+/// streams), those with a clip just before them. None found, the clip
+/// itself, so the refusal says why.
+pub fn transition_targets(project: &Project, kind: project::TransitionKind, clip: ClipId) -> Vec<ClipId> {
+    let Some(seq) = project.active() else {
+        return vec![clip];
+    };
+    if !kind.is_sound() {
+        return vec![clip];
+    }
+    let link = seq
+        .video_tracks
+        .iter()
+        .chain(seq.audio_tracks.iter())
+        .flat_map(|t| t.clips.iter())
+        .find(|c| c.id == clip)
+        .and_then(|c| c.link);
+    let found: Vec<ClipId> = seq
+        .audio_tracks
+        .iter()
+        .flat_map(|t| t.clips.iter().map(move |c| (t, c)))
+        .filter(|(_, c)| c.id == clip || (link.is_some() && c.link == link))
+        .filter(|(t, c)| project::transitions::before(t, c).is_some())
+        .map(|(_, c)| c.id)
+        .collect();
+    if found.is_empty() { vec![clip] } else { found }
 }
 
 /// The clip the inspector is about: of the selected ones with a picture,

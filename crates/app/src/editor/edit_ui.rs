@@ -86,14 +86,24 @@ impl Editor {
     /// Puts a transition of `kind` into `clip` from the clip before it, at
     /// the usual length (one undo step), and selects the clip so the
     /// inspector shows it.
+    /// A crossfade goes onto every sound stream of the link too, as one
+    /// undo step.
     pub(super) fn add_transition(&mut self, kind: project::TransitionKind, clip: project::ClipId) {
         let result = self.with_document(|d| {
             let sequence = d.project().active_sequence;
-            d.apply(Command::SetTransition {
-                sequence,
-                clip,
-                transition: Some(project::Transition::new(kind)),
-            })
+            let mut steps: Vec<Command> = crate::inspector::transition_targets(d.project(), kind, clip)
+                .into_iter()
+                .map(|clip| Command::SetTransition {
+                    sequence,
+                    clip,
+                    transition: Some(project::Transition::new(kind)),
+                })
+                .collect();
+            let command = match steps.len() {
+                1 => steps.remove(0),
+                _ => Command::Steps(steps),
+            };
+            d.apply(command)
         });
         match result {
             Ok(()) => {
@@ -248,10 +258,13 @@ impl Editor {
                 None
             }
             Some(Picked::AddTransition(kind)) => {
-                let target = self
-                    .document
-                    .as_ref()
-                    .and_then(|d| crate::inspector::effects_target(d.project(), &self.selected));
+                let target = self.document.as_ref().and_then(|d| {
+                    if kind.is_sound() {
+                        crate::inspector::shown_clip_id(d.project(), &self.selected)
+                    } else {
+                        crate::inspector::effects_target(d.project(), &self.selected)
+                    }
+                });
                 match target {
                     Some(clip) => self.add_transition(kind, clip),
                     None => {

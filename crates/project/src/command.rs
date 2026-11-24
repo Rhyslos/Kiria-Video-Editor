@@ -2211,11 +2211,78 @@ pub(crate) mod tests {
             "nothing before the first"
         );
         assert!(set(ids[2], dissolve).apply(&p).is_err(), "a gap before the third");
-        assert!(set(sound, dissolve).apply(&p).is_err(), "sound has none");
+        assert!(
+            set(sound, dissolve).apply(&p).is_err(),
+            "sound has no picture transition"
+        );
         let p = set(ids[1], dissolve).apply(&p).unwrap();
         assert_eq!(p.active().unwrap().video_tracks[0].clips[1].transition, dissolve);
         let p = set(ids[1], None).apply(&p).unwrap();
         assert_eq!(p.active().unwrap().video_tracks[0].clips[1].transition, None);
+    }
+
+    #[test]
+    fn a_crossfade_goes_between_sound_clips_only() {
+        use crate::transitions::{Transition, TransitionKind};
+        let f = fixture();
+        let p = place(&f, &f.p, f.a1, clip(&f, 0, 4, None)).unwrap();
+        let p = place(&f, &p, f.a1, clip(&f, 4, 4, None)).unwrap();
+        let p = place(&f, &p, f.v1, clip(&f, 0, 4, None)).unwrap();
+        let p = place(&f, &p, f.v1, clip(&f, 4, 4, None)).unwrap();
+        let seq = p.active().unwrap();
+        let second_sound = seq.audio_tracks[0].clips[1].id;
+        let second_picture = seq.video_tracks[0].clips[1].id;
+        let set = |clip, kind| Command::SetTransition {
+            sequence: f.seq,
+            clip,
+            transition: Some(Transition::new(kind)),
+        };
+        for kind in TransitionKind::SOUND {
+            let p = set(second_sound, kind).apply(&p).unwrap();
+            assert_eq!(
+                p.active().unwrap().audio_tracks[0].clips[1]
+                    .transition
+                    .map(|t| t.kind),
+                Some(kind)
+            );
+            assert!(
+                set(second_picture, kind).apply(&p).is_err(),
+                "pictures take no crossfade"
+            );
+        }
+        assert!(
+            set(seq.audio_tracks[0].clips[0].id, TransitionKind::Crossfade)
+                .apply(&p)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn crossfade_shapes_go_from_one_sound_to_the_other() {
+        use crate::transitions::TransitionKind;
+        for kind in TransitionKind::SOUND {
+            assert_eq!(
+                kind.levels(0.0),
+                (1.0, 0.0),
+                "{kind:?} starts on the sound going out"
+            );
+            let (out, inn) = kind.levels(1.0);
+            assert!(
+                out.abs() < 1e-12 && (inn - 1.0).abs() < 1e-12,
+                "{kind:?} ends on the next"
+            );
+        }
+        // Equal power holds the power, straight the level, in the middle.
+        let (o, i) = TransitionKind::Crossfade.levels(0.5);
+        assert!((o * o + i * i - 1.0).abs() < 1e-12);
+        let (o, i) = TransitionKind::CrossfadeStraight.levels(0.3);
+        assert!((o + i - 1.0).abs() < 1e-12);
+        // Smooth is gentler than straight at the ends.
+        assert!(TransitionKind::CrossfadeSmooth.levels(0.1).1 < 0.1);
+        // A dip is silent at the cut.
+        assert_eq!(TransitionKind::DipToSilence.levels(0.5), (0.0, 0.0));
+        assert!(TransitionKind::SOUND.iter().all(|k| k.is_sound()));
+        assert!(TransitionKind::ALL.iter().all(|k| !k.is_sound()));
     }
 
     #[test]

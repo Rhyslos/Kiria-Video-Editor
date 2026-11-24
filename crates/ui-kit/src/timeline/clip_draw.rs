@@ -160,9 +160,8 @@ impl TimelineView {
         if let Some(m) = merged {
             clip_painter.rect_filled(m, 1.0, tiny_fill(theme, colour, audio));
         }
-        if !audio {
-            self.draw_transitions(theme, clip_painter, track, *row, left);
-        }
+        // Picture transitions, and crossfades between sound clips.
+        self.draw_transitions(theme, clip_painter, track, *row, left);
         if let Some(gap) = self.gap.filter(|g| g.track == track.id) {
             let (x0, x1) = (self.x_of(left, gap.start), self.x_of(left, gap.end));
             gaps::draw(clip_painter, *row, x0, x1, theme.accent);
@@ -328,7 +327,8 @@ impl TimelineView {
         }
     }
 
-    /// The transitions across the cuts of a video track's `row`.
+    /// The transitions across the cuts of a track's `row`: a video track's
+    /// picture transitions or an audio track's crossfades.
     fn draw_transitions(
         &self,
         theme: &Theme,

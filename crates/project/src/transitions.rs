@@ -4,6 +4,12 @@
 //! is trimmed or overlapped for it: where a file has nothing past a clip's
 //! edge, its first or last frame is held. A transition whose clip no
 //! longer has one just before it waits, unused, until it does again.
+//!
+//! Sound clips have crossfades (format 46) the same way: the sound going
+//! out fades out and the one coming in fades in across the cut, each read
+//! past its edge while its file goes on, by one of the crossfade shapes
+//! ([`TransitionKind::SOUND`], [`TransitionKind::levels`]). Pictures take
+//! only picture transitions and sound only crossfades.
 
 use crate::ids::ClipId;
 use crate::model::{Clip, Sequence, Track};
@@ -37,6 +43,16 @@ pub enum TransitionKind {
     LumaFade,
     /// Both pictures break up in glitches, the cut in the middle of them.
     Glitch,
+    /// Sound (format 46): out and in on quarter sines, so the loudness
+    /// holds through the cut between two different sounds.
+    Crossfade,
+    /// Sound: out and in on straight lines, so the level holds between two
+    /// takes of the same sound.
+    CrossfadeStraight,
+    /// Sound: out and in on an S-curve, gentle at both ends.
+    CrossfadeSmooth,
+    /// Sound: the last out to silence by the cut, then the next in from it.
+    DipToSilence,
 }
 
 impl TransitionKind {
@@ -53,6 +69,46 @@ impl TransitionKind {
         TransitionKind::Glitch,
     ];
 
+    /// The sound crossfades, in the order offered.
+    pub const SOUND: [TransitionKind; 4] = [
+        TransitionKind::Crossfade,
+        TransitionKind::CrossfadeStraight,
+        TransitionKind::CrossfadeSmooth,
+        TransitionKind::DipToSilence,
+    ];
+
+    /// The picture transitions then the sound crossfades: what a drag from
+    /// the media drawer counts by.
+    pub fn every() -> impl Iterator<Item = TransitionKind> {
+        TransitionKind::ALL.into_iter().chain(TransitionKind::SOUND)
+    }
+
+    /// Whether it goes between sound clips rather than pictures.
+    pub fn is_sound(self) -> bool {
+        TransitionKind::SOUND.contains(&self)
+    }
+
+    /// A crossfade's levels `done` (0 to 1) of the way through: the sound
+    /// going out's and the one coming in's. Pictures' kinds give a plain
+    /// crossfade.
+    pub fn levels(self, done: f64) -> (f64, f64) {
+        use std::f64::consts::{FRAC_PI_2, PI};
+        let x = done.clamp(0.0, 1.0);
+        match self {
+            TransitionKind::CrossfadeStraight => (1.0 - x, x),
+            TransitionKind::CrossfadeSmooth => {
+                let s = 0.5 - 0.5 * (PI * x).cos();
+                (1.0 - s, s)
+            }
+            TransitionKind::DipToSilence => {
+                let out = ((1.0 - 2.0 * x).max(0.0) * FRAC_PI_2).sin();
+                let inn = ((2.0 * x - 1.0).max(0.0) * FRAC_PI_2).sin();
+                (out, inn)
+            }
+            _ => ((FRAC_PI_2 * (1.0 - x)).sin(), (FRAC_PI_2 * x).sin()),
+        }
+    }
+
     /// Its name in the interface.
     pub fn name(self) -> &'static str {
         match self {
@@ -66,6 +122,10 @@ impl TransitionKind {
             TransitionKind::WhipPan => "Whip pan",
             TransitionKind::LumaFade => "Luma fade",
             TransitionKind::Glitch => "Glitch",
+            TransitionKind::Crossfade => "Crossfade",
+            TransitionKind::CrossfadeStraight => "Straight crossfade",
+            TransitionKind::CrossfadeSmooth => "Smooth crossfade",
+            TransitionKind::DipToSilence => "Dip to silence",
         }
     }
 }
@@ -136,18 +196,32 @@ pub fn check(track: &Track, clip: &Clip, transition: &Transition) -> diag::Resul
 }
 
 /// Sets or takes away the transition into `clip` (see
-/// [`crate::Command::SetTransition`]).
+/// [`crate::Command::SetTransition`]): a picture takes a picture
+/// transition, sound a crossfade.
 pub(crate) fn set(seq: &mut Sequence, clip: ClipId, transition: Option<Transition>) -> diag::Result<()> {
-    if seq
-        .audio_tracks
-        .iter()
-        .any(|t| t.clips.iter().any(|c| c.id == clip))
-    {
-        return Err(AppError::new("Transitions are between pictures")
-            .why("This clip is sound, on an audio track.")
-            .fix("Select the picture it belongs to."));
+    let has = |tracks: &imbl::Vector<Track>| tracks.iter().any(|t| t.clips.iter().any(|c| c.id == clip));
+    let sound = has(&seq.audio_tracks);
+    if !sound && !has(&seq.video_tracks) {
+        return Err(crate::command::missing("clip"));
     }
-    for track in seq.video_tracks.iter_mut() {
+    if let Some(t) = &transition {
+        if sound && !t.kind.is_sound() {
+            return Err(AppError::new("That transition is for pictures")
+                .why("This clip is sound, on an audio track.")
+                .fix("Choose a crossfade, or select the picture it belongs to."));
+        }
+        if !sound && t.kind.is_sound() {
+            return Err(AppError::new("A crossfade is for sound")
+                .why("This clip is a picture, on a video track.")
+                .fix("Choose a picture transition, or select its sound."));
+        }
+    }
+    let tracks = if sound {
+        seq.audio_tracks.iter_mut()
+    } else {
+        seq.video_tracks.iter_mut()
+    };
+    for track in tracks {
         let Some(i) = track.clips.iter().position(|c| c.id == clip) else {
             continue;
         };

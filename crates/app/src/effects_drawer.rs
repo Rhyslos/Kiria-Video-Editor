@@ -36,6 +36,10 @@ fn transition_line(kind: TransitionKind) -> &'static str {
         TransitionKind::WhipPan => "A fast smeared push, as a camera whipped round",
         TransitionKind::LumaFade => "The next shot comes in brightest parts first",
         TransitionKind::Glitch => "Both shots break up in glitches across the cut",
+        TransitionKind::Crossfade => "One sound out as the next comes in, as loud throughout",
+        TransitionKind::CrossfadeStraight => "Straight out and in: for two takes of the same sound",
+        TransitionKind::CrossfadeSmooth => "Out and in gently at both ends",
+        TransitionKind::DipToSilence => "Out to silence by the cut, then in from it",
     }
 }
 
@@ -180,9 +184,10 @@ pub fn used(recent: &[String], kind: &EffectKind) -> Vec<String> {
         .collect()
 }
 
-/// A transition by its place in [`TransitionKind::ALL`], as a drag carries it.
+/// A transition by its place in [`TransitionKind::every`], as a drag
+/// carries it.
 pub fn transition_by_index(index: u32) -> Option<TransitionKind> {
-    TransitionKind::ALL.get(index as usize).copied()
+    TransitionKind::every().nth(index as usize)
 }
 
 /// A title layout by its place in [`TitleStyle::ALL`], as a drag carries it.
@@ -200,7 +205,12 @@ fn title_matches(style: TitleStyle, find: &str) -> bool {
 /// Whether a transition matches the words of `find` (its name, its
 /// group's or its line).
 fn transition_matches(kind: TransitionKind, find: &str) -> bool {
-    let text = format!("{} transitions {}", kind.name(), transition_line(kind)).to_lowercase();
+    let group = if kind.is_sound() {
+        "sound audio crossfades transitions"
+    } else {
+        "transitions"
+    };
+    let text = format!("{} {group} {}", kind.name(), transition_line(kind)).to_lowercase();
     find.split_whitespace()
         .all(|word| text.contains(&word.to_lowercase()))
 }
@@ -275,6 +285,15 @@ impl EffectsDrawer {
                 if !transitions.is_empty() {
                     any = true;
                     self.group(ui, theme, "Transitions", &transitions, selected, &mut asked);
+                }
+                let crossfades: Vec<Item> = TransitionKind::SOUND
+                    .into_iter()
+                    .filter(|k| transition_matches(*k, &self.find))
+                    .map(Item::Transition)
+                    .collect();
+                if !crossfades.is_empty() {
+                    any = true;
+                    self.group(ui, theme, "Sound crossfades", &crossfades, selected, &mut asked);
                 }
                 let titles: Vec<Item> = TitleStyle::ALL
                     .into_iter()
@@ -381,8 +400,8 @@ impl EffectsDrawer {
                 response.dnd_set_drag_payload(DraggedEffect(index));
             }
             Item::Transition(kind) => {
-                let index = TransitionKind::ALL.iter().position(|k| *k == kind).unwrap_or(0) as u32;
-                response.dnd_set_drag_payload(DraggedTransition(index));
+                let index = TransitionKind::every().position(|k| k == kind).unwrap_or(0) as u32;
+                response.dnd_set_drag_payload(DraggedTransition(index, kind.is_sound()));
             }
             Item::Title(style) => {
                 let index = TitleStyle::ALL.iter().position(|s| *s == style).unwrap_or(0) as u32;
@@ -523,10 +542,14 @@ mod tests {
 
     #[test]
     fn transitions_travel_by_place_and_are_found_by_their_words() {
-        for (i, kind) in TransitionKind::ALL.iter().enumerate() {
-            assert_eq!(transition_by_index(i as u32), Some(*kind));
-            assert!(transition_matches(*kind, "transition"));
+        for (i, kind) in TransitionKind::every().enumerate() {
+            assert_eq!(transition_by_index(i as u32), Some(kind));
+            assert!(transition_matches(kind, "transition"));
         }
+        for kind in TransitionKind::SOUND {
+            assert!(transition_matches(kind, "crossfade") && transition_matches(kind, "sound"));
+        }
+        assert!(!transition_matches(TransitionKind::Wipe, "sound"));
         assert!(transition_matches(TransitionKind::DipToBlack, "black"));
         assert!(!transition_matches(TransitionKind::Wipe, "black"));
         assert!(transition_matches(TransitionKind::WhipPan, "camera"));
