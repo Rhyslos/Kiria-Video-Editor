@@ -797,6 +797,8 @@ impl Editor {
                 |m, stream| waveforms.get(jobs, &ctx, m, stream),
                 |m, stream| pictures.get(jobs, &ctx, m, stream),
             );
+            let ready = self.playback_ready(seq);
+            timeline_panel::add_to_cache_bar(&mut drawn, &ready);
             // Sound being set in the inspector shows on its clips at once.
             timeline_panel::show_sounds(&mut drawn, &self.inspector.sounds_being_set());
             timeline_panel::show_chosen_label(&mut drawn, self.selected_label);

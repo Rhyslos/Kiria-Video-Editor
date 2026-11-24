@@ -167,6 +167,9 @@ pub struct Picture {
     /// (seconds of the file): what was read ahead. `None` when the frames
     /// of its file aren't kept (decoded on the processor, proxies).
     pub kept_ahead: Option<f64>,
+    /// How far before it they go back without a gap (seconds of the file).
+    /// `None` as for `kept_ahead`.
+    pub kept_behind: Option<f64>,
 }
 
 struct Request {
@@ -534,11 +537,16 @@ impl Worker {
         Some(self.with_kept_ahead(out))
     }
 
-    /// The picture, saying how far the frames kept go on past the playhead.
+    /// The picture, saying how far the frames kept go on past the playhead
+    /// and back before it.
     fn with_kept_ahead(&self, mut out: Picture) -> Picture {
         out.kept_ahead = self.playhead.as_ref().and_then(|playhead| {
             let end = self.frames.stretch_end(playhead.key, playhead.moment)?;
             Some((end - playhead.moment).clamp(0.0, ahead::MOST_AHEAD))
+        });
+        out.kept_behind = self.playhead.as_ref().and_then(|playhead| {
+            let start = self.frames.stretch_start(playhead.key, playhead.moment)?;
+            Some((playhead.moment - start).max(0.0))
         });
         out
     }
@@ -617,6 +625,7 @@ impl Picture {
             method: None,
             stand_in: false,
             kept_ahead: None,
+            kept_behind: None,
         }
     }
 }
