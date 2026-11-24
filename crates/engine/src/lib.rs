@@ -24,6 +24,7 @@
 //! The interface only sends requests and reads results back, so slow media
 //! can never freeze a window.
 
+pub mod bars;
 pub mod clarity;
 mod clip_fx;
 pub mod compose;

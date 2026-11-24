@@ -577,6 +577,8 @@ pub enum TimelineEvent {
     LabelRegion,
     /// "Pre-render the region" from the region's menu.
     PrerenderRegion,
+    /// "Crop away black bars" from a picture clip's menu.
+    CropBars { clip: u64 },
     /// "Add a label here" from the right-click menu.
     AddLabel(f64),
     /// "Split here" from the right-click menu: one clip (with its linked

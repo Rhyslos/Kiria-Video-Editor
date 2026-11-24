@@ -38,7 +38,7 @@ mod speed;
 mod title;
 mod transition;
 
-pub use look::fitted;
+pub use look::{cropped_to_fit, fitted};
 
 use keyframes::KeyTable;
 use look::Values;
@@ -109,6 +109,9 @@ pub struct Inspector {
     pub follow: Option<(ClipId, project::EffectId)>,
     /// "Analyse the clip" on a Stabilise effect: the clip and the effect.
     pub steady: Option<(ClipId, project::EffectId)>,
+    /// "Black bars" in Crop: the clip whose bars to find and cut away.
+    /// The page takes it and looks on a worker.
+    pub find_bars: Option<ClipId>,
 }
 
 /// The clip the inspector is about, for what changes its look from outside
@@ -382,7 +385,7 @@ impl Inspector {
     /// The picture sections, for a clip on a video track: the look's
     /// numbers as touched, kept for [`Inspector::finish_look`], and a blend
     /// mode picked, one undo step at once.
-    fn look_step(&mut self, ui: &mut egui::Ui, theme: &Theme, at: &Shown) -> (LookEdit, Option<Command>) {
+    fn look_step(&mut self, ui: &mut egui::Ui, theme: &Theme, at: &Shown) -> (LookEdit, Vec<Command>) {
         let (clip, track, frame) = (at.clip, at.track, at.frame);
         let adjustment = clip.is_adjustment();
         let before = self
@@ -395,7 +398,7 @@ impl Inspector {
             asks: Asks::default(),
             keys: KeyTable::at(clip, at.playhead, at.rate, at.on_clip),
         };
-        let mut blend = None;
+        let mut blend = Vec::new();
         if track.kind == TrackKind::Video {
             let on_picture = (&mut self.on_picture, self.on_picture_tip.as_str());
             if adjustment {
@@ -421,11 +424,19 @@ impl Inspector {
                 &mut edit.touched,
             );
             if let Some(mode) = edit.asks.mode {
-                blend = Some(Command::SetBlendMode {
+                blend.push(Command::SetBlendMode {
                     sequence: at.sequence,
                     clip: clip.id,
                     mode,
                 });
+            }
+            if edit.asks.find_bars {
+                self.find_bars = Some(clip.id);
+            }
+            if let Some(size) = edit.asks.timeline_to
+                && let Some(seq) = at.project.sequence(at.sequence)
+            {
+                blend.push(timeline_to(seq, at, &before, size));
             }
         }
         (edit, blend)
@@ -625,6 +636,35 @@ impl<'a> Shown<'a> {
             on_clip: clip.start <= playhead && playhead < clip.end(),
         }
     }
+}
+
+/// One undo step: the timeline made `size` and the clip's cropped picture
+/// fitted to it again, as large as fits.
+fn timeline_to(seq: &project::Sequence, at: &Shown, before: &Look, size: (u32, u32)) -> Command {
+    let crop = [
+        before.crop_left,
+        before.crop_top,
+        before.crop_right,
+        before.crop_bottom,
+    ]
+    .map(|c| f64::from(c) / f64::from(project::look::ONE));
+    let look = look::cropped_to_fit(before, at.picture, crop, size);
+    Command::Steps(vec![
+        Command::SetSettings {
+            sequence: at.sequence,
+            settings: project::SequenceSettings {
+                width: size.0,
+                height: size.1,
+                ..seq.settings
+            },
+        },
+        Command::SetLookAt {
+            sequence: at.sequence,
+            clip: at.clip.id,
+            at: at.moment,
+            look,
+        },
+    ])
 }
 
 /// The look as the picture sections left it this frame, for
@@ -1209,7 +1249,7 @@ pub(crate) mod tests {
         let clicked = |group: &'static [LookField], clicks: KeyClicks| Asks {
             resets: Vec::new(),
             keys: vec![(group, clicks)],
-            mode: None,
+            ..Asks::default()
         };
         let toggle = KeyClicks {
             toggle: true,
@@ -1263,8 +1303,7 @@ pub(crate) mod tests {
         // Reset puts the section back and takes its keyframes.
         let reset = Asks {
             resets: vec![&TRANSFORM],
-            keys: Vec::new(),
-            mode: None,
+            ..Asks::default()
         };
         let commands = answer(&mut inspector, &reset, 4);
         assert_eq!(

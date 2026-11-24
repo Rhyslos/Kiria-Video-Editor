@@ -448,6 +448,9 @@ impl Editor {
         {
             self.errors.push(&err);
         }
+        if let Some(clip) = self.inspector.find_bars.take() {
+            self.find_bars(clip);
+        }
         if let Some((clip, effect)) = self.inspector.steady.take()
             && let Err(err) = self.start_steady(clip, effect)
         {
