@@ -134,6 +134,58 @@ impl Input {
         (d > 0 && d != ff::AV_NOPTS_VALUE).then_some(d)
     }
 
+    /// When the last packet of any stream ends (seconds from the file's
+    /// start), read from the last few megabytes of the file: the length of
+    /// a file that doesn't state one, as a recording a crash cut short has
+    /// neither a length nor a seek index. Reading starts at a byte position,
+    /// where the demuxer finds the next whole piece of the file, so it
+    /// costs those bytes however long the file is. `None` when nothing can
+    /// be read there.
+    pub fn end_time(&self) -> Option<f64> {
+        const TAIL: i64 = 4 << 20;
+        let ctx = self.ctx();
+        // SAFETY: the format context is open and only this thread uses it;
+        // stream pointers stay valid while it is; the packet is allocated
+        // here, unreferenced after each use and freed before returning.
+        unsafe {
+            let size = if ctx.pb.is_null() {
+                -1
+            } else {
+                ff::avio_size(ctx.pb)
+            };
+            let from = (size - TAIL).max(0);
+            if ff::av_seek_frame(self.ctx, -1, from, ff::AVSEEK_FLAG_BYTE) < 0 {
+                return None;
+            }
+            let start = |tb: ff::AVRational, st: *const ff::AVStream| {
+                let s = (*st).start_time;
+                if s == ff::AV_NOPTS_VALUE { 0 } else { s }.saturating_mul(i64::from(tb.num)) as f64
+                    / f64::from(tb.den)
+            };
+            let mut packet = ff::av_packet_alloc();
+            if packet.is_null() {
+                return None;
+            }
+            let mut end: Option<f64> = None;
+            while ff::av_read_frame(self.ctx, packet) >= 0 {
+                let p = &*packet;
+                if p.stream_index >= 0 && (p.stream_index as u32) < ctx.nb_streams {
+                    let st = *ctx.streams.add(p.stream_index as usize);
+                    let tb = (*st).time_base;
+                    let stamp = if p.pts != ff::AV_NOPTS_VALUE { p.pts } else { p.dts };
+                    if stamp != ff::AV_NOPTS_VALUE && tb.num > 0 && tb.den > 0 {
+                        let ticks = stamp.saturating_add(p.duration.max(0));
+                        let t = ticks as f64 * f64::from(tb.num) / f64::from(tb.den) - start(tb, st);
+                        end = Some(end.map_or(t, |e| e.max(t)));
+                    }
+                }
+                ff::av_packet_unref(packet);
+            }
+            ff::av_packet_free(&mut packet);
+            end.filter(|e| e.is_finite() && *e > 0.0)
+        }
+    }
+
     /// Presentation times (seconds) of the packets of `stream` from about
     /// `from` seconds on, for up to `span` seconds of file. Reads packets only;
     /// nothing is decoded. Empty when the file can't be read there.

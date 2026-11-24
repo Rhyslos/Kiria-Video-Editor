@@ -157,6 +157,21 @@ pub enum Reached<T> {
     Dropped,
 }
 
+/// How far apart (bytes) the scaler's rows are put, and how much room is
+/// left after the last: its widest block of pixels.
+const SCALER_ALIGN: usize = 64;
+
+/// Rows `row` bytes long, written `step` bytes apart, packed together.
+fn packed(mut rows: Vec<u8>, row: usize, step: usize, height: usize) -> Vec<u8> {
+    if step != row {
+        for y in 1..height {
+            rows.copy_within(y * step..y * step + row, y * row);
+        }
+    }
+    rows.truncate(row * height);
+    rows
+}
+
 /// A listed key frame time and the time the frame is shown may differ by
 /// rounding: this much (seconds) earlier still counts as reaching it.
 const KEY_SLACK: f64 = 0.001;
@@ -1508,14 +1523,20 @@ impl VideoDecoder {
                     .fix("Report it with the file attached."));
             }
             self.set_scaler_colour(sw as u32, sh as u32);
-            let mut rgba = vec![0u8; dw as usize * dh as usize * 4];
+            // The scaler writes whole blocks of pixels, past the end of a
+            // row whose width isn't a multiple of them (3440 is not), so
+            // rows are written a step apart that leaves room, with room
+            // after the last too, and packed together afterwards.
+            let row = dw as usize * 4;
+            let step = row.next_multiple_of(SCALER_ALIGN);
+            let mut rgba = vec![0u8; step * dh as usize + SCALER_ALIGN];
             let dst = [
                 rgba.as_mut_ptr(),
                 ptr::null_mut(),
                 ptr::null_mut(),
                 ptr::null_mut(),
             ];
-            let stride = [dw * 4, 0, 0, 0];
+            let stride = [step as i32, 0, 0, 0];
             ff::sws_scale(
                 self.scaler,
                 (*source).data.as_ptr() as *const *const u8,
@@ -1525,6 +1546,7 @@ impl VideoDecoder {
                 dst.as_ptr(),
                 stride.as_ptr(),
             );
+            let rgba = packed(rgba, row, step, dh as usize);
             let (width, height, rgba) = turn(rgba, dw as u32, dh as u32, self.rotation);
             Ok(Frame {
                 width,
@@ -1650,6 +1672,14 @@ impl Drop for VideoDecoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rows_written_apart_are_packed_together() {
+        // Rows of 3 bytes, 4 apart, with room after the last.
+        let rows = vec![1, 2, 3, 0, 4, 5, 6, 0, 7, 8, 9, 0, 0, 0];
+        assert_eq!(packed(rows, 3, 4, 3), [1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        assert_eq!(packed(vec![1, 2, 3, 4, 0], 2, 2, 2), [1, 2, 3, 4]);
+    }
 
     #[test]
     fn only_8_bit_pictures_with_colour_at_half_size_are_decoded_on_the_device() {

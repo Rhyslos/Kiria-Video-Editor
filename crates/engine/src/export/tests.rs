@@ -1673,3 +1673,53 @@ fn nv12_turns_back_into_rgba() {
     let red = nv12_to_rgba(&[63, 63, 63, 63, 102, 240], (2, 2));
     assert!(red[0] > 245 && red[1] < 10 && red[2] < 10, "{red:?}");
 }
+
+#[test]
+fn a_recorders_pcm_streams_become_named_tracks_and_export() {
+    // Four 16-bit PCM streams as a screen recorder writes them, the last a
+    // muted source: pure digital silence.
+    let project = Project::new_automatic("T");
+    let seq = project.active_sequence;
+    let path = fixture("recorder-pcm.mkv");
+    let media = media::describe(&path).unwrap();
+    let project = Command::Import { sequence: seq, media }.apply(&project).unwrap();
+    let tracks = &project.active().unwrap().audio_tracks;
+    let names: Vec<&str> = tracks.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(names, ["Game", "Voice chat", "Mic", "Muted"], "named by the file");
+    assert!(
+        tracks.iter().all(|t| t.clips.len() == 1),
+        "the silent one is an ordinary track"
+    );
+
+    // Waveforms: the tones have peaks, the muted stream is flat.
+    let streams: Vec<u32> = (1..=4).collect();
+    let peaks = cache::waveform::peaks_of_streams(&path, &streams, |_, _| true).unwrap();
+    let loudest = |p: &cache::waveform::Peaks| p.values.iter().fold(0.0f32, |m, v| m.max(*v));
+    for p in &peaks[..3] {
+        assert!(loudest(p) > 0.05, "{}", loudest(p));
+    }
+    assert_eq!(loudest(&peaks[3]), 0.0);
+
+    let Some(devices) = devices() else {
+        eprintln!("no graphics device here: exporting isn't checked");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("pcm.mp4");
+    let settings = ExportSettings {
+        quality: Quality::Small,
+        software: true,
+        ..ExportSettings::mp4(out.clone())
+    };
+    let export = Export::start(project.clone(), seq, settings, Some(devices), || {});
+    let Outcome::Done(_) = wait(&export) else {
+        panic!("the export did not finish well");
+    };
+    let made = media::describe(&out).unwrap();
+    let rate = project.active().unwrap().settings.sample_rate;
+    let mut sound = media::AudioDecoder::open(&out, made.info.audio[0].index, rate).unwrap();
+    let mut heard = vec![0.0f32; rate as usize / 5];
+    let got = sound.read(&mut heard);
+    let peak = heard[..got * 2].iter().fold(0.0f32, |m, v| m.max(v.abs()));
+    assert!(peak > 0.05, "the tones are in the export: {peak}");
+}
