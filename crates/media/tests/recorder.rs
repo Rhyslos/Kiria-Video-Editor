@@ -131,5 +131,7 @@ fn a_wide_144_fps_av1_recording_decodes_and_gets_a_proxy() {
     let f = proxy.frame_at(0.0, 4000, 4000).unwrap();
     assert_eq!((f.width, f.height), written.size);
     assert!(!has_padding(&f), "the padding is in the proxy");
+    // Windows can't remove a file that is open.
+    drop(proxy);
     std::fs::remove_dir_all(&dir).unwrap();
 }
