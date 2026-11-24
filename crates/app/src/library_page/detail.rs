@@ -257,14 +257,16 @@ fn preview(
                     page.waiting += 1;
                 }
                 if let Some(peaks) = &look.peaks {
-                    ui_kit::waveform::paint(
+                    ui_kit::waveform::paint_file(
                         &ui.painter_at(wave),
                         wave,
                         crate::waveforms::drawn_as(media.id, stream),
                         &peaks.values,
+                        Some([&peaks.up, &peaks.down]),
                         peaks.per_second as f32,
                         length,
-                        colour,
+                        about.waves.look(colour),
+                        about.waves.fitted,
                     );
                 }
             }

@@ -204,6 +204,8 @@ pub struct About<'a> {
     pub status: &'a str,
     /// New files in the media folders.
     pub new_files: crate::new_files::NewFiles<'a>,
+    /// How sound is drawn (the waveform settings, as on the timeline).
+    pub waves: ui_kit::timeline::wave_look::WaveSettings,
 }
 
 /// What reading a file's pictures gives: its strip, once read, how far the

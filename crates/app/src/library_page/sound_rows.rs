@@ -232,14 +232,16 @@ fn draw_waveform(
         }
         match &look.peaks {
             Some(peaks) => {
-                ui_kit::waveform::paint(
+                ui_kit::waveform::paint_file(
                     &painter,
                     rect,
                     crate::waveforms::drawn_as(media.id, stream),
                     &peaks.values,
+                    Some([&peaks.up, &peaks.down]),
                     peaks.per_second as f32,
                     length,
-                    colour,
+                    about.waves.look(colour),
+                    about.waves.fitted,
                 );
             }
             None if look.state == Some(LoadState::Failed) => {

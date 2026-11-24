@@ -322,6 +322,16 @@ impl JumpPicture {
 }
 
 impl Settings {
+    /// How sound is drawn on every page: the waveform settings together.
+    pub fn wave_settings(&self) -> ui_kit::timeline::wave_look::WaveSettings {
+        ui_kit::timeline::wave_look::WaveSettings {
+            style: self.waveform_look,
+            colouring: self.waveform_colours,
+            side: self.waveform_side,
+            fitted: !self.waveform_straight,
+        }
+    }
+
     pub fn path(data_dir: &Path) -> PathBuf {
         data_dir.join("settings.ron")
     }
