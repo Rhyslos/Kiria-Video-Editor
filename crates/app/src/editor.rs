@@ -437,6 +437,10 @@ impl Editor {
         viewer.set_key_frame_first(settings.jump_picture.key_frame_first());
         let display = crate::display::ViewerDisplay::new(settings.split_view, &viewer);
         let global_labels = crate::global_labels::Everywhere::load(&data_dir, &mut errors);
+        let mut color_page = crate::color_page::ColorPage::default();
+        if let Some(err) = color_page.load_looks(&data_dir) {
+            errors.push(&err);
+        }
         let export_page = crate::export_page::ExportPage::new(&data_dir, settings.export_pace, &mut errors);
         let settings_keeper = crate::settings::SettingsKeeper::new(&data_dir, &settings, Instant::now());
         let mut editor = Editor {
@@ -508,7 +512,7 @@ impl Editor {
             following: None,
             finding_bars: None,
             color_before: None,
-            color_page: Default::default(),
+            color_page,
             steadying: None,
             save_frame_requested: false,
             global_labels,

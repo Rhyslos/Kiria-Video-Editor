@@ -7,6 +7,7 @@
 
 mod basic;
 mod curves;
+mod looks;
 mod mask;
 mod range;
 mod wheels;
@@ -27,10 +28,19 @@ pub enum Tool {
     Range,
     /// The shape a layer reaches.
     Mask,
+    /// Looks put on in a click, and the person's own.
+    Looks,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 5] = [Tool::Basic, Tool::Wheels, Tool::Curves, Tool::Range, Tool::Mask];
+    pub const ALL: [Tool; 6] = [
+        Tool::Basic,
+        Tool::Wheels,
+        Tool::Curves,
+        Tool::Range,
+        Tool::Mask,
+        Tool::Looks,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -39,6 +49,7 @@ impl Tool {
             Tool::Curves => "Curves",
             Tool::Range => "Range",
             Tool::Mask => "Mask",
+            Tool::Looks => "Looks",
         }
     }
 }
@@ -82,6 +93,16 @@ pub struct ColorPage {
     mask_held: bool,
     /// The picture is shown as it was before its grade.
     pub before: bool,
+    /// The person's own looks (`project::looks`), and whether they changed
+    /// since they were last handed over to be saved.
+    pub looks: project::looks::Looks,
+    looks_changed: bool,
+    /// The file couldn't be read: it is left as it is, never written over.
+    looks_kept_as_they_are: bool,
+    /// How strongly a look goes on, 0 to 1.
+    look_strength: f64,
+    /// A name being asked for, to keep this layer as a look.
+    naming_look: Option<(ui_kit::dialog::NameAsk, project::GradeLayer)>,
     /// Split: the picture without its grade left of a line, with it on the
     /// right; where the line is (0 to 1 across the picture).
     pub wipe: Option<f32>,
@@ -118,6 +139,11 @@ impl Default for ColorPage {
             curve_channel: curves::Channel::default(),
             before: false,
             wipe: None,
+            looks: project::looks::Looks::default(),
+            looks_changed: false,
+            looks_kept_as_they_are: false,
+            look_strength: 1.0,
+            naming_look: None,
             balancing: None,
         }
     }
@@ -195,6 +221,46 @@ impl ColorPage {
         }
         .apply(project)
         .ok()
+    }
+
+    /// The name dialog for keeping a layer as a look, while one is asked
+    /// for: call every frame.
+    pub fn look_dialog(&mut self, ctx: &egui::Context, theme: &Theme) -> Option<diag::AppError> {
+        let (ask, _) = self.naming_look.as_mut()?;
+        let answer = ui_kit::dialog::name_dialog(ctx, theme, "look-name", ask)?;
+        let (_, layer) = self.naming_look.take()?;
+        let ui_kit::dialog::NameAnswer::Given(name) = answer else {
+            return None;
+        };
+        match self.looks.add(&name, &layer) {
+            Ok(()) => {
+                self.looks_changed = true;
+                None
+            }
+            Err(err) => Some(err),
+        }
+    }
+
+    /// Reads the person's looks from the app's data folder; one that can't
+    /// be read is told and left alone.
+    pub fn load_looks(&mut self, data_dir: &std::path::Path) -> Option<diag::AppError> {
+        match project::looks::Looks::load(data_dir) {
+            Ok(looks) => {
+                self.looks = looks;
+                None
+            }
+            Err(err) => {
+                self.looks_kept_as_they_are = true;
+                Some(err)
+            }
+        }
+    }
+
+    /// The person's looks, when they changed since this was last asked:
+    /// to be written to the app's data folder on a worker.
+    pub fn looks_to_save(&mut self) -> Option<project::looks::Looks> {
+        let changed = std::mem::take(&mut self.looks_changed);
+        (changed && !self.looks_kept_as_they_are).then(|| self.looks.clone())
     }
 
     /// The project with `graded`'s grade taken away: the left of the split.
@@ -489,6 +555,37 @@ impl ColorPage {
                     grade.layer_mut(self.layer).mask = mask;
                 }
                 busy
+            }
+            Tool::Looks => {
+                let shown = grade.0.get(self.layer).cloned();
+                let has_layer = shown
+                    .as_ref()
+                    .is_some_and(|l| !l.primary.is_plain() || !l.curves.is_plain());
+                match looks::ui(ui, theme, &self.looks, &mut self.look_strength, has_layer) {
+                    Some(looks::Picked::Put(look)) => {
+                        let layer = project::looks::at_strength(&look.layer, self.look_strength);
+                        grade.0.push(layer);
+                        self.layer = grade.0.len() - 1;
+                        asked.status = Some(format!(
+                            "{} put on as a layer of its own: change it on the other tools, or switch it off in the layer list",
+                            look.name
+                        ));
+                    }
+                    Some(looks::Picked::SaveLayer) => {
+                        if let Some(layer) = shown {
+                            let ask = ui_kit::dialog::NameAsk::new("Keep as a look", layer.name.clone())
+                                .note("Offered in every project, on the Looks tool")
+                                .button("Keep");
+                            self.naming_look = Some((ask, layer));
+                        }
+                    }
+                    Some(looks::Picked::Remove(name)) => {
+                        self.looks.remove(&name);
+                        self.looks_changed = true;
+                    }
+                    None => {}
+                }
+                false
             }
         };
         // A pick waits only while its tool is open.

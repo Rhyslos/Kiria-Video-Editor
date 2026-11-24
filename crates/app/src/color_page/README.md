@@ -10,4 +10,5 @@ Every change is one `SetGrades` undo step; a value being dragged is shown at onc
 | `wheels.rs` | Wheels: Shadows, Midtones, Highlights and Overall, each with a brightness slider; Advanced draws them larger with red, green, blue and brightness to type |
 | `curves.rs` | Curves: Master, Red, Green and Blue, one shown at a time; points added, dragged and taken away, the ends moving up and down only; Reset curve |
 | `range.rs` | Color range: a layer kept to a range of hue, saturation and lightness with soft edges; "Pick from the picture" |
+| `looks.rs` | Looks: the strength, the looks the app comes with and the person's own as buttons (a click puts one on as a new layer at that strength and chooses it; right-click one of the person's to remove it), and "Keep this layer as a look…" (named in a small dialog, `ColorPage::look_dialog`; the editor writes `looks.ron` on a worker when they change, never over a file it couldn't read) |
 | `mask.rs` | Mask: a layer kept to an ellipse or rectangle (or what is outside it) with a soft edge; its outline over the picture, dragged there |
