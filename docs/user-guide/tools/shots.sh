@@ -105,6 +105,8 @@ make_project() {
     --import "$rec/Facecam 2026-11-08 21-14.mp4" --import "$MEDIA/Music/Intro music.mp3" \
     --import "$rec/Thumbnail idea.png" --import "$rec/Boss fight attempt 7.mp4" \
     --screenshot "$PNG/_import.png" >/dev/null 2>&1
+  # As imported, before it is dressed: the techniques' projects are made from it.
+  cp "$DEMO" "$PROJECTS/imported.kiria"
   python3 "$HERE/demo_project.py" "$DEMO" "$(data_dir)"
 }
 
@@ -269,6 +271,13 @@ if wanted export-queue; then
 fi
 
 # Settings and the shortcuts page.
+# Editing techniques: small projects laid out for J and L cuts and crossfades.
+if wanted techniques && [ -f "$PROJECTS/imported.kiria" ]; then
+  python3 "$HERE/techniques.py" "$PROJECTS/imported.kiria" "$PROJECTS/techniques"
+  editor_shot techniques-cuts "$PROJECTS/techniques/cuts.kiria" --playhead 11
+  editor_shot techniques-crossfades "$PROJECTS/techniques/crossfades.kiria" --playhead 8 --select-first-clip
+fi
+
 editor_shot settings-editing "$DEMO" --settings editing
 editor_shot shortcuts-page "" --shortcuts-page filter
 editor_shot shortcuts-clash "" --shortcuts-page clash
