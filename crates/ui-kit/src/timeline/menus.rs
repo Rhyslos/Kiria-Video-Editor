@@ -172,6 +172,14 @@ pub(super) fn region_menu(ui: &mut Ui, events: &mut Vec<TimelineEvent>) {
         events.push(TimelineEvent::LabelRegion);
         ui.close();
     }
+    if ui
+        .button("Pre-render the region")
+        .on_hover_text("Put its frames together ahead of time, so it plays smoothly however many layers and effects it has")
+        .clicked()
+    {
+        events.push(TimelineEvent::PrerenderRegion);
+        ui.close();
+    }
 }
 
 /// What the right-click menu of a timeline area is about.

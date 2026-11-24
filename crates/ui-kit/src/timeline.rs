@@ -575,6 +575,8 @@ pub enum TimelineEvent {
     RemoveLabel(u64),
     /// "Label the region" from the region's menu.
     LabelRegion,
+    /// "Pre-render the region" from the region's menu.
+    PrerenderRegion,
     /// "Add a label here" from the right-click menu.
     AddLabel(f64),
     /// "Split here" from the right-click menu: one clip (with its linked

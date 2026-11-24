@@ -14,6 +14,8 @@ publish = false
 cpal = { version = "0.18", features = ["realtime"] }
 # The real-time mixer: track effects, the master, meters (pure Rust).
 audio = { path = "../audio" }
+# The app's version, part of a pre-rendered frame's key.
+brand = { path = "../brand" }
 # Proxies: the preview shows their frames first.
 cache = { path = "../cache" }
 diag = { path = "../diag" }

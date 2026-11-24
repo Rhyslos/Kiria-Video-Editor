@@ -135,6 +135,7 @@ actions! {
     RemoveRegion, Timeline, "Remove the region: cut it out of every track and close the gap";
     LiftRegion, Timeline, "Remove the region, leave a gap";
     KeepRegion, Timeline, "Keep only the region: remove everything before and after it";
+    PrerenderRegion, Timeline, "Pre-render the region: put its frames together ahead of time, so it plays smoothly";
     EditAtPlayhead, Timeline, "Edit at the playhead: cuts, splits and pastes at the playhead, no separate edit needle";
     RemoveSilence, Timeline, "Remove silence…";
     RecordVoiceOver, Timeline, "Record a voice-over from the playhead (on the audio target track), and stop";
@@ -181,6 +182,13 @@ impl Action {
             Action::LabelRegion => &["marker", "name the region", "chapter", "in out"],
             Action::LiftRegion => &["lift", "cut region", "in out"],
             Action::KeepRegion => &["trim to region", "crop timeline", "in out"],
+            Action::PrerenderRegion => &[
+                "render",
+                "render cache",
+                "render in to out",
+                "smooth playback",
+                "in out",
+            ],
             Action::EditAtPlayhead => &["edit needle", "single needle", "cut at the playhead"],
             Action::Delete => &["lift", "remove clip", "leave gap"],
             Action::Split => &["cut", "razor", "blade"],

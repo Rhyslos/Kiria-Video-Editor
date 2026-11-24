@@ -24,6 +24,7 @@ pub const WAVEFORM_COLOURS: &str = "waveform-colours";
 pub const WAVEFORM_SIDE: &str = "waveform-side";
 pub const WAVEFORM_FITTED: &str = "waveform-fitted";
 pub const CLEAR_WAVEFORMS: &str = "clear-waveforms";
+pub const CLEAR_RENDERS: &str = "clear-renders";
 pub const PROXIES: &str = "proxies";
 pub const JUMP_PICTURE: &str = "jump-picture";
 pub const LOUDNESS_TARGET: &str = "loudness-target";
@@ -302,6 +303,12 @@ pub const CATEGORIES: &[Category] = &[
                         "Kept so recordings are not read again each time. Clearing them reads them again when needed; proxies stay.",
                     )
                     .keywords("clear delete remove cache waveforms peaks sound pictures thumbnails loudness lufs readings"),
+                    Setting::new(
+                        CLEAR_RENDERS,
+                        "Pre-rendered frames",
+                        "Regions pre-rendered to play smoothly, for every project (at most 20 GB, used longest ago go first). Clearing them puts frames together as they play again.",
+                    )
+                    .keywords("clear delete remove cache render pre-render prerender frames"),
                 ],
             },
         ],
@@ -382,6 +389,7 @@ impl Editor {
         let mut open = self.show_settings;
         let mut problems = Vec::new();
         let mut clear_waveforms = false;
+        let mut clear_renders = false;
         let in_use = *self.jobs.budgets();
         // Asked of the system on a thread of its own, the first time
         // Settings opens; `None` until it answers.
@@ -463,6 +471,11 @@ impl Editor {
                     CLEAR_WAVEFORMS => {
                         if ui_kit::settings::action(row.ui, "Clear").clicked() {
                             clear_waveforms = true;
+                        }
+                    }
+                    CLEAR_RENDERS => {
+                        if ui_kit::settings::action(row.ui, "Clear").clicked() {
+                            clear_renders = true;
                         }
                     }
                     CLICK_MOVES => {
@@ -581,6 +594,10 @@ impl Editor {
         });
         for err in &problems {
             self.errors.push(err);
+        }
+        if clear_renders {
+            self.prerendering.clear(&self.jobs);
+            self.status = "Pre-rendered frames cleared: regions are put together as they play again".into();
         }
         if clear_waveforms {
             self.waveforms.clear_kept(&self.jobs);
@@ -770,6 +787,7 @@ mod tests {
         assert!(finds("ripple", CUT_CLOSES_GAP));
         assert!(finds("thumbnails", CLIP_PICTURES));
         assert!(finds("clear waveforms", CLEAR_WAVEFORMS));
+        assert!(finds("pre-render", CLEAR_RENDERS));
         for words in ["help", "guide", "manual", "docs"] {
             assert!(finds(words, ui_kit::user_guide::ROW), "{words}");
         }

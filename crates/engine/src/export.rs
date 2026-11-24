@@ -1490,5 +1490,7 @@ fn wait_for(preview: &Preview, at: Time, shared: &Shared) -> diag::Result<Option
     }
 }
 
+pub mod prerender;
+
 #[cfg(test)]
 mod tests;

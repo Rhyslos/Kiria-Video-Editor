@@ -82,6 +82,30 @@ impl FrameDescription {
         self
     }
 
+    /// A frame of `size` that is one picture filling it, as it is: no
+    /// colour, effects or blending (a frame put together ahead of time).
+    pub fn filled(size: (u32, u32)) -> FrameDescription {
+        let whole = Area::fitted(size, size);
+        FrameDescription {
+            size,
+            layers: vec![Layer {
+                clip: ClipId(0),
+                media: MediaId(0),
+                stream: 0,
+                source_time: Time::ZERO,
+                area: whole,
+                part: Part::WHOLE,
+                opacity: 1.0,
+                colour: Colour::NEUTRAL,
+                effects: Vec::new(),
+                mode: render::Mode::Normal,
+                blend: None,
+                title: None,
+            }],
+            steps: vec![Step::Picture(0)],
+        }
+    }
+
     /// Whether anything is drawn that has to come from a nested timeline
     /// or be coloured by an adjustment layer.
     pub fn is_flat(&self) -> bool {

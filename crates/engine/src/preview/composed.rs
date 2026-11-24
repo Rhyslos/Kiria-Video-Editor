@@ -26,11 +26,15 @@ impl Worker {
             (sequence.settings.width, sequence.settings.height),
             (r.max_width, r.max_height),
         );
-        let mut description = frame::describe(&r.project, sequence, r.at).at_size(size);
+        let whole = frame::describe(&r.project, sequence, r.at);
         let mut out = Picture::black(r.at);
-        if description.layers.is_empty() {
+        if whole.layers.is_empty() {
             return Some(out); // a gap: black
         }
+        if let Some(picture) = self.prerendered(r, &whole, size, started) {
+            return Some(picture);
+        }
+        let mut description = whole.at_size(size);
         // One layer is the usual case and behaves as a picture alone does:
         // given up for a newer request, or carried on to it. With more, each
         // is decoded to the end, so they all show the same moment.
@@ -106,6 +110,40 @@ impl Worker {
         Some(out)
     }
 
+    /// The frame for `r` from the render cache, when it was pre-rendered
+    /// as `whole` shows it: one picture filling the frame, put together
+    /// as any other, so it looks as it would.
+    fn prerendered(
+        &mut self,
+        r: &Request,
+        whole: &FrameDescription,
+        size: (u32, u32),
+        started: Instant,
+    ) -> Option<Picture> {
+        let store = r.renders.as_ref().filter(|store| !store.is_empty())?;
+        let key = crate::export::prerender::frame_key(&r.project, whole)?;
+        let kept = store.get(key)?;
+        let shown = FrameDescription::filled(size);
+        let composing = self.composing.clone()?;
+        let composer = self.composer.get_or_insert_with(|| Composer::new(composing));
+        let mut out = Picture::black(r.at);
+        match composer.compose(&shown, vec![(0, Decoded::Rgba(kept), None)]) {
+            Ok(composed) => {
+                if r.scope {
+                    out.sampled = composer.sample(&composed, SCOPE_WIDTH).map(Arc::new);
+                }
+                out.composed = Some(composed);
+            }
+            // Put together the usual way instead.
+            Err(_) => return None,
+        }
+        out.method = Some(PRERENDERED.to_owned());
+        out.took = started.elapsed();
+        // What was read ahead belongs to the files, not this frame.
+        self.playhead = None;
+        Some(out)
+    }
+
     /// A title drawn at `size`: as it was last time when it is the same,
     /// else drawn now and kept.
     pub(super) fn title_picture(
@@ -173,6 +211,9 @@ pub(super) fn pixels_needed(layer: &frame::Layer) -> (u32, u32) {
     let whole = |shown: f32, part: f32| (shown / part.clamp(0.01, 1.0)).ceil().clamp(2.0, 16_384.0) as u32;
     (whole(w, layer.part.width), whole(h, layer.part.height))
 }
+
+/// How a picture from the render cache is described (the viewer's corner).
+pub(crate) const PRERENDERED: &str = "pre-rendered";
 
 /// How wide the copy read back for the scopes is.
 pub(super) const SCOPE_WIDTH: u32 = 320;

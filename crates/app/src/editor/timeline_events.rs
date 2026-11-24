@@ -32,6 +32,7 @@ impl Editor {
                     self.errors.push(&err);
                 }
             }
+            E::PrerenderRegion => self.prerender_region(),
             E::ClearSelection => self.selected.clear(),
             E::RegionCut(cut) => {
                 if let Err(err) = self.cut_region(cut) {

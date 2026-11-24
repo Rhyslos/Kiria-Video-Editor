@@ -36,6 +36,10 @@ impl Editor {
                 self.add_label(at)
             }
             Action::LabelRegion => self.label_region(),
+            Action::PrerenderRegion => {
+                self.prerender_region();
+                Ok(())
+            }
             Action::ToggleLoop => {
                 self.looping = !self.looping;
                 let has_region = self.region().is_some();

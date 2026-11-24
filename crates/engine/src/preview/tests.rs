@@ -452,6 +452,7 @@ fn request(p: &Project, seq: SequenceId, millis: i64) -> Request {
         max_width: 160,
         max_height: 160,
         proxies: None,
+        renders: None,
         playing: false,
         key_frame_first: true,
         scope: false,
