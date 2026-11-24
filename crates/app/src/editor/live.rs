@@ -1,6 +1,6 @@
 //! The project as it looks while something is being changed: every value
 //! being dragged anywhere in the window (a fader, a knob, a slider, a
-//! line, a setting in a tool), folded into one project once a frame. Every
+//! line, a setting in a tool, a grade's wheel), folded into one project once a frame. Every
 //! view draws from it and playback follows it, so a change is seen and
 //! heard everywhere as it moves, not only where the hand is; it becomes
 //! one undo step when let go, where it was made.
@@ -13,6 +13,16 @@ impl Editor {
     pub(super) fn live_project(&self, p: &Project) -> Option<Project> {
         // The Audio page's tools and mixer, the inspector's values.
         let mut live = self.audio_page.shown(p);
+        // A grade being dragged on the Color page (and its before view
+        // while there).
+        let graded = (self.page == crate::editor::Page::Color)
+            .then(|| p.active())
+            .flatten()
+            .and_then(|seq| {
+                self.color_page
+                    .graded(seq, &self.selected, self.viewer.playhead, false)
+            });
+        live = self.color_page.shown(live.as_ref().unwrap_or(p), graded).or(live);
         live = self.inspector.shown(live.as_ref().unwrap_or(p)).or(live);
         // A line's point, a track's header knob or fader, on the timeline
         // shown.
