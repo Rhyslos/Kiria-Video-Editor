@@ -64,6 +64,8 @@ pub struct Mixer {
     /// crossfade along a track, so the clips either side of one never
     /// share a decoder.
     lane: u8,
+    /// Clips' own EQ and clean-up as they run (`crate::clip_fx`).
+    chains: crate::clip_fx::Chains,
 }
 
 /// A decoder's file, stream, the rate it reads at (a clip at another speed
@@ -153,6 +155,7 @@ impl Mixer {
             depth,
             replaced: 0,
             lane: 0,
+            chains: Default::default(),
         }
     }
 
@@ -251,7 +254,11 @@ impl Mixer {
             let got = if let Some(inner) = clip.nested() {
                 self.nested_sound(project, clip, inner, (a, from), &mut scratch)
             } else if let Some(media) = project.media.get(&clip.media) {
-                self.file_sound(clip, media, a, from, &mut scratch)
+                if clip.fx.is_on() {
+                    self.file_sound_through_fx(clip, media, from, &mut scratch)
+                } else {
+                    self.file_sound(clip, media, a, from, &mut scratch)
+                }
             } else {
                 0
             };
@@ -273,6 +280,30 @@ impl Mixer {
             }
             self.scratch = scratch;
         }
+    }
+
+    /// Fills `out` with a file clip's sound from `from` seconds on, through
+    /// its own EQ and clean-up (`crate::clip_fx`): read as far ahead as
+    /// they delay it, the delay filled first after a jump. Past its file's
+    /// end silence goes through, so the clean-up's last samples come out.
+    /// Returns the sample frames written (all of `out`).
+    fn file_sound_through_fx(&mut self, clip: &Clip, media: &MediaRef, from: f64, out: &mut [f32]) -> usize {
+        let rate = f64::from(self.rate);
+        let at = (from * rate).round() as i64;
+        let (mut chain, fresh) = self.chains.take(self.rate, clip, at);
+        let ahead = chain.latency() as f64 / rate;
+        if fresh && chain.latency() > 0 {
+            let mut fill = vec![0f32; chain.latency() * CHANNELS];
+            let got = self.file_sound(clip, media, from, from, &mut fill);
+            fill[got * CHANNELS..].fill(0.0);
+            chain.process(&mut fill);
+        }
+        let got = self.file_sound(clip, media, from + ahead, from + ahead, out);
+        out[got * CHANNELS..].fill(0.0);
+        chain.process(out);
+        let frames = out.len() / CHANNELS;
+        self.chains.put(chain, at + frames as i64);
+        frames
     }
 
     /// Fills `out` with a file clip's sound from `a` seconds on the
@@ -928,6 +959,76 @@ pub(crate) mod tests {
         .apply(&p)
         .unwrap();
         (samples, p)
+    }
+
+    /// A second of a 300 Hz tone and 5 kHz hiss-like tone together, on a
+    /// project whose one sound clip has `fx`.
+    fn with_fx(dir: &Path, fx: project::clip_fx::ClipFx) -> (Vec<f32>, Project) {
+        let rate = 48_000u32;
+        let samples: Vec<f32> = (0..rate as usize)
+            .flat_map(|i| {
+                let t = i as f32 / rate as f32;
+                let v = 0.3 * (std::f32::consts::TAU * 300.0 * t).sin()
+                    + 0.05 * (std::f32::consts::TAU * 5_000.0 * t).sin();
+                [v, v]
+            })
+            .collect();
+        let p = wav_project(dir, "fx.wav", rate, &samples);
+        let seq = p.active_sequence;
+        let clip = p.active().unwrap().audio_tracks[0].clips[0].id;
+        let p = Command::SetClipFx {
+            sequence: seq,
+            clip,
+            fx: Box::new(fx),
+        }
+        .apply(&p)
+        .unwrap();
+        (samples, p)
+    }
+
+    fn mixed_in_pieces(p: &Project, seconds: f64) -> Vec<f32> {
+        let mut mixer = Mixer::new(48_000);
+        let mut buf = vec![0f32; (seconds * 48_000.0) as usize * CHANNELS];
+        for (i, piece) in buf.chunks_mut(1_024 * CHANNELS).enumerate() {
+            mixer.mix(p, p.active().unwrap(), i as f64 * 1_024.0 / 48_000.0, piece);
+        }
+        buf
+    }
+
+    #[test]
+    fn a_clips_clean_up_comes_out_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut fx = project::clip_fx::ClipFx::default();
+        // On, with nothing learned: everything passes, a window late
+        // inside the gate and read that far ahead, so in place.
+        fx.cleanup.on = true;
+        let (file, p) = with_fx(dir.path(), fx);
+        let out = mixed_in_pieces(&p, 0.9);
+        for i in (4_800..40_000).step_by(37) {
+            assert!(
+                (out[i * 2] - file[i * 2]).abs() < 2e-3,
+                "{i}: {} against {}",
+                out[i * 2],
+                file[i * 2]
+            );
+        }
+    }
+
+    #[test]
+    fn a_clips_eq_changes_only_that_clip() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut fx = project::clip_fx::ClipFx::default();
+        fx.eq.on = true;
+        // The 300 Hz band down 24 dB.
+        fx.eq.bands[1].freq_hz = 300;
+        fx.eq.bands[1].gain_mdb = -24_000;
+        let (file, p) = with_fx(dir.path(), fx);
+        let out = mixed_in_pieces(&p, 0.5);
+        let level = |s: &[f32]| (s.iter().map(|v| v * v).sum::<f32>() / s.len() as f32).sqrt();
+        let (was, now) = (level(&file[9_600..48_000]), level(&out[9_600..48_000]));
+        assert!(now < was * 0.4, "{now} against {was}");
+        // The track itself is as it was: its own EQ off.
+        assert!(!p.active().unwrap().audio_tracks[0].sound.eq.on);
     }
 
     #[test]

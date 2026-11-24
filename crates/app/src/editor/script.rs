@@ -281,6 +281,7 @@ fn audio_demo(editor: &mut Editor) {
                     document.project(),
                     track,
                     (Time::ZERO, Time::seconds(2)),
+                    None,
                 );
             }
             // Looked at from the top, fitted, as a project opened so.

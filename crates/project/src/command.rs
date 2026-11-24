@@ -172,6 +172,13 @@ pub enum Command {
         sequence: SequenceId,
         sounds: Vec<(ClipId, Sound)>,
     },
+    /// Sets a sound clip's own EQ and clean-up (format 47). Only clips of
+    /// recordings on audio tracks.
+    SetClipFx {
+        sequence: SequenceId,
+        clip: ClipId,
+        fx: Box<crate::clip_fx::ClipFx>,
+    },
     /// Sets how pictures fade in and out (format 32), each clip its own, as
     /// one undo step. Only clips on video tracks: a sound's fades are set
     /// with `SetSound`.
@@ -848,6 +855,7 @@ impl Command {
             } => crate::animate::reset_look(&mut p, *sequence, *clip, fields)?,
             Command::SetSound { sequence, sounds } => set_sound(&mut p, *sequence, sounds)?,
             Command::SetFades { sequence, fades } => set_fades(&mut p, *sequence, fades)?,
+            Command::SetClipFx { sequence, clip, fx } => set_clip_fx(&mut p, *sequence, *clip, fx)?,
             Command::Restore { project } => {
                 if project.active().is_none() {
                     return Err(AppError::new("That version can't be restored")
@@ -1346,6 +1354,38 @@ fn set_sound(p: &mut Project, sequence: SequenceId, sounds: &[(ClipId, Sound)]) 
     Ok(())
 }
 
+fn set_clip_fx(
+    p: &mut Project,
+    sequence: SequenceId,
+    clip: ClipId,
+    fx: &crate::clip_fx::ClipFx,
+) -> diag::Result<()> {
+    fx.check()?;
+    let seq = sequence_mut(p, sequence)?;
+    if seq
+        .video_tracks
+        .iter()
+        .any(|t| t.clips.iter().any(|c| c.id == clip))
+    {
+        return Err(AppError::new("EQ and clean-up are on the sound")
+            .why("This clip is a picture; its sound is on the audio tracks.")
+            .fix("Select its sound clip."));
+    }
+    let found = seq
+        .audio_tracks
+        .iter_mut()
+        .flat_map(|track| track.clips.iter_mut())
+        .find(|c| c.id == clip)
+        .ok_or_else(|| missing("clip"))?;
+    if !found.is_file() {
+        return Err(AppError::new("EQ and clean-up are on recordings for now")
+            .why("A nested timeline's sound can't have a clip's own yet.")
+            .fix("Use the track's EQ and clean-up, or those inside the nested timeline."));
+    }
+    found.fx = fx.clone();
+    Ok(())
+}
+
 fn set_fades(
     p: &mut Project,
     sequence: SequenceId,
@@ -1659,6 +1699,7 @@ pub(crate) mod tests {
             ramp: Default::default(),
             blend: Default::default(),
             kind: Default::default(),
+            fx: Default::default(),
         }
     }
 
@@ -2219,6 +2260,27 @@ pub(crate) mod tests {
         assert_eq!(p.active().unwrap().video_tracks[0].clips[1].transition, dissolve);
         let p = set(ids[1], None).apply(&p).unwrap();
         assert_eq!(p.active().unwrap().video_tracks[0].clips[1].transition, None);
+    }
+
+    #[test]
+    fn a_clips_own_eq_and_clean_up_are_on_sound_only() {
+        let f = fixture();
+        let p = place(&f, &f.p, f.a1, clip(&f, 0, 4, None)).unwrap();
+        let p = place(&f, &p, f.v1, clip(&f, 0, 4, None)).unwrap();
+        let seq = p.active().unwrap();
+        let (sound, picture) = (seq.audio_tracks[0].clips[0].id, seq.video_tracks[0].clips[0].id);
+        let mut fx = crate::clip_fx::ClipFx::default();
+        fx.eq.on = true;
+        let set = |clip, fx: &crate::clip_fx::ClipFx| Command::SetClipFx {
+            sequence: f.seq,
+            clip,
+            fx: Box::new(fx.clone()),
+        };
+        let done = set(sound, &fx).apply(&p).unwrap();
+        assert!(done.active().unwrap().audio_tracks[0].clips[0].fx.eq.on);
+        assert!(set(picture, &fx).apply(&p).is_err(), "a picture has none");
+        fx.cleanup.threshold_mdb = 99_000_000;
+        assert!(set(sound, &fx).apply(&p).is_err(), "out of range");
     }
 
     #[test]

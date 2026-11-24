@@ -518,6 +518,7 @@ mod tests {
                     ramp: Default::default(),
                     blend: Default::default(),
                     kind: Default::default(),
+                    fx: Default::default(),
                 },
             }
             .apply(&p)

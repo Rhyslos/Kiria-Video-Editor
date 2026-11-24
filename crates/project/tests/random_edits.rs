@@ -327,6 +327,7 @@ fn command_for(action: &Action, p: &Project, media: MediaId, recording: MediaId)
                     ramp: Default::default(),
                     blend: Default::default(),
                     kind: Default::default(),
+                    fx: Default::default(),
                 },
             }
         }

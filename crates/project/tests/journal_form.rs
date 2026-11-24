@@ -50,6 +50,7 @@ fn name(c: &Command) -> &'static str {
         Command::ResetLook { .. } => "ResetLook",
         Command::SetSound { .. } => "SetSound",
         Command::SetFades { .. } => "SetFades",
+        Command::SetClipFx { .. } => "SetClipFx",
         Command::Restore { .. } => "Restore",
         Command::InsertTemplate { .. } => "InsertTemplate",
         Command::RemoveMedia { .. } => "RemoveMedia",
@@ -296,6 +297,17 @@ fn every_command() -> Vec<Command> {
                     fade_out_curve: 0,
                 },
             )],
+        },
+        Command::SetClipFx {
+            sequence,
+            clip: sound_clip.id,
+            fx: Box::new(project::clip_fx::ClipFx {
+                cleanup: project::track_sound::Cleanup {
+                    on: true,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
         },
         Command::Restore {
             project: Box::new(small),

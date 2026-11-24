@@ -99,6 +99,7 @@ pub(crate) fn lay(
         ramp: Default::default(),
         blend: Default::default(),
         kind: Default::default(),
+        fx: Default::default(),
     };
 
     if let Some(v) = video {
@@ -789,6 +790,7 @@ mod tests {
                 ramp: Default::default(),
                 blend: Default::default(),
                 kind: Default::default(),
+                fx: Default::default(),
             },
         }
         .apply(&p)

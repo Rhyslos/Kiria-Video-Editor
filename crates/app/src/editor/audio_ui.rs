@@ -179,6 +179,7 @@ impl Editor {
 
         // Top right: the track's tools.
         let learn_from = learn_from(seq, &self.selected, self.audio_page.track);
+        let selected_clip = selected_clip(seq, &self.selected, self.audio_page.track);
         let mut panel = ui.new_child(
             egui::UiBuilder::new()
                 .max_rect(tools)
@@ -198,6 +199,7 @@ impl Editor {
                     shown_seq,
                     &live,
                     learn_from,
+                    selected_clip,
                     self.settings.loudness_counting,
                     self.settings.loudness_target,
                 )
@@ -283,10 +285,11 @@ impl Editor {
                 self.errors.push(&err);
             }
         }
-        if let Some((track, span)) = asks.learn.take()
+        if let Some((track, span, clip)) = asks.learn.take()
             && let Some(document) = &self.document
         {
-            self.audio_page.learn(&self.jobs, document.project(), track, span);
+            self.audio_page
+                .learn(&self.jobs, document.project(), track, span, clip);
             self.status = "Learning the noise…".into();
         }
         // Settings changed here are written by the settings keeper.
@@ -663,6 +666,20 @@ fn shown_count(seq: &project::Sequence, show: roles::Show) -> String {
         .filter(|t| show.shows(t.sound.role))
         .count();
     format!("{} ({n})", show.label())
+}
+
+/// The selected clip of a recording on the track the tools are on: the
+/// one EQ and Clean-up can work on alone.
+fn selected_clip(
+    seq: &project::Sequence,
+    selected: &[project::ClipId],
+    track: Option<project::TrackId>,
+) -> Option<project::ClipId> {
+    audio_page::chosen(seq, track)?
+        .clips
+        .iter()
+        .find(|c| selected.contains(&c.id) && c.is_file())
+        .map(|c| c.id)
 }
 
 /// What the clean-up would learn from: the region, else the selected clip

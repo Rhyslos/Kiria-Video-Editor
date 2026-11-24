@@ -408,6 +408,10 @@ pub struct Clip {
     /// `sound`).
     #[serde(default, skip_serializing_if = "crate::defaults::is_default")]
     pub fades: crate::fades::PictureFades,
+    /// A sound clip's own EQ and clean-up (format 47), off when missing.
+    /// Sound clips of recordings only.
+    #[serde(default, skip_serializing_if = "crate::defaults::is_default")]
+    pub fx: crate::clip_fx::ClipFx,
 }
 
 /// How a picture mixes with what is below it. Every mode leaves what is
@@ -1086,6 +1090,7 @@ mod tests {
             ramp: Default::default(),
             blend: Default::default(),
             kind: Default::default(),
+            fx: Default::default(),
         });
         p
     }

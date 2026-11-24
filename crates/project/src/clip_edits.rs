@@ -485,6 +485,7 @@ fn place_media_from(
         ramp: Default::default(),
         blend: Default::default(),
         kind: Default::default(),
+        fx: Default::default(),
     };
 
     if let Some(v) = video {

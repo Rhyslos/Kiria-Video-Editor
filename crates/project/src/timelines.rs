@@ -359,6 +359,7 @@ fn unfilled(kind: ClipKind, at: Time, length: Time) -> Clip {
         ramp: Default::default(),
         blend: Default::default(),
         kind,
+        fx: Default::default(),
     }
 }
 

@@ -39,9 +39,10 @@ use audio::TrackLevels;
 use audio::dsp::loudness::Measured;
 use egui::{Rect, Ui, pos2, vec2};
 use jobs::{JobHandle, JobSystem, PoolKind, Priority};
+use project::clip_fx::ClipFx;
 use project::track_sound::NoiseProfile;
 use project::{
-    Command, MasterSound, Project, Sequence, SequenceId, Time, Track, TrackId, TrackRole, TrackSound,
+    ClipId, Command, MasterSound, Project, Sequence, SequenceId, Time, Track, TrackId, TrackRole, TrackSound,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -159,6 +160,17 @@ pub struct Live {
 enum Waiting {
     Track(TrackId, Box<TrackSound>),
     Master(MasterSound),
+    /// A clip's own EQ and clean-up (format 47).
+    Clip(ClipId, Box<ClipFx>),
+}
+
+/// What EQ and Clean-up work on: the whole track, or the selected clip
+/// alone (its own, applied before the track's). For the session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Scope {
+    #[default]
+    Track,
+    Clip,
 }
 
 /// What the page asks of the window after a frame of its tools.
@@ -169,8 +181,9 @@ pub struct Asks {
     pub target: Option<LoudnessTarget>,
     /// Start the overview's counting again.
     pub reset: bool,
-    /// Learn this track's noise over this stretch.
-    pub learn: Option<(TrackId, (Time, Time))>,
+    /// Learn this track's noise over this stretch, for the track or for
+    /// one of its clips.
+    pub learn: Option<(TrackId, (Time, Time), Option<ClipId>)>,
 }
 
 /// The page's state, kept by the window.
@@ -181,6 +194,8 @@ pub struct AudioPage {
     pub track: Option<TrackId>,
     pub show: Show,
     pending: Option<Waiting>,
+    /// Whether EQ and Clean-up work on the track or the selected clip.
+    pub scope: Scope,
     eq: eq::EqTool,
     pub mixer: ui_kit::mixer::Mixer,
     pub master: ui_kit::master::MasterColumn,
@@ -196,8 +211,8 @@ pub struct AudioPage {
     pub clarity: clarity::ClarityBand,
     /// The live pictures the band can show instead.
     pub band: band::Band,
-    /// A noise being learned on a worker, for a track.
-    learning: Option<(TrackId, SequenceId, JobHandle<NoiseProfile>)>,
+    /// A noise being learned on a worker, for a track (or one of its clips).
+    learning: Option<(TrackId, SequenceId, Option<ClipId>, JobHandle<NoiseProfile>)>,
 }
 
 impl std::fmt::Debug for AudioPage {
@@ -303,6 +318,11 @@ impl AudioPage {
                     sequence,
                     sound: *sound,
                 },
+                Waiting::Clip(clip, fx) => Command::SetClipFx {
+                    sequence,
+                    clip: *clip,
+                    fx: fx.clone(),
+                },
             };
             shown = command.apply(project).ok();
         }
@@ -368,28 +388,71 @@ impl AudioPage {
                     sound,
                 });
             }
+            Some(Waiting::Clip(id, fx)) => {
+                let changed = seq
+                    .audio_tracks
+                    .iter()
+                    .flat_map(|t| t.clips.iter())
+                    .any(|c| c.id == id && c.fx != *fx);
+                if changed {
+                    asks.commands.push(Command::SetClipFx {
+                        sequence: seq.id,
+                        clip: id,
+                        fx,
+                    });
+                }
+            }
             Some(Waiting::Master(_)) | None => {}
         }
     }
 
+    /// A change to a clip's own EQ or clean-up: shown while dragged, one
+    /// undo step when let go.
+    fn clip_edit(&mut self, seq: &Sequence, clip: ClipId, fx: ClipFx, touched: Touched, asks: &mut Asks) {
+        if touched.changed {
+            self.pending = Some(Waiting::Clip(clip, Box::new(fx)));
+        }
+        if !touched.busy {
+            self.finish(seq, asks);
+        }
+    }
+
     /// Starts learning `track`'s noise over `span` on a worker.
-    pub fn learn(&mut self, jobs: &JobSystem, project: &Project, track: TrackId, span: (Time, Time)) {
-        let project = project.clone();
+    /// Learns the noise of `track` over `span` on a worker, for the track
+    /// or for `clip` (heard without its own clean-up).
+    pub fn learn(
+        &mut self,
+        jobs: &JobSystem,
+        project: &Project,
+        track: TrackId,
+        span: (Time, Time),
+        clip: Option<ClipId>,
+    ) {
+        let mut project = project.clone();
         let sequence = project.active_sequence;
+        if let Some(id) = clip
+            && let Some(seq) = project.sequences.iter_mut().find(|s| s.id == sequence)
+        {
+            for t in seq.audio_tracks.iter_mut() {
+                for c in t.clips.iter_mut().filter(|c| c.id == id) {
+                    c.fx.cleanup.on = false;
+                }
+            }
+        }
         let handle = jobs.submit(
             PoolKind::Analysis,
             Priority::Interactive,
             "learn noise",
             move |_| engine::noise::learn(&project, sequence, track, span),
         );
-        self.learning = Some((track, sequence, handle));
+        self.learning = Some((track, sequence, clip, handle));
     }
 
     /// A learned noise, as one undo step that also turns clean-up on.
     pub fn take_learned(&mut self, project: &Project) -> Option<diag::Result<Command>> {
-        let (track, sequence, handle) = self.learning.as_ref()?;
+        let (track, sequence, clip, handle) = self.learning.as_ref()?;
         let result = handle.try_result()?;
-        let (track, sequence) = (*track, *sequence);
+        let (track, sequence, clip) = (*track, *sequence, *clip);
         self.learning = None;
         Some(result.and_then(|profile| {
             let seq = project.sequence(sequence).ok_or_else(|| {
@@ -400,6 +463,20 @@ impl AudioPage {
                 diag::AppError::new("The learned noise can't be kept")
                     .why("The track is not on the timeline any more.")
             })?;
+            if let Some(clip) = clip {
+                let c = t.clips.iter().find(|c| c.id == clip).ok_or_else(|| {
+                    diag::AppError::new("The learned noise can't be kept")
+                        .why("The clip is not on the track any more.")
+                })?;
+                let mut fx = c.fx.clone();
+                fx.cleanup.profile = Some(profile);
+                fx.cleanup.on = true;
+                return Ok(Command::SetClipFx {
+                    sequence,
+                    clip,
+                    fx: Box::new(fx),
+                });
+            }
             let mut sound = t.sound.clone();
             sound.cleanup.profile = Some(profile);
             sound.cleanup.on = true;
@@ -463,6 +540,7 @@ impl AudioPage {
         seq: &Sequence,
         live: &Live,
         learn_from: cleanup::LearnFrom,
+        selected_clip: Option<ClipId>,
         counting: Counting,
         target: LoudnessTarget,
     ) -> Asks {
@@ -475,9 +553,6 @@ impl AudioPage {
             );
             return asks;
         };
-        let levels = live.tracks.get(&track.id).filter(|_| live.playing);
-        let mut sound = track.sound.clone();
-        let name = track.name.as_str();
         let room = ui.available_rect_before_wrap();
         let body = Rect::from_min_max(room.min, pos2(room.right(), room.bottom() - 22.0));
         let mut child = ui.new_child(
@@ -485,29 +560,127 @@ impl AudioPage {
                 .max_rect(body)
                 .layout(egui::Layout::top_down(egui::Align::Min)),
         );
-        let said = match self.tool {
+        // EQ and Clean-up on the selected clip alone, when asked.
+        let on_clip = matches!(self.tool, Tool::Eq | Tool::Cleanup)
+            .then_some(selected_clip)
+            .flatten()
+            .and_then(|id| track.clips.iter().find(|c| c.id == id));
+        if on_clip.is_some() {
+            let mut scope = self.scope;
+            child.horizontal(|ui| {
+                ui_kit::settings::segmented(
+                    ui,
+                    theme,
+                    &mut scope,
+                    &[(Scope::Track, "Whole track"), (Scope::Clip, "Selected clip")],
+                );
+            });
+            self.scope = scope;
+            child.add_space(4.0);
+        }
+        let on_clip = on_clip.filter(|_| self.scope == Scope::Clip);
+        let said = if let Some(clip) = on_clip {
+            self.clip_tool_ui(&mut child, theme, seq, track, clip, live, &mut asks)
+        } else {
+            self.track_tool_ui(
+                &mut child, theme, seq, track, live, learn_from, counting, target, &mut asks,
+            )
+        };
+        if !said.is_empty() {
+            ui.painter().text(
+                pos2(room.left(), room.bottom() - 4.0),
+                egui::Align2::LEFT_BOTTOM,
+                said,
+                egui::FontId::proportional(12.5),
+                theme.text,
+            );
+        }
+        ui.allocate_rect(room, egui::Sense::hover());
+        asks
+    }
+
+    /// EQ or Clean-up on one clip of `track` alone: its own, before the
+    /// track's. Returns what the tool says it does.
+    #[allow(clippy::too_many_arguments)]
+    fn clip_tool_ui(
+        &mut self,
+        ui: &mut Ui,
+        theme: &Theme,
+        seq: &Sequence,
+        track: &Track,
+        clip: &project::Clip,
+        live: &Live,
+        asks: &mut Asks,
+    ) -> String {
+        let mut fx = clip.fx.clone();
+        match self.tool {
             Tool::Eq => {
-                let (touched, said) = self.eq.ui(&mut child, theme, &mut sound, live, name);
-                self.track_edit(seq, track, sound, touched, &mut asks);
+                let mut sound = TrackSound {
+                    eq: fx.eq,
+                    ..track.sound.clone()
+                };
+                let (touched, said) = self.eq.ui(ui, theme, &mut sound, live, "this clip");
+                fx.eq = sound.eq;
+                self.clip_edit(seq, clip.id, fx, touched, asks);
+                said
+            }
+            Tool::Cleanup => {
+                let learning = self.learning.as_ref().map(|(t, ..)| *t);
+                let from = cleanup::LearnFrom::Clip(clip.start, clip.end());
+                let got = cleanup::ui(ui, theme, &mut fx.cleanup, None, from, learning);
+                asks.learn = got.learn.map(|span| (track.id, span, Some(clip.id)));
+                let said = match learning {
+                    Some(_) => "Learning the noise…".to_owned(),
+                    None => words::cleanup("this clip", &fx.cleanup, None),
+                };
+                self.clip_edit(seq, clip.id, fx, got.touched, asks);
+                said
+            }
+            _ => String::new(),
+        }
+    }
+
+    /// The tool shown, for the whole of `track`. Returns what it says it
+    /// does.
+    #[allow(clippy::too_many_arguments)]
+    fn track_tool_ui(
+        &mut self,
+        child: &mut Ui,
+        theme: &Theme,
+        seq: &Sequence,
+        track: &Track,
+        live: &Live,
+        learn_from: cleanup::LearnFrom,
+        counting: Counting,
+        target: LoudnessTarget,
+        asks: &mut Asks,
+    ) -> String {
+        let levels = live.tracks.get(&track.id).filter(|_| live.playing);
+        let mut sound = track.sound.clone();
+        let name = track.name.as_str();
+        match self.tool {
+            Tool::Eq => {
+                let (touched, said) = self.eq.ui(child, theme, &mut sound, live, name);
+                self.track_edit(seq, track, sound, touched, asks);
                 said
             }
             Tool::Compressor => {
                 let gr = levels.map(|l| l.compressor_db);
-                let touched = dynamics::ui(&mut child, theme, &mut sound.compressor, gr);
+                let touched = dynamics::ui(child, theme, &mut sound.compressor, gr);
                 let said = words::compressor(name, &sound.compressor, gr);
-                self.track_edit(seq, track, sound, touched, &mut asks);
+                self.track_edit(seq, track, sound, touched, asks);
                 said
             }
             Tool::Cleanup => {
                 let r = levels.map(|l| l.cleanup_db);
                 let learning = self.learning.as_ref().map(|(t, ..)| *t);
-                let got = cleanup::ui(&mut child, theme, &mut sound.cleanup, r, learn_from, learning);
-                asks.learn = got.learn.map(|span| (track.id, span));
+                let got = cleanup::ui(child, theme, &mut sound.cleanup, r, learn_from, learning);
+                asks.learn = got.learn.map(|span| (track.id, span, None));
                 let said = match learning {
                     Some(_) => "Learning the noise…".to_owned(),
                     None => words::cleanup(name, &sound.cleanup, r),
                 };
-                self.track_edit(seq, track, sound, got.touched, &mut asks);
+                self.track_edit(seq, track, sound, got.touched, asks);
                 said
             }
             Tool::Ducking => {
@@ -518,41 +691,41 @@ impl AudioPage {
                     .map(|t| t.name.as_str())
                     .collect();
                 let d = levels.map(|l| l.ducked_db);
-                let touched = ducking::ui(&mut child, theme, &mut sound.ducking, track.sound.role, &keys, d);
+                let touched = ducking::ui(child, theme, &mut sound.ducking, track.sound.role, &keys, d);
                 let said = words::ducking(name, &sound.ducking, &keys, d);
-                self.track_edit(seq, track, sound, touched, &mut asks);
+                self.track_edit(seq, track, sound, touched, asks);
                 said
             }
             Tool::Loudness => {
                 let g = levels.map(|l| l.level_db);
                 let st = levels.map(|l| l.short_term);
-                let touched = leveller::ui(&mut child, theme, &mut sound.loudness, g, st);
+                let touched = leveller::ui(child, theme, &mut sound.loudness, g, st);
                 let said = words::leveller(name, &sound.loudness, g);
-                self.track_edit(seq, track, sound, touched, &mut asks);
+                self.track_edit(seq, track, sound, touched, asks);
                 said
             }
             Tool::Distortion => {
-                let touched = space::distortion(&mut child, theme, &mut sound.distortion);
+                let touched = space::distortion(child, theme, &mut sound.distortion);
                 let said = words::distortion(name, &sound.distortion);
-                self.track_edit(seq, track, sound, touched, &mut asks);
+                self.track_edit(seq, track, sound, touched, asks);
                 said
             }
             Tool::Echo => {
-                let touched = space::echo(&mut child, theme, &mut sound.echo);
+                let touched = space::echo(child, theme, &mut sound.echo);
                 let said = words::echo(name, &sound.echo);
-                self.track_edit(seq, track, sound, touched, &mut asks);
+                self.track_edit(seq, track, sound, touched, asks);
                 said
             }
             Tool::Reverb => {
-                let touched = space::reverb(&mut child, theme, &mut sound.reverb);
+                let touched = space::reverb(child, theme, &mut sound.reverb);
                 let said = words::reverb(name, &sound.reverb);
-                self.track_edit(seq, track, sound, touched, &mut asks);
+                self.track_edit(seq, track, sound, touched, asks);
                 said
             }
             Tool::Pitch => {
-                let touched = space::pitch(&mut child, theme, &mut sound.pitch);
+                let touched = space::pitch(child, theme, &mut sound.pitch);
                 let said = words::pitch(name, &sound.pitch);
-                self.track_edit(seq, track, sound, touched, &mut asks);
+                self.track_edit(seq, track, sound, touched, asks);
                 said
             }
             Tool::Meters => {
@@ -589,7 +762,7 @@ impl AudioPage {
                     peak: self.counted.track.peak(),
                 };
                 let got = overview::ui(
-                    &mut child,
+                    child,
                     theme,
                     mix_now,
                     Some((name, track_now)),
@@ -602,18 +775,7 @@ impl AudioPage {
                 asks.reset = got.reset;
                 String::new()
             }
-        };
-        if !said.is_empty() {
-            ui.painter().text(
-                pos2(room.left(), room.bottom() - 4.0),
-                egui::Align2::LEFT_BOTTOM,
-                said,
-                egui::FontId::proportional(12.5),
-                theme.text,
-            );
         }
-        ui.allocate_rect(room, egui::Sense::hover());
-        asks
     }
 
     /// The mixer: the strips of the tracks shown, scrolling sideways, and
