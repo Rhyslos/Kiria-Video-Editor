@@ -22,7 +22,7 @@
 //! (`Command::SetLookAt`), so the hand on the picture keys it too.
 
 use project::animate::KeyframeChange;
-use project::{ClipId, Command, Ease, Look, Project, Rate, Sound, Time, TrackKind};
+use project::{ClipId, Command, Ease, Look, LookField, Project, Rate, Sound, Time, TrackKind};
 use ui_kit::Theme;
 use ui_kit::inspector::Touched;
 use ui_kit::keyframe::KeyState;
@@ -43,7 +43,7 @@ pub use look::{cropped_to_fit, fitted};
 use keyframes::KeyTable;
 use look::Values;
 use picture::{Asks, picture_sections};
-use sound::{sound_clips, stored_sounds};
+use sound::{sound_targets, stored_sounds};
 
 /// Whose look is being set, and at which moment of the timeline (where
 /// the change began).
@@ -75,6 +75,11 @@ impl LookAt {
 pub struct Inspector {
     /// A look being set and not yet an undo step.
     pending: Pending<LookAt, Look>,
+    /// The other selected clips with a picture: a change of a look's
+    /// numbers goes to them too.
+    others: Vec<ClipId>,
+    /// Every other selected clip: a change in Audio goes to their sound too.
+    others_all: Vec<ClipId>,
     /// Sound being set and not yet an undo step: the sound clips and each
     /// one's new settings, in the same order (a picture's linked sound
     /// clips change together).
@@ -147,10 +152,11 @@ impl Inspector {
     /// `None` when nothing is being changed.
     pub fn shown(&self, project: &Project) -> Option<Project> {
         let sequence = project.active_sequence;
-        let looked = self
-            .pending
-            .get()
-            .and_then(|(key, look)| key.command(sequence, *look).apply(project).ok());
+        let looked = self.pending.get().and_then(|(key, look)| {
+            self.look_command(project, sequence, *key, *look)
+                .apply(project)
+                .ok()
+        });
         let looked = match self.pending_effects.get() {
             Some((clip, effects)) => Command::SetEffects {
                 sequence,
@@ -187,6 +193,52 @@ impl Inspector {
         .apply(looked.as_ref().unwrap_or(project))
         .ok()
         .or(looked)
+    }
+
+    /// The command that sets `look` on the clip of `key`, and the numbers
+    /// it changes on the other selected pictures, each at the same moment
+    /// of the timeline brought onto it: one undo step.
+    fn look_command(
+        &self,
+        project: &Project,
+        sequence: project::SequenceId,
+        key: LookAt,
+        look: Look,
+    ) -> Command {
+        let main = key.command(sequence, look);
+        let Some(before) = key.stored(project) else {
+            return main;
+        };
+        let changed: Vec<LookField> = LookField::ALL
+            .into_iter()
+            .filter(|f| f.of(&look) != f.of(&before))
+            .collect();
+        let Some(rate) = project.sequence(sequence).map(|s| s.settings.frame_rate) else {
+            return main;
+        };
+        let spread: Vec<Command> = self
+            .others
+            .iter()
+            .filter(|_| !changed.is_empty())
+            .filter_map(|id| clip_in(project, *id))
+            .map(|clip| {
+                let at = clip.moment(key.at, rate);
+                let mut theirs = clip.look_at(at);
+                for field in &changed {
+                    field.set(&mut theirs, field.of(&look));
+                }
+                Command::SetLookAt {
+                    sequence,
+                    clip: clip.id,
+                    at,
+                    look: theirs,
+                }
+            })
+            .collect();
+        if spread.is_empty() {
+            return main;
+        }
+        Command::Steps(std::iter::once(main).chain(spread).collect())
     }
 
     /// Sound being set and not yet an undo step, for the timeline to draw.
@@ -284,13 +336,25 @@ impl Inspector {
         let target = shown_clip(project, selected);
         // Set again below while a length is being dragged.
         self.transition_dragged = None;
+        self.others_all = selected
+            .iter()
+            .copied()
+            .filter(|id| target.is_none_or(|(_, _, clip)| clip.id != *id))
+            .collect();
         let mut commands = self.finish_left_behind(project, target);
         // Nothing selected: the page shows the timeline here instead.
         let Some((seq, track, clip)) = target else {
             return commands;
         };
         let at = Shown::new(project, seq, track, clip, playhead);
-        header(ui, theme, &at, selected.len());
+        self.others = seq
+            .video_tracks
+            .iter()
+            .flat_map(|t| t.clips.iter())
+            .filter(|c| c.id != clip.id && selected.contains(&c.id))
+            .map(|c| c.id)
+            .collect();
+        header(ui, theme, &at, selected.len(), self.others.len());
         commands.extend(self.title_step(ui, theme, &at));
         let (look, blend) = self.look_step(ui, theme, &at);
         commands.extend(blend);
@@ -344,7 +408,12 @@ impl Inspector {
             });
         }
         let hearing: Vec<ClipId> = target
-            .map(|(seq, _, clip)| sound_clips(seq, clip).iter().map(|c| c.id).collect())
+            .map(|(seq, _, clip)| {
+                sound_targets(seq, clip, &self.others_all)
+                    .iter()
+                    .map(|c| c.id)
+                    .collect()
+            })
             .unwrap_or_default();
         if let Some((clips, sounds)) = self.pending_sound.finish_on_change(
             |clips| clips.iter().all(|id| hearing.contains(id)),
@@ -533,7 +602,7 @@ impl Inspector {
             .pending
             .finish_if_released(edit.touched.busy || self.held, |key| key.stored(project))
         {
-            commands.push(key.command(sequence, look));
+            commands.push(self.look_command(project, sequence, key, look));
         }
         commands.extend(self.answer(&edit.asks, &edit.keys, sequence, clip.id, at.playhead, at.rate));
         commands
@@ -681,7 +750,7 @@ struct LookEdit {
 /// What the clip is: its name, track and length, and why what is shown may
 /// not be what is seen (several selected, its track hidden, the playhead
 /// off it).
-fn header(ui: &mut egui::Ui, theme: &Theme, at: &Shown, selected: usize) {
+fn header(ui: &mut egui::Ui, theme: &Theme, at: &Shown, selected: usize, others: usize) {
     let (project, track, clip) = (at.project, at.track, at.clip);
     let name = match clip.kind {
         project::ClipKind::Adjustment => project::timelines::ADJUSTMENT_NAME.to_owned(),
@@ -713,11 +782,16 @@ fn header(ui: &mut egui::Ui, theme: &Theme, at: &Shown, selected: usize) {
         .size(12.0),
     );
     if selected > 1 {
-        ui.label(
-            egui::RichText::new("Several clips are selected: this is the one on top.")
-                .color(theme.muted)
-                .size(12.0),
-        );
+        let words = match (at.track.kind, others) {
+            (TrackKind::Video, 1) => {
+                "Several clips are selected: these are the values of the one on top. A number changed here changes on the other selected picture too.".to_owned()
+            }
+            (TrackKind::Video, n) if n > 1 => format!(
+                "Several clips are selected: these are the values of the one on top. A number changed here changes on the other {n} selected pictures too."
+            ),
+            _ => "Several clips are selected: this is the one on top.".to_owned(),
+        };
+        ui.label(egui::RichText::new(words).color(theme.muted).size(12.0));
     }
     if track.hidden {
         ui.label(
@@ -878,10 +952,11 @@ fn shown_clip<'a>(
 pub(crate) mod tests {
     use super::keyframes::over_time;
     use super::picture::{COLOUR, CROP_FIELDS, TRANSFORM};
+    use super::sound::sound_clips;
     use super::*;
     use project::look::ONE;
     use project::{
-        Fingerprint, LookField, MediaId, MediaInfo, MediaKind, MediaRef, Rate, SequenceSettings, VideoStream,
+        Fingerprint, MediaId, MediaInfo, MediaKind, MediaRef, Rate, SequenceSettings, VideoStream,
     };
     use ui_kit::keyframe::KeyClicks;
 
@@ -917,6 +992,68 @@ pub(crate) mod tests {
         }
         .apply(&project)
         .unwrap()
+    }
+
+    #[test]
+    fn a_number_changed_goes_to_every_selected_picture() {
+        // Two clips of the recording, the second graded already.
+        let project = project_with_a_clip();
+        let sequence = project.active_sequence;
+        let media = project.media.values().next().unwrap().clone();
+        let project = Command::Import { sequence, media }.apply(&project).unwrap();
+        let clips: Vec<project::Clip> = project.active().unwrap().video_tracks[0]
+            .clips
+            .iter()
+            .cloned()
+            .collect();
+        let (first, second) = (&clips[0], &clips[1]);
+        let project = Command::SetLook {
+            sequence,
+            clip: second.id,
+            look: Look {
+                exposure: 300_000,
+                x: 100_000,
+                ..Look::PLAIN
+            },
+        }
+        .apply(&project)
+        .unwrap();
+        let mut inspector = Inspector {
+            others: vec![second.id],
+            ..Inspector::default()
+        };
+        // Smaller on the first: only the size changes on the second.
+        let look = Look {
+            scale: 500_000,
+            ..Look::PLAIN
+        };
+        let key = LookAt {
+            clip: first.id,
+            at: Time::ZERO,
+        };
+        let done = inspector
+            .look_command(&project, sequence, key, look)
+            .apply(&project)
+            .unwrap();
+        let theirs = clip_in(&done, second.id).unwrap().look;
+        assert_eq!(theirs.scale, 500_000);
+        assert_eq!(
+            (theirs.exposure, theirs.x),
+            (300_000, 100_000),
+            "its own numbers stay"
+        );
+        assert_eq!(clip_in(&done, first.id).unwrap().look.scale, 500_000);
+        // Shown on both while being set.
+        inspector.pending.set(key, look);
+        let shown = inspector.shown(&project).unwrap();
+        assert_eq!(clip_in(&shown, second.id).unwrap().look.scale, 500_000);
+        // Alone, nothing else changes.
+        inspector.others.clear();
+        let alone = inspector
+            .look_command(&project, sequence, key, look)
+            .apply(&project)
+            .unwrap();
+        assert_eq!(clip_in(&alone, second.id).unwrap().look.scale, ONE);
     }
 
     #[test]
