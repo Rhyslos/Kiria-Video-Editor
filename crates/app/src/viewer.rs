@@ -830,6 +830,37 @@ impl Viewer {
         self.ask(alone, seq.id, at, shape, on_screen, quality);
     }
 
+    /// The picture on show drawn into `frame`, only inside `clip` (one side
+    /// of the Color page's wipe), and the picture of `project` at `at`
+    /// asked for at `frame`'s size.
+    #[allow(clippy::too_many_arguments)]
+    pub fn paint_over(
+        &mut self,
+        ui: &egui::Ui,
+        frame: egui::Rect,
+        clip: egui::Rect,
+        project: &Project,
+        at: Time,
+        quality: PreviewQuality,
+    ) {
+        let Some(seq) = project.active() else { return };
+        self.count_drawn();
+        self.mark_drawn(ui.ctx());
+        if let Some(picture) = self.shown.as_deref().map(Shown::picture) {
+            ui_kit::viewer::paint_into(ui, frame, clip, picture);
+        }
+        let ppp = ui.ctx().pixels_per_point();
+        let on_screen = ((frame.width() * ppp) as u32, (frame.height() * ppp) as u32);
+        self.ask(
+            project,
+            seq.id,
+            at,
+            (seq.settings.width, seq.settings.height),
+            on_screen,
+            quality,
+        );
+    }
+
     /// Asks for the picture at `at` on `sequence` of `project`, for a frame
     /// `on_screen` pixels big, unless that is what was asked for last.
     fn ask(

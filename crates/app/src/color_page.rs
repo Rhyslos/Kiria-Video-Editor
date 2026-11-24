@@ -82,6 +82,9 @@ pub struct ColorPage {
     mask_held: bool,
     /// The picture is shown as it was before its grade.
     pub before: bool,
+    /// Split: the picture without its grade left of a line, with it on the
+    /// right; where the line is (0 to 1 across the picture).
+    pub wipe: Option<f32>,
     /// Auto white balance looking at a clip: which, and the work.
     balancing: Option<(ClipId, engine::white_balance::Balancing)>,
     /// The scope's picture on the card, and what it was made from.
@@ -114,6 +117,7 @@ impl Default for ColorPage {
             mask_held: false,
             curve_channel: curves::Channel::default(),
             before: false,
+            wipe: None,
             balancing: None,
         }
     }
@@ -188,6 +192,16 @@ impl ColorPage {
         Command::SetGrades {
             sequence: project.active_sequence,
             grades,
+        }
+        .apply(project)
+        .ok()
+    }
+
+    /// The project with `graded`'s grade taken away: the left of the split.
+    pub fn ungraded(&self, project: &Project, graded: Option<ClipId>) -> Option<Project> {
+        Command::SetGrades {
+            sequence: project.active_sequence,
+            grades: vec![(graded?, Grade::default())],
         }
         .apply(project)
         .ok()
@@ -604,8 +618,20 @@ impl ColorPage {
             .size(12.0),
         );
         ui.add_space(4.0);
-        ui.toggle_value(&mut self.before, "Before")
-            .on_hover_text("Shows the picture without its grade, to compare; click again for after");
+        ui.horizontal(|ui| {
+            ui.toggle_value(&mut self.before, "Before")
+                .on_hover_text("Shows the picture without its grade, to compare; click again for after");
+            let mut split = self.wipe.is_some();
+            if ui
+                .toggle_value(&mut split, "Split")
+                .on_hover_text(
+                    "Before on the left of a line, after on the right: drag the line across the picture",
+                )
+                .changed()
+            {
+                self.wipe = split.then_some(0.5);
+            }
+        });
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             let labels: Vec<(project::MediaLabelId, String)> = project
