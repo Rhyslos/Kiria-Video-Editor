@@ -438,3 +438,35 @@ fn a_jump_past_frames_others_are_not_made_from_still_lands_on_the_exact_frame() 
         assert_eq!(counted(&f), n);
     }
 }
+
+/// Whether any pixel is the red the cropping fixtures pad their pictures with.
+fn has_padding(frame: &media::Frame) -> bool {
+    frame
+        .rgba
+        .chunks_exact(4)
+        .any(|p| p[0] > 150 && p[1] < 110 && p[2] < 110)
+}
+
+#[test]
+fn the_containers_crop_is_cut_off_every_picture() {
+    // Stored 64×36 and 80×32, with red padding the file says to cut off
+    // (PixelCropBottom 2, PixelCropRight 16), as a recorder writes for an
+    // encoder that pads its frames.
+    for (name, size) in [("padded-bottom.mkv", (64, 34)), ("padded-right.mkv", (64, 32))] {
+        let mut d = open(name, 0);
+        // In order, then back after a jump: a jump opens the decoder again.
+        for t in [0.0, 0.4, 0.9, 0.1] {
+            let f = d.frame_at(t, 4000, 4000).unwrap();
+            assert_eq!((f.width, f.height), size, "{name} at {t}");
+            assert!(!has_padding(&f), "{name} at {t}: the padding shows");
+            let Decoded::Yuv(yuv) = d.picture_at(t, 4000, 4000).unwrap() else {
+                panic!("{name}: 8-bit 4:2:0 comes as planes");
+            };
+            assert_eq!(yuv.upright_size(), size, "{name} at {t}: planes");
+            assert!(
+                !has_padding(&yuv.to_rgba()),
+                "{name} at {t}: the padding shows in the planes"
+            );
+        }
+    }
+}

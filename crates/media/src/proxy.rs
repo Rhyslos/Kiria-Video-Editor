@@ -970,6 +970,25 @@ mod tests {
     }
 
     #[test]
+    fn a_proxy_is_made_of_the_picture_without_the_containers_crop() {
+        let out = std::env::temp_dir().join(format!("crop-proxy-{}.mp4", std::process::id()));
+        let original = fixture("padded-bottom.mkv");
+        write_all(&original, 0, 2.0, &out, &mut Vec::new());
+        let mut proxy = VideoDecoder::open_proxy(&out, 0).unwrap();
+        assert_eq!(proxy.coded_size(), (64, 34));
+        for t in [0.0, 1.0, 1.9] {
+            let f = proxy.frame_at(t, 4000, 4000).unwrap();
+            assert_eq!((f.width, f.height), (64, 34));
+            let red = f
+                .rgba
+                .chunks_exact(4)
+                .any(|p| p[0] > 150 && p[1] < 110 && p[2] < 110);
+            assert!(!red, "at {t}: the padding is in the proxy");
+        }
+        let _ = std::fs::remove_file(&out);
+    }
+
+    #[test]
     fn stretches_start_at_key_frames_near_equal_shares() {
         let keys: Vec<f64> = (0..60).map(|k| f64::from(k) * 4.0).collect();
         assert_eq!(stretches(&keys, 240.0, 3, 20.0), [80.0, 160.0]);

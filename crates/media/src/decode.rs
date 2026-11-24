@@ -26,7 +26,7 @@
 //! can open and handles the codec, else the third. The preview tries the
 //! first before that and steps down per file when a way fails.
 
-use crate::ffi::{Input, error_text};
+use crate::ffi::{Crop, Input, error_text};
 use crate::jump::KeyFrames;
 use crate::vulkan::{GpuFrame, WindowDevice, device_error};
 use crate::yuv::{Colour, PlaneRef, Pool, Source, YuvFrame, step_for};
@@ -173,6 +173,9 @@ pub struct VideoDecoder {
     /// Timestamp of the file's first frame, so times count from zero.
     start: f64,
     rotation: u16,
+    /// What the container says to cut off each picture's edges, added to
+    /// each frame's own crop as it is decoded.
+    crop: Crop,
     hw_format: Option<ff::AVPixelFormat>,
     /// The frame shown at the last time asked for.
     held: *mut ff::AVFrame,
@@ -588,6 +591,7 @@ impl VideoDecoder {
                 time_base: f64::from((*st).time_base.num) / f64::from((*st).time_base.den.max(1)),
                 start: 0.0,
                 rotation,
+                crop: par.as_ref().map_or(Crop::NONE, Crop::of),
                 hw_format: None,
                 held: ff::av_frame_alloc(),
                 held_time: None,
@@ -917,15 +921,17 @@ impl VideoDecoder {
         }
     }
 
-    /// The stream's size as stored (before turning upright).
+    /// The stream's size as decoded (before turning upright), less the
+    /// container's crop.
     pub(crate) fn coded_size(&self) -> (u32, u32) {
         // SAFETY: the codec context is open.
-        unsafe {
+        let stored = unsafe {
             (
                 (*self.codec).width.max(0) as u32,
                 (*self.codec).height.max(0) as u32,
             )
-        }
+        };
+        self.crop.shown(stored)
     }
 
     /// Whether this decoder hands over the frames it passes on the way to
@@ -1250,6 +1256,36 @@ impl VideoDecoder {
         Ok(())
     }
 
+    /// Cuts the container's crop off the frame just decoded into `ahead`,
+    /// with the frame's own. A frame in memory has its planes moved on; one
+    /// on the graphics card is made narrower and shorter, and its left and
+    /// top crop is left for whatever copies it out (the device copier and
+    /// the copy back from the card take it into account).
+    fn apply_crop(&mut self) -> diag::Result<()> {
+        if self.crop.is_none() {
+            return Ok(());
+        }
+        // SAFETY: `ahead` holds the frame just received; the crop fields
+        // are plain numbers FFmpeg checks against the frame's size.
+        unsafe {
+            let f = self.ahead;
+            (*f).crop_top += self.crop.top as usize;
+            (*f).crop_bottom += self.crop.bottom as usize;
+            (*f).crop_left += self.crop.left as usize;
+            (*f).crop_right += self.crop.right as usize;
+            let r = ff::av_frame_apply_cropping(f, ff::AV_FRAME_CROP_UNALIGNED as i32);
+            if r < 0 {
+                return Err(AppError::new("The video can't be shown")
+                    .why(format!(
+                        "The file says to cut its pictures to a size they don't have ({}).",
+                        error_text(r)
+                    ))
+                    .fix("The file may be damaged. Check that it plays in a media player."));
+            }
+        }
+        Ok(())
+    }
+
     /// Decodes the next frame into `ahead`; returns its time, or `None` at the end.
     fn decode_next(&mut self) -> diag::Result<Option<f64>> {
         // SAFETY: all pointers are owned by self and valid; packets are
@@ -1258,6 +1294,7 @@ impl VideoDecoder {
             loop {
                 let r = ff::avcodec_receive_frame(self.codec, self.ahead);
                 if r == 0 {
+                    self.apply_crop()?;
                     let ts = (*self.ahead).best_effort_timestamp;
                     let t = if ts == ff::AV_NOPTS_VALUE {
                         self.held_time.map_or(0.0, |h| h + 1.0 / 60.0)
@@ -1327,6 +1364,21 @@ impl VideoDecoder {
                         error_text(r)
                     ))
                     .fix("Update the graphics driver. If it keeps happening, report it."));
+            }
+            // A frame on the card keeps its left and top crop (the right and
+            // bottom are already off its size); the copy is cut here.
+            let (left, top) = ((*self.held).crop_left, (*self.held).crop_top);
+            if left > 0 || top > 0 {
+                (*self.copy).crop_left = left;
+                (*self.copy).crop_top = top;
+                (*self.copy).crop_right = 0;
+                (*self.copy).crop_bottom = 0;
+                let r = ff::av_frame_apply_cropping(self.copy, ff::AV_FRAME_CROP_UNALIGNED as i32);
+                if r < 0 {
+                    return Err(AppError::new("The video can't be shown")
+                        .why(format!("Cutting the picture to size failed ({}).", error_text(r)))
+                        .fix("The file may be damaged. Check that it plays in a media player."));
+                }
             }
             Ok(self.copy)
         }
