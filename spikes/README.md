@@ -9,3 +9,4 @@ Throwaway prototypes for comparing approaches to a big system (see `docs/researc
 | [rendering](rendering/) | [rendering.md](../docs/research/rendering.md) |
 | [highlights](highlights/) | [highlights.md](../docs/research/highlights.md) |
 | [audio-engine](audio-engine/) | [audio-engine.md](../docs/research/audio-engine.md) |
+| [render-cache](render-cache/) | [render-cache.md](../docs/research/render-cache.md) |

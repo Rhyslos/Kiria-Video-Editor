@@ -1398,6 +1398,7 @@ version = "0.1.0"
 dependencies = [
  "ab_glyph",
  "audio",
+ "brand",
  "cache",
  "cpal",
  "diag",

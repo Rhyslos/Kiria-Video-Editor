@@ -180,6 +180,8 @@ struct Request {
     max_height: u32,
     /// Where proxies are kept, when they may be used.
     proxies: Option<Arc<Shelf>>,
+    /// Frames pre-rendered, when they may be shown.
+    renders: Option<Arc<cache::render::Store>>,
     /// The timeline is playing: frames are decoded on, never stood in for.
     playing: bool,
     /// A file without a proxy may show the key frame before the moment first.
@@ -193,6 +195,8 @@ pub struct Preview {
     requests: Option<Sender<Request>>,
     /// Handed along with every request: proxies may be shown.
     proxies: Option<Arc<Shelf>>,
+    /// Handed along with every request: see [`Preview::set_renders`].
+    renders: Option<Arc<cache::render::Store>>,
     playing: bool,
     /// Handed along with every request: see [`Preview::set_key_frame_first`].
     key_frame_first: bool,
@@ -273,6 +277,7 @@ impl Preview {
         Preview {
             requests: Some(requests),
             proxies: None,
+            renders: None,
             playing: false,
             key_frame_first: true,
             scope: false,
@@ -286,6 +291,14 @@ impl Preview {
     /// handed it; an export's never are.
     pub fn set_proxies(&mut self, shelf: Option<Arc<Shelf>>) {
         self.proxies = shelf;
+    }
+
+    /// Lets the worker show frames pre-rendered into `store` where the
+    /// timeline shows what they were made of (or not, with `None`). The
+    /// viewer's workers are handed it; an export's and a pre-render's
+    /// never are.
+    pub fn set_renders(&mut self, store: Option<Arc<cache::render::Store>>) {
+        self.renders = store;
     }
 
     /// Whether a jump in a file without a proxy shows the key frame before
@@ -338,6 +351,7 @@ impl Preview {
             max_width,
             max_height,
             proxies: self.proxies.clone(),
+            renders: self.renders.clone(),
             playing: self.playing,
             key_frame_first: self.key_frame_first,
             scope: self.scope,

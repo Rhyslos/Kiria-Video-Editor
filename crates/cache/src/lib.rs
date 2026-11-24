@@ -21,6 +21,7 @@ mod disk;
 pub mod loudness;
 pub mod naming;
 pub mod proxy;
+pub mod render;
 pub mod thumbs;
 pub mod waveform;
 

@@ -172,6 +172,8 @@ pub struct Viewer {
     frame_interval: Option<f64>,
     /// Where proxies are, handed to the worker (again when it is restarted).
     proxies: Option<Arc<cache::proxy::Shelf>>,
+    /// Where pre-rendered frames are kept, handed to every worker.
+    renders: Option<Arc<cache::render::Store>>,
     /// A jump in a file without a proxy shows the key frame before it first
     /// (handed to the worker, again when it is restarted).
     key_frame_first: bool,
@@ -224,6 +226,7 @@ impl Viewer {
             play_scale: 1,
             frame_interval: None,
             proxies: None,
+            renders: None,
             key_frame_first: true,
             scope: false,
             sampled: None,
@@ -261,6 +264,13 @@ impl Viewer {
             Some((room, timeline, ppp)) => self.zoom.readout(room, timeline, ppp, true),
             None => "Fit".to_owned(),
         }
+    }
+
+    /// Lets the viewer show frames pre-rendered into `store`.
+    pub fn set_renders(&mut self, store: Option<Arc<cache::render::Store>>) {
+        self.preview.set_renders(store.clone());
+        self.renders = store;
+        self.requested = None;
     }
 
     /// Lets the viewer show frames from proxies (as the shelf's mode says).
@@ -301,6 +311,7 @@ impl Viewer {
         let mut viewer = Viewer::new(&self.ctx, None, self.convert, decoding, self.renderer.clone());
         viewer.slot = slot;
         viewer.set_proxies(self.proxies.clone());
+        viewer.set_renders(self.renders.clone());
         viewer.set_key_frame_first(self.key_frame_first);
         viewer
     }
@@ -560,6 +571,7 @@ impl Viewer {
         }
         self.preview = start_preview(&self.ctx, self.convert, None, self.renderer.as_ref());
         self.preview.set_proxies(self.proxies.clone());
+        self.preview.set_renders(self.renders.clone());
         self.preview.set_key_frame_first(self.key_frame_first);
         self.preview.set_scope(self.scope);
         self.preview.set_playing(self.frame_interval.is_some());

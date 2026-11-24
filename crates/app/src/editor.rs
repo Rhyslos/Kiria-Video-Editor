@@ -142,6 +142,8 @@ pub struct Editor {
     pictures: crate::clip_pictures::ClipPictures,
     /// Proxies for the project's video files, built in the background.
     proxies: crate::proxies::ProxyBuilds,
+    /// The render cache and the pre-render under way.
+    prerendering: crate::prerender::Prerendering,
     /// How fast each track's waveforms or pictures are being read, for the time left.
     track_paces: timeline_panel::TrackPaces,
     relink: crate::relink::Relinker,
@@ -411,6 +413,13 @@ impl Editor {
             library_page.keep_loudness_in(cache.join("loudness"));
             pictures.keep_in(cache.join("pictures"), &jobs);
         }
+        let prerendering = crate::prerender::Prerendering::new(
+            proxy_dir
+                .parent()
+                .map_or_else(|| data_dir.join("renders"), |cache| cache.join("renders")),
+            &jobs,
+            cc.egui_ctx.clone(),
+        );
         let proxies = crate::proxies::ProxyBuilds::new(
             proxy_dir,
             settings.proxies,
@@ -419,6 +428,7 @@ impl Editor {
         );
         // Before the split view's Source is made: it takes the shelf from here.
         viewer.set_proxies(Some(proxies.shelf()));
+        viewer.set_renders(Some(prerendering.store()));
         viewer.set_key_frame_first(settings.jump_picture.key_frame_first());
         let display = crate::display::ViewerDisplay::new(settings.split_view, &viewer);
         let global_labels = crate::global_labels::Everywhere::load(&data_dir, &mut errors);
@@ -457,6 +467,7 @@ impl Editor {
             waveforms,
             pictures,
             proxies,
+            prerendering,
             track_paces: timeline_panel::TrackPaces::default(),
             relink: crate::relink::Relinker::default(),
             frame_grab: crate::frame_grab::FrameGrab::default(),
@@ -579,7 +590,56 @@ impl Editor {
     /// What is ready to play on `seq`, for the cache bar: proxies, and the
     /// frames kept around the picture on show.
     fn playback_ready(&self, seq: &project::Sequence) -> Vec<ui_kit::timeline::CacheRange> {
-        timeline_panel::playback_ready(seq, self.viewer.kept(), |m| self.proxies.cache_state(m))
+        let mut ranges =
+            timeline_panel::playback_ready(seq, self.viewer.kept(), |m| self.proxies.cache_state(m));
+        ranges.extend(self.prerendering.ranges(seq.id));
+        ranges
+    }
+
+    /// Pre-renders the region (its right-click menu, search): its frames
+    /// put together ahead of time into the render cache.
+    pub(crate) fn prerender_region(&mut self) {
+        let Some(region) = self.region() else {
+            self.status = "Mark a region first: Shift-drag in the ruler, or I and O.".into();
+            return;
+        };
+        let Some(devices) = self.viewer.export_devices() else {
+            self.status =
+                "Pre-rendering needs the graphics card the window is drawn with, and there is none here."
+                    .into();
+            return;
+        };
+        let Some(project) = self.document.as_ref().map(|d| d.project().clone()) else {
+            return;
+        };
+        let Some(sequence) = project.active().map(|s| s.id) else {
+            return;
+        };
+        self.prerendering.stop();
+        self.prerendering
+            .start(&project, sequence, (region.start, region.end), devices);
+        self.status = "Pre-rendering the region…".into();
+    }
+
+    /// Looks how the pre-render goes, and what is kept.
+    fn poll_prerender(&mut self) {
+        let Some(document) = self.document.as_ref() else {
+            return;
+        };
+        let project = document.project();
+        let Some(sequence) = project.active().map(|s| s.id) else {
+            return;
+        };
+        let version = (document.newest_entry(), sequence);
+        match self.prerendering.poll(version, project, &self.jobs) {
+            Some(Ok(told)) => self.status = told,
+            Some(Err(err)) => self.errors.push(&err),
+            None => {
+                if let Some(progress) = self.prerendering.progress_text() {
+                    self.status = progress;
+                }
+            }
+        }
     }
 
     /// The playhead, on the open timeline's frame grid.
@@ -1674,6 +1734,7 @@ impl eframe::App for Editor {
         if let Some(err) = self.proxies.poll(&self.jobs, &ctx, project, now) {
             self.errors.push(&err);
         }
+        self.poll_prerender();
         let polled = self.cache_cleanup.poll();
         if let Some(err) = &polled.problem {
             self.errors.push(err);

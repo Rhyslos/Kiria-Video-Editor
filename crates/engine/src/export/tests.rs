@@ -1723,3 +1723,64 @@ fn a_recorders_pcm_streams_become_named_tracks_and_export() {
     let peak = heard[..got * 2].iter().fold(0.0f32, |m, v| m.max(v.abs()));
     assert!(peak > 0.05, "the tones are in the export: {peak}");
 }
+
+#[test]
+fn a_prerendered_stretch_is_shown_from_the_render_cache() {
+    use super::prerender::Prerender;
+    let Some(devices) = devices() else {
+        eprintln!("no graphics device here: pre-rendering isn't checked");
+        return;
+    };
+    let (project, seq) = recording();
+    let rate = project.active().unwrap().settings.frame_rate;
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(cache::render::Store::open(dir.path().to_path_buf()));
+    let range = (Time::ZERO, rate.frame_start(6));
+    let pre = Prerender::start(project.clone(), seq, range, devices.clone(), store.clone(), || {});
+    let give_up = Instant::now() + Duration::from_secs(120);
+    let done = loop {
+        if let Some(outcome) = pre.finished() {
+            break outcome.unwrap().expect("not cancelled");
+        }
+        assert!(Instant::now() < give_up, "the pre-render did not end");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(done.written, 6);
+    assert_eq!(pre.progress(), (6, 6));
+    // Again: everything is kept already.
+    let again = Prerender::start(project.clone(), seq, range, devices.clone(), store.clone(), || {});
+    let done = loop {
+        if let Some(outcome) = again.finished() {
+            break outcome.unwrap().unwrap();
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!((done.written, done.passed), (0, 6));
+
+    let mut preview = Preview::start_composing(
+        devices.decoding,
+        devices.convert,
+        None,
+        Some(devices.composing.clone()),
+        || {},
+    );
+    preview.set_renders(Some(store));
+    let shown = |at: Time| {
+        preview.show(&project, seq, at, 640, 360);
+        let give_up = Instant::now() + Duration::from_secs(60);
+        loop {
+            if let Some(p) = preview.wait(Duration::from_millis(100))
+                && p.at == at
+                && !p.stand_in
+            {
+                return p;
+            }
+            assert!(Instant::now() < give_up, "no picture");
+        }
+    };
+    let inside = shown(rate.frame_start(2));
+    assert_eq!(inside.method.as_deref(), Some("pre-rendered"));
+    assert!(inside.composed.is_some());
+    let outside = shown(rate.frame_start(30));
+    assert_ne!(outside.method.as_deref(), Some("pre-rendered"));
+}
