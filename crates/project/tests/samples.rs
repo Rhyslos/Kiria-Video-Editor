@@ -422,6 +422,8 @@ fn rich_project() -> Project {
     if let Some(second) = short_sound.clips.back_mut() {
         second.fx.eq.on = true;
         second.fx.eq.bands[0].gain_mdb = -4_000;
+        // And keeps its pitch when played faster (format 48).
+        second.fx.keep_pitch = true;
     }
     short.audio_tracks.push_back(short_sound);
     let (nested_id, nested_clip, adjustment) = (short.id, p.allocate_id(), p.allocate_id());
@@ -1241,6 +1243,30 @@ fn the_current_sample_has_a_clip_with_its_own_eq() {
         .expect("its sound");
     assert!(clip.fx.eq.on && clip.fx.is_on());
     assert_eq!(clip.fx.eq.bands[0].gain_mdb, -4_000);
+}
+
+#[test]
+fn the_current_sample_has_a_clip_that_keeps_its_pitch() {
+    let project = file::load(&sample_path(FORMAT_VERSION)).expect("the sample opens");
+    let keeps = project
+        .sequences
+        .iter()
+        .flat_map(|s| s.audio_tracks.iter())
+        .flat_map(|t| t.clips.iter())
+        .any(|c| c.fx.keep_pitch);
+    assert!(keeps);
+}
+
+#[test]
+fn version_47_sample_keeps_no_pitch() {
+    let project = file::load(&sample_path(47)).expect("the version 47 sample opens");
+    let keeps = project
+        .sequences
+        .iter()
+        .flat_map(|s| s.audio_tracks.iter())
+        .flat_map(|t| t.clips.iter())
+        .any(|c| c.fx.keep_pitch);
+    assert!(!keeps);
 }
 
 #[test]

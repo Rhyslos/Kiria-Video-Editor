@@ -254,7 +254,7 @@ impl Mixer {
             let got = if let Some(inner) = clip.nested() {
                 self.nested_sound(project, clip, inner, (a, from), &mut scratch)
             } else if let Some(media) = project.media.get(&clip.media) {
-                if clip.fx.is_on() {
+                if crate::clip_fx::runs(clip) {
                     self.file_sound_through_fx(clip, media, from, &mut scratch)
                 } else {
                     self.file_sound(clip, media, a, from, &mut scratch)
@@ -1012,6 +1012,60 @@ pub(crate) mod tests {
                 file[i * 2]
             );
         }
+    }
+
+    /// How strong `hz` is in interleaved stereo `samples` at 48 kHz.
+    fn strength(samples: &[f32], hz: f32) -> f64 {
+        let w = std::f32::consts::TAU * hz / 48_000.0;
+        let (mut re, mut im) = (0f64, 0f64);
+        for (i, s) in samples.iter().step_by(CHANNELS).enumerate() {
+            let (sin, cos) = (w * i as f32).sin_cos();
+            re += f64::from(s * cos);
+            im += f64::from(s * sin);
+        }
+        (re * re + im * im).sqrt()
+    }
+
+    #[test]
+    fn a_faster_clip_keeps_its_pitch_when_asked() {
+        let dir = tempfile::tempdir().unwrap();
+        let at_double = |keep: bool| {
+            let fx = project::clip_fx::ClipFx {
+                keep_pitch: keep,
+                ..Default::default()
+            };
+            let (_, p) = with_fx(dir.path(), fx);
+            let (seq, clip) = (p.active_sequence, p.active().unwrap().audio_tracks[0].clips[0].id);
+            let p = Command::SetSpeed {
+                sequence: seq,
+                clip,
+                speed: project::Speed::new(2, 1).unwrap(),
+            }
+            .apply(&p)
+            .unwrap();
+            mixed_in_pieces(&p, 0.45)
+        };
+        // Like tape: an octave up, 600 Hz.
+        let tape = at_double(false);
+        let piece = &tape[4_800 * CHANNELS..19_200 * CHANNELS];
+        assert!(strength(piece, 600.0) > 4.0 * strength(piece, 300.0));
+        // Kept: 300 Hz still.
+        let kept = at_double(true);
+        let piece = &kept[4_800 * CHANNELS..19_200 * CHANNELS];
+        assert!(
+            strength(piece, 300.0) > 4.0 * strength(piece, 600.0),
+            "300 Hz {} against 600 Hz {}",
+            strength(piece, 300.0),
+            strength(piece, 600.0)
+        );
+        // In time: as loud as the tape version over the same stretch,
+        // nothing missing at its start.
+        let level = |s: &[f32]| (s.iter().map(|v| v * v).sum::<f32>() / s.len() as f32).sqrt();
+        let (a, b) = (
+            level(&tape[2_000 * CHANNELS..19_200 * CHANNELS]),
+            level(&kept[2_000 * CHANNELS..19_200 * CHANNELS]),
+        );
+        assert!((b / a - 1.0).abs() < 0.2, "{a} against {b}");
     }
 
     #[test]

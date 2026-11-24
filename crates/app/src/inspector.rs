@@ -580,6 +580,11 @@ impl Inspector {
                     rate: at.rate,
                     recorded: at.media.and_then(|m| m.info.video.as_ref()).map(|v| v.frame_rate),
                     playhead: at.playhead,
+                    sounds: at
+                        .project
+                        .sequence(at.sequence)
+                        .map(|seq| sound::sound_clips(seq, clip))
+                        .unwrap_or_default(),
                 },
             ),
         };
