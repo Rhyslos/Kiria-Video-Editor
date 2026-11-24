@@ -156,16 +156,22 @@ fn audio_stream(s: &Stream, number: usize) -> AudioStream {
     }
 }
 
-/// The container's length, else the longest stream's.
+/// The container's length, else the longest stream's, else where the
+/// last packet ends (a recording a crash cut short states none).
 fn length(input: &Input, streams: &[Stream]) -> Time {
     if let Some(us) = input.duration_us() {
         return Time::from_ratio(us, 1_000_000).unwrap_or(Time::ZERO);
     }
-    streams
+    let stated = streams
         .iter()
         .filter_map(Stream::duration)
         .filter_map(|(num, den)| Time::from_ratio(num, den.unsigned_abs()))
-        .max()
+        .max();
+    stated
+        .or_else(|| {
+            let end = input.end_time()?;
+            Time::from_ratio((end * 1_000_000.0).round() as i64, 1_000_000)
+        })
         .unwrap_or(Time::ZERO)
 }
 
