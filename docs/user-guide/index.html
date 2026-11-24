@@ -1284,6 +1284,83 @@ footer p { color: var(--muted); }
 </section>
 </section>
 
+<section class="chapter" id="techniques">
+<h2>Editing techniques<a class="anchor" href="#techniques" aria-label="Link to this section">#</a></h2>
+<p class="lead">The cuts and tricks editors use again and again, what each is for, and how to make it in Kiria. Try them on your own recordings: every step is one undo away.</p>
+
+<section id="jl-cuts">
+<h3>J cuts and L cuts<a class="anchor" href="#jl-cuts" aria-label="Link to this section">#</a></h3>
+<p>In a plain cut, picture and sound change at the same moment. In a <strong>J cut</strong> the next shot's sound starts first: you hear the boss fight a moment before you see it, which pulls the viewer forward. In an <strong>L cut</strong> the last shot's sound carries on under the next picture: your reaction keeps going while the replay starts. On the timeline the sound's cut sits before or after the picture's, which is where the names come from (the shapes of the letters).</p>
+<figure><img loading="lazy" src="images/techniques-cuts.jpg" width="1440" height="900" alt="Three shots on V1; on the Game track the first shot's sound runs two seconds past its picture's cut (an L cut), and the third shot's sound starts a second and a half before its picture (a J cut)."><figcaption>An L cut at 10 s (the match is still heard over the clutch round) and a J cut at 20 s (the boss fight is heard before it is seen).</figcaption></figure>
+<ol class="steps">
+<li>Cut the two shots so they meet (<a href="#split-delete">Split</a> with <kbd>S</kbd>).</li>
+<li>Select both, right-click one and choose <strong>Unlink</strong>, so their pictures and sounds move on their own.</li>
+<li>Pick the <strong>Roll</strong> tool (<kbd>T</kbd>) and drag the cut on the sound track (Game, and Mic too if you have one): to the left for a J cut, to the right for an L cut. The picture's cut stays where it is.</li>
+<li>Press <kbd>V</kbd> to go back to the Select tool. A short <a href="#techniques-crossfades">crossfade</a> on the sound's cut makes the change smoother.</li>
+</ol>
+</section>
+
+<section id="jump-cuts">
+<h3>Jump cuts: cutting out the pauses<a class="anchor" href="#jump-cuts" aria-label="Link to this section">#</a></h3>
+<p>Cutting the pauses and "umm"s out of a talking shot keeps it quick. The picture jumps a little at each cut, which viewers of commentary and vlogs are used to.</p>
+<ul>
+<li>By hand: put the edit needle where the pause starts and press <kbd>S</kbd>, again where it ends, then select the piece and press <kbd>Backspace</kbd>. Everything after closes up, on every track.</li>
+<li>All at once: <a href="#remove-silence">Remove silence</a> (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd>) finds the quiet stretches on the mic track, shows the cuts first, and makes them as one undo step.</li>
+<li>To hide a jump, cut to something else for a moment (a <a href="#techniques-cutaway">cutaway</a>), or punch in (next).</li>
+</ul>
+</section>
+
+<section id="punch-in">
+<h3>Punch-ins<a class="anchor" href="#punch-in" aria-label="Link to this section">#</a></h3>
+<p>A punch-in jumps closer on the same shot, for a punchline or a reaction. It also hides a jump cut.</p>
+<ol class="steps">
+<li>Split where the punch-in starts (<kbd>S</kbd>), and again where it ends if it should jump back out.</li>
+<li>Select the middle part and set <strong>Size</strong> to 120–150 % in the <a href="#inspector">inspector</a>'s Transform. Drag the picture in the viewer to frame the face or the action.</li>
+<li>For a slow push in instead of a jump, add <strong>Zoom to a point</strong> from the media drawer's Effects (Motion) and raise <strong>Keep it sharp</strong> so the close-up stays crisp.</li>
+</ol>
+</section>
+
+<section id="cut-on-action">
+<h3>Cutting on action<a class="anchor" href="#cut-on-action" aria-label="Link to this section">#</a></h3>
+<p>Cut in the middle of a movement (a jump, a turn, a reload), and continue the same movement in the next shot. The eye follows the movement and hardly notices the cut. Step through the moment a frame at a time with <kbd>←</kbd> and <kbd>→</kbd>, split where the movement is half done in each shot, and use the <strong>Roll</strong> tool (<kbd>T</kbd>) to nudge the cut a frame or two until it flows.</p>
+</section>
+
+<section id="match-cut">
+<h3>Match cuts and smash cuts<a class="anchor" href="#match-cut" aria-label="Link to this section">#</a></h3>
+<ul>
+<li>A <strong>match cut</strong> joins two shots that look or move alike: a crosshair to a round sun, a door closing to a level loading. Line the shapes up in the viewer with the inspector's Position and Size, and turn on <strong>Split view</strong> (in the viewer's Display menu) to compare the clip with the timeline's picture.</li>
+<li>A <strong>smash cut</strong> goes straight from calm to loud with no warning: a quiet lobby to the explosion. Keep it a hard cut, with no fade on either side. For an extra hit, put a short <strong>Impact frame</strong> or <strong>Shake</strong> (Effects) on the first frames of the loud shot.</li>
+</ul>
+</section>
+
+<section id="techniques-crossfades">
+<h3>Crossfades and sound bridges<a class="anchor" href="#techniques-crossfades" aria-label="Link to this section">#</a></h3>
+<p>A hard cut in sound can click or jar even when the picture cut is clean. A short crossfade on the sound smooths it without anyone noticing. Music that carries on across picture cuts (a <strong>sound bridge</strong>) ties a run of shots together into one moment.</p>
+<figure><img loading="lazy" src="images/techniques-crossfades.jpg" width="1440" height="900" alt="Two shots dissolving into each other on V1; on the Game track their sound crossfades across the same cut; on the Music track the music crossfades over two seconds into a later part of itself."><figcaption>A dissolve on the picture, a crossfade on the game sound under it, and the music crossfading into a later part of itself.</figcaption></figure>
+<ul>
+<li>Drag <strong>Crossfade</strong> from the media drawer's Effects (Sound crossfades) onto a cut on an audio track. A third of a second is often enough for game sound; music likes one or two seconds of <strong>Smooth crossfade</strong>.</li>
+<li>To shorten music, cut it at two places on the beat, remove the middle, and crossfade the join: the song seems to skip naturally.</li>
+<li>Keep the music on its own track running across your picture cuts, and turn on <a href="#ducking">Ducking</a> on it so it dips under your voice.</li>
+<li>A <strong>Cross dissolve</strong> on the picture with a Crossfade on its sound makes a soft change of time or place.</li>
+</ul>
+</section>
+
+<section id="techniques-cutaway">
+<h3>Cutaways and B-roll<a class="anchor" href="#techniques-cutaway" aria-label="Link to this section">#</a></h3>
+<p>A cutaway shows something else while the sound goes on: the scoreboard while you explain the round, the map while you plan. Put the other shot on a video track above (V2) where it should be seen, and leave the sound below it as it is. The picture on top covers the one below for that moment; your voice carries on. For a smaller window instead, use the inspector's one-click layouts (a corner, or the top or bottom half): the <a href="#picture-handles">facecam layouts</a>.</p>
+</section>
+
+<section id="speed-ramps">
+<h3>Speed ramps<a class="anchor" href="#speed-ramps" aria-label="Link to this section">#</a></h3>
+<p>A speed ramp slows a shot down for the moment that matters and speeds back up after: the headshot in slow motion, the rest at full speed. Put the playhead on that moment and click <strong>Slow moment</strong> in the inspector's <a href="#speed">Speed</a> section (down, a second slow, back up), or <strong>Ease into slow motion</strong> to stay slow; for your own shape, add speed keyframes with the Speed row's diamond. Recordings at 120 fps or more slow down most smoothly. Add <strong>Motion blur</strong> (Effects, Motion) if fast parts look choppy.</p>
+</section>
+
+<section id="cut-to-beat">
+<h3>Cutting to the beat<a class="anchor" href="#cut-to-beat" aria-label="Link to this section">#</a></h3>
+<p>For a montage, cuts that land on the music's beats feel deliberate. Play the music and press <kbd>M</kbd> on each beat you want to cut on: each press puts a <a href="#timeline-labels">timeline label</a> at the needle. With snapping on (<kbd>N</kbd>), clip edges and the edit needle snap to those labels, so trim each shot to end on one. Cutting on every beat soon feels busy: every second or fourth beat usually works better.</p>
+</section>
+</section>
+
 <section class="chapter" id="settings">
 <h2>Settings<a class="anchor" href="#settings" aria-label="Link to this section">#</a></h2>
 <figure><img loading="lazy" src="images/settings-editing.jpg" width="1440" height="900" alt="The editor's Settings: tabs across the top, a search box at the right, and the Editing tab's settings in a card, one row each."><figcaption>Settings: the tabs across the top, a search box at their right end, one row per setting.</figcaption></figure>
