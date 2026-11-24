@@ -1,7 +1,8 @@
 //! "Black bars" in the inspector's Crop: the bars along a recording's
 //! edges found on a worker (`engine::bars`, frames spread over the clip)
 //! and cut away, the part left as large as fits the frame, in one undo
-//! step. The Crop section then offers to make the timeline that size.
+//! step, on the clip and every other selected clip of the same recording.
+//! The Crop section then offers to make the timeline that size.
 
 use super::Editor;
 use jobs::{JobHandle, PoolKind, Priority};
@@ -11,7 +12,8 @@ use project::{ClipId, Command, SequenceId};
 #[derive(Debug)]
 pub struct FindingBars {
     sequence: SequenceId,
-    clip: ClipId,
+    /// The clip asked for, and the other selected clips of its recording.
+    clips: Vec<ClipId>,
     job: JobHandle<engine::bars::Bars>,
 }
 
@@ -41,9 +43,18 @@ impl Editor {
             "find black bars",
             move |_| engine::bars::find(&path, stream, rotation, from, to),
         );
+        let mut clips = vec![clip];
+        clips.extend(
+            seq.tracks()
+                .flat_map(|t| t.clips.iter())
+                .filter(|c| {
+                    c.id != clip && c.is_file() && c.media == found.media && self.selected.contains(&c.id)
+                })
+                .map(|c| c.id),
+        );
         self.finding_bars = Some(FindingBars {
             sequence: seq.id,
-            clip,
+            clips,
             job,
         });
         self.status = "Looking for black bars…".into();
@@ -58,7 +69,7 @@ impl Editor {
         let Some(result) = finding.job.try_result() else {
             return;
         };
-        let (sequence, clip) = (finding.sequence, finding.clip);
+        let (sequence, clips) = (finding.sequence, finding.clips.clone());
         self.finding_bars = None;
         let bars = match result {
             Ok(bars) => bars,
@@ -78,20 +89,35 @@ impl Editor {
             let Some(seq) = project.sequence(sequence) else {
                 return Ok(());
             };
-            let Some(found) = seq.tracks().flat_map(|t| t.clips.iter()).find(|c| c.id == clip) else {
-                return Ok(());
-            };
             let rate = seq.settings.frame_rate;
-            let at = found.moment(playhead, rate);
             let frame = (seq.settings.width, seq.settings.height);
-            let look =
-                crate::inspector::cropped_to_fit(&found.look_at(at), bars.picture, bars.shares(), frame);
+            let steps: Vec<Command> = seq
+                .tracks()
+                .flat_map(|t| t.clips.iter())
+                .filter(|c| clips.contains(&c.id))
+                .map(|found| {
+                    let at = found.moment(playhead, rate);
+                    let look = crate::inspector::cropped_to_fit(
+                        &found.look_at(at),
+                        bars.picture,
+                        bars.shares(),
+                        frame,
+                    );
+                    Command::SetLookAt {
+                        sequence,
+                        clip: found.id,
+                        at,
+                        look,
+                    }
+                })
+                .collect();
+            if steps.is_empty() {
+                return Ok(());
+            }
             applied = Some(bars.inside());
-            d.apply(Command::SetLookAt {
-                sequence,
-                clip,
-                at,
-                look,
+            d.apply(match steps.len() {
+                1 => steps.into_iter().next().unwrap_or(Command::Steps(Vec::new())),
+                _ => Command::Steps(steps),
             })
         });
         match (result, applied) {
