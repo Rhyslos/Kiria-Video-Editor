@@ -35,6 +35,9 @@ pub struct Subject<'a> {
     /// The rate its file was recorded at, when it has a picture.
     pub recorded: Option<Rate>,
     pub playhead: Time,
+    /// Its sound clips (itself on an audio track, or those linked to a
+    /// picture): whether they keep their pitch is set on them.
+    pub sounds: Vec<&'a Clip>,
 }
 
 /// What the section asked for: commands (each an undo step) and a place
@@ -163,6 +166,7 @@ fn body(ui: &mut egui::Ui, theme: &Theme, it: &Subject<'_>, keys: &RampKeys, ask
         }
     });
 
+    pitch_row(ui, theme, it, asked);
     if it.kind == TrackKind::Video {
         ui.add_space(2.0);
         ui.horizontal(|ui| {
@@ -196,10 +200,58 @@ fn body(ui: &mut egui::Ui, theme: &Theme, it: &Subject<'_>, keys: &RampKeys, ask
             recorded,
             clean.percent()
         ),
-        _ => "The clip gets longer or shorter, with its sound (its pitch follows the speed), and what follows moves along."
-            .to_owned(),
+        _ => "The clip gets longer or shorter, with its sound, and what follows moves along.".to_owned(),
     };
     ui.label(small(hint));
+}
+
+/// The Pitch row: whether the sound keeps its pitch at another speed, or
+/// goes higher and lower like tape. Set on every sound clip of it, one
+/// undo step.
+fn pitch_row(ui: &mut egui::Ui, theme: &Theme, it: &Subject<'_>, asked: &mut Asked) {
+    let sounds: Vec<&Clip> = it.sounds.iter().copied().filter(|c| c.is_file()).collect();
+    if sounds.is_empty() {
+        return;
+    }
+    let kept = sounds.iter().all(|c| c.fx.keep_pitch);
+    ui.add_space(2.0);
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Pitch").color(theme.text_secondary));
+        for (keep, name, tip) in [
+            (false, "Like tape", "Faster sounds higher, slower lower"),
+            (
+                true,
+                "Keep",
+                "The voice and music sound as they were recorded, at any speed",
+            ),
+        ] {
+            let chosen = kept == keep;
+            if ui.selectable_label(chosen, name).on_hover_text(tip).clicked() && !chosen {
+                let steps: Vec<Command> = sounds
+                    .iter()
+                    .map(|c| Command::SetClipFx {
+                        sequence: it.sequence,
+                        clip: c.id,
+                        fx: Box::new(project::clip_fx::ClipFx {
+                            keep_pitch: keep,
+                            ..c.fx.clone()
+                        }),
+                    })
+                    .collect();
+                asked.commands.push(match steps.len() {
+                    1 => steps.into_iter().next().unwrap_or(Command::Steps(Vec::new())),
+                    _ => Command::Steps(steps),
+                });
+            }
+        }
+    });
+    if kept && !it.clip.ramp.is_empty() {
+        ui.label(
+            egui::RichText::new("With a speed ramp the pitch follows the speed.")
+                .color(theme.muted)
+                .size(12.0),
+        );
+    }
 }
 
 /// Whether a recording at `recorded` has more frames than the timeline.
@@ -382,6 +434,7 @@ mod tests {
             rate: Rate::FPS_60,
             recorded: Some(Rate::FPS_120),
             playhead,
+            sounds: Vec::new(),
         }
     }
 

@@ -32,14 +32,24 @@ impl PitchSettings {
         mix: 1.0,
     };
 
-    /// How much faster the heads read than the sound is written.
+    /// How much faster the heads read than the sound is written. Two
+    /// octaves either way at most: a track's shift is kept to one by its
+    /// settings, a clip's kept pitch goes as far as its speed (25 % to 400 %).
     pub fn ratio(&self) -> f32 {
-        2f32.powf(self.semitones.clamp(-12.0, 12.0) / 12.0)
+        2f32.powf(self.semitones.clamp(-24.0, 24.0) / 12.0)
     }
 }
 
 /// The window each head is faded over, in seconds.
 pub const WINDOW: f32 = 0.04;
+
+/// How far behind the sound it is given the shifted sound comes out, on
+/// average (samples at `rate`): where its heads read from, half way through
+/// their window, past the room kept for lining up.
+pub fn latency(rate: f32) -> usize {
+    let window = (rate * WINDOW).max(16.0);
+    (1.0 + (window / 4.0).floor() + window / 2.0).round() as usize
+}
 
 /// A read head: where it is in its window (0 to 1) and how far behind the
 /// newest sample its window starts.

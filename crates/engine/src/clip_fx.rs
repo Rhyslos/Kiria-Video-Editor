@@ -1,6 +1,8 @@
 //! A sound clip's own EQ and clean-up (`project::clip_fx`), run by the
 //! mixer on the clip's samples as they are read, before its volume, pan,
-//! lines and fades.
+//! lines and fades. A clip played at another speed that keeps its pitch is
+//! shifted back here too, after them: read tape-style at its speed, its
+//! pitch moved by the opposite (`audio::dsp::pitch`).
 //!
 //! Each clip being played keeps its effects' state here from piece to
 //! piece, so playback and export, which read the same pieces, make the
@@ -11,6 +13,7 @@
 
 use audio::dsp::cleanup::{LATENCY, NoiseProfile, SpectralGate};
 use audio::dsp::filters::Eq;
+use audio::dsp::pitch::{Pitch, PitchSettings};
 use audio::settings::{TrackSettings, noise_from_project};
 use media::audio::CHANNELS;
 use project::clip_fx::ClipFx;
@@ -26,6 +29,8 @@ pub(crate) struct Chain {
     eq: Eq,
     eq_on: bool,
     gate: Option<SpectralGate>,
+    /// Shifting a faster or slower clip back to its own pitch.
+    pitch: Option<Kept>,
     /// The timeline sample (at the mixer's rate) the next sample out is.
     next: i64,
     left: Vec<f32>,
@@ -49,15 +54,18 @@ impl Chain {
             eq: Eq::new(rate as f32, settings.eq.bands),
             eq_on: settings.eq.on,
             gate,
+            pitch: pitch_for(rate, clip),
             next,
             left: Vec::new(),
             right: Vec::new(),
         }
     }
 
-    /// How far ahead its clip is read: the clean-up's delay, when it is on.
+    /// How far ahead its clip is read: the clean-up's delay, when it is
+    /// on, and the pitch shift's, when its pitch is kept.
     pub(crate) fn latency(&self) -> usize {
-        if self.gate.is_some() { LATENCY } else { 0 }
+        let gate = if self.gate.is_some() { LATENCY } else { 0 };
+        gate + self.pitch.as_ref().map_or(0, |kept| kept.latency)
     }
 
     /// Runs interleaved stereo `samples` through the EQ and the clean-up.
@@ -75,6 +83,9 @@ impl Chain {
         if let Some(gate) = &mut self.gate {
             gate.process(&mut self.left, &mut self.right);
         }
+        if let Some(kept) = &mut self.pitch {
+            kept.shift.process(&mut self.left, &mut self.right);
+        }
         for (i, frame) in samples.chunks_exact_mut(CHANNELS).enumerate() {
             frame[0] = self.left[i];
             frame[1] = self.right[i];
@@ -85,6 +96,10 @@ impl Chain {
     /// numbers carry on; turning the clean-up on or off, or a new noise,
     /// starts it afresh (`false`).
     fn follow(&mut self, clip: &Clip) -> bool {
+        let speed = ClipFx::keeps_pitch(clip).then_some(clip.speed);
+        if speed != self.pitch.as_ref().map(|kept| kept.speed) {
+            return false;
+        }
         if self.fx == clip.fx {
             return true;
         }
@@ -108,6 +123,38 @@ impl Chain {
         self.fx = clip.fx.clone();
         true
     }
+}
+
+/// A clip's pitch kept: the shift that undoes its speed's, and its delay.
+struct Kept {
+    shift: Pitch,
+    speed: project::Speed,
+    latency: usize,
+}
+
+/// The shift back to `clip`'s own pitch at its speed, when it keeps it:
+/// read twice as fast, its pitch is an octave up, so it goes an octave down.
+fn pitch_for(rate: u32, clip: &Clip) -> Option<Kept> {
+    if !ClipFx::keeps_pitch(clip) {
+        return None;
+    }
+    let speed = clip.speed.as_f64();
+    let settings = PitchSettings {
+        on: true,
+        semitones: (-12.0 * speed.log2()) as f32,
+        mix: 1.0,
+    };
+    Some(Kept {
+        shift: Pitch::new(rate as f32, settings),
+        speed: clip.speed,
+        latency: audio::dsp::pitch::latency(rate as f32),
+    })
+}
+
+/// Whether the mixer runs `clip` through a chain: its own EQ or clean-up
+/// is on, or it keeps its pitch at another speed.
+pub(crate) fn runs(clip: &Clip) -> bool {
+    clip.fx.is_on() || ClipFx::keeps_pitch(clip)
 }
 
 fn noise_of(fx: &ClipFx) -> Option<NoiseProfile> {
