@@ -36,8 +36,12 @@ pub struct Subject<'a> {
     pub recorded: Option<Rate>,
     pub playhead: Time,
     /// Its sound clips (itself on an audio track, or those linked to a
-    /// picture): whether they keep their pitch is set on them.
+    /// picture), and those of the other selected clips: whether they keep
+    /// their pitch is set on them.
     pub sounds: Vec<&'a Clip>,
+    /// The other selected clips that play something: one speed set here
+    /// is set on them too.
+    pub others: Vec<project::ClipId>,
 }
 
 /// What the section asked for: commands (each an undo step) and a place
@@ -280,12 +284,23 @@ fn ramp_from_here(it: &Subject<'_>, at: Time, from: Speed, slow: Speed, back: bo
     Ramp::new(kept.chain(made.keys().iter().copied()))
 }
 
-fn set_speed(it: &Subject<'_>, speed: Speed) -> Command {
-    Command::SetSpeed {
+/// One speed for the clip, and for every other selected clip that plays
+/// something: one undo step.
+pub(super) fn set_speed(it: &Subject<'_>, speed: Speed) -> Command {
+    let set = |clip| Command::SetSpeed {
         sequence: it.sequence,
-        clip: it.clip.id,
+        clip,
         speed,
+    };
+    if it.others.is_empty() {
+        return set(it.clip.id);
     }
+    Command::Steps(
+        std::iter::once(it.clip.id)
+            .chain(it.others.iter().copied())
+            .map(set)
+            .collect(),
+    )
 }
 
 fn set_ramp(it: &Subject<'_>, ramp: Ramp) -> Command {
@@ -435,6 +450,7 @@ mod tests {
             recorded: Some(Rate::FPS_120),
             playhead,
             sounds: Vec::new(),
+            others: Vec::new(),
         }
     }
 

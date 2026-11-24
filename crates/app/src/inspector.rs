@@ -583,8 +583,16 @@ impl Inspector {
                     sounds: at
                         .project
                         .sequence(at.sequence)
-                        .map(|seq| sound::sound_clips(seq, clip))
+                        .map(|seq| sound_targets(seq, clip, &self.others_all))
                         .unwrap_or_default(),
+                    others: self
+                        .others_all
+                        .iter()
+                        .copied()
+                        .filter(|id| {
+                            clip_in(at.project, *id).is_some_and(|c| !c.is_adjustment() && !c.is_title())
+                        })
+                        .collect(),
                 },
             ),
         };
@@ -1065,6 +1073,35 @@ pub(crate) mod tests {
             .apply(&project)
             .unwrap();
         assert_eq!(clip_in(&alone, second.id).unwrap().look.scale, ONE);
+    }
+
+    #[test]
+    fn one_speed_goes_to_every_selected_clip() {
+        let project = project_with_a_clip();
+        let sequence = project.active_sequence;
+        let media = project.media.values().next().unwrap().clone();
+        let project = Command::Import { sequence, media }.apply(&project).unwrap();
+        let clips: Vec<project::Clip> = project.active().unwrap().video_tracks[0]
+            .clips
+            .iter()
+            .cloned()
+            .collect();
+        let it = speed::Subject {
+            sequence,
+            clip: &clips[0],
+            kind: TrackKind::Video,
+            rate: Rate::FPS_60,
+            recorded: None,
+            playhead: Time::ZERO,
+            sounds: Vec::new(),
+            others: vec![clips[1].id],
+        };
+        let command = speed::set_speed(&it, project::Speed::new(2, 1).unwrap());
+        let done = command.apply(&project).unwrap();
+        for clip in done.active().unwrap().video_tracks[0].clips.iter() {
+            assert_eq!(clip.speed, project::Speed::new(2, 1).unwrap());
+            assert_eq!(clip.duration, Time::seconds(5), "half as long");
+        }
     }
 
     #[test]
