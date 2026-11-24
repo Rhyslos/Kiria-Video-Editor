@@ -85,6 +85,8 @@ pub struct Editor {
     following: Option<follow::FollowJob>,
     /// Black bars being looked for (Crop › Black bars).
     finding_bars: Option<crop_bars::FindingBars>,
+    /// The Color page's Split: a viewer of the picture without its grade.
+    color_before: Option<Viewer>,
     /// The Color page's own state.
     color_page: crate::color_page::ColorPage,
     /// A clip being analysed for its Stabilise effect.
@@ -505,6 +507,7 @@ impl Editor {
             full_screen_asked: None,
             following: None,
             finding_bars: None,
+            color_before: None,
             color_page: Default::default(),
             steadying: None,
             save_frame_requested: false,

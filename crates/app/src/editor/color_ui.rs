@@ -76,6 +76,23 @@ impl Editor {
         let needle = (!self.settings.edit_at_playhead).then_some(seq.edit_needle);
         let display_state = self.display_state(false);
         let away = self.display.away();
+        // Split: a viewer of its own shows the picture without its grade
+        // on the left of the line.
+        let wipe = self.color_page.wipe;
+        match (wipe.is_some(), self.color_before.is_some()) {
+            (true, false) => self.color_before = Some(self.viewer.second(ui_kit::Slot(2))),
+            (false, true) => {
+                if let Some(mut before) = self.color_before.take() {
+                    before.close();
+                }
+            }
+            _ => {}
+        }
+        let ungraded = wipe.and_then(|_| self.color_page.ungraded(shown_p, graded_id));
+        let (playhead, quality) = (self.viewer.playhead, self.settings.preview_quality);
+        let before_viewer = &mut self.color_before;
+        let mut wipe_moved = None;
+        let wipe_theme = self.theme;
         let mut left = ui.new_child(
             egui::UiBuilder::new()
                 .max_rect(viewer)
@@ -92,6 +109,36 @@ impl Editor {
             display_state,
             crate::viewer::Stage { source: None, away },
             |ui, frame, response| {
+                // Split: before on the left of the line.
+                if let (Some(at), Some(before), Some(ungraded)) = (wipe, before_viewer.as_mut(), &ungraded) {
+                    let line = frame.left() + frame.width() * at;
+                    let left = egui::Rect::from_min_max(frame.min, egui::pos2(line, frame.bottom()));
+                    before.paint_over(ui, frame, left, ungraded, playhead, quality);
+                    ui_kit::viewer::caption(ui, &wipe_theme, frame, "Before");
+                    let right = egui::Rect::from_min_max(egui::pos2(line, frame.top()), frame.max);
+                    if right.width() > 60.0 {
+                        let painter = ui.painter_at(right);
+                        let galley = painter.layout_no_wrap(
+                            "After".to_owned(),
+                            egui::FontId::proportional(11.0),
+                            wipe_theme.text_secondary,
+                        );
+                        let pill = egui::Rect::from_min_size(
+                            egui::pos2(frame.right() - galley.size().x - 18.0, frame.top() + 6.0),
+                            galley.size() + egui::vec2(12.0, 6.0),
+                        );
+                        painter.rect_filled(
+                            pill,
+                            pill.height() / 2.0,
+                            wipe_theme.viewport.gamma_multiply(0.85),
+                        );
+                        painter.galley(pill.min + egui::vec2(6.0, 3.0), galley, wipe_theme.text_secondary);
+                    }
+                    let (moved, _) = ui_kit::viewer::wipe_divider(ui, &wipe_theme, frame, at);
+                    if moved != at {
+                        wipe_moved = Some(moved);
+                    }
+                }
                 // "Pick white": a click on the picture says where.
                 if picking {
                     let hovered = ui.rect_contains_pointer(frame);
@@ -127,6 +174,14 @@ impl Editor {
             },
         );
 
+        if let Some(moved) = wipe_moved {
+            self.color_page.wipe = Some(moved);
+        }
+        if let Some(before) = self.color_before.as_mut()
+            && let Some(err) = before.poll(ui.ctx(), self.settings.preview_quality)
+        {
+            self.errors.push(&err);
+        }
         let mut asked = Vec::new();
         if let (Some(at), Some(clip), Some(sampled)) = (picked, graded, self.viewer.sampled.clone()) {
             asked.push(match self.color_page.picking_range {

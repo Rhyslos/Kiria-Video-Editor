@@ -183,6 +183,57 @@ fn draw(
     (frame, response)
 }
 
+/// Draws `picture` into `frame` as the viewer does (fitted in its shape),
+/// only where it falls inside `clip`: one side of a wipe between two
+/// pictures of the same frame.
+pub fn paint_into(ui: &Ui, frame: Rect, clip: Rect, picture: Picture<'_>) {
+    let painter = ui.painter_at(clip);
+    painter.rect_filled(frame.intersect(clip), 0.0, Color32::BLACK);
+    if let Some((on_screen, part)) = seen_part(picture_rect(frame, picture.size()), clip) {
+        match picture {
+            Picture::Texture(texture) => {
+                painter.image(texture.id(), on_screen, part, Color32::WHITE);
+            }
+            Picture::Video(video) => {
+                let part = [part.min.x, part.min.y, part.max.x, part.max.y];
+                painter.add(video.shape(on_screen, part));
+            }
+        }
+    }
+}
+
+/// The divider of a wipe at `at` (0 to 1 across `frame`), with a handle to
+/// drag: where it is after the hand moved it, and whether it is held.
+pub fn wipe_divider(ui: &mut Ui, theme: &Theme, frame: Rect, at: f32) -> (f32, bool) {
+    let x = frame.left() + frame.width() * at.clamp(0.0, 1.0);
+    let grip = Rect::from_center_size(egui::pos2(x, frame.center().y), vec2(18.0, frame.height()));
+    let response = ui.interact(grip, ui.make_persistent_id("wipe divider"), Sense::drag());
+    let painter = ui.painter_at(frame);
+    let line = if response.hovered() || response.dragged() {
+        theme.accent
+    } else {
+        theme.text
+    };
+    // Light on dark, so it shows on any picture.
+    let ends = [egui::pos2(x, frame.top()), egui::pos2(x, frame.bottom())];
+    painter.line_segment(ends, egui::Stroke::new(3.5, Color32::from_black_alpha(160)));
+    painter.line_segment(ends, egui::Stroke::new(1.5, line));
+    painter.circle_filled(egui::pos2(x, frame.center().y), 7.0, line);
+    painter.circle_stroke(
+        egui::pos2(x, frame.center().y),
+        7.0,
+        egui::Stroke::new(1.0, theme.viewport),
+    );
+    if response.hovered() || response.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+    }
+    let moved = match response.interact_pointer_pos().filter(|_| response.dragged()) {
+        Some(pointer) => ((pointer.x - frame.left()) / frame.width().max(1.0)).clamp(0.02, 0.98),
+        None => at,
+    };
+    (moved, response.dragged())
+}
+
 /// The quiet note in the viewer's bottom right corner. Beside the picture
 /// it is plain faint text; where it would lie on the picture (a narrow
 /// viewer, such as each half of the split view) it is cut to the
