@@ -31,30 +31,60 @@
 //! engine's clips' sound (`engine::mix::Mixer::mix_track`) is already
 //! clean before it is written, and that also covers what reaches a
 //! [`crate::strip::Strip`] without a ring (the clarity check).
+//!
+//! **Sound already in a ring that a change makes wrong** (a clip's volume
+//! being dragged while it plays) is cut short instead of played out: the
+//! feeder asks for a cut ([`FeedWriter::ask_cut`]) and stops writing; the
+//! mixer, at its next block, drops what is in the ring past that point
+//! (never what it is already playing) and says where it cut; the feeder
+//! then writes again from there ([`FeedWriter::cut_done`]), so the change
+//! is heard within a few blocks instead of after the whole ring.
+//!
+//! The ring is samples kept as the bits of `f32`s in atomics, with
+//! counters of what was written and read: both ends wait for nothing and
+//! the reader can move the writer's end back while the writer waits.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 /// What both ends share.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct Shared {
+    /// The samples, interleaved stereo, as `f32` bits.
+    samples: Box<[AtomicU32]>,
+    /// Samples written and read since the ring was made: what is in it is
+    /// the difference.
+    written: AtomicU64,
+    read: AtomicU64,
     /// Frames the mixer filled with silence and the feeder has not yet skipped.
     owed: AtomicU64,
+    /// Cuts asked for and made, counted; where the feeder asked to cut
+    /// (a count of samples written) and where the mixer did.
+    cuts_asked: AtomicU64,
+    cuts_made: AtomicU64,
+    cut_to: AtomicU64,
+    cut_at: AtomicU64,
+}
+
+impl Shared {
+    fn slot(&self, at: u64) -> &AtomicU32 {
+        &self.samples[(at % self.samples.len() as u64) as usize]
+    }
 }
 
 /// The feeder's end of a track's ring.
 #[derive(Debug)]
 pub struct FeedWriter {
-    to: rtrb::Producer<f32>,
     shared: Arc<Shared>,
     /// Samples written as 0 because they were not numbers, not yet taken.
     replaced: u64,
+    /// A cut asked for and not yet made: what had been written then.
+    cutting: Option<u64>,
 }
 
 /// The mixer's end of a track's ring.
 #[derive(Debug)]
 pub struct FeedReader {
-    from: rtrb::Consumer<f32>,
     shared: Arc<Shared>,
     /// Frames of silence to play before reading (a track whose first frame
     /// is later than where the mixer is): not owed.
@@ -63,26 +93,43 @@ pub struct FeedReader {
 
 /// A ring for one track holding up to `frames` stereo frames.
 pub fn ring(frames: usize) -> (FeedWriter, FeedReader) {
-    let (to, from) = rtrb::RingBuffer::new(frames.max(1) * 2);
-    let shared = Arc::new(Shared::default());
+    let samples = (0..frames.max(1) * 2).map(|_| AtomicU32::new(0)).collect();
+    let shared = Arc::new(Shared {
+        samples,
+        written: AtomicU64::new(0),
+        read: AtomicU64::new(0),
+        owed: AtomicU64::new(0),
+        cuts_asked: AtomicU64::new(0),
+        cuts_made: AtomicU64::new(0),
+        cut_to: AtomicU64::new(0),
+        cut_at: AtomicU64::new(0),
+    });
     (
         FeedWriter {
-            to,
             shared: Arc::clone(&shared),
             replaced: 0,
+            cutting: None,
         },
-        FeedReader {
-            from,
-            shared,
-            wait: 0,
-        },
+        FeedReader { shared, wait: 0 },
     )
 }
 
 impl FeedWriter {
-    /// Frames there is room for now.
+    /// Frames there is room for now (none while a cut is waited for).
     pub fn room(&self) -> usize {
-        self.to.slots() / 2
+        if self.cutting.is_some() {
+            return 0;
+        }
+        let s = &self.shared;
+        let held = s.written.load(Ordering::Relaxed) - s.read.load(Ordering::Acquire);
+        (s.samples.len() - held as usize) / 2
+    }
+
+    /// Frames in the ring not yet played.
+    pub fn held(&self) -> usize {
+        let s = &self.shared;
+        let held = s.written.load(Ordering::Relaxed) - s.read.load(Ordering::Acquire);
+        held as usize / 2
     }
 
     /// Writes as many whole frames of `interleaved` stereo as there is room
@@ -93,23 +140,21 @@ impl FeedWriter {
         if frames == 0 {
             return 0;
         }
-        if let Ok(mut chunk) = self.to.write_chunk(frames * 2) {
-            let (a, b) = chunk.as_mut_slices();
-            let mut replaced = 0;
-            for (to, from) in a.iter_mut().chain(b.iter_mut()).zip(&interleaved[..frames * 2]) {
-                *to = if from.is_finite() {
-                    *from
-                } else {
-                    replaced += 1;
-                    0.0
-                };
-            }
-            self.replaced += replaced;
-            chunk.commit_all();
-            frames
-        } else {
-            0
+        let s = &self.shared;
+        let at = s.written.load(Ordering::Relaxed);
+        let mut replaced = 0;
+        for (i, from) in interleaved[..frames * 2].iter().enumerate() {
+            let v = if from.is_finite() {
+                *from
+            } else {
+                replaced += 1;
+                0.0
+            };
+            s.slot(at + i as u64).store(v.to_bits(), Ordering::Relaxed);
         }
+        s.written.store(at + frames as u64 * 2, Ordering::Release);
+        self.replaced += replaced;
+        frames
     }
 
     /// Samples written as 0 since last asked because they were NaN or
@@ -123,12 +168,62 @@ impl FeedWriter {
     pub fn take_owed(&self) -> u64 {
         self.shared.owed.swap(0, Ordering::AcqRel)
     }
+
+    /// Asks the mixer to drop what the ring holds past `keep` frames from
+    /// what it plays now. Nothing is written until [`FeedWriter::cut_done`]
+    /// says it was made.
+    pub fn ask_cut(&mut self, keep: usize) {
+        if self.cutting.is_some() {
+            return;
+        }
+        let s = &self.shared;
+        let written = s.written.load(Ordering::Relaxed);
+        let to = (s.read.load(Ordering::Acquire) + keep as u64 * 2).min(written);
+        s.cut_to.store(to, Ordering::Relaxed);
+        s.cuts_asked.fetch_add(1, Ordering::Release);
+        self.cutting = Some(written);
+    }
+
+    /// Whether a cut is being waited for.
+    pub fn cutting(&self) -> bool {
+        self.cutting.is_some()
+    }
+
+    /// Once the mixer has made the cut asked for: how many frames it
+    /// dropped (write again from that much earlier). `None` while it is
+    /// still to come, or when none was asked for.
+    pub fn cut_done(&mut self) -> Option<u64> {
+        let was = self.cutting?;
+        let s = &self.shared;
+        if s.cuts_made.load(Ordering::Acquire) != s.cuts_asked.load(Ordering::Relaxed) {
+            return None;
+        }
+        self.cutting = None;
+        Some((was - s.cut_at.load(Ordering::Relaxed)) / 2)
+    }
 }
 
 impl FeedReader {
+    /// Makes a cut the feeder asked for: what the ring holds past where it
+    /// asked (never before what has been read) is dropped. Never waits.
+    fn make_cut(&self) {
+        let s = &self.shared;
+        let asked = s.cuts_asked.load(Ordering::Acquire);
+        if asked == s.cuts_made.load(Ordering::Relaxed) {
+            return;
+        }
+        let read = s.read.load(Ordering::Relaxed);
+        let written = s.written.load(Ordering::Acquire);
+        let at = s.cut_to.load(Ordering::Relaxed).clamp(read, written);
+        s.written.store(at, Ordering::Release);
+        s.cut_at.store(at, Ordering::Relaxed);
+        s.cuts_made.store(asked, Ordering::Release);
+    }
+
     /// Fills `l` and `r` from the ring; what is missing is silence, and
     /// counted as owed. Returns how many frames were missing.
     pub fn read(&mut self, l: &mut [f32], r: &mut [f32]) -> usize {
+        self.make_cut();
         let n = l.len().min(r.len());
         if self.wait > 0 {
             let quiet = usize::try_from(self.wait).unwrap_or(usize::MAX).min(n);
@@ -138,24 +233,21 @@ impl FeedReader {
             let (l, r) = (&mut l[quiet..n], &mut r[quiet..n]);
             return if l.is_empty() { 0 } else { self.read(l, r) };
         }
-        let have = (self.from.slots() / 2).min(n);
-        if have > 0
-            && let Ok(chunk) = self.from.read_chunk(have * 2)
-        {
-            let (a, b) = chunk.as_slices();
-            for (i, pair) in a.chunks_exact(2).chain(b.chunks_exact(2)).enumerate() {
-                l[i] = pair[0];
-                r[i] = pair[1];
-            }
-            // A chunk of whole frames can split a frame between its two
-            // slices only if the ring's length were odd; it is even.
-            chunk.commit_all();
+        let s = &self.shared;
+        let read = s.read.load(Ordering::Relaxed);
+        let written = s.written.load(Ordering::Acquire);
+        let have = (((written - read) / 2) as usize).min(n);
+        for i in 0..have {
+            let at = read + i as u64 * 2;
+            l[i] = f32::from_bits(s.slot(at).load(Ordering::Relaxed));
+            r[i] = f32::from_bits(s.slot(at + 1).load(Ordering::Relaxed));
         }
+        s.read.store(read + have as u64 * 2, Ordering::Release);
         let missing = n - have;
         if missing > 0 {
             l[have..n].fill(0.0);
             r[have..n].fill(0.0);
-            self.shared.owed.fetch_add(missing as u64, Ordering::AcqRel);
+            s.owed.fetch_add(missing as u64, Ordering::AcqRel);
         }
         missing
     }
@@ -172,12 +264,11 @@ impl FeedReader {
 
     /// Throws away everything in the ring and forgets what was owed (a jump).
     pub fn clear(&mut self) {
+        self.make_cut();
         self.wait = 0;
-        let n = self.from.slots();
-        if let Ok(chunk) = self.from.read_chunk(n) {
-            chunk.commit_all();
-        }
-        self.shared.owed.store(0, Ordering::Release);
+        let s = &self.shared;
+        s.read.store(s.written.load(Ordering::Acquire), Ordering::Release);
+        s.owed.store(0, Ordering::Release);
     }
 }
 
@@ -248,5 +339,41 @@ mod tests {
         let (w, mut r) = ring(8);
         r.align(10, 14);
         assert_eq!(w.take_owed(), 4);
+    }
+
+    #[test]
+    fn a_cut_drops_what_was_not_played_and_the_feeder_writes_on_from_there() {
+        let (mut w, mut r) = ring(16);
+        let frames: Vec<f32> = (0..10).flat_map(|i| [i as f32, -(i as f32)]).collect();
+        assert_eq!(w.write(&frames), 10);
+        let (mut l, mut rr) = ([9f32; 3], [9f32; 3]);
+        r.read(&mut l, &mut rr);
+        assert_eq!(l, [0.0, 1.0, 2.0]);
+        // Keep two more frames past what is played; the rest goes.
+        w.ask_cut(2);
+        assert!(w.cutting());
+        assert_eq!(w.room(), 0, "nothing written while waiting");
+        assert_eq!(w.cut_done(), None, "the mixer hasn't been");
+        let (mut l, mut rr) = ([9f32; 1], [9f32; 1]);
+        r.read(&mut l, &mut rr);
+        assert_eq!(l, [3.0], "what it was about to play is kept");
+        assert_eq!(w.cut_done(), Some(5), "frames 5 to 9 dropped");
+        assert!(!w.cutting());
+        // Written again from frame 5, new sound.
+        assert_eq!(w.write(&[50.0, -50.0, 60.0, -60.0]), 2);
+        let (mut l, mut rr) = ([9f32; 4], [9f32; 4]);
+        assert_eq!(r.read(&mut l, &mut rr), 1);
+        assert_eq!(l, [4.0, 50.0, 60.0, 0.0]);
+    }
+
+    #[test]
+    fn a_cut_never_takes_back_what_was_played() {
+        let (mut w, mut r) = ring(8);
+        w.write(&[1.0, 1.0, 2.0, 2.0]);
+        w.ask_cut(4);
+        // Played past where it asked to cut before the mixer saw the ask.
+        let (mut l, mut rr) = ([9f32; 2], [9f32; 2]);
+        r.read(&mut l, &mut rr);
+        assert_eq!(w.cut_done(), Some(0), "nothing past what is held");
     }
 }

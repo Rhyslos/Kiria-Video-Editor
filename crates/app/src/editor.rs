@@ -9,6 +9,7 @@ mod edit_ui;
 mod follow;
 mod keyframe_clipboard;
 mod library_ui;
+mod live;
 mod media_removal;
 mod region_cuts;
 mod saving;
@@ -748,18 +749,17 @@ impl Editor {
         self.after_play_change();
     }
 
-    /// While playing, carries on from here with the project as it is now
-    /// (after a change to a clip's sound, speed or length): mixed again
-    /// from here at once, by a jump that keeps the sound card open.
+    /// While playing, carries on with the project as it is now (after a
+    /// change to a clip's sound, speed or length): what was mixed ahead of
+    /// the tracks that changed is mixed again (`Playback::refeed`).
     fn play_on_with_new_mix(&mut self) {
         let Some(project) = self.document.as_ref().map(|d| d.project()) else {
             return;
         };
+        // What was mixed ahead is mixed again: heard within a few blocks,
+        // with no gap.
         if let Some(playback) = &mut self.playback {
-            let at = playback.position();
-            playback.update(project);
-            playback.jump(at);
-            self.viewer.playhead = at;
+            playback.refeed(project);
         }
     }
 
@@ -860,36 +860,31 @@ impl Editor {
                 ui_kit::master::UNHEARD
             );
         }
+        // Mute, solo, volume and sound changes (and their undo) are heard
+        // within a block: a comparison per frame, sent only when changed.
+        // Whatever is being dragged, anywhere in the window, is heard as it
+        // moves (`live_project`).
+        let followed = self
+            .document
+            .as_ref()
+            .filter(|_| self.playback.is_some())
+            .map(|document| {
+                let p = document.project();
+                let live = self.live_project(p);
+                let live_p = live.as_ref().unwrap_or(p);
+                // The track a voice-over is being recorded on is muted while it plays.
+                self.voice_over
+                    .as_ref()
+                    .and_then(|take| {
+                        crate::voice_over::muted_while_recording(live_p, take.sequence, take.track)
+                    })
+                    .or(live)
+            });
         let Some(playback) = &mut self.playback else {
             return;
         };
-        // Mute, solo, volume and sound changes (and their undo) are heard
-        // within a block: a comparison per frame, sent only when changed.
-        // What is being dragged on the Audio page (a setting, a fader, a
-        // track's line) or in the inspector's Audio section (a clip's
-        // volume or pan) is heard as it moves.
         if let Some(document) = &self.document {
-            let p = document.project();
-            let shown = self.audio_page.shown(p);
-            let shown = shown.as_ref().unwrap_or(p);
-            let setting = self.inspector.with_sounds_being_set(shown);
-            let base = setting.as_ref().unwrap_or(shown);
-            let view = view_on(self.page, &self.timeline, &self.audio_page.timeline);
-            let lined = view
-                .line_being_set()
-                .and_then(|line| crate::audio_page::lines::with_line_being_set(base, line));
-            let lined = lined.as_ref().unwrap_or(base);
-            // A track's volume being turned in its header is heard as it turns.
-            let turned = view
-                .gain_being_set()
-                .and_then(|(track, db)| crate::timeline_panel::with_gain_being_set(lined, track, db));
-            let turned = turned.as_ref().unwrap_or(lined);
-            // The track a voice-over is being recorded on is muted while it plays.
-            let recording = self
-                .voice_over
-                .as_ref()
-                .and_then(|take| crate::voice_over::muted_while_recording(turned, take.sequence, take.track));
-            playback.follow(recording.as_ref().unwrap_or(turned));
+            playback.follow(followed.flatten().as_ref().unwrap_or(document.project()));
         }
         let seq = self.document.as_ref().and_then(|d| d.project().active());
         let (length, rate) = seq.map_or((Time::ZERO, project::Rate::FPS_60), |s| {

@@ -767,6 +767,8 @@ pub struct TimelineView {
     obstacles: Obstacles,
     /// A track volume being dragged: track and its value so far.
     fader_drag: Option<(u64, f32)>,
+    /// A track's pan knob being turned in its header: the track and its pan.
+    pan_knob_drag: Option<(u64, f32)>,
     /// Audio tracks whose clips show their level line. View state: the
     /// page keeps and saves it.
     level_lines: std::collections::BTreeSet<u64>,
@@ -908,6 +910,7 @@ impl Default for TimelineView {
             clip_drag: None,
             obstacles: Obstacles::default(),
             fader_drag: None,
+            pan_knob_drag: None,
             level_lines: Default::default(),
             level_drag: None,
             fade_drag: None,
@@ -1603,6 +1606,21 @@ impl TimelineView {
     /// heard following it before the undo step comes when it is let go.
     pub fn gain_being_set(&self) -> Option<(u64, f32)> {
         self.fader_drag
+    }
+
+    /// A track's pan being turned in its header: the track's id and the pan
+    /// as it is now (-1 all left to 1 all right).
+    pub fn pan_being_set(&self) -> Option<(u64, f32)> {
+        self.pan_knob_drag
+    }
+
+    /// A fade's handle or curve point being dragged on a clip: the clip,
+    /// whether it is its sound's fade (else its picture's), and its fades
+    /// as letting go now would set them.
+    pub fn fade_being_set(&self) -> Option<(u64, bool, ClipFades)> {
+        self.fade_drag
+            .filter(|d| d.changed())
+            .map(|d| (d.clip, d.sound, d.now))
     }
 
     /// Fits `length` seconds in `width` pixels.

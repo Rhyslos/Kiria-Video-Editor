@@ -228,6 +228,12 @@ pub(crate) fn falling(drawn: f32, now: f32) -> f32 {
 }
 
 impl MasterColumn {
+    /// Its fader being dragged: the mix's volume now (dB), so every other
+    /// view shows it and playback hears it as it moves.
+    pub fn gain_being_set(&self) -> Option<f32> {
+        self.drag
+    }
+
     /// Draws the column in `rect`. `levels` is `None` when nothing plays.
     pub fn show(&mut self, ui: &mut Ui, theme: &Theme, rect: Rect, mix: Mix) -> MasterResponse {
         let Mix {

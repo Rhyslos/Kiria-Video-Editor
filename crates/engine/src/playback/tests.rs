@@ -698,6 +698,7 @@ fn following_the_project_sends_only_when_the_mix_changed() {
     let (send, inbox) = channel();
     let mut playback = Playback::with_audio(project.active_sequence, Time::ZERO, send, |c| c.follow_time());
     playback.mix = MixShape::of(&project, project.active_sequence);
+    playback.clips = SoundClips::of(&project, project.active_sequence);
     playback.follow(&project);
     assert!(inbox.try_recv().is_err(), "nothing changed");
     let mut louder = project.clone();
@@ -710,6 +711,47 @@ fn following_the_project_sends_only_when_the_mix_changed() {
     sounded.sequences[0].master_sound.limiter.on = true;
     playback.follow(&sounded);
     assert!(matches!(inbox.try_recv(), Ok(Message::Project(_))));
+    // A clip's sound changed: what is mixed ahead is mixed again.
+    let mut quieter = sounded.clone();
+    let clip = &mut quieter.sequences[0].audio_tracks[0].clips[0];
+    clip.sound.gain_mdb = -6_000;
+    playback.follow(&quieter);
+    assert!(
+        matches!(inbox.try_recv(), Ok(Message::Refeed(_, tracks)) if tracks == vec![quieter.sequences[0].audio_tracks[0].id])
+    );
+    playback.follow(&quieter);
+    assert!(inbox.try_recv().is_err(), "sent once");
+}
+
+/// A clip's volume changed while playing is heard within a few blocks, not
+/// after all that was mixed ahead, and nothing stops: no silence on the
+/// way.
+#[test]
+fn a_change_to_a_clip_while_playing_is_heard_within_a_few_blocks() {
+    let project = recording();
+    let mut fake = fake(&project, Time::from_ratio(1, 2).unwrap());
+    let before = fake.play(BLOCK * 94, BLOCK);
+    let level = loudness(&before[before.len() - 4 * BLOCK..]);
+    assert!(level > 0.01);
+    let mut silent = project.clone();
+    for t in silent.sequences[0].audio_tracks.iter_mut() {
+        for c in t.clips.iter_mut() {
+            c.sound.gain_mdb = project::Sound::SILENT;
+        }
+    }
+    let every = silent.sequences[0].audio_tracks.iter().map(|t| t.id).collect();
+    fake.send.send(Message::Refeed(Box::new(silent), every)).unwrap();
+    // What was kept plays out (never a gap), then the change.
+    let keep = (f64::from(RATE) * REFEED_KEEP).ceil() as usize;
+    let kept = fake.play(keep.div_ceil(BLOCK) * BLOCK, BLOCK);
+    assert!(loudness(&kept[..BLOCK * 2]) > level / 3.0, "no gap");
+    fake.play(4 * BLOCK, BLOCK);
+    let after = fake.play(4 * BLOCK, BLOCK);
+    assert!(
+        loudness(&after) < level / 100.0,
+        "{} against {level}",
+        loudness(&after)
+    );
 }
 
 /// Without a sound card the mix is still made at real-time pace and

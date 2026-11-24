@@ -10,16 +10,23 @@ use ui_kit::{Theme, inspector};
 /// Lengths offered with one click, in seconds.
 const QUICK: [f64; 4] = [0.25, 0.5, 1.0, 2.0];
 
+/// What the section asks: the change made (one undo step), and while a
+/// length is dragged, the change as it is now, for every view to show and
+/// playback to hear.
+#[derive(Debug, Default)]
+pub struct Asked {
+    pub command: Option<Command>,
+    pub dragging: Option<Command>,
+}
+
 /// Draws the section for `clip` on `track` when a transition can go into
 /// it, and returns the change asked for.
-pub fn section(
-    ui: &mut egui::Ui,
-    theme: &Theme,
-    sequence: SequenceId,
-    track: &Track,
-    clip: &Clip,
-) -> Option<Command> {
-    let previous = project::transitions::before(track, clip).filter(|c| c.is_file() && clip.is_file())?;
+pub fn section(ui: &mut egui::Ui, theme: &Theme, sequence: SequenceId, track: &Track, clip: &Clip) -> Asked {
+    let mut out = Asked::default();
+    let Some(previous) = project::transitions::before(track, clip).filter(|c| c.is_file() && clip.is_file())
+    else {
+        return out;
+    };
     let sound = track.kind == project::TrackKind::Audio;
     let (title, kinds, hover): (&str, &[TransitionKind], &str) = if sound {
         (
@@ -86,6 +93,14 @@ pub fn section(
                 .on_hover_text("How long it takes, centred on the cut; no longer than either clip");
             if response.dragged() {
                 ui.data_mut(|d| d.insert_temp(id, value));
+                out.dragging = Some(Command::SetTransition {
+                    sequence,
+                    clip: clip.id,
+                    transition: Some(Transition {
+                        length: length_of(value),
+                        ..transition
+                    }),
+                });
             } else {
                 ui.data_mut(|d| d.remove::<f64>(id));
                 if (value - stored).abs() > 1e-9 {
@@ -112,12 +127,15 @@ pub fn section(
     if clicks.reset {
         asked = Some(None);
     }
-    let transition = asked?;
-    (transition != now).then_some(Command::SetTransition {
+    let Some(transition) = asked else {
+        return out;
+    };
+    out.command = (transition != now).then_some(Command::SetTransition {
         sequence,
         clip: clip.id,
         transition,
-    })
+    });
+    out
 }
 
 /// A length in seconds as a time, to the millisecond.

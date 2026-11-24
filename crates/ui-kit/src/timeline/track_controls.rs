@@ -326,8 +326,10 @@ impl TimelineView {
         ) {
             self.knob_under = Some((area, knob_id));
         }
-        // Drawn (the waveforms follow) while it is being turned.
-        if out.shown_db != track.gain_db {
+        // Drawn (the waveforms follow) while it is being turned: by whether
+        // it is, never by whether it differs from the track, which follows
+        // it while it moves (`gain_being_set`).
+        if out.turning {
             self.fader_drag = Some((track.id, out.shown_db));
         } else if self.fader_drag.is_some_and(|(t, _)| t == track.id) {
             self.fader_drag = None;
@@ -400,6 +402,11 @@ impl TimelineView {
             tip: "Pan: drag left or right (Shift: finer), double-click to centre",
         };
         let out = crate::pan_knob::pan_knob(ui, theme, knob);
+        if out.turning {
+            self.pan_knob_drag = Some((track.id, out.shown));
+        } else if self.pan_knob_drag.is_some_and(|(t, _)| t == track.id) {
+            self.pan_knob_drag = None;
+        }
         if let Some(pan) = out.done {
             events.push(TimelineEvent::TrackPan { track: track.id, pan });
         }

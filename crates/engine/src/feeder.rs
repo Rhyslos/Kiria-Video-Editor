@@ -36,6 +36,13 @@ use std::sync::Arc;
 /// Frames mixed at a time per track: four of the mixer's blocks.
 pub const PIECE: usize = 4 * audio::BLOCK;
 
+/// How many frames ahead a track is mixed for a while after a refeed:
+/// three pieces, about 64 ms at 48 kHz.
+const SHALLOW: usize = 3 * PIECE;
+/// How long after a refeed a track stays shallow: a drag sends one a frame,
+/// so this outlasts the gap between two.
+const SHALLOW_FOR: std::time::Duration = std::time::Duration::from_millis(250);
+
 /// How many tracks a mixer has room for: every track of the timeline and
 /// plenty more to add while playing.
 pub fn slots_for(sequence: &Sequence) -> usize {
@@ -60,6 +67,8 @@ struct Fed {
     /// Samples of its sound that were NaN or infinite and went into the
     /// ring as 0 (`mix::Mixer::mix_track`), so the log says so once.
     replaced: u64,
+    /// Until then (after a refeed) only [`SHALLOW`] is mixed ahead.
+    shallow_until: Option<std::time::Instant>,
 }
 
 pub struct Feeder {
@@ -269,9 +278,24 @@ impl Feeder {
         let mut written = 0;
         for i in 0..self.tracks.len() {
             let fed = &mut self.tracks[i];
+            // A cut asked for (`refeed`): nothing until the mixer has made
+            // it, then on from where it cut.
+            if fed.writer.cutting() {
+                match fed.writer.cut_done() {
+                    Some(dropped) => fed.next = fed.next.saturating_sub(dropped),
+                    None => continue,
+                }
+            }
             fed.next += fed.writer.take_owed();
             if fed.writer.room() < PIECE {
                 continue;
+            }
+            if fed.shallow_until.is_some_and(|t| std::time::Instant::now() < t) {
+                if fed.writer.held() >= SHALLOW {
+                    continue;
+                }
+            } else {
+                fed.shallow_until = None;
             }
             let at = fed.next;
             let id = fed.id;
@@ -302,6 +326,22 @@ impl Feeder {
             written += frames;
         }
         written
+    }
+
+    /// The sound in the rings of `tracks` past `keep` frames from what is
+    /// playing is dropped and mixed again from the project last taken: a
+    /// change to clips is heard within a few blocks instead of after the
+    /// whole ring.
+    /// Each track goes on from where its own ring was cut, at the timeline
+    /// sample that is, so the tracks stay in step.
+    pub fn refeed(&mut self, keep: usize, tracks: &[TrackId]) {
+        let until = std::time::Instant::now() + SHALLOW_FOR;
+        for t in self.tracks.iter_mut().filter(|t| tracks.contains(&t.id)) {
+            t.writer.ask_cut(keep);
+            // While changes come one after another (a drag), only a little
+            // is mixed ahead of what plays, so each cut drops little.
+            t.shallow_until = Some(until);
+        }
     }
 
     /// Takes the project as it is now: changed track settings travel as
@@ -372,6 +412,7 @@ impl Feeder {
             sound: track.sound.clone(),
             next: first.unwrap_or(self.origin.0),
             replaced: 0,
+            shallow_until: None,
         })
     }
 }

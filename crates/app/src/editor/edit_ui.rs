@@ -631,7 +631,12 @@ impl Editor {
         );
         let Some(document) = &self.document else { return };
         let p = document.project();
-        let Some(seq) = p.active() else { return };
+        // Everything being dragged anywhere in the window, so the timeline,
+        // the columns beside it and the viewer all show it as it moves.
+        let live = self.live_project(p);
+        let Some(seq) = live.as_ref().unwrap_or(p).active() else {
+            return;
+        };
         // A removed track's height is forgotten.
         self.timeline.heights.keep_only(&timeline_panel::track_ids(seq));
         if seq.length() == project::Time::ZERO {
@@ -671,7 +676,7 @@ impl Editor {
             // A value being dragged in the inspector, the picture being
             // dragged in the viewer, or keyframe marks being dragged on the
             // timeline, are seen at once.
-            let being_changed = self.effect_previewed(p, self.inspector.shown(p));
+            let being_changed = self.effect_previewed(p, live.clone());
             let mut being_changed =
                 timeline_panel::keyframes_moved(&self.timeline, being_changed.as_ref().unwrap_or(p))
                     .or(being_changed);

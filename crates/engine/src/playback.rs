@@ -53,6 +53,9 @@ use std::time::{Duration, Instant};
 const AHEAD: f64 = 0.5;
 /// How much of each track is mixed before the sound starts, seconds.
 const PRIME: f64 = 0.1;
+/// How much of what is mixed ahead a refeed keeps, seconds: the next few
+/// blocks, which the feeder can't mix again in time.
+const REFEED_KEEP: f64 = 0.03;
 /// The longest a jump waits for the sound card to take it.
 const JUMP_PATIENCE: Duration = Duration::from_secs(2);
 /// A sound card that hasn't called for sound for this long has gone away
@@ -270,6 +273,9 @@ impl Clock {
 enum Message {
     /// The project as it is now.
     Project(Box<Project>),
+    /// The project as it is now, the clips of these tracks changed: what
+    /// is mixed ahead on them is mixed again (`Feeder::refeed`).
+    Refeed(Box<Project>, Vec<TrackId>),
     /// Go on from `at`; `number` counts jumps.
     Jump { at: Time, number: u64 },
     /// What the analyser listens to, if anything.
@@ -294,8 +300,70 @@ pub struct Playback {
     clock: Arc<Clock>,
     messages: Sender<Message>,
     mix: Option<MixShape>,
+    /// The sound clips as last sent: a change to them is mixed again.
+    clips: Option<SoundClips>,
     /// What the analyser was last told to listen to.
     analysed: Option<Listen>,
+}
+
+/// The clips of a timeline's audio tracks (and the timelines they nest)
+/// as last sent to the audio thread. Kept as the project shares them, so
+/// telling whether they changed is a comparison of pointers unless they
+/// did: a frame with nothing being changed costs next to nothing.
+#[derive(Debug, Clone)]
+struct SoundClips {
+    tracks: Vec<project::Vector<project::Clip>>,
+    nested: Vec<(SequenceId, Vec<project::Vector<project::Clip>>)>,
+}
+
+impl SoundClips {
+    fn of(project: &Project, sequence: SequenceId) -> Option<SoundClips> {
+        let seq = project.sequence(sequence)?;
+        let tracks: Vec<_> = seq.audio_tracks.iter().map(|t| t.clips.clone()).collect();
+        let nested = tracks
+            .iter()
+            .flat_map(|clips| clips.iter().filter_map(|c| c.nested()))
+            .filter_map(|id| {
+                let inner = project.sequence(id)?;
+                Some((id, inner.audio_tracks.iter().map(|t| t.clips.clone()).collect()))
+            })
+            .collect();
+        Some(SoundClips { tracks, nested })
+    }
+
+    /// The tracks whose clips are not these in `project` (every track when
+    /// tracks came or went, or a nested timeline changed); empty when all
+    /// are the same.
+    fn changed(&self, project: &Project, sequence: SequenceId) -> Vec<TrackId> {
+        let Some(seq) = project.sequence(sequence) else {
+            return Vec::new();
+        };
+        let same =
+            |a: &project::Vector<project::Clip>, b: &project::Vector<project::Clip>| a.ptr_eq(b) || a == b;
+        let every = || seq.audio_tracks.iter().map(|t| t.id).collect();
+        if seq.audio_tracks.len() != self.tracks.len() {
+            return every();
+        }
+        let nested_same = self.nested.iter().all(|(id, kept)| {
+            project.sequence(*id).is_none_or(|inner| {
+                inner.audio_tracks.len() == kept.len()
+                    && inner
+                        .audio_tracks
+                        .iter()
+                        .zip(kept)
+                        .all(|(t, k)| same(&t.clips, k))
+            })
+        });
+        if !nested_same {
+            return every();
+        }
+        seq.audio_tracks
+            .iter()
+            .zip(&self.tracks)
+            .filter(|(t, kept)| !same(&t.clips, kept))
+            .map(|(t, _)| t.id)
+            .collect()
+    }
 }
 
 impl Playback {
@@ -312,11 +380,13 @@ impl Playback {
 
     fn start_on(project: Project, sequence: SequenceId, from: Time, speakers: Speakers) -> Playback {
         let mix = MixShape::of(&project, sequence);
+        let clips = SoundClips::of(&project, sequence);
         let (messages, inbox) = channel();
         let mut playback = Playback::with_audio(sequence, from, messages, move |clock| {
             audio_thread(project, sequence, from, clock, &inbox, speakers);
         });
         playback.mix = mix;
+        playback.clips = clips;
         playback
     }
 
@@ -347,6 +417,7 @@ impl Playback {
             clock,
             messages,
             mix: None,
+            clips: None,
             analysed: None,
         }
     }
@@ -390,7 +461,27 @@ impl Playback {
     /// on; jump to hear them at once).
     pub fn update(&mut self, project: &Project) {
         self.mix = MixShape::of(project, self.sequence);
+        self.clips = SoundClips::of(project, self.sequence);
         let _ = self.messages.send(Message::Project(Box::new(project.clone())));
+    }
+
+    /// Hands the audio thread the project as it is now and has what is
+    /// already mixed ahead mixed again from it: a change to clips (a
+    /// volume, a fade, a clip's own EQ, a move) is heard within a few
+    /// blocks, with no gap.
+    pub fn refeed(&mut self, project: &Project) {
+        let tracks = match &self.clips {
+            Some(clips) => clips.changed(project, self.sequence),
+            None => project
+                .sequence(self.sequence)
+                .map(|s| s.audio_tracks.iter().map(|t| t.id).collect())
+                .unwrap_or_default(),
+        };
+        self.mix = MixShape::of(project, self.sequence);
+        self.clips = SoundClips::of(project, self.sequence);
+        let _ = self
+            .messages
+            .send(Message::Refeed(Box::new(project.clone()), tracks));
     }
 
     /// Called every frame of the interface while playing: when the mix
@@ -402,7 +493,13 @@ impl Playback {
             .mix
             .as_ref()
             .is_some_and(|m| m.matches(project, self.sequence));
-        if !same {
+        let clips_same = self
+            .clips
+            .as_ref()
+            .is_some_and(|c| c.changed(project, self.sequence).is_empty());
+        if !clips_same {
+            self.refeed(project);
+        } else if !same {
             self.update(project);
         }
     }
@@ -567,6 +664,11 @@ impl Session {
         loop {
             match inbox.try_recv() {
                 Ok(Message::Project(project)) => self.take(*project, clock),
+                Ok(Message::Refeed(project, tracks)) => {
+                    self.take(*project, clock);
+                    let keep = (f64::from(self.controller.rate()) * REFEED_KEEP).ceil() as usize;
+                    self.feeder.refeed(keep, &tracks);
+                }
                 Ok(Message::Jump { at, number }) => jump = Some((at, number)),
                 Ok(Message::Analyse(track)) => {
                     self.analysed = track;
